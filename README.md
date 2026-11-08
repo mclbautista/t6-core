@@ -5,8 +5,22 @@ before its first commit. The distribution and import namespace are `t6`.
 
 Requires Python 3.11 or newer. Install the base package with `pip install t6`.
 The base package has no third-party runtime dependencies and includes
-`t6.domain`, `t6.lookup`, and the `t6` command. The domain and lookup modules
-are placeholders for their follow-up tickets.
+`t6.domain`, `t6.lookup`, and the `t6` command. The lookup module is a
+placeholder for its follow-up ticket.
+
+## Domain
+
+`t6.domain` models T6 once, as immutable dataclasses that do no I/O:
+Project, Episode, Deliverable, JobOrder, Contact, Studio, Machine (Bay),
+Camera and ExternalRef.
+
+- Each entity stored in Notion is identified by its Notion page ID. Two
+  instances with the same page ID compare equal. Relations are page IDs.
+- A Project's human key is its Project Code, which may be blank (`None`).
+- `Project.episodes` derives Episodes 1 to `Eps` for the series Project Types
+  (`SERIES_PROJECT_TYPES`). Films and other types have no Episodes.
+- An ExternalRef (system, kind, external ID, URL) mirrors one External Links
+  row. System, kind and external ID identify the object; the URL may change.
 
 ## Optional extras
 
