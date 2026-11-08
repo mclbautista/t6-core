@@ -25,6 +25,7 @@ from typing import Any
 import httpx
 
 from t6.notion.client import NOTION_VERSION, AsyncNotionClient, RetryPolicy
+from t6.notion.external_links import ExternalLinksProperties as xl
 from t6.notion.models import ProjectsProperties as p
 from t6.notion.sync import NotionClient
 
@@ -40,6 +41,7 @@ class _Failure:
     status: int | None
     code: str
     retry_after: float | None
+    after: int = 0
 
 
 class FakeNotion:
@@ -84,10 +86,23 @@ class FakeNotion:
     # Error injection
 
     def fail_next(
-        self, status: int, *, code: str = "error", times: int = 1, retry_after: float | None = None
+        self,
+        status: int,
+        *,
+        code: str = "error",
+        times: int = 1,
+        retry_after: float | None = None,
+        after: int = 0,
     ) -> None:
-        """Answer the next `times` requests with this HTTP error."""
-        self._failures.extend(_Failure(status, code, retry_after) for _ in range(times))
+        """Answer the next `times` requests with this HTTP error.
+
+        `after` lets that many requests through first, so a test can fail the
+        second call of a flow (for example the create after a lookup).
+        """
+        failures = [_Failure(status, code, retry_after) for _ in range(times)]
+        if failures:
+            failures[0].after = after
+        self._failures.extend(failures)
 
     def time_out_next(self, *, times: int = 1) -> None:
         """Make the next `times` requests time out before Notion answers."""
@@ -113,7 +128,9 @@ class FakeNotion:
 
     def _handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
-        if self._failures:
+        if self._failures and self._failures[0].after > 0:
+            self._failures[0].after -= 1
+        elif self._failures:
             failure = self._failures.pop(0)
             if failure.status is None:
                 raise httpx.ReadTimeout("fake timeout", request=request)
@@ -147,14 +164,14 @@ class FakeNotion:
         data_source_id = parent.get("data_source_id")
         if data_source_id not in self._data_sources:
             return _error(404, "object_not_found", f"Could not find data source {data_source_id}.")
-        page = self.add_page(data_source_id, body.get("properties") or {})
+        page = self.add_page(data_source_id, _as_read(body.get("properties") or {}))
         return httpx.Response(200, json=page)
 
     def _update_page(self, page_id: str, body: JSON) -> httpx.Response:
         if page_id not in self._pages:
             return _error(404, "object_not_found", f"Could not find page {page_id}.")
         page = self._pages[page_id]
-        page["properties"].update(copy.deepcopy(body.get("properties") or {}))
+        page["properties"].update(_as_read(copy.deepcopy(body.get("properties") or {})))
         for flag in ("archived", "in_trash"):
             if flag in body:
                 page[flag] = bool(body[flag])
@@ -186,10 +203,18 @@ class FakeNotion:
 
 
 def _matches(page: JSON, query_filter: JSON | None) -> bool:
-    """Support single-property `equals` filters; anything else matches every row."""
-    if not query_filter or "property" not in query_filter:
+    """Support `and` of single-property filters: `equals` on text, select, number and
+    checkbox, and `contains` on relation. Anything else matches every row."""
+    if not query_filter:
+        return True
+    if "and" in query_filter:
+        return all(_matches(page, part) for part in query_filter["and"])
+    if "property" not in query_filter:
         return True
     prop = page["properties"].get(query_filter["property"]) or {}
+    if "relation" in query_filter and "contains" in query_filter["relation"]:
+        wanted_id = query_filter["relation"]["contains"]
+        return any(item.get("id") == wanted_id for item in prop.get("relation") or [])
     for kind in ("select", "status", "rich_text", "title", "number", "checkbox"):
         if kind in query_filter and "equals" in query_filter[kind]:
             wanted = query_filter[kind]["equals"]
@@ -200,6 +225,27 @@ def _matches(page: JSON, query_filter: JSON | None) -> bool:
                 value = "".join(part.get("plain_text", "") for part in value or [])
             return bool(value == wanted)
     return True
+
+
+def _as_read(properties: JSON) -> JSON:
+    """Turn write-shaped properties into the typed shape Notion returns when reading.
+
+    A write sends `{"select": {...}}`; a read returns `{"type": "select", "select": {...}}`,
+    and rich text parts carry `plain_text`.
+    """
+    result: JSON = {}
+    for name, value in properties.items():
+        prop = dict(value)
+        if "type" not in prop and len(prop) == 1:
+            prop["type"] = next(iter(prop))
+        for kind in ("title", "rich_text"):
+            if prop.get("type") == kind:
+                prop[kind] = [
+                    {**part, "plain_text": part.get("plain_text", part["text"]["content"])}
+                    for part in prop[kind]
+                ]
+        result[name] = prop
+    return result
 
 
 def _error(status: int, code: str, message: str, headers: dict[str, str] | None = None) -> httpx.Response:
@@ -233,6 +279,18 @@ def relation(*page_ids: str) -> JSON:
     return {"type": "relation", "relation": [{"id": page_id} for page_id in page_ids], "has_more": False}
 
 
+def checkbox(value: bool) -> JSON:
+    return {"type": "checkbox", "checkbox": value}
+
+
+def url_value(value: str | None) -> JSON:
+    return {"type": "url", "url": value}
+
+
+def date(start: str | None) -> JSON:
+    return {"type": "date", "date": {"start": start, "end": None} if start else None}
+
+
 def _text(text: str) -> JSON:
     return {"type": "text", "text": {"content": text}, "plain_text": text}
 
@@ -254,4 +312,39 @@ def project_properties(
         p.EPS: number(eps),
         p.STATUS: select(status),
         p.STUDIO: relation(*([studio_id] if studio_id else [])),
+    }
+
+
+def external_link_properties(
+    *,
+    system: str | None = None,
+    kind: str | None = None,
+    external_id: str | None = None,
+    internal_id: str | None = None,
+    url: str | None = None,
+    active: bool = False,
+    last_activity: str | None = None,
+    projects: list[str] | None = None,
+    deliverables: list[str] | None = None,
+    contacts: list[str] | None = None,
+    bays: list[str] | None = None,
+    storage: list[str] | None = None,
+    cameras: list[str] | None = None,
+) -> JSON:
+    """Properties for an External Links page, with the exact Notion property names."""
+    return {
+        xl.NAME: title(" / ".join(part for part in (system, kind, external_id) if part)),
+        xl.SYSTEM: select(system),
+        xl.KIND: select(kind),
+        xl.EXTERNAL_ID: rich_text(external_id),
+        xl.INTERNAL_ID: rich_text(internal_id),
+        xl.URL: url_value(url),
+        xl.ACTIVE: checkbox(active),
+        xl.LAST_ACTIVITY: date(last_activity),
+        xl.PROJECTS: relation(*(projects or [])),
+        xl.DELIVERABLES: relation(*(deliverables or [])),
+        xl.CONTACTS: relation(*(contacts or [])),
+        xl.BAYS: relation(*(bays or [])),
+        xl.STORAGE: relation(*(storage or [])),
+        xl.CAMERAS: relation(*(cameras or [])),
     }

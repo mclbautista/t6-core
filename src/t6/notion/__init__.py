@@ -5,6 +5,8 @@
 - `NotionError`: the only error either client raises.
 - `RetryPolicy`: opt-in retry (see the README).
 - `t6.notion.models`: pages to `t6.domain` entities.
+- `t6.notion.external_links`: read External Links rows as ExternalRefs, create
+  them idempotently, update Last Activity. Code never writes Active.
 - `t6.notion.testing`: an in-memory fake Notion for tests.
 """
 

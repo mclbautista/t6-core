@@ -113,6 +113,23 @@ class ExternalRefTests(unittest.TestCase):
             ExternalRef(system="frameio", kind="project", external_id="abc"),
         )
 
+    def test_internal_id_is_optional_and_not_part_of_the_identity(self) -> None:
+        plain = ExternalRef(system="resolve", kind="project", external_id="db/Show")
+        self.assertIsNone(plain.internal_id)
+        with_id = ExternalRef(
+            system="resolve", kind="project", external_id="db/Show", internal_id="p-77"
+        )
+        self.assertEqual(with_id.internal_id, "p-77")
+        self.assertEqual(plain, with_id)
+        self.assertEqual(
+            with_id,
+            ExternalRef(system="resolve", kind="project", external_id="db/Show", internal_id="p-9"),
+        )
+
+    def test_a_blank_internal_id_is_none(self) -> None:
+        ref = ExternalRef(system="resolve", kind="project", external_id="x", internal_id="  ")
+        self.assertIsNone(ref.internal_id)
+
     def test_system_kind_and_external_id_are_required(self) -> None:
         for blank in ("system", "kind", "external_id"):
             with self.subTest(blank=blank):

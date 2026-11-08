@@ -72,19 +72,22 @@ class ExternalRef:
     """A pointer from a T6 entity to an object in another tool.
 
     Mirrors one External Links row. The object is identified by system, kind
-    and external ID. The URL is carried, but it can change without changing
-    which object it is.
+    and external ID. The URL and the internal ID are carried, but neither is
+    part of the identity: a URL can change, and the internal ID is the tool's
+    own key for the object (for example the project server's project ID).
     """
 
     system: str
     kind: str
     external_id: str
     url: str | None = field(default=None, compare=False)
+    internal_id: str | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         _require(self.system, "system")
         _require(self.kind, "kind")
         _require(self.external_id, "external_id")
+        object.__setattr__(self, "internal_id", _blank_to_none(self.internal_id))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -19,8 +19,10 @@ Camera and ExternalRef.
 - A Project's human key is its Project Code, which may be blank (`None`).
 - `Project.episodes` derives Episodes 1 to `Eps` for the series Project Types
   (`SERIES_PROJECT_TYPES`). Films and other types have no Episodes.
-- An ExternalRef (system, kind, external ID, URL) mirrors one External Links
-  row. System, kind and external ID identify the object; the URL may change.
+- An ExternalRef (system, kind, external ID, URL, internal ID) mirrors one
+  External Links row. System, kind and external ID identify the object; the URL
+  and the optional internal ID (the tool's own key, such as the project
+  server's project ID) are carried but do not affect equality.
 
 ### Events and jobs
 
@@ -87,6 +89,22 @@ with NotionClient(token, retry=RetryPolicy()) as notion:
     project = project_from_page(notion.retrieve_page(page_id))
     rows = notion.query_data_source(projects_data_source_id)
 ```
+
+### External Links
+
+`t6.notion.external_links.ExternalLinks(client, data_source_id)` reads and
+writes the External Links database:
+
+- `refs_for_project(project_id)` returns the Project's rows as ExternalRefs,
+  Internal ID included. `links_for_project` also returns the row's page ID,
+  Active and Last Activity.
+- `ensure(ref, project_id=...)` creates a row only when no row has the same
+  System, Kind and External ID. If one exists, it is returned and nothing is
+  written. It never sets Active, because people do.
+- `touch(page_id, when)` sets Last Activity and writes nothing else.
+
+The property names and types are not yet checked against the live database
+(see the module docstring).
 
 ### Retry policy
 
