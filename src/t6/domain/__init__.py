@@ -5,6 +5,7 @@ instances with the same page ID are the same entity, whatever their other
 fields say, so a row read again compares equal to the row read earlier.
 Relations to other rows are held as page IDs (for example
 `Deliverable.project_id`). Links to objects in other tools are ExternalRefs.
+Tool events and the jobs they trigger are in `t6.domain.events`, re-exported here.
 """
 
 from __future__ import annotations
@@ -12,17 +13,34 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
+from t6.domain.events import (
+    Event,
+    EventSource,
+    FrameioCommentCreated,
+    Job,
+    JobKind,
+    JsonValue,
+    ProjectStatusChanged,
+)
+
 __all__ = [
     "SERIES_PROJECT_TYPES",
     "Camera",
     "Contact",
     "Deliverable",
     "Episode",
+    "Event",
+    "EventSource",
     "ExternalRef",
+    "FrameioCommentCreated",
+    "Job",
+    "JobKind",
     "JobOrder",
+    "JsonValue",
     "Machine",
     "NotionEntity",
     "Project",
+    "ProjectStatusChanged",
     "Studio",
 ]
 

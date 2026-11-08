@@ -22,6 +22,20 @@ Camera and ExternalRef.
 - An ExternalRef (system, kind, external ID, URL) mirrors one External Links
   row. System, kind and external ID identify the object; the URL may change.
 
+### Events and jobs
+
+Tool events and the work they trigger share one typed shape, used by the
+webhook server, the worker and poll-and-diff.
+
+- `FrameioCommentCreated` (Frame.io comment ID, Frame.io project ID, optional
+  file ID) and `ProjectStatusChanged` (Project page ID, new Status) are Events.
+- Each Event has a `dedupe_key` built from the tool's own IDs. The same tool
+  event has the same key whether it came from a webhook or from poll-and-diff;
+  `source` and `received_at` are carried but are not part of the key.
+- A `Job` carries its `JobKind`, a read-only JSON-ready payload and a dedupe
+  key. `Job.for_event(kind, event)` keys the job by kind and event, so one
+  event queues each kind of job at most once.
+
 ## Optional extras
 
 Install only the adapters an application needs, for example
