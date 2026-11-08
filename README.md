@@ -37,6 +37,43 @@ $ t6 version
 
 `python -m t6 version` provides the same output.
 
+## This repository is public
+
+Anything pushed here is visible to everyone at once, and Docker images install
+`t6` from it with no GitHub token. Never commit:
+
+- passwords, API keys, tokens or private keys, even in a test or a comment
+- a `.env` file (`.env.example` with empty values is fine)
+- a real `config.yaml` (commit `config.example.yaml` instead)
+- databases (`*.db`, `*.sqlite`), anything in a `data/` folder, or token store
+  files such as `token.json`
+- real client, show or person names, or any client data, in code, tests,
+  fixtures or docs; use made-up names
+
+If a secret is ever pushed, rotate it straight away. Deleting the commit is not
+enough, because the old value is already public.
+
+### Safety checks
+
+The `Public repo` workflow runs on every push and pull request. It fails when
+gitleaks finds a likely secret in the new commits, when a tracked file has a
+forbidden path, or when a tracked line contains a name from the denylist. The
+denylist lives only in the `T6_NAMES_DENYLIST` Actions secret (one name per
+line), and the check prints the file and line, never the name. The same job
+installs `t6[notion]` from this repo with no credentials.
+
+Run the same checks locally before pushing (needs
+[gitleaks](https://github.com/gitleaks/gitleaks#installing) on your `PATH`):
+
+```sh
+T6_NAMES_DENYLIST="$(cat ~/.t6-names)" python3 scripts/public_repo_safety.py
+```
+
+Add `--full-history` to scan every commit, or `--skip-secrets` to run only the
+path and names checks. Other public T6 repositories turn the checks on by
+calling the reusable workflow; see the header of
+`.github/workflows/public-repo-safety.yml`.
+
 ## Development
 
 This is a single-package uv workspace. Install uv, then run:
