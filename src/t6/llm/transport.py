@@ -4,7 +4,9 @@ A provider sends a request and returns a :class:`Completion`. A request is
 either chat messages or a :class:`DecisionsRequest`; each transport accepts
 one kind and raises ``TypeError`` for the other. It raises
 :class:`ProviderTimeout` or :class:`ProviderError` for transport failures, and
-the adapter turns those into ``failed`` results. :class:`OpenAIChat` speaks the
+the adapter turns those into ``failed`` results. A 429 raises
+:class:`RateLimited`, which the adapter waits on once. Every provider declares
+its :data:`~t6.llm.policy.Retention`. :class:`OpenAIChat` speaks the
 OpenAI-style chat completions API that DeepSeek and OpenRouter both serve;
 :class:`~t6.llm.decisions.OpenRouterDecisions` speaks the Decisions API (Jev).
 """
@@ -12,13 +14,16 @@ OpenAI-style chat completions API that DeepSeek and OpenRouter both serve;
 from __future__ import annotations
 
 import dataclasses
+import email.utils
 import json
 import socket
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal, Protocol, TypedDict
 
+from t6.llm.policy import RETENTIONS, Retention
 from t6.llm.result import Tokens
 
 
@@ -64,9 +69,40 @@ class ProviderError(Exception):
     """The provider answered with an error, or with a reply the transport cannot read."""
 
 
+class RateLimited(ProviderError):
+    """The provider answered 429. ``retry_after`` is in seconds, ``None`` when it sent no usable header."""
+
+    def __init__(self, retry_after: float | None = None) -> None:
+        self.retry_after = retry_after
+        super().__init__("HTTP 429" if retry_after is None else f"HTTP 429, retry after {retry_after:g}s")
+
+
+def parse_retry_after(value: str | None, *, now: float | None = None) -> float | None:
+    """Seconds to wait from a ``Retry-After`` header (delay seconds or an HTTP date), else ``None``."""
+    if value is None or not value.strip():
+        return None
+    value = value.strip()
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            when = email.utils.parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        if when.tzinfo is None:
+            return None
+        seconds = when.timestamp() - (time.time() if now is None else now)
+    if seconds != seconds:  # NaN
+        return None
+    return max(0.0, seconds)
+
+
 class Provider(Protocol):
     @property
     def model(self) -> str: ...
+
+    @property
+    def retention(self) -> Retention: ...
 
     def complete(self, request: Request, *, timeout: float) -> Completion: ...
 
@@ -83,10 +119,13 @@ def _urlopen(url: str, headers: dict[str, str], body: bytes, timeout: float) -> 
 
 
 def _post(send: Send, url: str, headers: dict[str, str], body: bytes, timeout: float) -> bytes:
-    """Send one request; map transport failures to ``ProviderTimeout`` or ``ProviderError``."""
+    """Send one request; map transport failures to ``RateLimited``, ``ProviderTimeout`` or ``ProviderError``."""
     try:
         return send(url, headers, body, timeout)
     except urllib.error.HTTPError as error:
+        if error.code == 429:
+            headers_in = error.headers
+            raise RateLimited(parse_retry_after(headers_in.get("Retry-After") if headers_in else None)) from None
         # The body can echo the request, so only the status is kept.
         raise ProviderError(f"HTTP {error.code}") from None
     except (TimeoutError, socket.timeout) as error:
@@ -104,6 +143,8 @@ class OpenAIChat:
 
     ``base_url`` is the API root, for example ``https://api.deepseek.com`` or
     ``https://openrouter.ai/api/v1``. The API key comes from the app's config.
+    ``retention`` is what this endpoint promises; it defaults to ``unknown``.
+    Build providers from config with :class:`t6.llm.LLMConfig`.
     """
 
     def __init__(
@@ -112,18 +153,26 @@ class OpenAIChat:
         base_url: str,
         api_key: str,
         model: str,
+        retention: Retention = "unknown",
         json_mode: bool = True,
         send: Send = _urlopen,
     ) -> None:
+        if retention not in RETENTIONS:
+            raise ValueError(f"retention must be one of {', '.join(RETENTIONS)}, got {retention!r}")
         self._url = base_url.rstrip("/") + "/chat/completions"
         self._api_key = api_key
         self._model = model
+        self._retention: Retention = retention
         self._json_mode = json_mode
         self._send = send
 
     @property
     def model(self) -> str:
         return self._model
+
+    @property
+    def retention(self) -> Retention:
+        return self._retention
 
     def complete(self, request: Request, *, timeout: float) -> Completion:
         if isinstance(request, DecisionsRequest):

@@ -20,6 +20,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from t6.llm.policy import RETENTIONS, Retention
 from t6.llm.result import Tokens
 from t6.llm.transport import (
     Choice,
@@ -124,7 +125,10 @@ class CandidateKeys:
 class OpenRouterDecisions:
     """OpenRouter's alpha Decisions API, the transport Jev runs on.
 
-    The API key comes from the app's config. ``send`` is swappable for tests.
+    The API key comes from the app's config. ``retention`` is what this
+    endpoint promises; it defaults to ``unknown``, so a task with the default
+    policy (``zdr_enforced``) returns ``failed(policy)`` until the app declares
+    otherwise or sets a lower minimum. ``send`` is swappable for tests.
     """
 
     def __init__(
@@ -133,9 +137,13 @@ class OpenRouterDecisions:
         api_key: str,
         model: str = JEV_MODEL,
         url: str = DECISIONS_URL,
+        retention: Retention = "unknown",
         send: Send = _urlopen,
     ) -> None:
+        if retention not in RETENTIONS:
+            raise ValueError(f"retention must be one of {', '.join(RETENTIONS)}, got {retention!r}")
         self._api_key = api_key
+        self._retention: Retention = retention
         self._model = model
         self._url = url
         self._send = send
@@ -143,6 +151,10 @@ class OpenRouterDecisions:
     @property
     def model(self) -> str:
         return self._model
+
+    @property
+    def retention(self) -> Retention:
+        return self._retention
 
     def complete(self, request: Request, *, timeout: float) -> Completion:
         if not isinstance(request, DecisionsRequest):

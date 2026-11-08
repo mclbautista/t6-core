@@ -15,6 +15,7 @@ from t6.llm import (
     CandidateDecisions,
     CandidateKeys,
     Choice,
+    DataPolicy,
     DecisionsRequest,
     Failed,
     MissingSession,
@@ -23,6 +24,7 @@ from t6.llm import (
     OpenRouterDecisions,
     ProviderError,
     ProviderTimeout,
+    RateLimited,
     Task,
     Tokens,
     UnmaskedInput,
@@ -30,7 +32,7 @@ from t6.llm import (
     run,
 )
 from t6.llm.testing import FakeProvider
-from t6.privacy import Masked, Person, Project, Registry, Session, pseudonymize
+from t6.privacy import Masked, Person, Project, Registry, Session, Withheld, pseudonymize, withhold
 
 # The app owns the prompt: question wording and criteria live here, not in t6.
 CRITERIA = {
@@ -254,6 +256,56 @@ class SameRulesAsChatTests(unittest.TestCase):
         assert isinstance(result, Ok), result
         self.assertEqual(result.value.note, "Marco assigned")  # first casing seen in the input
 
+    def test_provider_below_the_policy_returns_policy_and_sends_nothing(self) -> None:
+        task_input, session = masked_input()
+        fake = FakeProvider(retention="unknown").decisions(decisions_body())
+        result = run(MATCH, task_input, provider=fake, session=session)
+        assert isinstance(result, Failed), result
+        self.assertEqual(result.reason, "policy")
+        self.assertEqual(fake.calls, [])
+
+    def test_decisions_transport_declares_unknown_retention_by_default(self) -> None:
+        task_input, session = masked_input()
+        send = Recorder(json.dumps(decisions_body()).encode())
+        result = run(MATCH, task_input, provider=OpenRouterDecisions(api_key="k", send=send), session=session)
+        assert isinstance(result, Failed)
+        self.assertEqual(result.reason, "policy")
+        self.assertEqual(send.requests, [])
+        zdr = OpenRouterDecisions(api_key="k", retention="zdr_enforced", send=send)
+        self.assertIsInstance(run(MATCH, task_input, provider=zdr, session=session), Ok)
+
+    def test_withhold_policy_task_runs_without_a_session(self) -> None:
+        @dataclasses.dataclass(frozen=True)
+        class WithheldInput:
+            job_order: Withheld
+            candidates: tuple[Withheld, ...]
+
+        def withheld_render(task_input: WithheldInput) -> DecisionsRequest:
+            return DecisionsRequest(
+                {"job_order": task_input.job_order.text},
+                {candidate_key(i): Choice(c.text, CRITERIA) for i, c in enumerate(task_input.candidates)},
+            )
+
+        policy = DataPolicy(min_retention="unknown", masking="withhold")
+        task: Task[WithheldInput, CandidateDecisions] = Task(
+            "match-v1", WithheldInput, CandidateDecisions, withheld_render, policy=policy
+        )
+        payload = WithheldInput(withhold("JO #32 password: hunter2"), (withhold("FTR SCR"), withhold("DCP")))
+        fake = FakeProvider(retention="unknown").decisions(decisions_body())
+        result = run(task, payload, provider=fake)
+        assert isinstance(result, Ok), result
+        request = fake.calls[0].request
+        assert isinstance(request, DecisionsRequest)
+        self.assertNotIn("hunter2", json.dumps(dataclasses.asdict(request)))
+
+    def test_one_429_is_waited_on_then_the_reply_is_used(self) -> None:
+        task_input, session = masked_input()
+        waits: list[float] = []
+        fake = FakeProvider().rate_limited(retry_after=2).decisions(decisions_body())
+        result = run(MATCH, task_input, provider=fake, session=session, sleep=waits.append)
+        self.assertIsInstance(result, Ok)
+        self.assertEqual(waits, [2])
+
     def test_a_chat_reply_cannot_answer_a_decisions_request(self) -> None:
         task_input, session = masked_input()
         with self.assertRaises(TypeError):
@@ -354,10 +406,18 @@ class OpenRouterDecisionsTests(unittest.TestCase):
         self.assertEqual(send.requests[0][2]["model"], "typesafe/jev-1.1")
 
     def test_http_errors_raise_provider_error_without_the_body(self) -> None:
-        error = urllib.error.HTTPError("https://openrouter.ai", 429, "slow down", Headers(), None)
+        error = urllib.error.HTTPError("https://openrouter.ai", 500, "boom", Headers(), None)
         with self.assertRaises(ProviderError) as caught:
             transport(Recorder(error=error)).complete(two_questions(), timeout=1)
-        self.assertEqual(str(caught.exception), "HTTP 429")
+        self.assertEqual(str(caught.exception), "HTTP 500")
+
+    def test_429_raises_rate_limited_with_retry_after(self) -> None:
+        headers = Headers()
+        headers["Retry-After"] = "3"
+        error = urllib.error.HTTPError("https://openrouter.ai", 429, "slow down", headers, None)
+        with self.assertRaises(RateLimited) as caught:
+            transport(Recorder(error=error)).complete(two_questions(), timeout=1)
+        self.assertEqual(caught.exception.retry_after, 3)
 
     def test_timeouts_raise_provider_timeout(self) -> None:
         with self.assertRaises(ProviderTimeout):

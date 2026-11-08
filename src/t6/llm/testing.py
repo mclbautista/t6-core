@@ -7,12 +7,16 @@ Queue what the provider should do, in order, then run tasks against it::
     fake.reply("not json")
     fake.timeout()
     fake.api_error("HTTP 500")
+    fake.rate_limited(retry_after=2)
 
 For a Decisions task (Jev), queue the raw Decisions API body instead. The fake
 runs it through the transport's alpha-shape validation, so a malformed body
 gives the same ``failed(schema_violation)`` as the real transport::
 
     fake.decisions({"model": "typesafe/jev-1.1", "answers": {"c0": {...}}})
+
+A fake declares ``zdr_enforced`` retention unless told otherwise:
+``FakeProvider(retention="unknown")``.
 
 Each call to ``complete`` takes the next scripted step. ``calls`` records the
 request sent, so a test can check that only masked text left the app.
@@ -22,11 +26,19 @@ from __future__ import annotations
 
 import dataclasses
 from collections import deque
-from collections.abc import Sequence
 
 from t6.llm.decisions import read_reply
+from t6.llm.policy import Retention
 from t6.llm.result import Tokens
-from t6.llm.transport import Completion, DecisionsRequest, Message, ProviderError, ProviderTimeout, Request
+from t6.llm.transport import (
+    Completion,
+    DecisionsRequest,
+    Message,
+    ProviderError,
+    ProviderTimeout,
+    RateLimited,
+    Request,
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -51,14 +63,19 @@ class _DecisionsBody:
 class FakeProvider:
     """Replays scripted replies and failures in order."""
 
-    def __init__(self, model: str = "fake-model") -> None:
+    def __init__(self, model: str = "fake-model", *, retention: Retention = "zdr_enforced") -> None:
         self._model = model
+        self._retention: Retention = retention
         self._script: deque[Completion | _DecisionsBody | Exception] = deque()
         self.calls: list[Call] = []
 
     @property
     def model(self) -> str:
         return self._model
+
+    @property
+    def retention(self) -> Retention:
+        return self._retention
 
     def reply(
         self,
@@ -85,6 +102,11 @@ class FakeProvider:
     def api_error(self, detail: str = "scripted API error") -> FakeProvider:
         """Queue a provider error."""
         self._script.append(ProviderError(detail))
+        return self
+
+    def rate_limited(self, retry_after: float | None = None) -> FakeProvider:
+        """Queue a 429. ``retry_after`` is the seconds the provider asks for, or ``None`` for no header."""
+        self._script.append(RateLimited(retry_after))
         return self
 
     @property
