@@ -74,6 +74,19 @@ The other extras are declared and currently empty; their dependencies will be
 added when those adapters are implemented. The `notion` extra does not install Frame.io, Adobe sign-in, or
 LLM libraries.
 
+## Instagantt
+
+`t6.instagantt` reads an Instagantt Standalone export saved as CSV (stdlib
+only; no Excel). `read_export(path)` / `parse_export(text)` return a
+`Timeline` per Instagantt project, each with its `Task`s (name, start, end; a
+blank end is a milestone). `link_timelines(timelines, ExternalLinks(...))`
+ties each timeline to its Notion Project through an External Links row
+(System `instagantt`, Kind `project`, External ID = the export's Project ID,
+or the project name when the export has none). A project with no row, a row
+with no Project or a row with several Projects comes back in `unmapped` with
+a reason; nothing is guessed. It reads no Notion dates and writes nothing.
+The column names are assumed, not yet checked against a live export.
+
 ## Notion
 
 `t6.notion` is the one shared Notion client. Install it with
