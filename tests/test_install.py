@@ -8,6 +8,12 @@ import tempfile
 import unittest
 import venv
 
+# httpx and what it pulls in. No Frame.io, Adobe sign-in or LLM libraries.
+NOTION_PACKAGES = {
+    "httpx", "httpcore", "h11", "anyio", "idna", "certifi", "sniffio",
+    "typing-extensions", "typing_extensions", "exceptiongroup",
+}
+
 
 class InstallationTests(unittest.TestCase):
     def test_base_and_notion_install_without_other_adapters(self) -> None:
@@ -25,16 +31,23 @@ class InstallationTests(unittest.TestCase):
                     environment = root / ("notion" if extra else "base")
                     venv.create(environment, with_pip=True)
                     python = environment / "bin" / "python"
-                    self.run_command(python, "-m", "pip", "install", "--no-index", f"{wheel}{extra}")
+                    # The base package must install with no index at all. The
+                    # Notion extra fetches httpx and its dependencies.
+                    offline = [] if extra else ["--no-index"]
+                    self.run_command(python, "-m", "pip", "install", *offline, f"{wheel}{extra}")
                     self.run_command(python, "-c", "import t6.domain; import t6.lookup")
                     installed = json.loads(self.run_command(python, "-c", self.distribution_probe()))
-                    self.assertEqual(installed["dependencies"], [])
+                    self.assertEqual(installed["dependencies"], ["httpx<1,>=0.27; extra == 'notion'"])
                     self.assertEqual(
                         set(installed["extras"]),
                         {"notion", "privacy", "llm", "frameio", "resolve", "instagantt", "server", "worker"},
                     )
                     # A fresh environment may include setuptools on Python 3.11.
-                    self.assertLessEqual(set(installed["packages"]), {"t6", "pip", "setuptools"})
+                    allowed = {"t6", "pip", "setuptools"}
+                    if extra:
+                        allowed |= NOTION_PACKAGES
+                        self.run_command(python, "-c", "import t6.notion, t6.notion.testing")
+                    self.assertLessEqual(set(installed["packages"]), allowed)
                     output = self.run_command(environment / "bin" / "t6", "version")
                     self.assertEqual(json.loads(output), {"version": "0.1.0"})
 

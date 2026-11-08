@@ -52,9 +52,71 @@ Install only the adapters an application needs, for example
 | `server` | Webhook server and queue |
 | `worker` | Job workers |
 
-All extras are declared and currently empty. Adapter dependencies will be added
-when those adapters are implemented. The `notion` extra does not install
-Frame.io, Adobe sign-in, or LLM libraries.
+The `notion` extra installs `httpx`. The other extras are declared and
+currently empty; their dependencies will be added when those adapters are
+implemented. The `notion` extra does not install Frame.io, Adobe sign-in, or
+LLM libraries.
+
+## Notion
+
+`t6.notion` is the one shared Notion client. Install it with
+`pip install 't6[notion]'`.
+
+- `AsyncNotionClient` is a generic async httpx client: `retrieve_page`,
+  `create_page`, `update_page`, `retrieve_data_source`, and
+  `query_data_source` (which follows `next_cursor` and returns every row) or
+  `iter_data_source` (which yields rows page by page).
+- `NotionClient` is a thin blocking wrapper with the same methods and the same
+  results. It runs its own event loop, so do not call it from async code.
+- Every request sends Notion-Version `NOTION_VERSION` (`2026-03-11`). Pass
+  `notion_version=` to one client to override it for that client only.
+- Every failure raises `NotionError` with `status`, `code`, `message` and
+  `retry_after`. A timeout or a network error has `status` None and `code`
+  `timeout` or `network_error`.
+- `t6.notion.codec` decodes property values. `t6.notion.models` turns pages
+  into `t6.domain` entities; `project_from_page` builds a Project from a
+  Projects page (property names checked against the live schema).
+- `t6.notion.testing.FakeNotion` is an in-memory Notion behind an httpx mock
+  transport, with `fail_next` and `time_out_next` to inject errors.
+
+```python
+from t6.notion import NotionClient, RetryPolicy
+from t6.notion.models import project_from_page
+
+with NotionClient(token, retry=RetryPolicy()) as notion:
+    project = project_from_page(notion.retrieve_page(page_id))
+    rows = notion.query_data_source(projects_data_source_id)
+```
+
+### Retry policy
+
+This policy is written in ASD-STE100 Simplified Technical English.
+
+1. Retry is off by default. To turn it on, give a `RetryPolicy` to the client.
+2. When retry is off, the client does not retry. Each error causes a
+   `NotionError` immediately.
+3. A read is a page retrieve, a data source retrieve, or a data source query.
+   A write is a page create or a page update.
+4. When Notion sends status 429, the client retries the call. This rule
+   applies to reads and to writes.
+5. When Notion sends a status of 500 or more, the client retries a read. It
+   does not retry a write.
+6. When a read times out, the client retries the read. When a write times
+   out, the client does not retry the write.
+7. Other errors cause a `NotionError` immediately. Examples are status 400,
+   401 and 404.
+8. If a write gets a status of 500 or more, or times out, the client raises
+   `NotionError`. The write possibly occurred. Do not send the write again
+   before you make sure that it did not occur.
+9. Before each retry, the client waits. If Notion sends a Retry-After value,
+   the client waits for that number of seconds.
+10. If Notion does not send a Retry-After value, the client waits
+    `base_delay` seconds (default 0.5). After each retry, the wait becomes
+    two times longer. The wait does not become longer than `max_delay`
+    seconds (default 8).
+11. The client tries a call a maximum of `attempts` times (default 3). This
+    number includes the first try. After the last try, the client raises the
+    last `NotionError`.
 
 ## Privacy
 
