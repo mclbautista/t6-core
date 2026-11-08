@@ -54,6 +54,7 @@ class ExternalLink:
     ref: ExternalRef
     active: bool
     last_activity: datetime | None
+    project_ids: tuple[str, ...] = ()
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, ExternalLink) and self.page_id == other.page_id
@@ -84,6 +85,7 @@ def external_link_from_page(page: JSON) -> ExternalLink | None:
         ),
         active=codec.checkbox(props.get(_P.ACTIVE)) is True,
         last_activity=last if isinstance(last, datetime) else None,
+        project_ids=codec.relation(props.get(_P.PROJECTS)),
     )
 
 
@@ -107,6 +109,20 @@ class ExternalLinks:
         rows = self._client.query_data_source(
             self._data_source_id,
             filter={"property": _P.PROJECTS, "relation": {"contains": project_id}},
+        )
+        links = (external_link_from_page(row) for row in rows)
+        return tuple(link for link in links if link is not None)
+
+    def links_for_system(self, system: str, kind: str) -> tuple[ExternalLink, ...]:
+        """Every row with this System and Kind."""
+        rows = self._client.query_data_source(
+            self._data_source_id,
+            filter={
+                "and": [
+                    {"property": _P.SYSTEM, "select": {"equals": system}},
+                    {"property": _P.KIND, "select": {"equals": kind}},
+                ]
+            },
         )
         links = (external_link_from_page(row) for row in rows)
         return tuple(link for link in links if link is not None)
