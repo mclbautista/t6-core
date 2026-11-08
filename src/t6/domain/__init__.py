@@ -158,7 +158,9 @@ class JobOrder(NotionEntity):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Studio(NotionEntity):
-    """A client company."""
+    """A client company. `aliases` mirrors the Notion `Aliases` property."""
+
+    aliases: tuple[str, ...] = field(default=(), compare=False)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -169,6 +171,7 @@ class Contact(NotionEntity):
     email: str | None = field(default=None, compare=False)
     telegram_handle: str | None = field(default=None, compare=False)
     telegram_user_id: int | None = field(default=None, compare=False)
+    aliases: tuple[str, ...] = field(default=(), compare=False)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -176,6 +179,7 @@ class Machine(NotionEntity):
     """A computer in the fleet. Edit and color suites are called Bays."""
 
     hostname: str | None = field(default=None, compare=False)
+    serial_number: str | None = field(default=None, compare=False)
     lan_ip: str | None = field(default=None, compare=False)
     os_version: str | None = field(default=None, compare=False)
 

@@ -5,8 +5,7 @@ before its first commit. The distribution and import namespace are `t6`.
 
 Requires Python 3.11 or newer. Install the base package with `pip install t6`.
 The base package has no third-party runtime dependencies and includes
-`t6.domain`, `t6.lookup`, and the `t6` command. The lookup module is a
-placeholder for its follow-up ticket.
+`t6.domain`, `t6.lookup`, and the `t6` command.
 
 ## Domain
 
@@ -35,6 +34,22 @@ webhook server, the worker and poll-and-diff.
 - A `Job` carries its `JobKind`, a read-only JSON-ready payload and a dedupe
   key. `Job.for_event(kind, event)` keys the job by kind and event, so one
   event queues each kind of job at most once.
+
+## Lookup
+
+`t6.lookup` turns a loose mention into the right entity, over an `Index` of
+`t6.domain` entities the caller supplies (no I/O). `Lookup` has one method per
+entity type: `job_order(telegram_key)`, `project(code, name=)`,
+`deliverable(text, project_id=)`, `contact(mention, team=)`, `machine(text)`
+and `studio(name)`. Each runs its pipeline cheapest first (exact ID,
+normalized, fuzzy, optional LLM `judge`, human review) and returns a
+`Resolution` (entity or none, method, score, ranked candidates,
+`needs_review`). Below the policy thresholds it never picks. Deliverables are
+resolved within one Project; Contacts within the Project team first, then all.
+`Lookup.propose_alias` returns an `AliasWrite` for Notion `Aliases`; it never
+writes. Honorifics and other normalizers are configuration (`Normalizers`).
+The default fuzzy scorer is stdlib-only; set `Policy(scorer=...)` to use
+another.
 
 ## Optional extras
 
