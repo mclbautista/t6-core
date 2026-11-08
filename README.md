@@ -136,6 +136,54 @@ This policy is written in ASD-STE100 Simplified Technical English.
     number includes the first try. After the last try, the client raises the
     last `NotionError`.
 
+### Schema snapshot and models
+
+`src/t6/notion/schema_snapshot.json` lists every T6 database and the exact
+name and type of each property (captured 2026-11-08). It holds no select
+option values, because they contain show and client names. The `t6.notion.generated`
+module has one model per database, such as `BaysRow` and `JobOrdersRow`. Run
+`uv run python scripts/generate_models.py` after the snapshot changes. A test
+fails when the module is out of date.
+
+- A model field maps a Python name to the exact Notion property name, so a
+  trailing space (`Blocker `) or an emoji (`🗂️ Coordinator`) reads and writes
+  correctly.
+- `Model.from_page(page)` ignores live properties that the snapshot does not
+  list. A missing or wrong-typed property reads as `None` or an empty tuple.
+- `Model.to_properties(**values)` builds the `properties` body for
+  `create_page` or `update_page`. A value of `None` clears the property.
+  Formula, rollup, timestamp and similar properties are read-only.
+- Select and multi-select values are sent by name, and Notion adds an option
+  that does not exist. This is how a new Bays `OS Version` value works until
+  that property becomes text. The in-memory fake does the same.
+
+```python
+from t6.notion.generated import BaysRow
+
+body = BaysRow.to_properties(name="Bay 12", os_version="macOS 26.5")
+page = notion.create_page({"parent": {"data_source_id": bays_id}, "properties": body})
+bay = BaysRow.from_page(page)
+```
+
+### Schema check
+
+`t6 schema-check` diffs live Notion against the snapshot. It needs the Notion
+extra, a token in `T6_NOTION_TOKEN`, and a JSON file that maps snapshot
+database keys to live data source IDs (keep that file out of the repository):
+
+```console
+$ cat data-sources.json
+{"projects": "<data source id>", "bays": "<data source id>"}
+$ t6 schema-check --data-sources data-sources.json
+```
+
+The report is JSON. For each database it lists `added`, `removed` and
+`changed` (type) properties. For `projects` it also lists `blank` Project
+Codes and `duplicates` (codes on more than one page). Databases without an ID
+are listed under `skipped`. The exit status is 0 when everything matches, 1
+when something drifted or a Project Code is blank or duplicated, and 2 when
+the command cannot run (for example, no token).
+
 ## Privacy
 
 `t6.privacy.withhold(text)` strips labelled credentials (`pw`, `pass`,
@@ -351,7 +399,8 @@ $ t6 version
 {"version": "0.1.0"}
 ```
 
-`python -m t6 version` provides the same output.
+`python -m t6 version` provides the same output. `t6 schema-check` is
+described under [Schema check](#schema-check).
 
 ## This repository is public
 

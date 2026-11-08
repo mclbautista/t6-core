@@ -11,6 +11,13 @@ so tests run the real client code with no network:
 
 `fail_next` and `time_out_next` inject errors for the next requests, and
 `requests` records every request the fake received.
+
+A data source added with properties works like Notion's: a write that names a
+property the data source does not have fails with 400, and a select or
+multi-select value that is not yet an option is added as an option. Write
+bodies need no `type` keys; the fake adds them so pages read back like
+Notion's. `add_snapshot_data_source` builds such a data source from the
+committed schema snapshot.
 """
 
 from __future__ import annotations
@@ -27,6 +34,7 @@ import httpx
 from t6.notion.client import NOTION_VERSION, AsyncNotionClient, RetryPolicy
 from t6.notion.external_links import ExternalLinksProperties as xl
 from t6.notion.models import ProjectsProperties as p
+from t6.notion.schema import load_snapshot
 from t6.notion.sync import NotionClient
 
 JSON = dict[str, Any]
@@ -60,6 +68,25 @@ class FakeNotion:
         source = {"object": "data_source", "id": data_source_id, "properties": properties or {}}
         self._data_sources[data_source_id] = source
         return copy.deepcopy(source)
+
+    def add_snapshot_data_source(self, data_source_id: str, database: str) -> JSON:
+        """Add a data source whose schema is a snapshot database, with no options yet."""
+        return self.add_data_source(data_source_id, snapshot_properties(database))
+
+    def add_property(self, data_source_id: str, name: str, notion_type: str) -> None:
+        """Add a property to a data source, as if someone edited it in Notion."""
+        self._data_sources[data_source_id]["properties"][name] = _property(name, notion_type)
+
+    def remove_property(self, data_source_id: str, name: str) -> None:
+        del self._data_sources[data_source_id]["properties"][name]
+
+    def change_property_type(self, data_source_id: str, name: str, notion_type: str) -> None:
+        self.add_property(data_source_id, name, notion_type)
+
+    def select_options(self, data_source_id: str, name: str) -> list[str]:
+        """The option names of a select or multi-select property."""
+        prop = self._data_sources[data_source_id]["properties"][name]
+        return [str(option["name"]) for option in prop[prop["type"]]["options"]]
 
     def add_page(self, data_source_id: str, properties: JSON, page_id: str | None = None) -> JSON:
         if data_source_id not in self._data_sources:
@@ -164,18 +191,47 @@ class FakeNotion:
         data_source_id = parent.get("data_source_id")
         if data_source_id not in self._data_sources:
             return _error(404, "object_not_found", f"Could not find data source {data_source_id}.")
-        page = self.add_page(data_source_id, _as_read(body.get("properties") or {}))
+        properties = self._prepare(data_source_id, body.get("properties") or {})
+        if isinstance(properties, httpx.Response):
+            return properties
+        page = self.add_page(data_source_id, properties)
         return httpx.Response(200, json=page)
 
     def _update_page(self, page_id: str, body: JSON) -> httpx.Response:
         if page_id not in self._pages:
             return _error(404, "object_not_found", f"Could not find page {page_id}.")
         page = self._pages[page_id]
-        page["properties"].update(_as_read(copy.deepcopy(body.get("properties") or {})))
+        properties = self._prepare(page["parent"]["data_source_id"], body.get("properties") or {})
+        if isinstance(properties, httpx.Response):
+            return properties
+        page["properties"].update(properties)
         for flag in ("archived", "in_trash"):
             if flag in body:
                 page[flag] = bool(body[flag])
         return httpx.Response(200, json=page)
+
+    def _prepare(self, data_source_id: str, properties: JSON) -> JSON | httpx.Response:
+        """Validate and complete a write body; add select options it introduces."""
+        schema: JSON = self._data_sources[data_source_id]["properties"]
+        prepared: JSON = {}
+        for name, value in properties.items():
+            if schema and name not in schema:
+                return _error(
+                    400, "validation_error", f"{name} is not a property that exists."
+                )
+            value = _as_read({name: copy.deepcopy(value)})[name]
+            kind = value.get("type")
+            if kind is None:
+                return _error(400, "validation_error", f"{name} has no value.")
+            if schema and kind in ("select", "multi_select"):
+                options = schema[name][kind]["options"]
+                chosen = value.get(kind)
+                for option in chosen if isinstance(chosen, list) else [chosen]:
+                    known = {existing["name"] for existing in options}
+                    if option and option["name"] not in known:
+                        options.append({"id": uuid.uuid4().hex[:8], "name": option["name"]})
+            prepared[name] = value
+        return prepared
 
     def _query(self, data_source_id: str, body: JSON) -> httpx.Response:
         if data_source_id not in self._data_sources:
@@ -254,6 +310,26 @@ def _error(status: int, code: str, message: str, headers: dict[str, str] | None 
         json={"object": "error", "status": status, "code": code, "message": message},
         headers=headers,
     )
+
+
+# Schema helpers
+
+
+def _property(name: str, notion_type: str) -> JSON:
+    prop: JSON = {"id": uuid.uuid4().hex[:4], "name": name, "type": notion_type}
+    if notion_type in ("select", "multi_select", "status"):
+        prop[notion_type] = {"options": []}
+    else:
+        prop[notion_type] = {}
+    return prop
+
+
+def snapshot_properties(database: str) -> JSON:
+    """Live-shaped data source properties for one database of the schema snapshot."""
+    return {
+        prop["name"]: _property(prop["name"], prop["type"])
+        for prop in load_snapshot()["databases"][database]["properties"]
+    }
 
 
 # Property builders for seeding the fake

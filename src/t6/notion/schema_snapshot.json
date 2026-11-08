@@ -1,0 +1,898 @@
+{
+  "snapshot_version": 1,
+  "captured": "2026-11-08",
+  "notion_version": "2026-03-11",
+  "databases": {
+    "projects": {
+      "title": "Projects",
+      "properties": [
+        {
+          "name": "Archival Deadline",
+          "type": "date"
+        },
+        {
+          "name": "Assistant Editor",
+          "type": "relation"
+        },
+        {
+          "name": "Cameras",
+          "type": "relation"
+        },
+        {
+          "name": "Captions Translator",
+          "type": "relation"
+        },
+        {
+          "name": "Capture Resolutions",
+          "type": "multi_select"
+        },
+        {
+          "name": "Cinematographer",
+          "type": "relation"
+        },
+        {
+          "name": "Colorist",
+          "type": "relation"
+        },
+        {
+          "name": "Coordinator",
+          "type": "formula"
+        },
+        {
+          "name": "Created time",
+          "type": "created_time"
+        },
+        {
+          "name": "DaVinci Resolve Version",
+          "type": "select"
+        },
+        {
+          "name": "Date",
+          "type": "date"
+        },
+        {
+          "name": "Deadline Display",
+          "type": "formula"
+        },
+        {
+          "name": "Delegate Producer",
+          "type": "relation"
+        },
+        {
+          "name": "Deletion Date",
+          "type": "date"
+        },
+        {
+          "name": "Delivery Format",
+          "type": "multi_select"
+        },
+        {
+          "name": "Director",
+          "type": "relation"
+        },
+        {
+          "name": "Editors",
+          "type": "relation"
+        },
+        {
+          "name": "Eps",
+          "type": "number"
+        },
+        {
+          "name": "Facilities Inclusions",
+          "type": "multi_select"
+        },
+        {
+          "name": "Facilities Inclusions (1)",
+          "type": "multi_select"
+        },
+        {
+          "name": "Has Post Supe?",
+          "type": "select"
+        },
+        {
+          "name": "Health",
+          "type": "select"
+        },
+        {
+          "name": "Inclusions",
+          "type": "multi_select"
+        },
+        {
+          "name": "Label AE (1)",
+          "type": "formula"
+        },
+        {
+          "name": "Label Editor",
+          "type": "formula"
+        },
+        {
+          "name": "Label OE",
+          "type": "formula"
+        },
+        {
+          "name": "Label PM Notes",
+          "type": "formula"
+        },
+        {
+          "name": "Label Sound",
+          "type": "formula"
+        },
+        {
+          "name": "Label Supe",
+          "type": "formula"
+        },
+        {
+          "name": "Live Sound Recordist",
+          "type": "relation"
+        },
+        {
+          "name": "Main T6 Services ",
+          "type": "multi_select"
+        },
+        {
+          "name": "Musical Scorer",
+          "type": "relation"
+        },
+        {
+          "name": "NLE",
+          "type": "multi_select"
+        },
+        {
+          "name": "Name",
+          "type": "title"
+        },
+        {
+          "name": "Online Editor",
+          "type": "relation"
+        },
+        {
+          "name": "PM Notes",
+          "type": "rich_text"
+        },
+        {
+          "name": "Playdate",
+          "type": "date"
+        },
+        {
+          "name": "Prod Coor/Supe",
+          "type": "relation"
+        },
+        {
+          "name": "Project Code",
+          "type": "select"
+        },
+        {
+          "name": "Project Health",
+          "type": "select"
+        },
+        {
+          "name": "Project Type",
+          "type": "select"
+        },
+        {
+          "name": "Promo Inclusions",
+          "type": "multi_select"
+        },
+        {
+          "name": "Related to Meeting Notes (Project)",
+          "type": "relation"
+        },
+        {
+          "name": "Separator 1",
+          "type": "formula"
+        },
+        {
+          "name": "Separator 2",
+          "type": "formula"
+        },
+        {
+          "name": "Sound Mixer",
+          "type": "relation"
+        },
+        {
+          "name": "Sound Tech",
+          "type": "relation"
+        },
+        {
+          "name": "Stage",
+          "type": "select"
+        },
+        {
+          "name": "Status",
+          "type": "select"
+        },
+        {
+          "name": "Status for Editors",
+          "type": "select"
+        },
+        {
+          "name": "Studio",
+          "type": "relation"
+        },
+        {
+          "name": "Submission Deadline",
+          "type": "date"
+        },
+        {
+          "name": "T6 Post Coordinator",
+          "type": "relation"
+        },
+        {
+          "name": "TRT",
+          "type": "select"
+        },
+        {
+          "name": "Tech Notes",
+          "type": "rich_text"
+        },
+        {
+          "name": "VFX Editor",
+          "type": "relation"
+        },
+        {
+          "name": "VFX Supe",
+          "type": "relation"
+        },
+        {
+          "name": "🌟🚀",
+          "type": "checkbox"
+        },
+        {
+          "name": "📔 Wiki",
+          "type": "relation"
+        },
+        {
+          "name": "📦 Deliverables",
+          "type": "relation"
+        }
+      ]
+    },
+    "contacts": {
+      "title": "Contacts",
+      "properties": [
+        {
+          "name": "Aliases",
+          "type": "rich_text"
+        },
+        {
+          "name": "Assistant Editor",
+          "type": "relation"
+        },
+        {
+          "name": "Contact Number",
+          "type": "phone_number"
+        },
+        {
+          "name": "Coor JOs",
+          "type": "relation"
+        },
+        {
+          "name": "DOP Projects",
+          "type": "relation"
+        },
+        {
+          "name": "DP Projects",
+          "type": "relation"
+        },
+        {
+          "name": "Director Projects",
+          "type": "relation"
+        },
+        {
+          "name": "Editor Projects",
+          "type": "relation"
+        },
+        {
+          "name": "Email",
+          "type": "email"
+        },
+        {
+          "name": "End of Shift",
+          "type": "select"
+        },
+        {
+          "name": "Name",
+          "type": "title"
+        },
+        {
+          "name": "Note to Driver",
+          "type": "rich_text"
+        },
+        {
+          "name": "OS Format",
+          "type": "select"
+        },
+        {
+          "name": "Position",
+          "type": "multi_select"
+        },
+        {
+          "name": "Post Supe Projects",
+          "type": "relation"
+        },
+        {
+          "name": "Projects as Live Sound",
+          "type": "relation"
+        },
+        {
+          "name": "Projects as VFX Editor",
+          "type": "relation"
+        },
+        {
+          "name": "Related to Job Orders (Assigned)",
+          "type": "relation"
+        },
+        {
+          "name": "Related to Tasks (Freelancer)",
+          "type": "relation"
+        },
+        {
+          "name": "Software",
+          "type": "multi_select"
+        },
+        {
+          "name": "Swing Drives in Possession",
+          "type": "relation"
+        },
+        {
+          "name": "TelegramHandle",
+          "type": "rich_text"
+        },
+        {
+          "name": "TelegramUserID",
+          "type": "rich_text"
+        },
+        {
+          "name": "📔 Wiki",
+          "type": "relation"
+        },
+        {
+          "name": "📦 Coordinator Deliverables",
+          "type": "relation"
+        },
+        {
+          "name": "📦 Editor Deliverables",
+          "type": "relation"
+        },
+        {
+          "name": "🗺️ Projects",
+          "type": "relation"
+        }
+      ]
+    },
+    "studios": {
+      "title": "Studios",
+      "properties": [
+        {
+          "name": "Aliases",
+          "type": "multi_select"
+        },
+        {
+          "name": "Average Redelivery Velocity",
+          "type": "rich_text"
+        },
+        {
+          "name": "Name",
+          "type": "title"
+        },
+        {
+          "name": "OCP Intake ID",
+          "type": "rich_text"
+        },
+        {
+          "name": "OCP Intake Source",
+          "type": "rich_text"
+        },
+        {
+          "name": "Project Delay from Past 24 Months expressed as %",
+          "type": "rich_text"
+        },
+        {
+          "name": "Rolling Average On Time Rate of 24 months",
+          "type": "rich_text"
+        },
+        {
+          "name": "Rolling Average Redelivery Rate of 24 months",
+          "type": "multi_select"
+        },
+        {
+          "name": "🗺️ Projects",
+          "type": "relation"
+        }
+      ]
+    },
+    "job_orders": {
+      "title": "Job Orders",
+      "properties": [
+        {
+          "name": "Assigned",
+          "type": "relation"
+        },
+        {
+          "name": "Blocker ",
+          "type": "rich_text"
+        },
+        {
+          "name": "Date",
+          "type": "date"
+        },
+        {
+          "name": "Deadline",
+          "type": "date"
+        },
+        {
+          "name": "Deliverable",
+          "type": "relation"
+        },
+        {
+          "name": "Department",
+          "type": "select"
+        },
+        {
+          "name": "Health",
+          "type": "formula"
+        },
+        {
+          "name": "JO Notes",
+          "type": "rich_text"
+        },
+        {
+          "name": "JO Number",
+          "type": "rich_text"
+        },
+        {
+          "name": "Link Settings",
+          "type": "rich_text"
+        },
+        {
+          "name": "Mode of Transfer",
+          "type": "rich_text"
+        },
+        {
+          "name": "Name",
+          "type": "title"
+        },
+        {
+          "name": "Pending",
+          "type": "rich_text"
+        },
+        {
+          "name": "Place",
+          "type": "place"
+        },
+        {
+          "name": "Platform",
+          "type": "rich_text"
+        },
+        {
+          "name": "Projects",
+          "type": "relation"
+        },
+        {
+          "name": "Purpose",
+          "type": "rich_text"
+        },
+        {
+          "name": "Source / Source Drive",
+          "type": "rich_text"
+        },
+        {
+          "name": "Status",
+          "type": "status"
+        },
+        {
+          "name": "Subtitle",
+          "type": "rich_text"
+        },
+        {
+          "name": "Task",
+          "type": "rich_text"
+        },
+        {
+          "name": "Telegram Key",
+          "type": "rich_text"
+        },
+        {
+          "name": "Title",
+          "type": "rich_text"
+        },
+        {
+          "name": "Watchdog Notes",
+          "type": "rich_text"
+        },
+        {
+          "name": "Watermark",
+          "type": "rich_text"
+        },
+        {
+          "name": "cc",
+          "type": "relation"
+        },
+        {
+          "name": "🗂️ Coordinator",
+          "type": "relation"
+        }
+      ]
+    },
+    "deliverables": {
+      "title": "Deliverables",
+      "properties": [
+        {
+          "name": "Class",
+          "type": "select"
+        },
+        {
+          "name": "Created time",
+          "type": "created_time"
+        },
+        {
+          "name": "Deadline",
+          "type": "date"
+        },
+        {
+          "name": "Deliverable Class",
+          "type": "select"
+        },
+        {
+          "name": "Job Orders",
+          "type": "relation"
+        },
+        {
+          "name": "Last edited time",
+          "type": "last_edited_time"
+        },
+        {
+          "name": "Name",
+          "type": "title"
+        },
+        {
+          "name": "Notes",
+          "type": "rich_text"
+        },
+        {
+          "name": "OCP Intake ID",
+          "type": "rich_text"
+        },
+        {
+          "name": "OCP Intake Source",
+          "type": "rich_text"
+        },
+        {
+          "name": "Playdate",
+          "type": "date"
+        },
+        {
+          "name": "Status",
+          "type": "select"
+        },
+        {
+          "name": "Tasks",
+          "type": "relation"
+        },
+        {
+          "name": "🗂️ Coordinator",
+          "type": "relation"
+        },
+        {
+          "name": "🗂️ Editor",
+          "type": "relation"
+        },
+        {
+          "name": "🗺️ Projects",
+          "type": "relation"
+        }
+      ]
+    },
+    "bays": {
+      "title": "Bays",
+      "properties": [
+        {
+          "name": "Adobe email",
+          "type": "rich_text"
+        },
+        {
+          "name": "Avid Activation ID",
+          "type": "rich_text"
+        },
+        {
+          "name": "Avid System ID",
+          "type": "rich_text"
+        },
+        {
+          "name": "Device UIID",
+          "type": "rich_text"
+        },
+        {
+          "name": "Done",
+          "type": "checkbox"
+        },
+        {
+          "name": "Hardware UUID",
+          "type": "rich_text"
+        },
+        {
+          "name": "Has Paragon",
+          "type": "checkbox"
+        },
+        {
+          "name": "Hostname",
+          "type": "rich_text"
+        },
+        {
+          "name": "LAN IP Address",
+          "type": "rich_text"
+        },
+        {
+          "name": "Name",
+          "type": "title"
+        },
+        {
+          "name": "Notes",
+          "type": "rich_text"
+        },
+        {
+          "name": "OS Version",
+          "type": "select"
+        },
+        {
+          "name": "Paragon License",
+          "type": "rich_text"
+        },
+        {
+          "name": "Paragon NTFS License",
+          "type": "rich_text"
+        },
+        {
+          "name": "Related to Tasks (Property)",
+          "type": "relation"
+        },
+        {
+          "name": "Type",
+          "type": "multi_select"
+        },
+        {
+          "name": "Username",
+          "type": "rich_text"
+        }
+      ]
+    },
+    "cameras": {
+      "title": "Cameras",
+      "properties": [
+        {
+          "name": "Name",
+          "type": "title"
+        },
+        {
+          "name": "Related to Projects (Cameras)",
+          "type": "relation"
+        },
+        {
+          "name": "Tags",
+          "type": "multi_select"
+        },
+        {
+          "name": "📔 Wiki",
+          "type": "relation"
+        }
+      ]
+    },
+    "swing_drives": {
+      "title": "Swing Drives",
+      "properties": [
+        {
+          "name": "Collaborator",
+          "type": "relation"
+        },
+        {
+          "name": "For Bawi",
+          "type": "checkbox"
+        },
+        {
+          "name": "Format ",
+          "type": "select"
+        },
+        {
+          "name": "HD Type",
+          "type": "multi_select"
+        },
+        {
+          "name": "In Use",
+          "type": "checkbox"
+        },
+        {
+          "name": "Last Moved",
+          "type": "date"
+        },
+        {
+          "name": "Name",
+          "type": "title"
+        },
+        {
+          "name": "Person-In-Charge",
+          "type": "people"
+        },
+        {
+          "name": "Short Notes",
+          "type": "rich_text"
+        }
+      ]
+    },
+    "events_tasks": {
+      "title": "Events & Tasks",
+      "properties": [
+        {
+          "name": "Bay",
+          "type": "relation"
+        },
+        {
+          "name": "Created time.   ",
+          "type": "created_time"
+        },
+        {
+          "name": "Creator",
+          "type": "relation"
+        },
+        {
+          "name": "Deadline",
+          "type": "date"
+        },
+        {
+          "name": "Deliverable",
+          "type": "relation"
+        },
+        {
+          "name": "JOB ID",
+          "type": "unique_id"
+        },
+        {
+          "name": "Last Updated",
+          "type": "last_edited_time"
+        },
+        {
+          "name": "MODE",
+          "type": "select"
+        },
+        {
+          "name": "Name",
+          "type": "title"
+        },
+        {
+          "name": "PM Notes",
+          "type": "rich_text"
+        },
+        {
+          "name": "Project Code",
+          "type": "rollup"
+        },
+        {
+          "name": "Project Status",
+          "type": "rollup"
+        },
+        {
+          "name": "Project Type",
+          "type": "rollup"
+        },
+        {
+          "name": "Schedule",
+          "type": "date"
+        },
+        {
+          "name": "Status",
+          "type": "status"
+        },
+        {
+          "name": "Transfer Mode",
+          "type": "multi_select"
+        },
+        {
+          "name": "🗺️ Project",
+          "type": "relation"
+        }
+      ]
+    },
+    "wiki": {
+      "title": "Wiki",
+      "properties": [
+        {
+          "name": "Created",
+          "type": "created_time"
+        },
+        {
+          "name": "Date",
+          "type": "date"
+        },
+        {
+          "name": "Definition",
+          "type": "rich_text"
+        },
+        {
+          "name": "Last Edited",
+          "type": "last_edited_time"
+        },
+        {
+          "name": "Name",
+          "type": "title"
+        },
+        {
+          "name": "Notes",
+          "type": "rich_text"
+        },
+        {
+          "name": "Purpose",
+          "type": "rich_text"
+        },
+        {
+          "name": "Role",
+          "type": "multi_select"
+        },
+        {
+          "name": "Status",
+          "type": "multi_select"
+        },
+        {
+          "name": "To Do",
+          "type": "checkbox"
+        },
+        {
+          "name": "Topic",
+          "type": "multi_select"
+        },
+        {
+          "name": "Updated by",
+          "type": "last_edited_by"
+        },
+        {
+          "name": "🎥 Cameras",
+          "type": "relation"
+        },
+        {
+          "name": "🗂️ Contacts",
+          "type": "relation"
+        },
+        {
+          "name": "🗺️ Projects",
+          "type": "relation"
+        }
+      ]
+    },
+    "meeting_notes": {
+      "title": "Meeting Notes",
+      "properties": [
+        {
+          "name": "Last Updated",
+          "type": "last_edited_time"
+        },
+        {
+          "name": "Last Updated By",
+          "type": "last_edited_by"
+        },
+        {
+          "name": "Meeting Date",
+          "type": "date"
+        },
+        {
+          "name": "Name",
+          "type": "title"
+        },
+        {
+          "name": "Project",
+          "type": "relation"
+        },
+        {
+          "name": "Ready to send",
+          "type": "checkbox"
+        },
+        {
+          "name": "Sent at",
+          "type": "date"
+        },
+        {
+          "name": "Team Attendees",
+          "type": "people"
+        }
+      ]
+    }
+  }
+}

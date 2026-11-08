@@ -97,3 +97,25 @@ def date_start(prop: JSON | None) -> date | datetime | None:
     if "T" in start:
         return datetime.fromisoformat(start)
     return date.fromisoformat(start)
+
+
+def phone_number(prop: JSON | None) -> str | None:
+    return _value(prop, "phone_number") or None
+
+
+def people(prop: JSON | None) -> tuple[str, ...]:
+    """User IDs of a people property, in Notion's order."""
+    return tuple(str(item["id"]) for item in _value(prop, "people") or [] if item.get("id"))
+
+
+def timestamp(prop: JSON | None) -> datetime | None:
+    """A created_time or last_edited_time property."""
+    if not prop or prop.get("type") not in ("created_time", "last_edited_time"):
+        return None
+    value = prop.get(str(prop["type"]))
+    return datetime.fromisoformat(value) if isinstance(value, str) and value else None
+
+
+def raw(prop: JSON | None) -> JSON | None:
+    """The property object as Notion sent it, for read-only types such as formula."""
+    return dict(prop) if prop else None

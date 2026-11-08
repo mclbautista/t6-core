@@ -2,7 +2,7 @@
 
 Property names are the exact Notion names. The Projects mapping was checked
 against the live Projects data source schema on 2026-11-08. Generated models
-for the other databases come with the schema-snapshot ticket.
+for every database, built from the schema snapshot, are in `t6.notion.generated`.
 """
 
 from __future__ import annotations
