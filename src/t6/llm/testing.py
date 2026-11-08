@@ -8,8 +8,14 @@ Queue what the provider should do, in order, then run tasks against it::
     fake.timeout()
     fake.api_error("HTTP 500")
 
+For a Decisions task (Jev), queue the raw Decisions API body instead. The fake
+runs it through the transport's alpha-shape validation, so a malformed body
+gives the same ``failed(schema_violation)`` as the real transport::
+
+    fake.decisions({"model": "typesafe/jev-1.1", "answers": {"c0": {...}}})
+
 Each call to ``complete`` takes the next scripted step. ``calls`` records the
-messages sent, so a test can check that only masked text left the app.
+request sent, so a test can check that only masked text left the app.
 """
 
 from __future__ import annotations
@@ -18,14 +24,28 @@ import dataclasses
 from collections import deque
 from collections.abc import Sequence
 
+from t6.llm.decisions import read_reply
 from t6.llm.result import Tokens
-from t6.llm.transport import Completion, Message, ProviderError, ProviderTimeout
+from t6.llm.transport import Completion, DecisionsRequest, Message, ProviderError, ProviderTimeout, Request
 
 
 @dataclasses.dataclass(frozen=True)
 class Call:
-    messages: tuple[Message, ...]
+    request: Request
     timeout: float
+
+    @property
+    def messages(self) -> tuple[Message, ...]:
+        """The chat messages sent. Raises ``TypeError`` for a Decisions request."""
+        if isinstance(self.request, DecisionsRequest):
+            raise TypeError("this call sent a DecisionsRequest, not chat messages")
+        return tuple(self.request)
+
+
+@dataclasses.dataclass(frozen=True)
+class _DecisionsBody:
+    body: object
+    requested_model: str
 
 
 class FakeProvider:
@@ -33,7 +53,7 @@ class FakeProvider:
 
     def __init__(self, model: str = "fake-model") -> None:
         self._model = model
-        self._script: deque[Completion | Exception] = deque()
+        self._script: deque[Completion | _DecisionsBody | Exception] = deque()
         self.calls: list[Call] = []
 
     @property
@@ -52,6 +72,11 @@ class FakeProvider:
         self._script.append(Completion(content, model or self._model, Tokens(prompt_tokens, completion_tokens)))
         return self
 
+    def decisions(self, body: object) -> FakeProvider:
+        """Queue a raw Decisions API reply body. It may be off the alpha shape."""
+        self._script.append(_DecisionsBody(body, self._model))
+        return self
+
     def timeout(self) -> FakeProvider:
         """Queue a timeout."""
         self._script.append(ProviderTimeout("scripted timeout"))
@@ -67,11 +92,19 @@ class FakeProvider:
         """Scripted steps not used yet."""
         return len(self._script)
 
-    def complete(self, messages: Sequence[Message], *, timeout: float) -> Completion:
-        self.calls.append(Call(tuple(messages), timeout))
+    def complete(self, request: Request, *, timeout: float) -> Completion:
+        if not isinstance(request, DecisionsRequest):
+            request = tuple(request)
+        self.calls.append(Call(request, timeout))
         if not self._script:
             raise AssertionError("FakeProvider has no scripted reply left")
         step = self._script.popleft()
         if isinstance(step, Exception):
             raise step
+        if isinstance(step, _DecisionsBody):
+            if not isinstance(request, DecisionsRequest):
+                raise TypeError("a Decisions reply was scripted but the task sent chat messages")
+            return read_reply(step.body, request, requested_model=step.requested_model)
+        if isinstance(request, DecisionsRequest):
+            raise TypeError("a chat reply was scripted but the task sent a DecisionsRequest")
         return step

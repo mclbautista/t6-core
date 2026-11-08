@@ -76,6 +76,14 @@ class PseudonymizeTests(unittest.TestCase):
         masked, _ = pseudonymize("Marco and Rossi on Other Show and OS1", registry())
         self.assertEqual(masked.text, "[person 1] and [person 2] on [project 1] and [project 2]")
 
+    def test_session_masks_more_fields_with_the_same_placeholders(self) -> None:
+        masked, session = pseudonymize("Marco on Other Show", registry())
+        second = session.mask("Other Show and Own Show")
+        self.assertIsInstance(second, Masked)
+        self.assertEqual(masked.text, "[person 1] on [project 1]")
+        self.assertEqual(second.text, "[project 1] and [project 2]")
+        self.assertEqual(session.restore("[project 2] after [person 1]"), "Own Show after Marco")
+
 
 class RestoreTests(unittest.TestCase):
     def setUp(self) -> None:

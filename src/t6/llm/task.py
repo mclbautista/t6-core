@@ -2,7 +2,8 @@
 
 A :class:`Task` names a prompt (its tag), the input model the app fills and the
 output model the reply must fit. Prompts stay in the app: ``render`` turns an
-input into chat messages. :func:`run` checks the input is masked, sends it,
+input into chat messages, or into a :class:`~t6.llm.transport.DecisionsRequest`
+for a Decisions task (Jev). :func:`run` checks the input is masked, sends it,
 parses and validates the reply, then runs ``Session.leaks`` and
 ``Session.restore``. It returns ``Ok`` or ``Failed`` and never raises for a bad
 reply. Only programmer errors raise: unmasked input, or masked input without
@@ -14,14 +15,15 @@ from __future__ import annotations
 import dataclasses
 import json
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from enum import Enum
 from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from t6.llm.decisions import MalformedReply
 from t6.llm.result import Failed, Ok, Reason, Result, Tokens, Trace
-from t6.llm.transport import Completion, Message, Provider, ProviderError, ProviderTimeout
+from t6.llm.transport import Completion, Provider, ProviderError, ProviderTimeout, Request
 from t6.privacy import Masked, Session, Unresolved
 
 In = TypeVar("In")
@@ -40,12 +42,15 @@ class MissingSession(TypeError):
 
 @dataclasses.dataclass(frozen=True)
 class Task(Generic[In, Out]):
-    """One LLM job. ``render`` builds the messages from the input; the app owns the prompt."""
+    """One LLM job. ``render`` builds the request from the input; the app owns the prompt.
+
+    A chat task renders a list of messages; a Decisions task renders a ``DecisionsRequest``.
+    """
 
     prompt_tag: str
     input_model: type[In]
     output_model: type[Out]
-    render: Callable[[In], Sequence[Message]]
+    render: Callable[[In], Request]
 
 
 def run(
@@ -68,7 +73,7 @@ def run(
         raise UnmaskedInput(f"{task.prompt_tag}: unmasked text at {', '.join(plain)}; pass it through t6.privacy")
     if session is None and _holds_masked(payload):
         raise MissingSession(f"{task.prompt_tag}: pseudonymized input needs the Session that masked it")
-    messages = list(task.render(payload))
+    request = task.render(payload)
 
     started = time.monotonic()
     model, tokens = provider.model, Tokens()
@@ -80,7 +85,11 @@ def run(
         return Failed(reason, trace(), detail)
 
     try:
-        completion: Completion = provider.complete(messages, timeout=timeout)
+        completion: Completion = provider.complete(request, timeout=timeout)
+    except MalformedReply as error:
+        # The Decisions transport read the reply but it is off the alpha shape.
+        model, tokens = error.model, error.tokens
+        return failed("schema_violation", str(error))
     except ProviderTimeout as error:
         return failed("timeout", str(error))
     except ProviderError as error:

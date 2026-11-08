@@ -1,9 +1,12 @@
 """Providers: the transports a task's messages travel through.
 
-A provider sends chat messages and returns a :class:`Completion`. It raises
+A provider sends a request and returns a :class:`Completion`. A request is
+either chat messages or a :class:`DecisionsRequest`; each transport accepts
+one kind and raises ``TypeError`` for the other. It raises
 :class:`ProviderTimeout` or :class:`ProviderError` for transport failures, and
 the adapter turns those into ``failed`` results. :class:`OpenAIChat` speaks the
-OpenAI-style chat completions API that DeepSeek and OpenRouter both serve.
+OpenAI-style chat completions API that DeepSeek and OpenRouter both serve;
+:class:`~t6.llm.decisions.OpenRouterDecisions` speaks the Decisions API (Jev).
 """
 
 from __future__ import annotations
@@ -13,7 +16,7 @@ import json
 import socket
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal, Protocol, TypedDict
 
 from t6.llm.result import Tokens
@@ -22,6 +25,26 @@ from t6.llm.result import Tokens
 class Message(TypedDict):
     role: Literal["system", "user", "assistant"]
     content: str
+
+
+@dataclasses.dataclass(frozen=True)
+class Choice:
+    """One typed Choice question for the Decisions API. ``criteria`` describes ``match``, ``maybe`` and ``no``."""
+
+    instructions: str
+    criteria: Mapping[str, str]
+
+
+@dataclasses.dataclass(frozen=True)
+class DecisionsRequest:
+    """What a Decisions task renders: masked ``state`` and one question per candidate key (``c0``, ``c1``, ...)."""
+
+    state: Mapping[str, str]
+    questions: Mapping[str, Choice]
+
+
+Request = Sequence[Message] | DecisionsRequest
+"""What a task's ``render`` returns and a provider sends."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -45,7 +68,7 @@ class Provider(Protocol):
     @property
     def model(self) -> str: ...
 
-    def complete(self, messages: Sequence[Message], *, timeout: float) -> Completion: ...
+    def complete(self, request: Request, *, timeout: float) -> Completion: ...
 
 
 # (url, headers, body, timeout) -> response body. Raises urllib or socket errors.
@@ -57,6 +80,23 @@ def _urlopen(url: str, headers: dict[str, str], body: bytes, timeout: float) -> 
     with urllib.request.urlopen(request, timeout=timeout) as response:
         data: bytes = response.read()
         return data
+
+
+def _post(send: Send, url: str, headers: dict[str, str], body: bytes, timeout: float) -> bytes:
+    """Send one request; map transport failures to ``ProviderTimeout`` or ``ProviderError``."""
+    try:
+        return send(url, headers, body, timeout)
+    except urllib.error.HTTPError as error:
+        # The body can echo the request, so only the status is kept.
+        raise ProviderError(f"HTTP {error.code}") from None
+    except (TimeoutError, socket.timeout) as error:
+        raise ProviderTimeout(str(error) or "timed out") from None
+    except urllib.error.URLError as error:
+        if isinstance(error.reason, (TimeoutError, socket.timeout)):
+            raise ProviderTimeout("timed out") from None
+        raise ProviderError(f"connection failed: {type(error.reason).__name__}") from None
+    except OSError as error:
+        raise ProviderError(f"connection failed: {type(error).__name__}") from None
 
 
 class OpenAIChat:
@@ -85,24 +125,14 @@ class OpenAIChat:
     def model(self) -> str:
         return self._model
 
-    def complete(self, messages: Sequence[Message], *, timeout: float) -> Completion:
-        payload: dict[str, Any] = {"model": self._model, "messages": list(messages)}
+    def complete(self, request: Request, *, timeout: float) -> Completion:
+        if isinstance(request, DecisionsRequest):
+            raise TypeError("OpenAIChat sends chat messages; use OpenRouterDecisions for a DecisionsRequest")
+        payload: dict[str, Any] = {"model": self._model, "messages": list(request)}
         if self._json_mode:
             payload["response_format"] = {"type": "json_object"}
         headers = {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
-        try:
-            raw = self._send(self._url, headers, json.dumps(payload).encode(), timeout)
-        except urllib.error.HTTPError as error:
-            # The body can echo the request, so only the status is kept.
-            raise ProviderError(f"HTTP {error.code}") from None
-        except (TimeoutError, socket.timeout) as error:
-            raise ProviderTimeout(str(error) or "timed out") from None
-        except urllib.error.URLError as error:
-            if isinstance(error.reason, (TimeoutError, socket.timeout)):
-                raise ProviderTimeout("timed out") from None
-            raise ProviderError(f"connection failed: {type(error.reason).__name__}") from None
-        except OSError as error:
-            raise ProviderError(f"connection failed: {type(error).__name__}") from None
+        raw = _post(self._send, self._url, headers, json.dumps(payload).encode(), timeout)
         return _completion(raw, self._model)
 
 
