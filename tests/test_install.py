@@ -28,7 +28,11 @@ class InstallationTests(unittest.TestCase):
                     self.run_command(python, "-m", "pip", "install", "--no-index", f"{wheel}{extra}")
                     self.run_command(python, "-c", "import t6.domain; import t6.lookup")
                     installed = json.loads(self.run_command(python, "-c", self.distribution_probe()))
-                    self.assertEqual(installed["dependencies"], [])
+                    # Base install pulls nothing; adapter libraries sit behind their extra only.
+                    unconditional = [d for d in installed["dependencies"] if "extra ==" not in d]
+                    self.assertEqual(unconditional, [])
+                    notion_only = [d for d in installed["dependencies"] if "extra == 'notion'" in d]
+                    self.assertFalse(any(d.startswith("pydantic") for d in notion_only))
                     self.assertEqual(
                         set(installed["extras"]),
                         {"notion", "privacy", "llm", "frameio", "resolve", "instagantt", "server", "worker"},

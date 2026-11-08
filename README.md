@@ -52,8 +52,8 @@ Install only the adapters an application needs, for example
 | `server` | Webhook server and queue |
 | `worker` | Job workers |
 
-All extras are declared and currently empty. Adapter dependencies will be added
-when those adapters are implemented. The `notion` extra does not install
+Extras without an adapter yet are empty. Each adapter adds its dependencies to
+its own extra only (`llm` adds pydantic). The `notion` extra does not install
 Frame.io, Adobe sign-in, or LLM libraries.
 
 ## Privacy
@@ -97,6 +97,62 @@ Matching is by whole word and ignores case. Names in `allow` stay unmasked.
 placeholder variants such as `[PERSON 1 ]` or `person 1`, and restores only
 placeholders the session issued. Any other placeholder-shaped token raises
 `Unresolved` and nothing is restored.
+
+## LLM
+
+`t6.llm` runs typed LLM tasks. Install it with `pip install 't6[llm]'`
+(pydantic v2 is its only dependency). A `Task` has a prompt tag, an input
+model and a pydantic output model. Prompts stay in the app: the task's
+`render` function turns the input into chat messages.
+
+```python
+from t6.llm import OpenAIChat, Ok, Task, run
+from t6.privacy import pseudonymize
+
+summarise = Task("summarise-v1", Notes, Summary, render)
+masked, session = pseudonymize(text, registry)
+provider = OpenAIChat(base_url="https://api.deepseek.com", api_key=key, model="deepseek-chat")
+
+result = run(summarise, Notes(masked), provider=provider, session=session)
+if isinstance(result, Ok):
+    use(result.value)          # a Summary, with real names restored
+else:
+    log(result.reason)         # timeout, api_error, empty, invalid_json,
+                               # schema_violation, unresolved_placeholder, leak
+store(result.trace)            # prompt tag, model, tokens, latency in ms
+```
+
+`run` never raises for a bad reply. It parses the reply as JSON, validates it
+against the output model, then runs `session.leaks()` and `session.restore()`.
+A raw registry name in the reply fails with `leak`, and a placeholder the
+session did not issue fails with `unresolved_placeholder`. Failure details
+name field paths, never the names themselves. The trace holds no prompt or
+reply text; the app decides where to store it.
+
+Only programmer errors raise. Every string in the input must be `Masked`:
+a plain `str` raises `UnmaskedInput` before anything is sent. Masked input
+without its `Session` raises `MissingSession`. A `str` enum counts as a fixed
+value, not free text.
+
+`OpenAIChat` speaks the OpenAI-style `/chat/completions` API that DeepSeek
+and OpenRouter serve, and asks for a JSON object reply by default
+(`json_mode=False` turns that off).
+
+### Testing
+
+Tests use `t6.llm.testing.FakeProvider`, never a live provider or recorded
+replies (they can hold real names). Queue steps in order, then run tasks:
+
+```python
+from t6.llm.testing import FakeProvider
+
+fake = FakeProvider("deepseek-chat")
+fake.reply('{"headline": "[PERSON 1 ] moved the grade"}', prompt_tokens=40, completion_tokens=8)
+fake.reply("not json")
+fake.timeout()
+fake.api_error("HTTP 503")
+fake.calls  # the messages each call sent, to check only masked text left
+```
 
 ## CLI
 
