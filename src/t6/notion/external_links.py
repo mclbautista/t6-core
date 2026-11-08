@@ -54,6 +54,7 @@ class ExternalLink:
     ref: ExternalRef
     active: bool
     last_activity: datetime | None
+    project_ids: tuple[str, ...] = ()
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, ExternalLink) and self.page_id == other.page_id
@@ -84,6 +85,7 @@ def external_link_from_page(page: JSON) -> ExternalLink | None:
         ),
         active=codec.checkbox(props.get(_P.ACTIVE)) is True,
         last_activity=last if isinstance(last, datetime) else None,
+        project_ids=codec.relation(props.get(_P.PROJECTS)),
     )
 
 
