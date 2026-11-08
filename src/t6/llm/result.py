@@ -15,6 +15,7 @@ Reason = Literal[
     "schema_violation",
     "unresolved_placeholder",
     "leak",
+    "policy",
 ]
 
 
@@ -32,12 +33,16 @@ class Tokens:
 
 @dataclasses.dataclass(frozen=True)
 class Trace:
-    """One call, for the app to store. Holds no prompt or reply text."""
+    """One call, for the app to store. Holds no prompt or reply text.
+
+    ``repaired`` is true when the parsed reply came from quote repair.
+    """
 
     prompt_tag: str
     model: str
     tokens: Tokens
     latency_ms: int
+    repaired: bool = False
 
 
 @dataclasses.dataclass(frozen=True)

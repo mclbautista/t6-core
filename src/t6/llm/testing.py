@@ -7,6 +7,10 @@ Queue what the provider should do, in order, then run tasks against it::
     fake.reply("not json")
     fake.timeout()
     fake.api_error("HTTP 500")
+    fake.rate_limited(retry_after=2)
+
+A fake declares ``zdr_enforced`` retention unless told otherwise:
+``FakeProvider(retention="unknown")``.
 
 Each call to ``complete`` takes the next scripted step. ``calls`` records the
 messages sent, so a test can check that only masked text left the app.
@@ -18,8 +22,9 @@ import dataclasses
 from collections import deque
 from collections.abc import Sequence
 
+from t6.llm.policy import Retention
 from t6.llm.result import Tokens
-from t6.llm.transport import Completion, Message, ProviderError, ProviderTimeout
+from t6.llm.transport import Completion, Message, ProviderError, ProviderTimeout, RateLimited
 
 
 @dataclasses.dataclass(frozen=True)
@@ -31,14 +36,19 @@ class Call:
 class FakeProvider:
     """Replays scripted replies and failures in order."""
 
-    def __init__(self, model: str = "fake-model") -> None:
+    def __init__(self, model: str = "fake-model", *, retention: Retention = "zdr_enforced") -> None:
         self._model = model
+        self._retention: Retention = retention
         self._script: deque[Completion | Exception] = deque()
         self.calls: list[Call] = []
 
     @property
     def model(self) -> str:
         return self._model
+
+    @property
+    def retention(self) -> Retention:
+        return self._retention
 
     def reply(
         self,
@@ -60,6 +70,11 @@ class FakeProvider:
     def api_error(self, detail: str = "scripted API error") -> FakeProvider:
         """Queue a provider error."""
         self._script.append(ProviderError(detail))
+        return self
+
+    def rate_limited(self, retry_after: float | None = None) -> FakeProvider:
+        """Queue a 429. ``retry_after`` is the seconds the provider asks for, or ``None`` for no header."""
+        self._script.append(RateLimited(retry_after))
         return self
 
     @property
