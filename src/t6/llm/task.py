@@ -2,7 +2,8 @@
 
 A :class:`Task` names a prompt (its tag), the input model the app fills, the
 output model the reply must fit, and its :class:`~t6.llm.DataPolicy`. Prompts
-stay in the app: ``render`` turns an input into chat messages. :func:`run`
+stay in the app: ``render`` turns an input into chat messages, or into a
+:class:`~t6.llm.transport.DecisionsRequest` for a Decisions task (Jev). :func:`run`
 checks the input is masked the way the policy says, checks the provider's
 retention meets it, sends, strips a code fence, parses (repairing quotes if the
 task opts in), validates, then runs ``Session.leaks`` and ``Session.restore``.
@@ -16,16 +17,17 @@ from __future__ import annotations
 import dataclasses
 import json
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from enum import Enum
 from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from t6.llm.decisions import MalformedReply
 from t6.llm.jsontext import repair_quotes, strip_fence
 from t6.llm.policy import DataPolicy
 from t6.llm.result import Failed, Ok, Reason, Result, Tokens, Trace
-from t6.llm.transport import Completion, Message, Provider, ProviderError, ProviderTimeout, RateLimited
+from t6.llm.transport import Completion, Provider, ProviderError, ProviderTimeout, RateLimited, Request
 from t6.privacy import Masked, Session, Unresolved, Withheld
 
 In = TypeVar("In")
@@ -48,7 +50,9 @@ class MissingSession(TypeError):
 
 @dataclasses.dataclass(frozen=True)
 class Task(Generic[In, Out]):
-    """One LLM job. ``render`` builds the messages from the input; the app owns the prompt.
+    """One LLM job. ``render`` builds the request from the input; the app owns the prompt.
+
+    A chat task renders a list of messages; a Decisions task renders a ``DecisionsRequest``.
 
     ``policy`` defaults to the strictest: ``zdr_enforced`` and ``pseudonymize``.
     ``repair_quotes`` turns on quote repair for replies that fail to parse.
@@ -57,7 +61,7 @@ class Task(Generic[In, Out]):
     prompt_tag: str
     input_model: type[In]
     output_model: type[Out]
-    render: Callable[[In], Sequence[Message]]
+    render: Callable[[In], Request]
     policy: DataPolicy = DataPolicy()
     repair_quotes: bool = False
 
@@ -105,13 +109,17 @@ def run(
             "policy",
             f"provider retention {provider.retention!r} is below the task minimum {task.policy.min_retention!r}",
         )
-    messages = list(task.render(payload))
+    request = task.render(payload)
 
     waited = False
     while True:
         try:
-            completion: Completion = provider.complete(messages, timeout=timeout)
+            completion: Completion = provider.complete(request, timeout=timeout)
             break
+        except MalformedReply as error:
+            # The Decisions transport read the reply but it is off the alpha shape.
+            model, tokens = error.model, error.tokens
+            return failed("schema_violation", str(error))
         except ProviderTimeout as error:
             return failed("timeout", str(error))
         except RateLimited as error:

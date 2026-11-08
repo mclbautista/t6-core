@@ -153,6 +153,13 @@ class Session:
 
         return self._matcher.sub(replace, text)
 
+    def mask(self, text: str) -> Masked:
+        """Mask one more text with this session's placeholders, for inputs with several text fields.
+
+        A name seen before keeps its placeholder, so ``restore`` works across every field.
+        """
+        return Masked(self._mask(text))
+
     def restore(self, output: T) -> T:
         """``output`` with every issued placeholder replaced by its original name.
 

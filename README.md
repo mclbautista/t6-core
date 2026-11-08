@@ -263,6 +263,45 @@ retry.
 and OpenRouter serve, and asks for a JSON object reply by default
 (`json_mode=False` turns that off).
 
+### Jev: Decisions tasks
+
+Jev runs as a normal typed task on OpenRouter's Decisions API. Its `render`
+returns a `DecisionsRequest` instead of chat messages: masked `state`, and one
+`Choice` question per candidate keyed `c0`, `c1`, ... The output model is
+`CandidateDecisions`: a choice (`match`, `maybe` or `no`) and the three
+probabilities per key. `CandidateKeys` stays in the app and maps the keys
+back to Notion page IDs, so a page ID never reaches the transport.
+
+```python
+from t6.llm import (CandidateDecisions, CandidateKeys, Choice, DecisionsRequest, Ok,
+                    OpenRouterDecisions, Task, candidate_key, run)
+
+def render(job: MatchInput) -> DecisionsRequest:
+    return DecisionsRequest(
+        state={"project": job.project.text, "job_order": job.job_order.text},
+        questions={candidate_key(i): Choice(f"Does this Job Order belong to '{name.text}'?", CRITERIA)
+                   for i, name in enumerate(job.candidates)},
+    )
+
+match = Task("match-v1", MatchInput, CandidateDecisions, render)
+keys = CandidateKeys([d.page_id for d in deliverables])   # same order as job.candidates
+result = run(match, job, provider=OpenRouterDecisions(api_key=key), session=session)
+if isinstance(result, Ok):
+    by_page = keys.by_page_id(result.value)               # page ID -> CandidateDecision
+```
+
+Use `session.mask(text)` to mask each extra field (project name, Deliverable
+names) with the same session, so placeholders stay consistent.
+
+The endpoint is alpha, so the transport checks every reply against the
+documented shape: `model`, one `choice` answer per question key and no other
+keys, probabilities from 0 to 1 that sum to 1, no extra fields such as a
+reason. Anything else fails with `schema_violation`, and the detail names
+field paths only. Data policy, masking, `leaks()`, `restore()`, the one 429
+wait and the trace work the same as for chat tasks. `OpenRouterDecisions`
+declares `retention="unknown"` unless told otherwise, so give a Jev task a
+`DataPolicy` it can meet, or declare `zdr_enforced` when the account enforces it.
+
 ### Testing
 
 Tests use `t6.llm.testing.FakeProvider`, never a live provider or recorded
@@ -277,12 +316,15 @@ fake.reply("not json")
 fake.timeout()
 fake.api_error("HTTP 503")
 fake.rate_limited(retry_after=2)
-fake.calls  # the messages each call sent, to check only masked text left
+fake.decisions({"model": "typesafe/jev-1.1", "answers": {...}})  # a raw Decisions body
+fake.calls  # the request each call sent, to check only masked text left
 ```
 
 A fake declares `zdr_enforced` retention; `FakeProvider(retention="unknown")`
 tests the policy check. `run(..., sleep=...)` takes a stand-in for
-`time.sleep` so 429 tests do not wait.
+`time.sleep` so 429 tests do not wait. `fake.decisions(body)` runs the body
+through the same alpha-shape validation as `OpenRouterDecisions`, so a
+malformed body fails with `schema_violation`.
 
 ## CLI
 
