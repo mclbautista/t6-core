@@ -46,6 +46,30 @@ result.count           # 1
 result.masker_version  # '1.0.0'
 ```
 
+`t6.privacy.pseudonymize(text, registry, allow)` swaps registry names for
+placeholders before text leaves T6, and its `Session` puts them back
+afterwards. It uses only the standard library.
+
+```python
+from t6.privacy import Person, Project, Registry, pseudonymize
+
+registry = Registry(
+    people=[Person("Marco Rossi", aliases=["Marco", "Rossi"], handles=["@marcor"])],
+    projects=[Project("Other Show", code="OS1")],
+    ids=["123456789"],
+)
+masked, session = pseudonymize("Marco confirmed Other Show", registry)
+# masked.text == "[person 1] confirmed [project 1]"
+leaks = session.leaks(reply)      # raw registry names in the reply
+restored = session.restore(reply) # raises Unresolved if a stray placeholder is left
+```
+
+Matching is by whole word and ignores case. Names in `allow` stay unmasked.
+`restore` walks dataclasses, pydantic models, dicts, lists and tuples, accepts
+placeholder variants such as `[PERSON 1 ]` or `person 1`, and restores only
+placeholders the session issued. Any other placeholder-shaped token raises
+`Unresolved` and nothing is restored.
+
 ## CLI
 
 ```console
