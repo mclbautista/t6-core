@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling>=1.26,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "t6"
+version = "0.1.0"
+description = "Shared T6 domain and tool adapters"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+notion = []
+privacy = []
+llm = []
+frameio = []
+resolve = []
+instagantt = []
+server = []
+worker = []
+
+[project.scripts]
+t6 = "t6.cli:main"
+
+[dependency-groups]
+dev = ["hatchling>=1.26,<2", "mypy>=1.13,<2"]
+
+[tool.uv.workspace]
+members = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/t6"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
