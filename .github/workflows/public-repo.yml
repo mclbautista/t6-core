@@ -1,0 +1,41 @@
+name: Public repo
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      full-history:
+        description: Scan every commit for secrets
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  safety:
+    uses: ./.github/workflows/public-repo-safety.yml
+    with:
+      full-history: ${{ github.event_name == 'workflow_dispatch' && inputs.full-history }}
+    secrets:
+      T6_NAMES_DENYLIST: ${{ secrets.T6_NAMES_DENYLIST }}
+
+  anonymous-install:
+    # Proves Docker builds can install t6 from this public repo with no GitHub token.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install t6[notion] with no credentials
+        env:
+          REF: ${{ github.ref_type == 'tag' && github.ref_name || github.event.pull_request.head.sha || github.sha }}
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --no-cache-dir \
+            "t6[notion] @ git+https://github.com/${GITHUB_REPOSITORY}@${REF}"
+          "$RUNNER_TEMP/venv/bin/t6" version

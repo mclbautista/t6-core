@@ -1,0 +1,98 @@
+# Reusable checks for public T6 repositories: secrets, forbidden paths and names.
+#
+# Turn it on in another public repo with .github/workflows/public-repo-safety.yml:
+#
+#   name: Public repo safety
+#   on: [push, pull_request]
+#   permissions:
+#     contents: read
+#   jobs:
+#     safety:
+#       uses: mclbautista/t6-core/.github/workflows/public-repo-safety.yml@main
+#       with:
+#         t6-core-ref: main
+#       secrets:
+#         T6_NAMES_DENYLIST: ${{ secrets.T6_NAMES_DENYLIST }}
+#
+# Pin both `@main` and `t6-core-ref` to the same t6-core tag once one exists.
+name: Public repo safety
+
+on:
+  workflow_call:
+    inputs:
+      t6-core-ref:
+        description: t6-core ref to load the check script from (match the ref in `uses:`).
+        type: string
+        default: main
+      full-history:
+        description: Scan every commit for secrets instead of only the new ones.
+        type: boolean
+        default: false
+    secrets:
+      T6_NAMES_DENYLIST:
+        description: Real client, show and person names, one per line. Never commit these.
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_VERSION: 8.21.2
+  GITLEAKS_SHA256: 5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba
+
+jobs:
+  safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install gitleaks
+        run: |
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$archive"
+          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$archive" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
+          echo "T6_GITLEAKS=$RUNNER_TEMP/gitleaks" >> "$GITHUB_ENV"
+
+      - name: Load the check script
+        env:
+          REF: ${{ inputs.t6-core-ref }}
+        run: |
+          if [ "$GITHUB_REPOSITORY" = "mclbautista/t6-core" ]; then
+            cp scripts/public_repo_safety.py "$RUNNER_TEMP/public_repo_safety.py"
+          else
+            curl -fsSL -o "$RUNNER_TEMP/public_repo_safety.py" \
+              "https://raw.githubusercontent.com/mclbautista/t6-core/${REF}/scripts/public_repo_safety.py"
+          fi
+
+      - name: Choose which commits to scan
+        env:
+          EVENT: ${{ github.event_name }}
+          FULL: ${{ inputs.full-history }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # A new branch, a force push or a manual run has no reliable "before",
+          # so scan everything.
+          scope="--full-history"
+          if [ "$FULL" != "true" ]; then
+            if [ "$EVENT" = "pull_request" ]; then
+              scope="--range=$BASE..$HEAD"
+            elif [ "$EVENT" = "push" ] && [ -n "$BEFORE" ] \
+              && ! echo "$BEFORE" | grep -qE '^0+$' \
+              && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+              scope="--range=$BEFORE..$AFTER"
+            fi
+          fi
+          echo "SCOPE=$scope" >> "$GITHUB_ENV"
+
+      - name: Check secrets, forbidden paths and names
+        env:
+          T6_NAMES_DENYLIST: ${{ secrets.T6_NAMES_DENYLIST }}
+        run: python3 "$RUNNER_TEMP/public_repo_safety.py" "$SCOPE" --require-names

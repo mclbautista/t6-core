@@ -5,3 +5,21 @@ __pycache__/
 dist/
 .mypy_cache/
 .uv-cache/
+
+# Never commit these: this repository is public (see README).
+.env
+.env.*
+!.env.example
+*.db
+*.sqlite
+*.sqlite3
+config.yaml
+config.yml
+data/
+token.json
+tokens.json
+*_token.json
+*_tokens.json
+*-token.json
+*-tokens.json
+*.token
