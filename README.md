@@ -212,6 +212,24 @@ are listed under `skipped`. The exit status is 0 when everything matches, 1
 when something drifted or a Project Code is blank or duplicated, and 2 when
 the command cannot run (for example, no token).
 
+### Cameras
+
+`t6 cameras get` and `t6 cameras update` let a skill read and change Cameras
+without Notion property names. Both need the Notion extra, `T6_NOTION_TOKEN`,
+and the same `--data-sources` file, which must have a `cameras` entry. Fields
+use the generated model's names: `name`, `tags`, `related_to_projects_cameras`
+and `wiki`, plus the row `id`.
+
+```console
+$ t6 cameras get --data-sources data-sources.json            # JSON list
+$ t6 cameras get --page-id <page id> --data-sources data-sources.json
+$ echo '{"tags": ["Sony", "Full frame"]}' | t6 cameras update <page id> --data-sources data-sources.json
+```
+
+`update` reads a JSON object from stdin (or `--json FILE`), writes only those
+fields, and prints the updated row. An unknown field, an invalid value, a page
+outside Cameras or a Notion error prints `{"error": ...}` on stderr and exits 2.
+
 ## Privacy
 
 `t6.privacy.withhold(text)` strips labelled credentials (`pw`, `pass`,
