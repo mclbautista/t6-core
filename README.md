@@ -168,33 +168,96 @@ model and a pydantic output model. Prompts stay in the app: the task's
 `render` function turns the input into chat messages.
 
 ```python
-from t6.llm import OpenAIChat, Ok, Task, run
+from t6.llm import DataPolicy, LLMConfig, Ok, Task, run
 from t6.privacy import pseudonymize
 
-summarise = Task("summarise-v1", Notes, Summary, render)
+summarise = Task("summarise-v1", Notes, Summary, render, repair_quotes=True)
 masked, session = pseudonymize(text, registry)
-provider = OpenAIChat(base_url="https://api.deepseek.com", api_key=key, model="deepseek-chat")
+provider = LLMConfig.from_mapping(app_config["llm"]).provider_for("summarise-v1")
 
 result = run(summarise, Notes(masked), provider=provider, session=session)
 if isinstance(result, Ok):
     use(result.value)          # a Summary, with real names restored
 else:
-    log(result.reason)         # timeout, api_error, empty, invalid_json,
+    log(result.reason)         # policy, timeout, api_error, empty, invalid_json,
                                # schema_violation, unresolved_placeholder, leak
-store(result.trace)            # prompt tag, model, tokens, latency in ms
+store(result.trace)            # prompt tag, model, tokens, latency in ms, repaired
 ```
 
-`run` never raises for a bad reply. It parses the reply as JSON, validates it
+`run` never raises for a bad reply. It strips a Markdown code fence if the
+whole reply is wrapped in one, parses the reply as JSON, validates it
 against the output model, then runs `session.leaks()` and `session.restore()`.
 A raw registry name in the reply fails with `leak`, and a placeholder the
 session did not issue fails with `unresolved_placeholder`. Failure details
 name field paths, never the names themselves. The trace holds no prompt or
 reply text; the app decides where to store it.
 
-Only programmer errors raise. Every string in the input must be `Masked`:
-a plain `str` raises `UnmaskedInput` before anything is sent. Masked input
+Only programmer errors raise. Every text value in the input must be masked
+the way the task's policy says (below): a plain `str`, or text masked the
+other way, raises `UnmaskedInput` before anything is sent. Masked input
 without its `Session` raises `MissingSession`. A `str` enum counts as a fixed
 value, not free text.
+
+### Data policy
+
+Each provider declares its retention: `zdr_enforced` (zero data retention is
+enforced on every request) or `unknown`. Each task declares a `DataPolicy`:
+the minimum retention it accepts and the masking its input must carry.
+
+| Masking | Every text value in the input must be | Session |
+| --- | --- | --- |
+| `pseudonymize` | `t6.privacy.Masked` (names swapped, restored after) | required |
+| `withhold` | `t6.privacy.Withheld` (credentials removed, names kept) | not needed |
+
+```python
+report = Task("report-v1", Notes, Summary, render)   # default: zdr_enforced + pseudonymize
+classify = Task("classify-v1", Ticket, Label, render_ticket, policy=DataPolicy("unknown", "withhold"))
+```
+
+If the provider's retention is below the task's minimum, `run` returns
+`Failed("policy")` and sends nothing.
+
+### Provider config
+
+Provider choice and retention live in the app's config, not in code. The app
+parses its own config file and passes the `llm` section as a mapping:
+
+```yaml
+llm:
+  default: deepseek
+  providers:
+    deepseek:
+      base_url: https://api.deepseek.com
+      model: deepseek-chat
+      retention: unknown
+      api_key_env: DEEPSEEK_API_KEY
+    openrouter:
+      base_url: https://openrouter.ai/api/v1
+      model: some/model
+      retention: zdr_enforced
+      api_key_env: OPENROUTER_API_KEY
+  tasks:
+    report-v1: openrouter
+```
+
+`LLMConfig.from_mapping(...)` checks the section and raises `ConfigError` for
+a missing `retention`, an unknown provider name or an unknown key. API keys
+never go in config: `provider_for(prompt_tag)` reads the key from the
+environment variable each provider names. A task with no `tasks` entry uses
+`default`.
+
+### JSON replies and retries
+
+A reply wrapped in a code fence is always unwrapped. Quote repair (escaping
+double quotes left unescaped inside a string value) is opt-in per task with
+`repair_quotes=True`. It runs only when the reply fails to parse, before
+validation and restore, and the trace then shows `repaired=True`. There is no
+other repair and no model repair call: anything else is `invalid_json`.
+
+On a 429 `run` waits once, for the `Retry-After` the provider sent (one
+second if none, `api_error` at once if it asks for more than 60), then tries
+again. A second 429 returns `Failed("api_error")`. Callers own every other
+retry.
 
 `OpenAIChat` speaks the OpenAI-style `/chat/completions` API that DeepSeek
 and OpenRouter serve, and asks for a JSON object reply by default
@@ -213,8 +276,13 @@ fake.reply('{"headline": "[PERSON 1 ] moved the grade"}', prompt_tokens=40, comp
 fake.reply("not json")
 fake.timeout()
 fake.api_error("HTTP 503")
+fake.rate_limited(retry_after=2)
 fake.calls  # the messages each call sent, to check only masked text left
 ```
+
+A fake declares `zdr_enforced` retention; `FakeProvider(retention="unknown")`
+tests the policy check. `run(..., sleep=...)` takes a stand-in for
+`time.sleep` so 429 tests do not wait.
 
 ## CLI
 
