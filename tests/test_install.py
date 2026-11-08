@@ -37,7 +37,11 @@ class InstallationTests(unittest.TestCase):
                     self.run_command(python, "-m", "pip", "install", *offline, f"{wheel}{extra}")
                     self.run_command(python, "-c", "import t6.domain; import t6.lookup")
                     installed = json.loads(self.run_command(python, "-c", self.distribution_probe()))
-                    self.assertEqual(installed["dependencies"], ["httpx<1,>=0.27; extra == 'notion'"])
+                    # Adapter libraries sit behind their own extra only.
+                    self.assertEqual(
+                        set(installed["dependencies"]),
+                        {"httpx<1,>=0.27; extra == 'notion'", "pydantic<3,>=2.7; extra == 'llm'"},
+                    )
                     self.assertEqual(
                         set(installed["extras"]),
                         {"notion", "privacy", "llm", "frameio", "resolve", "instagantt", "server", "worker"},

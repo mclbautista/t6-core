@@ -13,7 +13,9 @@ dependencies = []
 [project.optional-dependencies]
 notion = ["httpx>=0.27,<1"]
 privacy = []
-llm = []
+llm = [
+    "pydantic>=2.7,<3",
+]
 frameio = []
 resolve = []
 instagantt = []
@@ -24,7 +26,12 @@ worker = []
 t6 = "t6.cli:main"
 
 [dependency-groups]
-dev = ["hatchling>=1.26,<2", "httpx>=0.27,<1", "mypy>=1.13,<2"]
+dev = [
+    "hatchling>=1.26,<2",
+    "httpx>=0.27,<1",
+    "mypy>=1.13,<2",
+    "pydantic>=2.7,<3",
+]
 
 [tool.uv.workspace]
 members = []
