@@ -113,6 +113,20 @@ class ExternalLinks:
         links = (external_link_from_page(row) for row in rows)
         return tuple(link for link in links if link is not None)
 
+    def links_for_system(self, system: str, kind: str) -> tuple[ExternalLink, ...]:
+        """Every row with this System and Kind."""
+        rows = self._client.query_data_source(
+            self._data_source_id,
+            filter={
+                "and": [
+                    {"property": _P.SYSTEM, "select": {"equals": system}},
+                    {"property": _P.KIND, "select": {"equals": kind}},
+                ]
+            },
+        )
+        links = (external_link_from_page(row) for row in rows)
+        return tuple(link for link in links if link is not None)
+
     def refs_for_project(self, project_id: str) -> tuple[ExternalRef, ...]:
         """The domain ExternalRefs of this Project's rows."""
         return tuple(link.ref for link in self.links_for_project(project_id))

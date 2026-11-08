@@ -69,7 +69,7 @@ Install only the adapters an application needs, for example
 | `server` | Webhook server and queue |
 | `worker` | Job workers |
 
-The `notion` extra installs `httpx` and the `llm` extra installs `pydantic`.
+The `notion` extra installs `httpx`, the `llm` extra installs `pydantic` and the `resolve` extra installs `psycopg`.
 The other extras are declared and currently empty; their dependencies will be
 added when those adapters are implemented. The `notion` extra does not install Frame.io, Adobe sign-in, or
 LLM libraries.
@@ -499,3 +499,28 @@ uv build
 The tests exercise the public CLI and build a wheel, then install the base
 package and the Notion extra into separate clean environments without an
 index. CI runs these checks on push and pull request for Python 3.11–3.14.
+
+## Resolve
+
+`t6.resolve` reads the DaVinci Resolve PostgreSQL project server. Install it
+with `pip install 't6[resolve]'`.
+
+- `ProjectServer(db, database, schema_for(version))` lists every project with
+  database, folder path, name and internal ID. It refuses to start when the
+  database role can write (`ReadOnlyViolation`). Connect with
+  `t6.resolve.postgres.PostgresDatabase(dsn)`, which also sets the session
+  read-only.
+- A project's External ID is `<database>/<folder path>/<project name>`; a
+  project in the root folder has no folder segment. `ResolveProject.ref` is the
+  ExternalRef (system `resolve`, kind `project`, Internal ID the server's
+  project ID).
+- `map_projects(projects, external_links)` matches projects to External Links
+  rows. `unmapped` holds projects with no row or no Notion Project;
+  `orphan_links` holds rows whose project is no longer on the server.
+- `schema_for(version)` gives the table layout per `DaVinci Resolve Version`.
+  Tests run against a SQLite fixture per version in `tests/fixtures/resolve/`.
+
+The table layout in `t6.resolve.schema` and the SQL in `t6.resolve.postgres`
+have not been run against a live server. Check them first, then correct the
+schema entries and fixtures. The versions in `SCHEMAS` (18, 19) are placeholders until
+`DaVinci Resolve Version` is filled on active shows.

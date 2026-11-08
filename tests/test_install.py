@@ -40,7 +40,11 @@ class InstallationTests(unittest.TestCase):
                     # Adapter libraries sit behind their own extra only.
                     self.assertEqual(
                         set(installed["dependencies"]),
-                        {"httpx<1,>=0.27; extra == 'notion'", "pydantic<3,>=2.7; extra == 'llm'"},
+                        {
+                            "httpx<1,>=0.27; extra == 'notion'",
+                            "pydantic<3,>=2.7; extra == 'llm'",
+                            "psycopg[binary]<4,>=3.2; extra == 'resolve'",
+                        },
                     )
                     self.assertEqual(
                         set(installed["extras"]),
