@@ -1,0 +1,5 @@
+[
+  "DEMO - TOC - JO #1\nAugust 17 / Monday\n\nTitle: Demo Feature\nTask: zip the EXR files and upload to frame io\n\nPurpose: VFX turnover\nMode of Transfer: frame.io\n\nSource material:\n\nPlates from the vendor\nLink: https://files.example.test/share/abc\nPW: hunter2\n\nDeadline: August 17, 11AM\nStatus:\nPending:\n\nAssigned: @editor\ncc: @producer",
+  "DEMO - TOC - JO #2\nSeptember 26 / Saturday\n\nTitle: Demo Series EP 3\nTask: export synced dailies\nPurpose: For prod review\nSource Drive: NAS\nWatermark: follow guidelines\nMode of Transfer: Dropbox\nLink Settings: DL with password, expiry 14 days\nDeadline: within shift\nStatus:\nPending:\nNote: DL w pw\n\nAssigned: @assistant\ncc: @producer",
+  "DEMO - TOC - JO #3\nOctober 2 / Friday\n\nTitle: Demo Short\nTask: download the review copy\nSource: https://www.dropbox.com/s/abc?dl=0&rlkey=xyz&pw=link-key\nLink Settings: non dl w pw\nDeadline: October 3 / Sat 5AM\n\nAssigned: @colorist"
+]

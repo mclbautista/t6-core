@@ -28,6 +28,24 @@ All extras are declared and currently empty. Adapter dependencies will be added
 when those adapters are implemented. The `notion` extra does not install
 Frame.io, Adobe sign-in, or LLM libraries.
 
+## Privacy
+
+`t6.privacy.withhold(text)` strips labelled credentials (`pw`, `pass`,
+`password`, `passcode`, `pin` followed directly by `:` or `=`) before text
+leaves T6. It is one way: the result holds only the masked `text`, the `count`
+of values withheld, and the `masker_version`, so nothing can be restored. URLs
+are kept byte for byte. It is ported from the watchdog masker in t6-jo-tg-ntn
+and needs no third-party packages or Notion access.
+
+```python
+from t6.privacy import withhold
+
+result = withhold("PW: secret")
+result.text            # 'PW: [password withheld – see Telegram message]'
+result.count           # 1
+result.masker_version  # '1.0.0'
+```
+
 ## CLI
 
 ```console
