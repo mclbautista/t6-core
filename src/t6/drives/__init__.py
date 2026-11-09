@@ -16,13 +16,21 @@ import enum
 import re
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Protocol
+from typing import Protocol, Sequence
 
 __all__ = [
+    "CustodyEvent",
+    "CustodyKind",
     "Drive",
+    "DriveStatus",
     "DriveStore",
     "DuplicateSerial",
     "FormFactor",
+    "Party",
+    "PartyKind",
+    "Ref",
+    "UnknownDrive",
+    "derive_status",
     "normalize_serial",
     "parse_capacity_tb",
 ]
@@ -107,6 +115,109 @@ class Drive:
         return self.owner_studio_id is None
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Ref:
+    """A link to a Notion page, or the text of a name that could not be resolved.
+
+    A resolved Ref holds a Notion page ID. When a name could not be matched to a
+    page, the Ref keeps the name as text and is flagged: `unresolved` is True so
+    a reviewer can find it. Exactly one of `page_id` and `text` is set.
+    """
+
+    page_id: str | None = None
+    text: str | None = None
+
+    def __post_init__(self) -> None:
+        page_id = _blank_to_none(self.page_id)
+        text = _blank_to_none(self.text)
+        if (page_id is None) == (text is None):
+            raise ValueError("a Ref needs exactly one of a page ID or unresolved text")
+        object.__setattr__(self, "page_id", page_id)
+        object.__setattr__(self, "text", text)
+
+    @property
+    def unresolved(self) -> bool:
+        return self.page_id is None
+
+
+class PartyKind(enum.Enum):
+    CONTACT = "contact"
+    STUDIO = "studio"
+
+
+@dataclass(frozen=True, slots=True)
+class Party:
+    """The Contact or Studio a custody event involves."""
+
+    kind: PartyKind
+    ref: Ref
+
+
+class CustodyKind(enum.Enum):
+    RECEIVED = "received"
+    RELEASED = "released"
+    RETURNED = "returned"
+    RETIRED = "retired"
+
+
+class DriveStatus(enum.Enum):
+    """Where a Drive stands now. Derived from its custody log; never stored."""
+
+    IN_CUSTODY = "in custody"
+    RELEASED = "released"
+    RETIRED = "retired"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CustodyEvent:
+    """One entry in a Drive's custody log: received, released, returned or retired.
+
+    Holds the date, the Contact or Studio involved, the Project, who logged it
+    and an optional reason. Retired needs a reason (for example dead, lost,
+    sold). An event is never edited: a correction is a new event.
+    """
+
+    kind: CustodyKind
+    on: date
+    party: Party
+    project: Ref
+    logged_by: Ref
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        reason = _blank_to_none(self.reason)
+        if self.kind is CustodyKind.RETIRED and reason is None:
+            raise ValueError("a retired event needs a reason, such as dead, lost or sold")
+        object.__setattr__(self, "reason", reason)
+
+
+_STATUS_AFTER = {
+    CustodyKind.RECEIVED: DriveStatus.IN_CUSTODY,
+    CustodyKind.RETURNED: DriveStatus.IN_CUSTODY,
+    CustodyKind.RELEASED: DriveStatus.RELEASED,
+    CustodyKind.RETIRED: DriveStatus.RETIRED,
+}
+
+
+def derive_status(events: Sequence[CustodyEvent]) -> DriveStatus | None:
+    """The status after the last event in the log, or None if there are none.
+
+    The log is in the order events were appended, so a correction logged later
+    wins whatever date it carries.
+    """
+    if not events:
+        return None
+    return _STATUS_AFTER[events[-1].kind]
+
+
+class UnknownDrive(LookupError):
+    """No Drive with this serial is recorded."""
+
+    def __init__(self, serial: str) -> None:
+        super().__init__(f"no Drive with serial {serial!r} is recorded")
+        self.serial = serial
+
+
 class DuplicateSerial(ValueError):
     """A Drive with this serial is already recorded."""
 
@@ -128,4 +239,28 @@ class DriveStore(Protocol):
 
     def get_drive(self, serial: str) -> Drive | None:
         """The Drive with this serial, or None if none is recorded."""
+        ...
+
+    def append_event(self, serial: str, event: CustodyEvent) -> None:
+        """Add an event to the end of a Drive's custody log.
+
+        Raises UnknownDrive if no Drive has this serial. The store has no way to
+        edit or delete an event: a correction is a new event.
+        """
+        ...
+
+    def list_events(self, serial: str) -> tuple[CustodyEvent, ...]:
+        """The Drive's custody events in the order they were appended.
+
+        Raises UnknownDrive if no Drive has this serial. A Drive with no events
+        gives an empty tuple.
+        """
+        ...
+
+    def status(self, serial: str) -> DriveStatus | None:
+        """The Drive's current status, worked out from its log.
+
+        None if the Drive has no events yet. Raises UnknownDrive if no Drive
+        has this serial.
+        """
         ...
