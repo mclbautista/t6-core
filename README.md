@@ -108,6 +108,13 @@ I/O and needs no extra.
 - Contacts, Studios and Projects are a `Ref`: a Notion page ID, or, when a name
   could not be resolved, the name as text with `unresolved` True so it can be
   reviewed.
+- An `Assignment` holds label, `project` (a `Ref`), `role` (`Role.MASTER`,
+  `BACKUP`, `OFFLINE`, `SWING` or `ARCHIVE`), start, end and remarks. No end
+  means the Assignment is open. `DriveStore.add_assignment(serial, assignment)`
+  adds one and never edits or closes earlier ones. `open_assignments(project)`
+  lists the Drives still out for a Project; `assignment_history(serial)` lists a
+  Drive's Assignments across Projects, oldest start first. An unknown serial
+  raises `UnknownDrive`. A label can repeat on different Drives and Projects.
 
 ## Lookup
 

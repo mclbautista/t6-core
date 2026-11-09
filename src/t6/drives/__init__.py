@@ -19,6 +19,7 @@ from datetime import date
 from typing import Protocol, Sequence
 
 __all__ = [
+    "Assignment",
     "CustodyEvent",
     "CustodyKind",
     "Drive",
@@ -29,6 +30,7 @@ __all__ = [
     "Party",
     "PartyKind",
     "Ref",
+    "Role",
     "UnknownDrive",
     "derive_status",
     "normalize_serial",
@@ -210,6 +212,47 @@ def derive_status(events: Sequence[CustodyEvent]) -> DriveStatus | None:
     return _STATUS_AFTER[events[-1].kind]
 
 
+class Role(enum.Enum):
+    """What a Drive does for a Project while it is assigned."""
+
+    MASTER = "master"
+    BACKUP = "backup"
+    OFFLINE = "offline"
+    SWING = "swing"
+    ARCHIVE = "archive"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Assignment:
+    """One stretch of a Drive's life on one Project, under one label.
+
+    `project` is a `Ref`: a Notion page ID, or the Project's name as text when
+    it could not be resolved. An Assignment with no `end` is open: the Drive is
+    still out for that Project. The same label may be on different Drives in
+    different Projects.
+    """
+
+    label: str
+    project: Ref
+    role: Role
+    start: date
+    end: date | None = None
+    remarks: str | None = None
+
+    def __post_init__(self) -> None:
+        label = _blank_to_none(self.label)
+        if label is None:
+            raise ValueError("an Assignment needs a label")
+        if self.end is not None and self.end < self.start:
+            raise ValueError(f"an Assignment cannot end ({self.end}) before it starts ({self.start})")
+        object.__setattr__(self, "label", label)
+        object.__setattr__(self, "remarks", _blank_to_none(self.remarks))
+
+    @property
+    def is_open(self) -> bool:
+        return self.end is None
+
+
 class UnknownDrive(LookupError):
     """No Drive with this serial is recorded."""
 
@@ -262,5 +305,30 @@ class DriveStore(Protocol):
 
         None if the Drive has no events yet. Raises UnknownDrive if no Drive
         has this serial.
+        """
+        ...
+
+    def add_assignment(self, serial: str, assignment: Assignment) -> None:
+        """Assign a recorded Drive. Raises UnknownDrive if the serial is not recorded.
+
+        Earlier Assignments are kept: relabelling a reused Drive adds a new
+        Assignment and never edits or removes an old one. Nothing is closed
+        automatically.
+        """
+        ...
+
+    def open_assignments(self, project: Ref) -> list[tuple[Drive, Assignment]]:
+        """The Drives still out for a Project, with their open Assignments.
+
+        Ordered by start date, then label. Another Project that has the same
+        label is not included.
+        """
+        ...
+
+    def assignment_history(self, serial: str) -> list[Assignment]:
+        """A Drive's Assignments across all Projects, oldest start first.
+
+        Returns an empty list for a recorded Drive with none. Raises
+        UnknownDrive if the serial is not recorded.
         """
         ...

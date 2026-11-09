@@ -26,3 +26,8 @@ Modelled in `t6.drives`.
   deleted; a correction is a new event.
 - **Status**: where a Drive stands (in custody, released or retired), always
   derived from the last custody event and never stored. No events, no status.
+- **Assignment**: one stretch of a Drive's life on one Project: label, Project
+  (a Notion page ID, or text when unresolved), role (master, backup, offline,
+  swing, archive), start, end and remarks. No end means open, and "which drives
+  are out for show X" is a query over open Assignments. A reused Drive gets a new
+  Assignment; old ones stay as its history.
