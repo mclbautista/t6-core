@@ -121,6 +121,11 @@ class JobKind(str, Enum):
     PROJECT_START_FRAMEIO_FOLDERS = "project_start.frameio_folders"
     PROJECT_START_INSTAGANTT = "project_start.instagantt"
     PROJECT_START_NOTION_PAGES = "project_start.notion_pages"
+    NOTION_PAGE_CHANGED = "notion.page_changed"
+    """A Notion page changed. A Notion webhook names the changed properties, not
+    their new values, so a worker reads the page to find the current state."""
+    TAP = "tap"
+    """A person tapped a button on a card the gateway sent for t6-core."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
