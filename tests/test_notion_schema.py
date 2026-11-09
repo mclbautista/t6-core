@@ -4,6 +4,7 @@ All Notion traffic goes to the in-memory fake.
 """
 
 from contextlib import redirect_stderr, redirect_stdout
+import datetime as dt
 import io
 import json
 import os
@@ -150,20 +151,44 @@ class ModelReadWriteTests(unittest.TestCase):
             ("Harbour Lights", 6, "HBL", ("ProRes", "DCP"), ("studio-1",), "Rec.709"),
         )
 
+    def test_the_munki_fleet_fields_round_trip_on_a_bays_page(self) -> None:
+        fake = fake_with(bays=BAYS)
+        checked_in = dt.datetime(2026, 11, 9, 3, 15, tzinfo=dt.timezone.utc)
+        body = BaysRow.to_properties(
+            name="Bay 06",
+            serial_number="C02EXAMPLE01",
+            munki_manifest="bay06",
+            munki_client_version="6.6.3",
+            ring="pilot",
+            last_check_in=checked_in,
+            os_version="macOS 26.5",
+        )
+        self.assertIn("rich_text", body["OS Version"])
+        with fake.client() as client:
+            created = client.create_page({"parent": {"data_source_id": BAYS}, "properties": body})
+            row = BaysRow.from_page(client.retrieve_page(created["id"]))
+        self.assertEqual(
+            (row.serial_number, row.munki_manifest, row.munki_client_version, row.ring),
+            ("C02EXAMPLE01", "bay06", "6.6.3", "pilot"),
+        )
+        self.assertEqual(row.last_check_in, checked_in)
+        self.assertEqual(row.os_version, "macOS 26.5")
+        self.assertEqual(fake.select_options(BAYS, "Ring"), ["pilot"])
+
 
 class SelectOptionTests(unittest.TestCase):
-    def test_writing_a_new_bays_os_version_creates_the_select_option(self) -> None:
+    def test_writing_a_new_bays_ring_creates_the_select_option(self) -> None:
         fake = fake_with(bays=BAYS)
-        self.assertEqual(fake.select_options(BAYS, "OS Version"), [])
+        self.assertEqual(fake.select_options(BAYS, "Ring"), [])
         with fake.client() as client:
             client.create_page(
                 {
                     "parent": {"data_source_id": BAYS},
-                    "properties": BaysRow.to_properties(name="Bay 02", os_version="macOS 26.5"),
+                    "properties": BaysRow.to_properties(name="Bay 02", ring="pilot"),
                 }
             )
             live = client.retrieve_data_source(BAYS)
-        self.assertEqual([o["name"] for o in live["properties"]["OS Version"]["select"]["options"]], ["macOS 26.5"])
+        self.assertEqual([o["name"] for o in live["properties"]["Ring"]["select"]["options"]], ["pilot"])
 
     def test_an_existing_option_is_not_added_twice(self) -> None:
         fake = fake_with(bays=BAYS)
@@ -172,10 +197,10 @@ class SelectOptionTests(unittest.TestCase):
                 client.create_page(
                     {
                         "parent": {"data_source_id": BAYS},
-                        "properties": BaysRow.to_properties(name=name, os_version="macOS 12.7.4"),
+                        "properties": BaysRow.to_properties(name=name, ring="production"),
                     }
                 )
-        self.assertEqual(fake.select_options(BAYS, "OS Version"), ["macOS 12.7.4"])
+        self.assertEqual(fake.select_options(BAYS, "Ring"), ["production"])
 
     def test_a_multi_select_value_creates_its_options(self) -> None:
         fake = fake_with(bays=BAYS)
@@ -206,7 +231,7 @@ class SchemaCheckTests(unittest.TestCase):
         fake = fake_with(bays=BAYS)
         fake.add_property(BAYS, "Rack Position", "rich_text")
         fake.remove_property(BAYS, "Notes")
-        fake.change_property_type(BAYS, "OS Version", "rich_text")
+        fake.change_property_type(BAYS, "OS Version", "select")
         report = self.check(fake, {"bays": BAYS})
         self.assertFalse(report["ok"])
         bays = report["databases"]["bays"]  # type: ignore[index]
@@ -215,7 +240,7 @@ class SchemaCheckTests(unittest.TestCase):
         self.assertEqual(bays["removed"], [{"name": "Notes", "type": "rich_text"}])
         self.assertEqual(
             bays["changed"],
-            [{"name": "OS Version", "snapshot_type": "select", "live_type": "rich_text"}],
+            [{"name": "OS Version", "snapshot_type": "rich_text", "live_type": "select"}],
         )
 
     def test_a_renamed_trailing_space_counts_as_drift(self) -> None:

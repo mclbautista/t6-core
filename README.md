@@ -259,7 +259,7 @@ This policy is written in ASD-STE100 Simplified Technical English.
 ### Schema snapshot and models
 
 `src/t6/notion/schema_snapshot.json` lists every T6 database and the exact
-name and type of each property (captured 2026-11-08). It holds no select
+name and type of each property (captured 2026-11-09). It holds no select
 option values, because they contain show and client names. The `t6.notion.generated`
 module has one model per database, such as `BaysRow` and `JobOrdersRow`. Run
 `uv run python scripts/generate_models.py` after the snapshot changes. A test
@@ -274,13 +274,15 @@ fails when the module is out of date.
   `create_page` or `update_page`. A value of `None` clears the property.
   Formula, rollup, timestamp and similar properties are read-only.
 - Select and multi-select values are sent by name, and Notion adds an option
-  that does not exist. This is how a new Bays `OS Version` value works until
-  that property becomes text. The in-memory fake does the same.
+  that does not exist. The in-memory fake does the same.
+- Bays carries the Munki fleet fields: `serial_number`, `munki_manifest`,
+  `munki_client_version` and `os_version` (text), `ring` (select) and
+  `last_check_in` (date).
 
 ```python
 from t6.notion.generated import BaysRow
 
-body = BaysRow.to_properties(name="Bay 12", os_version="macOS 26.5")
+body = BaysRow.to_properties(name="Bay 12", os_version="macOS 26.5", ring="pilot")
 page = notion.create_page({"parent": {"data_source_id": bays_id}, "properties": body})
 bay = BaysRow.from_page(page)
 ```
@@ -534,7 +536,7 @@ malformed body fails with `schema_violation`.
 
 ```console
 $ t6 version
-{"version": "0.2.0"}
+{"version": "0.3.0"}
 ```
 
 `python -m t6 version` provides the same output. `t6 schema-check` is
@@ -560,7 +562,7 @@ Pull requests build the image and run the smoke test; nothing is pushed.
 the matching tag:
 
 ```sh
-git tag v0.2.0 && git push origin v0.2.0
+git tag v0.3.0 && git push origin v0.3.0
 ```
 
 The `Image` workflow fails unless the tag equals the pyproject version. It

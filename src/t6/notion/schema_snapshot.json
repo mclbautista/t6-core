@@ -1,6 +1,6 @@
 {
   "snapshot_version": 1,
-  "captured": "2026-11-08",
+  "captured": "2026-11-09",
   "notion_version": "2026-03-11",
   "databases": {
     "projects": {
@@ -624,6 +624,18 @@
           "type": "rich_text"
         },
         {
+          "name": "Last Check-in",
+          "type": "date"
+        },
+        {
+          "name": "Munki Client Version",
+          "type": "rich_text"
+        },
+        {
+          "name": "Munki Manifest",
+          "type": "rich_text"
+        },
+        {
           "name": "Name",
           "type": "title"
         },
@@ -633,7 +645,7 @@
         },
         {
           "name": "OS Version",
-          "type": "select"
+          "type": "rich_text"
         },
         {
           "name": "Paragon License",
@@ -646,6 +658,14 @@
         {
           "name": "Related to Tasks (Property)",
           "type": "relation"
+        },
+        {
+          "name": "Ring",
+          "type": "select"
+        },
+        {
+          "name": "Serial Number",
+          "type": "rich_text"
         },
         {
           "name": "Type",
