@@ -65,6 +65,19 @@ Mac mini. Both use only the standard library.
 - **Worker.** `Worker(QueueClient(HttpTransport(url), secret), "main", handlers)`
   claims, runs and acks one job per `run_once()`. The server never calls a
   worker.
+- **Worker entrypoint.** `python -m t6.worker` polls one queue in a loop,
+  sleeps between empty polls and exits cleanly on SIGTERM. It exits with code 2
+  and a message on stderr when a required variable is missing or no handler is
+  registered for its queue (`t6.worker.__main__.HANDLERS`, filled by later
+  tickets). Until then the table is empty, so the entrypoint always refuses to
+  start.
+
+| Worker variable | Use |
+| --- | --- |
+| `T6_SERVER_URL` | required: the server's tailnet address, for example `http://100.64.0.1:8081` |
+| `T6_WORKER_SECRET` | required: the bearer secret for the queue (the server's `T6_WORKER_SECRET` or `T6_FRAMEIO_WORKER_SECRET`) |
+| `T6_WORKER_QUEUE` | required: the queue to poll (`main` or `frameio`) |
+| `T6_WORKER_POLL_SECONDS` | optional: sleep after an empty poll, default `5` |
 
 | Variable | Use |
 | --- | --- |
