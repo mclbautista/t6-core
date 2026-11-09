@@ -1,0 +1,12 @@
+.git
+.github
+.venv
+.bootstrap
+.mypy_cache
+.uv-cache
+__pycache__
+*.egg-info
+dist
+tests
+docs
+.env

@@ -521,11 +521,40 @@ malformed body fails with `schema_violation`.
 
 ```console
 $ t6 version
-{"version": "0.1.0"}
+{"version": "0.2.0"}
 ```
 
 `python -m t6 version` provides the same output. `t6 schema-check` is
 described under [Schema check](#schema-check).
+
+## Container image
+
+One image, `ghcr.io/mclbautista/t6`, runs every role. It installs the `server`,
+`worker`, `notion`, `privacy`, `llm` and `frameio` extras, runs as a non-root
+user, and keeps the queue database in the `/data` volume. The command picks the
+role; the default is the server.
+
+```sh
+docker build -t t6:dev .                      # linux/amd64 hosts only
+scripts/image-smoke-test.sh t6:dev            # `t6 version`, then the server answers
+docker run --rm t6:dev python -m t6.server    # the server (VPS)
+docker run --rm t6:dev python -m t6.worker    # a worker (Mac mini)
+```
+
+Pull requests build the image and run the smoke test; nothing is pushed.
+
+**Release.** Set `version` in `pyproject.toml` (and `uv.lock`), merge, then push
+the matching tag:
+
+```sh
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+The `Image` workflow fails unless the tag equals the pyproject version. It
+publishes `X.Y.Z` and `sha-<short>` for linux/amd64, never `latest`, and prints
+the digest in the run summary. t6-netops pins `ghcr.io/mclbautista/t6:X.Y.Z@sha256:...`.
+After the first publish, set the package's visibility to public in GitHub
+package settings so hosts can pull without credentials.
 
 ## This repository is public
 
