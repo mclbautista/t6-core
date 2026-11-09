@@ -37,6 +37,45 @@ webhook server, the worker and poll-and-diff.
   key. `Job.for_event(kind, event)` keys the job by kind and event, so one
   event queues each kind of job at most once.
 
+## Webhook server, queue and worker
+
+`t6.server` runs on the VPS: `python -m t6.server`. `t6.worker` runs on the
+Mac mini. Both use only the standard library.
+
+- **Two listeners.** The public one serves only `/webhook` and `/webhook/*`
+  (Frame.io and Notion). The tailnet one serves `POST /tap` (the gateway) and
+  `/queue/*` (workers and callers). Nothing else is served on the public one.
+- **Signatures.** Frame.io: `v0:{timestamp}:{body}` HMAC-SHA256, five-minute
+  window in both directions. Notion: HMAC-SHA256 of the raw body; the event's
+  own timestamp must be less than 25 hours old, because Notion retries for
+  about 24 hours. A bad or stale request is answered 401 and queues nothing.
+  A secret that is not set turns its route off (503).
+- **Queue** (`JobQueue`, SQLite WAL): at-least-once, one job per
+  (queue, dedupe key), lease-based claims, named queues (`main`, `frameio`), a
+  typed result per job, and quiet-period timers stored in the database. A job
+  that loses its lease five times is failed.
+- **Events.** A Frame.io `comment.created` starts or resets a 15-minute timer
+  for its Frame.io project; when it fires it becomes a `frameio.review_done`
+  job with the comment count. A Notion `page.properties_updated` becomes a
+  `notion.page_changed` job (Notion names the changed properties, not the new
+  value, so a worker reads the page). A tap becomes a `tap` job keyed by the
+  gateway's `Idempotency-Key`.
+- **Worker.** `Worker(QueueClient(HttpTransport(url), secret), "main", handlers)`
+  claims, runs and acks one job per `run_once()`. The server never calls a
+  worker.
+
+| Variable | Use |
+| --- | --- |
+| `T6_FRAMEIO_WEBHOOK_SECRET` | Frame.io signing secret |
+| `T6_NOTION_WEBHOOK_TOKEN` | Notion `verification_token` |
+| `T6_TAP_SECRET` | the gateway's `T6CORE_SECRET` |
+| `T6_WORKER_SECRET` | main worker: claims `main`, may submit to `main` and `frameio` |
+| `T6_FRAMEIO_WORKER_SECRET` | Frame.io worker: claims `frameio` |
+| `T6_QUEUE_DB`, `T6_PUBLIC_BIND`, `T6_TAILNET_BIND` | database path, listener addresses |
+
+Tests use `t6.server.testing.FakeClock`; no test opens a connection to a
+provider.
+
 ## Lookup
 
 `t6.lookup` turns a loose mention into the right entity, over an `Index` of
@@ -66,8 +105,8 @@ Install only the adapters an application needs, for example
 | `frameio` | Frame.io integration |
 | `resolve` | DaVinci Resolve integration |
 | `instagantt` | Instagantt export reader |
-| `server` | Webhook server and queue |
-| `worker` | Job workers |
+| `server` | Webhook server and queue (stdlib only) |
+| `worker` | Job workers (stdlib only) |
 
 The `notion` extra installs `httpx`, the `llm` extra installs `pydantic` and the `resolve` extra installs `psycopg`.
 The other extras are declared and currently empty; their dependencies will be
