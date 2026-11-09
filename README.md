@@ -95,6 +95,19 @@ I/O and needs no extra.
   `add_drive` and `get_drive(serial)`. Adding a serial that is already recorded
   raises `DuplicateSerial`. `t6.drives.testing.InMemoryDriveStore` is the fake
   for tests.
+- Custody is an append-only log of `CustodyEvent`s: kind (`CustodyKind.RECEIVED`,
+  `RELEASED`, `RETURNED`, `RETIRED`), date, the `Party` involved (a Contact or
+  Studio), the Project, who logged it and an optional reason. `RETIRED` needs a
+  reason (dead, lost, sold). `DriveStore.append_event(serial, event)` and
+  `list_events(serial)` are the only ways in and out: events cannot be edited or
+  deleted, so a correction is a new event and both stay in the list.
+- `DriveStore.status(serial)` is derived from the last appended event
+  (`DriveStatus.IN_CUSTODY`, `RELEASED` or `RETIRED`) and never stored. A Drive
+  with no events has no status (`None`). `derive_status(events)` does the same
+  over a list. An unrecorded serial raises `UnknownDrive`.
+- Contacts, Studios and Projects are a `Ref`: a Notion page ID, or, when a name
+  could not be resolved, the name as text with `unresolved` True so it can be
+  reviewed.
 
 ## Lookup
 

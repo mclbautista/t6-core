@@ -20,3 +20,9 @@ Modelled in `t6.drives`.
 - **DriveStore**: the interface where Drive records live. The custodian's web
   app implements it; `t6.drives.testing.InMemoryDriveStore` is the fake for
   tests.
+- **Custody event**: one entry in a Drive's append-only custody log: received,
+  released, returned or retired, with date, the Contact or Studio involved, the
+  Project and who logged it. Retired needs a reason. Events are never edited or
+  deleted; a correction is a new event.
+- **Status**: where a Drive stands (in custody, released or retired), always
+  derived from the last custody event and never stored. No events, no status.
