@@ -95,6 +95,14 @@ I/O and needs no extra.
   `add_drive` and `get_drive(serial)`. Adding a serial that is already recorded
   raises `DuplicateSerial`. `t6.drives.testing.InMemoryDriveStore` is the fake
   for tests.
+- An `Assignment` holds label, `project` (a `ProjectRef`: a Notion page ID, or
+  text when unresolved), `role` (`Role.MASTER`, `BACKUP`, `OFFLINE`, `SWING` or
+  `ARCHIVE`), start, end and remarks. No end means the Assignment is open.
+  `DriveStore.add_assignment(serial, assignment)` adds one and never edits or
+  closes earlier ones. `open_assignments(project)` lists the Drives still out for
+  a Project; `assignment_history(serial)` lists a Drive's Assignments across
+  Projects, oldest start first. An unknown serial raises `UnknownDrive`. A label
+  can repeat on different Drives and Projects.
 
 ## Lookup
 

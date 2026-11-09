@@ -7,10 +7,14 @@ from datetime import date
 import unittest
 
 from t6.drives import (
+    Assignment,
     Drive,
     DriveStore,
     DuplicateSerial,
     FormFactor,
+    ProjectRef,
+    Role,
+    UnknownDrive,
     normalize_serial,
     parse_capacity_tb,
 )
@@ -153,6 +157,171 @@ class DuplicateTests(unittest.TestCase):
 
     def test_duplicate_serial_is_a_value_error(self) -> None:
         self.assertTrue(issubclass(DuplicateSerial, ValueError))
+
+
+SHOW_A = ProjectRef.page("project-page-a")
+SHOW_B = ProjectRef.page("project-page-b")
+
+
+def assign(
+    store: DriveStore,
+    serial: str,
+    label: str,
+    project: ProjectRef,
+    start: date,
+    *,
+    end: date | None = None,
+    role: Role = Role.MASTER,
+    remarks: str | None = None,
+) -> None:
+    store.add_assignment(
+        serial,
+        Assignment(label=label, project=project, role=role, start=start, end=end, remarks=remarks),
+    )
+
+
+class AssignmentFactsTests(unittest.TestCase):
+    def test_an_assignment_holds_its_facts_and_is_open_without_an_end(self) -> None:
+        assignment = Assignment(
+            label=" M01 ",
+            project=SHOW_A,
+            role=Role.MASTER,
+            start=date(2024, 5, 1),
+            remarks="  first copy ",
+        )
+        self.assertEqual(assignment.label, "M01")
+        self.assertEqual(assignment.project.page_id, "project-page-a")
+        self.assertIs(assignment.role, Role.MASTER)
+        self.assertEqual(assignment.start, date(2024, 5, 1))
+        self.assertIsNone(assignment.end)
+        self.assertTrue(assignment.is_open)
+        self.assertEqual(assignment.remarks, "first copy")
+
+    def test_an_assignment_with_an_end_is_closed(self) -> None:
+        closed = Assignment(
+            label="M01", project=SHOW_A, role=Role.BACKUP, start=date(2024, 5, 1), end=date(2024, 6, 1)
+        )
+        self.assertFalse(closed.is_open)
+
+    def test_roles_are_master_backup_offline_swing_archive(self) -> None:
+        self.assertEqual(
+            {role.value for role in Role}, {"master", "backup", "offline", "swing", "archive"}
+        )
+
+    def test_a_project_can_be_unresolved_text(self) -> None:
+        ref = ProjectRef.text(" Some Show S2 ")
+        self.assertFalse(ref.resolved)
+        self.assertEqual(ref.unresolved_text, "Some Show S2")
+        self.assertIsNone(ref.page_id)
+        self.assertTrue(SHOW_A.resolved)
+
+    def test_a_page_id_never_equals_the_same_text(self) -> None:
+        self.assertNotEqual(ProjectRef.page("x"), ProjectRef.text("x"))
+
+    def test_a_project_ref_needs_exactly_one_of_page_or_text(self) -> None:
+        for kwargs in ({}, {"page_id": "a", "unresolved_text": "b"}, {"page_id": "  "}):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaisesRegex(ValueError, "ProjectRef"):
+                    ProjectRef(**kwargs)
+
+    def test_an_assignment_needs_a_label(self) -> None:
+        with self.assertRaisesRegex(ValueError, "label"):
+            Assignment(label="  ", project=SHOW_A, role=Role.SWING, start=date(2024, 1, 1))
+
+    def test_an_assignment_cannot_end_before_it_starts(self) -> None:
+        with self.assertRaisesRegex(ValueError, "before it starts"):
+            Assignment(
+                label="M01",
+                project=SHOW_A,
+                role=Role.MASTER,
+                start=date(2024, 2, 1),
+                end=date(2024, 1, 1),
+            )
+
+
+class OpenAssignmentTests(unittest.TestCase):
+    def test_open_assignments_list_the_drives_out_for_a_project(self) -> None:
+        store = make_store()
+        for serial in ("D1", "D2", "D3"):
+            store.add_drive(Drive(serial=serial))
+        assign(store, "D1", "M01", SHOW_A, date(2024, 5, 2))
+        assign(store, "D2", "B01", SHOW_A, date(2024, 5, 1), role=Role.BACKUP)
+        assign(store, "D3", "M01", SHOW_B, date(2024, 5, 1))
+
+        out = store.open_assignments(SHOW_A)
+
+        self.assertEqual([(d.serial, a.label) for d, a in out], [("D2", "B01"), ("D1", "M01")])
+        self.assertIs(out[0][1].role, Role.BACKUP)
+
+    def test_closed_assignments_are_not_listed(self) -> None:
+        store = make_store()
+        store.add_drive(Drive(serial="D1"))
+        assign(store, "D1", "M01", SHOW_A, date(2024, 5, 1), end=date(2024, 6, 1))
+        self.assertEqual(store.open_assignments(SHOW_A), [])
+
+    def test_a_project_with_no_assignments_has_no_open_ones(self) -> None:
+        self.assertEqual(make_store().open_assignments(SHOW_A), [])
+
+    def test_an_unresolved_text_project_is_queried_by_its_text(self) -> None:
+        store = make_store()
+        store.add_drive(Drive(serial="D1"))
+        store.add_drive(Drive(serial="D2"))
+        assign(store, "D1", "M01", ProjectRef.text("Some Show S2"), date(2024, 5, 1))
+        assign(store, "D2", "M01", SHOW_A, date(2024, 5, 1))
+
+        out = store.open_assignments(ProjectRef.text("Some Show S2"))
+        self.assertEqual([d.serial for d, _ in out], ["D1"])
+        self.assertEqual(store.open_assignments(ProjectRef.text("Other")), [])
+
+
+class HistoryTests(unittest.TestCase):
+    def test_history_lists_assignments_across_projects_in_date_order(self) -> None:
+        store = make_store()
+        store.add_drive(Drive(serial="D1"))
+        assign(store, "D1", "SWING19", SHOW_B, date(2024, 9, 1), role=Role.SWING)
+        assign(store, "D1", "M01", SHOW_A, date(2024, 1, 1), end=date(2024, 3, 1))
+
+        history = store.assignment_history(" d1 ")
+
+        self.assertEqual([a.label for a in history], ["M01", "SWING19"])
+        self.assertEqual([a.project for a in history], [SHOW_A, SHOW_B])
+
+    def test_relabelling_a_reused_drive_keeps_earlier_labels_and_projects(self) -> None:
+        store = make_store()
+        store.add_drive(Drive(serial="D1"))
+        assign(store, "D1", "M01", SHOW_A, date(2024, 1, 1), end=date(2024, 3, 1))
+        assign(store, "D1", "ARCH-7", SHOW_B, date(2024, 4, 1), role=Role.ARCHIVE)
+
+        history = store.assignment_history("D1")
+
+        self.assertEqual([(a.label, a.project) for a in history], [("M01", SHOW_A), ("ARCH-7", SHOW_B)])
+        self.assertEqual(history[0].end, date(2024, 3, 1))
+        self.assertEqual([d.serial for d, _ in store.open_assignments(SHOW_B)], ["D1"])
+        self.assertEqual(store.open_assignments(SHOW_A), [])
+
+    def test_a_drive_with_no_assignments_has_an_empty_history(self) -> None:
+        store = make_store()
+        store.add_drive(Drive(serial="D1"))
+        self.assertEqual(store.assignment_history("D1"), [])
+
+    def test_the_same_label_on_different_drives_in_different_projects_is_fine(self) -> None:
+        store = make_store()
+        store.add_drive(Drive(serial="D1"))
+        store.add_drive(Drive(serial="D2"))
+        assign(store, "D1", "SWING19", SHOW_A, date(2024, 1, 1), role=Role.SWING)
+        assign(store, "D2", "SWING19", SHOW_B, date(2024, 1, 1), role=Role.SWING)
+
+        self.assertEqual([d.serial for d, _ in store.open_assignments(SHOW_A)], ["D1"])
+        self.assertEqual([d.serial for d, _ in store.open_assignments(SHOW_B)], ["D2"])
+        self.assertEqual([a.label for a in store.assignment_history("D1")], ["SWING19"])
+        self.assertEqual([a.label for a in store.assignment_history("D2")], ["SWING19"])
+
+    def test_assigning_or_reading_history_of_an_unknown_drive_is_refused(self) -> None:
+        store = make_store()
+        with self.assertRaisesRegex(UnknownDrive, "NOPE"):
+            assign(store, "NOPE", "M01", SHOW_A, date(2024, 1, 1))
+        with self.assertRaises(UnknownDrive):
+            store.assignment_history("NOPE")
 
 
 if __name__ == "__main__":

@@ -20,3 +20,8 @@ Modelled in `t6.drives`.
 - **DriveStore**: the interface where Drive records live. The custodian's web
   app implements it; `t6.drives.testing.InMemoryDriveStore` is the fake for
   tests.
+- **Assignment**: one stretch of a Drive's life on one Project: label, Project
+  (a Notion page ID, or text when unresolved), role (master, backup, offline,
+  swing, archive), start, end and remarks. No end means open, and "which drives
+  are out for show X" is a query over open Assignments. A reused Drive gets a new
+  Assignment; old ones stay as its history.
