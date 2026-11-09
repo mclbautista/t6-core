@@ -5,7 +5,9 @@ before its first commit. The distribution and import namespace are `t6`.
 
 Requires Python 3.11 or newer. Install the base package with `pip install t6`.
 The base package has no third-party runtime dependencies and includes
-`t6.domain`, `t6.lookup`, and the `t6` command.
+`t6.domain`, `t6.lookup`, `t6.drives`, and the `t6` command.
+
+Domain terms are defined in [`CONTEXT.md`](CONTEXT.md).
 
 ## Domain
 
@@ -36,6 +38,24 @@ webhook server, the worker and poll-and-diff.
 - A `Job` carries its `JobKind`, a read-only JSON-ready payload and a dedupe
   key. `Job.for_event(kind, event)` keys the job by kind and event, so one
   event queues each kind of job at most once.
+
+## Drives
+
+`t6.drives` models physical external drives (never Google Drive). It does no
+I/O and needs no extra.
+
+- A `Drive` holds serial, brand, model, capacity in TB, format, form factor
+  (`FormFactor.PORTABLE` or `FormFactor.POWERED_DESKTOP`), owner (a Studio page
+  ID, or `None` for T6), purchase date, warranty and remarks.
+- The serial is the identity. `normalize_serial` removes notes in brackets,
+  trims and upper-cases, so `" abc123 (old) "` is `"ABC123"`. A Drive needs a
+  serial.
+- `parse_capacity_tb` reads sheet text: `"4TB, P"` is 4.0 and `"500GB"` is 0.5.
+  Text it cannot read raises `ValueError` naming the text.
+- `DriveStore` is the interface the custodian's web app implements:
+  `add_drive` and `get_drive(serial)`. Adding a serial that is already recorded
+  raises `DuplicateSerial`. `t6.drives.testing.InMemoryDriveStore` is the fake
+  for tests.
 
 ## Lookup
 
