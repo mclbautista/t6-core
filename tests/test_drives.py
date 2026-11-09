@@ -4,17 +4,24 @@ Serials, brands and studio IDs here are made up.
 """
 
 from datetime import date
+from typing import Any
 import unittest
 
 from t6.drives import (
     Assignment,
+    CustodyEvent,
+    CustodyKind,
     Drive,
+    DriveStatus,
     DriveStore,
     DuplicateSerial,
     FormFactor,
-    ProjectRef,
+    Party,
+    PartyKind,
+    Ref,
     Role,
     UnknownDrive,
+    derive_status,
     normalize_serial,
     parse_capacity_tb,
 )
@@ -159,15 +166,15 @@ class DuplicateTests(unittest.TestCase):
         self.assertTrue(issubclass(DuplicateSerial, ValueError))
 
 
-SHOW_A = ProjectRef.page("project-page-a")
-SHOW_B = ProjectRef.page("project-page-b")
+SHOW_A = Ref(page_id="project-page-a")
+SHOW_B = Ref(page_id="project-page-b")
 
 
 def assign(
     store: DriveStore,
     serial: str,
     label: str,
-    project: ProjectRef,
+    project: Ref,
     start: date,
     *,
     end: date | None = None,
@@ -207,22 +214,6 @@ class AssignmentFactsTests(unittest.TestCase):
         self.assertEqual(
             {role.value for role in Role}, {"master", "backup", "offline", "swing", "archive"}
         )
-
-    def test_a_project_can_be_unresolved_text(self) -> None:
-        ref = ProjectRef.text(" Some Show S2 ")
-        self.assertFalse(ref.resolved)
-        self.assertEqual(ref.unresolved_text, "Some Show S2")
-        self.assertIsNone(ref.page_id)
-        self.assertTrue(SHOW_A.resolved)
-
-    def test_a_page_id_never_equals_the_same_text(self) -> None:
-        self.assertNotEqual(ProjectRef.page("x"), ProjectRef.text("x"))
-
-    def test_a_project_ref_needs_exactly_one_of_page_or_text(self) -> None:
-        for kwargs in ({}, {"page_id": "a", "unresolved_text": "b"}, {"page_id": "  "}):
-            with self.subTest(kwargs=kwargs):
-                with self.assertRaisesRegex(ValueError, "ProjectRef"):
-                    ProjectRef(**kwargs)
 
     def test_an_assignment_needs_a_label(self) -> None:
         with self.assertRaisesRegex(ValueError, "label"):
@@ -266,12 +257,12 @@ class OpenAssignmentTests(unittest.TestCase):
         store = make_store()
         store.add_drive(Drive(serial="D1"))
         store.add_drive(Drive(serial="D2"))
-        assign(store, "D1", "M01", ProjectRef.text("Some Show S2"), date(2024, 5, 1))
+        assign(store, "D1", "M01", Ref(text="Some Show S2"), date(2024, 5, 1))
         assign(store, "D2", "M01", SHOW_A, date(2024, 5, 1))
 
-        out = store.open_assignments(ProjectRef.text("Some Show S2"))
+        out = store.open_assignments(Ref(text="Some Show S2"))
         self.assertEqual([d.serial for d, _ in out], ["D1"])
-        self.assertEqual(store.open_assignments(ProjectRef.text("Other")), [])
+        self.assertEqual(store.open_assignments(Ref(text="Other")), [])
 
 
 class HistoryTests(unittest.TestCase):
@@ -326,3 +317,152 @@ class HistoryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def ref(page_id: str) -> Ref:
+    return Ref(page_id=page_id)
+
+
+def event(kind: CustodyKind, day: int, reason: str | None = None, **over: Any) -> CustodyEvent:
+    fields: dict[str, Any] = dict(
+        kind=kind,
+        on=date(2026, 5, day),
+        party=Party(PartyKind.STUDIO, ref("studio-1")),
+        project=ref("project-1"),
+        logged_by=ref("contact-1"),
+        reason=reason,
+    )
+    fields.update(over)
+    return CustodyEvent(**fields)
+
+
+def store_with_drive() -> DriveStore:
+    store = make_store()
+    store.add_drive(Drive(serial="ZX900AA1"))
+    return store
+
+
+class CustodyLogTests(unittest.TestCase):
+    def test_an_event_keeps_all_its_facts(self) -> None:
+        store = store_with_drive()
+        logged = event(CustodyKind.RELEASED, 3, reason="for grading")
+        store.append_event("ZX900AA1", logged)
+        (back,) = store.list_events("ZX900AA1")
+        self.assertEqual(back, logged)
+        self.assertEqual(back.kind, CustodyKind.RELEASED)
+        self.assertEqual(back.on, date(2026, 5, 3))
+        self.assertEqual(back.party, Party(PartyKind.STUDIO, ref("studio-1")))
+        self.assertEqual(back.project, ref("project-1"))
+        self.assertEqual(back.logged_by, ref("contact-1"))
+        self.assertEqual(back.reason, "for grading")
+
+    def test_a_contact_can_be_the_party(self) -> None:
+        party = Party(PartyKind.CONTACT, ref("contact-9"))
+        self.assertEqual(event(CustodyKind.RECEIVED, 1, party=party).party, party)
+
+    def test_retired_requires_a_reason(self) -> None:
+        for reason in (None, "", "   "):
+            with self.assertRaises(ValueError):
+                event(CustodyKind.RETIRED, 1, reason=reason)
+        self.assertEqual(event(CustodyKind.RETIRED, 1, reason="dead").reason, "dead")
+
+    def test_other_kinds_do_not_need_a_reason(self) -> None:
+        for kind in (CustodyKind.RECEIVED, CustodyKind.RELEASED, CustodyKind.RETURNED):
+            self.assertIsNone(event(kind, 1).reason)
+
+    def test_events_list_in_the_order_they_were_appended(self) -> None:
+        store = store_with_drive()
+        first = event(CustodyKind.RECEIVED, 5)
+        second = event(CustodyKind.RELEASED, 2)  # an earlier date, logged later
+        store.append_event("zx900aa1", first)
+        store.append_event("ZX900AA1 (old)", second)
+        self.assertEqual(store.list_events("ZX900AA1"), (first, second))
+
+    def test_the_store_offers_no_way_to_edit_or_delete_an_event(self) -> None:
+        store = store_with_drive()
+        for name in dir(store):
+            if name.startswith("_"):
+                continue
+            self.assertFalse(
+                any(word in name for word in ("edit", "update", "delete", "remove", "clear")),
+                name,
+            )
+        store.append_event("ZX900AA1", event(CustodyKind.RECEIVED, 1))
+        listed = store.list_events("ZX900AA1")
+        self.assertIsInstance(listed, tuple)
+        self.assertEqual(len(store.list_events("ZX900AA1")), 1)
+
+    def test_a_correction_is_a_new_event_and_both_stay_visible(self) -> None:
+        store = store_with_drive()
+        wrong = event(CustodyKind.RELEASED, 3, project=ref("project-wrong"))
+        fixed = event(CustodyKind.RELEASED, 3, project=ref("project-1"))
+        store.append_event("ZX900AA1", wrong)
+        store.append_event("ZX900AA1", fixed)
+        self.assertEqual(store.list_events("ZX900AA1"), (wrong, fixed))
+
+    def test_a_drive_with_no_events_has_an_empty_log(self) -> None:
+        self.assertEqual(store_with_drive().list_events("ZX900AA1"), ())
+
+    def test_events_for_an_unrecorded_drive_are_refused(self) -> None:
+        store = store_with_drive()
+        with self.assertRaises(UnknownDrive):
+            store.append_event("NOPE", event(CustodyKind.RECEIVED, 1))
+        with self.assertRaises(UnknownDrive):
+            store.list_events("NOPE")
+        with self.assertRaises(UnknownDrive):
+            store.status("NOPE")
+
+    def test_logs_are_kept_per_drive(self) -> None:
+        store = store_with_drive()
+        store.add_drive(Drive(serial="OTHER1"))
+        store.append_event("ZX900AA1", event(CustodyKind.RECEIVED, 1))
+        self.assertEqual(store.list_events("OTHER1"), ())
+
+
+class StatusTests(unittest.TestCase):
+    def test_a_drive_with_no_events_has_no_status(self) -> None:
+        self.assertIsNone(store_with_drive().status("ZX900AA1"))
+
+    def test_status_follows_the_last_event(self) -> None:
+        store = store_with_drive()
+        expected = [
+            (CustodyKind.RECEIVED, DriveStatus.IN_CUSTODY),
+            (CustodyKind.RELEASED, DriveStatus.RELEASED),
+            (CustodyKind.RETURNED, DriveStatus.IN_CUSTODY),
+            (CustodyKind.RETIRED, DriveStatus.RETIRED),
+        ]
+        for day, (kind, status) in enumerate(expected, start=1):
+            reason = "lost" if kind is CustodyKind.RETIRED else None
+            store.append_event("ZX900AA1", event(kind, day, reason=reason))
+            self.assertEqual(store.status("ZX900AA1"), status)
+
+    def test_a_correction_changes_the_status_whatever_its_date(self) -> None:
+        store = store_with_drive()
+        store.append_event("ZX900AA1", event(CustodyKind.RELEASED, 20))
+        store.append_event("ZX900AA1", event(CustodyKind.RETURNED, 2))
+        self.assertEqual(store.status("ZX900AA1"), DriveStatus.IN_CUSTODY)
+
+    def test_status_is_not_a_stored_field_of_the_drive(self) -> None:
+        self.assertNotIn("status", Drive.__slots__)
+        self.assertIsNone(derive_status(()))
+
+
+class RefTests(unittest.TestCase):
+    def test_a_resolved_ref_holds_a_page_id(self) -> None:
+        self.assertFalse(Ref(page_id="p1").unresolved)
+
+    def test_an_unresolved_name_is_kept_as_text_and_flagged(self) -> None:
+        unresolved = Ref(text=" Some Studio ")
+        self.assertTrue(unresolved.unresolved)
+        self.assertEqual(unresolved.text, "Some Studio")
+        stored = event(CustodyKind.RELEASED, 1, party=Party(PartyKind.STUDIO, unresolved))
+        store = store_with_drive()
+        store.append_event("ZX900AA1", stored)
+        (back,) = store.list_events("ZX900AA1")
+        self.assertTrue(back.party.ref.unresolved)
+        self.assertEqual(back.party.ref.text, "Some Studio")
+
+    def test_a_ref_is_exactly_one_of_page_id_or_text(self) -> None:
+        for kwargs in ({}, {"page_id": " "}, {"page_id": "p1", "text": "x"}):
+            with self.assertRaises(ValueError):
+                Ref(**kwargs)
