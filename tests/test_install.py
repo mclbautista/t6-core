@@ -35,7 +35,7 @@ class InstallationTests(unittest.TestCase):
                     # Notion extra fetches httpx and its dependencies.
                     offline = [] if extra else ["--no-index"]
                     self.run_command(python, "-m", "pip", "install", *offline, f"{wheel}{extra}")
-                    self.run_command(python, "-c", "import t6.domain; import t6.lookup")
+                    self.run_command(python, "-c", "import t6.domain; import t6.lookup; import t6.drives, t6.drives.testing")
                     installed = json.loads(self.run_command(python, "-c", self.distribution_probe()))
                     # Adapter libraries sit behind their own extra only.
                     self.assertEqual(
