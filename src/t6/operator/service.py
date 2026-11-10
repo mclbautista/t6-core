@@ -119,6 +119,9 @@ class OperatorService:
             project_id=project_id,
         )
 
+    def undelivered(self) -> tuple[Action, ...]:
+        return self._store.undelivered()
+
     def delivered(self, token: str, message_ref: int, message_id: int) -> Action | None:
         return self._store.delivered(token, message_ref, message_id)
 

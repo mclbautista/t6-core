@@ -183,6 +183,7 @@ class WebhookApp:
         self._clock = clock
         self._on_notion_verification = on_notion_verification
         self._dispatch_sync()  # jobs for changes accepted before a restart
+        self._redeliver_cards()
 
     # -- public listener --------------------------------------------------------
 
@@ -297,6 +298,16 @@ class WebhookApp:
                     {"project_id": intent.project_id, "revision": intent.revision},
                 )
             self._registry.mark_dispatched(intent.id for intent in intents)
+        except RegistryUnavailable:
+            return
+
+    def _redeliver_cards(self) -> None:
+        """Queue delivery again for cards Telegram never confirmed (a restore may have lost the job)."""
+        if self._operator is None:
+            return
+        try:
+            for action in self._operator.undelivered():
+                self._deliver(action.token, action.version)
         except RegistryUnavailable:
             return
 
