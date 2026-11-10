@@ -1,9 +1,8 @@
 """Physical external drives. Pure data and an interface: nothing here does I/O.
 
 A Drive is a physical external drive (portable or powered desktop), owned by
-T6 or by a Studio. It is never Google Drive. A Drive is identified by its
-normalized serial number, so one drive can be recorded only once. A drive whose
-serial is not known yet is a provisional Drive, flagged "no serial". It is not a
+T6 or by a Studio. It is never Google Drive. Identity is a permanent opaque ID;
+accepted and suspected serials are correctable facts. It is not a
 Notion entity: it has no Notion row. Relations, such as the owning Studio, are
 Notion page IDs.
 
@@ -15,6 +14,7 @@ from __future__ import annotations
 
 import enum
 import re
+from uuid import uuid4
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Iterable, Protocol, Sequence
@@ -86,18 +86,21 @@ def _blank_to_none(value: str | None) -> str | None:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Drive:
-    """One physical external drive, identified by its normalized serial.
+    """One physical Drive. Equality and references use only its permanent ID.
 
-    Two Drives with the same serial are the same drive, whatever their other
-    facts say. A Drive made with `serial=None` is provisional: `no_serial` is
-    True, and the store that records it gives it a `provisional_id` to find it
-    by until `DriveStore.set_serial` makes it a normal Drive. `owner_studio_id` is the owning Studio's Notion page ID; `None`
-    means T6 owns the drive. Capacity is in terabytes; use `parse_capacity_tb`
-    for sheet text.
+    IDs are generated at construction (UUID4, prefixed t6d_). Supplying an ID
+    rehydrates an existing record; adapters must never change or reuse it.
+    A serial is an optional accepted fact, not identity. Suspected serials are
+    explicitly uncertain and must never participate in exact serial matching.
     """
 
-    serial: str | None
-    provisional_id: str | None = None
+    id: str = field(default_factory=lambda: f"t6d_{uuid4().hex}")
+    serial: str | None = field(default=None, compare=False)
+    suspected_serial: str | None = field(default=None, compare=False)
+    label: str | None = field(default=None, compare=False)
+    description: str | None = field(default=None, compare=False)
+    needs_review: bool = field(default=False, compare=False)
+    review_note: str | None = field(default=None, compare=False)
     brand: str | None = field(default=None, compare=False)
     model: str | None = field(default=None, compare=False)
     capacity_tb: float | None = field(default=None, compare=False)
@@ -109,20 +112,22 @@ class Drive:
     remarks: str | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
-        serial = None
-        if self.serial is not None:
-            serial = normalize_serial(self.serial)
-            if not serial:
-                raise ValueError(
-                    f"{self.serial!r} holds no serial; pass serial=None for a Drive with no serial"
-                )
-            if self.provisional_id is not None:
-                raise ValueError("a Drive with a serial has no provisional ID")
+        if not re.fullmatch(r"t6d_[0-9a-f]{32}", self.id):
+            raise ValueError("invalid Drive ID: expected t6d_ followed by 32 lowercase hex digits")
+        for name in ("serial", "suspected_serial"):
+            value = getattr(self, name)
+            if value is not None:
+                normalized = normalize_serial(value)
+                if not normalized:
+                    raise ValueError(f"{name} holds no serial; use serial=None for no serial")
+                object.__setattr__(self, name, normalized)
         if self.capacity_tb is not None and self.capacity_tb <= 0:
             raise ValueError(f"capacity must be more than 0 TB, got {self.capacity_tb}")
-        object.__setattr__(self, "serial", serial)
-        for name in ("brand", "model", "format", "owner_studio_id", "warranty", "remarks"):
+        for name in ("label", "description", "brand", "model", "format", "owner_studio_id", "warranty", "remarks", "review_note"):
             object.__setattr__(self, name, _blank_to_none(getattr(self, name)))
+        if not any((self.serial, self.suspected_serial, self.label, self.description,
+                    self.brand, self.model, self.remarks)):
+            raise ValueError("a Drive needs meaningful identifying detail, not just an ID")
 
     @property
     def owned_by_t6(self) -> bool:
@@ -130,16 +135,13 @@ class Drive:
 
     @property
     def no_serial(self) -> bool:
-        """True for a provisional Drive: its serial is not known yet."""
+        """The Drive has no accepted serial."""
         return self.serial is None
 
     @property
     def key(self) -> str:
-        """What a store finds this Drive by: its serial, or its provisional ID."""
-        key = self.serial or self.provisional_id
-        if key is None:
-            raise ValueError("a Drive with no serial has no key until a store records it")
-        return key
+        """Alias for the permanent ID, never the serial."""
+        return self.id
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -268,7 +270,7 @@ class Assignment:
     recorded, as in rows imported from the old workbooks.
     """
 
-    label: str
+    label: str | None
     project: Ref
     role: Role | None
     start: date | None
@@ -277,8 +279,6 @@ class Assignment:
 
     def __post_init__(self) -> None:
         label = _blank_to_none(self.label)
-        if label is None:
-            raise ValueError("an Assignment needs a label")
         if self.end is not None and self.start is not None and self.end < self.start:
             raise ValueError(f"an Assignment cannot end ({self.end}) before it starts ({self.start})")
         object.__setattr__(self, "label", label)
@@ -290,11 +290,11 @@ class Assignment:
 
 
 class UnknownDrive(LookupError):
-    """No Drive with this serial is recorded."""
+    """No Drive with this permanent ID is recorded."""
 
-    def __init__(self, serial: str) -> None:
-        super().__init__(f"no Drive with serial {serial!r} is recorded")
-        self.serial = serial
+    def __init__(self, drive_id: str) -> None:
+        super().__init__(f"no Drive with ID {drive_id!r} is recorded")
+        self.drive_id = drive_id
 
 
 class DuplicateSerial(ValueError):
@@ -306,69 +306,97 @@ class DuplicateSerial(ValueError):
 
 
 class DriveStore(Protocol):
-    """Where Drive records live. The custodian's web app implements it.
+    """Store addressed by exact, case-sensitive permanent Drive IDs.
 
-    Serials passed in are normalized by the store, so any spelling of a serial
-    finds the same Drive. Wherever a method takes a serial, a provisional
-    Drive's `provisional_id` works too.
+    Mutations fail atomically. Serial/review edits do not touch history or
+    shipment membership and impose no extra workflow restrictions.
     """
 
     def add_drive(self, drive: Drive) -> Drive:
-        """Record a new Drive and return it as recorded.
+        """Record a new ID; reject a duplicate ID or accepted serial."""
+        ...
 
-        Raises DuplicateSerial if its serial is taken. A Drive with no serial
-        is recorded as provisional and comes back with the `provisional_id` the
-        store gave it.
+    def get_drive(self, drive_id: str) -> Drive | None:
+        """Find by permanent ID only. Unknown IDs return None."""
+        ...
+
+    def find_by_serial(self, serial: str) -> Drive | None:
+        """Normalize and match accepted serials only; never suspected values."""
+        ...
+
+    def set_serial(self, drive_id: str, serial: str | None) -> Drive:
+        """Add/correct/remove the accepted serial; collisions raise DuplicateSerial.
+
+        Blank serial strings are invalid. Removal uses None. Validation and
+        uniqueness checks precede all changes; no automatic demotion or merge.
         """
         ...
 
-    def get_drive(self, serial: str) -> Drive | None:
-        """The Drive with this serial, or None if none is recorded."""
+    def set_suspected_serial(self, drive_id: str, serial: str | None) -> Drive:
+        """Retain/remove an uncertain candidate, even if another Drive holds it."""
         ...
 
-    def set_serial(self, provisional_id: str, serial: str) -> Drive:
-        """Give a provisional Drive its serial and return the normal Drive.
+    def promote_suspected_serial(self, drive_id: str) -> Drive:
+        """Explicitly accept the candidate and clear it, only if unique."""
+        ...
 
-        Its Assignments and custody events are kept, and from then on it is
-        found by the serial, not the provisional ID. Raises UnknownDrive if no
-        Drive has this provisional ID, DuplicateSerial if another Drive already
-        has the serial, and ValueError if the Drive already has a serial or the
-        new one is blank.
+    def set_review(self, drive_id: str, *, needs_review: bool, note: str | None = None) -> Drive:
+        """Set general review state without changing serials or workflow rights."""
+        ...
+
+    def imported_drive(self, row_key: str) -> str | None:
+        """Importer receipt: ID previously associated with an opaque row key.
+
+        This is importer bookkeeping, not identity evidence or field provenance.
+        Persistent adapters must persist receipts with the imported changes.
         """
         ...
 
-    def append_event(self, serial: str, event: CustodyEvent) -> None:
+    def import_row(
+        self, row_key: str, drive: Drive, assignment: Assignment, events: Sequence[CustodyEvent]
+    ) -> None:
+        """Atomically import a row and its receipt, or do nothing if already recorded.
+
+        Match only an accepted serial, otherwise add the new permanent ID.
+        Preserve existing physical facts, combine review notes, add an Assignment
+        unless equal to one already held, and append every supplied event in order.
+        Distinct row keys preserve repeated events, even with identical facts.
+        Persist all changes and the receipt in one transaction; failure writes nothing.
+        """
+        ...
+
+    def append_event(self, drive_id: str, event: CustodyEvent) -> None:
         """Add an event to the end of a Drive's custody log.
 
-        Raises UnknownDrive if no Drive has this serial. The store has no way to
+        Raises UnknownDrive if no Drive has this ID. The store has no way to
         edit or delete an event: a correction is a new event.
         """
         ...
 
-    def list_events(self, serial: str) -> tuple[CustodyEvent, ...]:
+    def list_events(self, drive_id: str) -> tuple[CustodyEvent, ...]:
         """The Drive's custody events in the order they were appended.
 
-        Raises UnknownDrive if no Drive has this serial. A Drive with no events
+        Raises UnknownDrive if no Drive has this ID. A Drive with no events
         gives an empty tuple.
         """
         ...
 
-    def status(self, serial: str) -> DriveStatus | None:
+    def status(self, drive_id: str) -> DriveStatus | None:
         """The Drive's current status, worked out from its log.
 
         None if the Drive has no events yet. Raises UnknownDrive if no Drive
-        has this serial.
+        has this ID.
         """
         ...
 
     def release_shipment(
-        self, serials: Iterable[str], *, on: date, party: Party, project: Ref, logged_by: Ref
+        self, drive_ids: Iterable[str], *, on: date, party: Party, project: Ref, logged_by: Ref
     ) -> str:
         """Release several Drives in one handover and return the new shipment ID.
 
         Appends one released event per Drive, all with the same new shipment ID.
-        A serial given twice is released once. Raises ValueError if no serial is
-        given, and UnknownDrive if any serial is not recorded; then nothing is
+        An ID given twice is released once. Raises ValueError if no ID is
+        given, and UnknownDrive if any ID is not recorded; then nothing is
         released.
         """
         ...
@@ -381,8 +409,8 @@ class DriveStore(Protocol):
         """
         ...
 
-    def add_assignment(self, serial: str, assignment: Assignment) -> None:
-        """Assign a recorded Drive. Raises UnknownDrive if the serial is not recorded.
+    def add_assignment(self, drive_id: str, assignment: Assignment) -> None:
+        """Assign a recorded Drive. Raises UnknownDrive if the ID is not recorded.
 
         Earlier Assignments are kept: relabelling a reused Drive adds a new
         Assignment and never edits or removes an old one. Nothing is closed
@@ -398,11 +426,11 @@ class DriveStore(Protocol):
         """
         ...
 
-    def assignment_history(self, serial: str) -> list[Assignment]:
+    def assignment_history(self, drive_id: str) -> list[Assignment]:
         """A Drive's Assignments across all Projects, oldest start first.
 
         Assignments with no recorded start come first. Returns an empty list
-        for a recorded Drive with none. Raises UnknownDrive if the serial is not
+        for a recorded Drive with none. Raises UnknownDrive if the ID is not
         recorded.
         """
         ...
@@ -413,10 +441,16 @@ class ManifestLine:
     """One Drive on a shipment manifest: what went out, to whom, when, logged by whom.
 
     `label` is the label the Drive carried on the release date, or None if it
-    had no Assignment then. `serial` is None for a provisional Drive.
+    had no Assignment then. Accepted and suspected serials remain distinct.
+    Identifying facts reflect the current record, not a rewritten custody event.
     """
 
+    drive_id: str
     serial: str | None
+    suspected_serial: str | None = None
+    description: str | None = None
+    needs_review: bool = False
+    review_note: str | None = None
     label: str | None
     capacity_tb: float | None
     recipient: Party | None
@@ -445,8 +479,13 @@ def shipment_manifest(store: DriveStore, shipment_id: str) -> tuple[ManifestLine
         ]
         lines.append(
             ManifestLine(
+                drive_id=drive.id,
                 serial=drive.serial,
-                label=current[-1].label if current else None,
+                suspected_serial=drive.suspected_serial,
+                description=drive.description,
+                needs_review=drive.needs_review,
+                review_note=drive.review_note,
+                label=current[-1].label if current else drive.label,
                 capacity_tb=drive.capacity_tb,
                 recipient=event.party,
                 on=event.on,
