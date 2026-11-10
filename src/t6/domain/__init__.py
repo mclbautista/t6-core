@@ -112,8 +112,14 @@ class Episode:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Project(NotionEntity):
-    """A client show. System key: Notion page ID. Human key: Project Code."""
+    """A client show. System key: Notion page ID. Human key: Project Code.
 
+    `t6_id` is the T6 Project ID from the Project registry (`t6.registry`). It
+    is carried beside the page ID and is not yet part of equality; references
+    move to it in t6-core#71.
+    """
+
+    t6_id: str | None = field(default=None, compare=False)
     project_code: str | None = field(default=None, compare=False)
     project_type: str | None = field(default=None, compare=False)
     eps: int | None = field(default=None, compare=False)

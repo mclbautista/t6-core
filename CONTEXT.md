@@ -31,3 +31,25 @@ Modelled in `t6.drives`.
   swing, archive), start, end and remarks. No end means open, and "which drives
   are out for show X" is a query over open Assignments. A reused Drive gets a new
   Assignment; old ones stay as its history.
+
+## Project
+
+A **client show** that T6 works on. Modelled in `t6.domain` (the descriptive
+fields, read from Notion) and `t6.registry` (identity).
+
+- **Project registry**: the single T6-wide record of which Projects exist. It
+  owns each Project's ID, code, rotation, bindings and audit history. Notion
+  owns the descriptive fields. See
+  `docs/adr/0001-project-registry-owns-project-identity.md`.
+- **Project ID** (T6 Project ID): the permanent, opaque identifier the
+  registry issues at registration, written `t6p_...`. It never changes and is
+  never reused. It is not the Notion page ID.
+- **Project Code**: the short human-facing code of a Project. Optional. It is
+  not identity: codes are reused once a Project leaves rotation.
+- **Rotation**: whether a Project currently holds its code. A Project is **in
+  rotation** or **out of rotation**, set explicitly and never derived from
+  production Status. A new Project starts out of rotation.
+- **Binding**: the link from a Project to one external page that stands for
+  it, today a Notion page. A page is bound to at most one Project.
+- **Register**: to create a Project in the registry. Registration is always
+  explicit; nothing is registered or merged by matching a code or a name.
