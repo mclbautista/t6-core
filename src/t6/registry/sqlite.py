@@ -1,36 +1,45 @@
 """The durable Project registry on SQLite (WAL). Standard library only.
 
-Run one instance for all of T6: code reservations (t6-core#69) are only
-T6-wide when every writer uses the same file. Every operation opens its own
-connection and runs in one `BEGIN IMMEDIATE` transaction, so a registration
-commits its Project, binding, audit entries and sync intent together or not
-at all.
+Run one instance for all of T6: code reservations are only T6-wide when every
+writer uses the same file. Every operation opens its own connection and runs
+in one `BEGIN IMMEDIATE` transaction, so writers take turns and a change
+commits its Project state, audit entry and sync intent together or not at
+all. A refused change writes nothing.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 import json
 from pathlib import Path
 import secrets
 import sqlite3
 import time
+from typing import TypeAlias
 
+from t6.domain.events import JsonValue
 from t6.registry.core import (
     NOTION,
     PROJECT_ID_PREFIX,
     AuditEntry,
+    Changed,
+    ChangeOutcome,
+    CodeHeld,
     KeyReused,
+    NotFound,
     PageAlreadyBound,
     PageBinding,
     RegisterOutcome,
     Registered,
     RegisteredProject,
     RegistryError,
+    RegistryUnavailable,
+    RevisionConflict,
     Rotation,
     SyncIntent,
     SyncStatus,
+    normalize_code,
     normalize_page_id,
 )
 
@@ -41,14 +50,18 @@ CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     revision INTEGER NOT NULL,
     code TEXT,
+    code_form TEXT,
     rotation TEXT NOT NULL,
     created_at REAL NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS one_holder_per_code ON projects (code_form)
+    WHERE rotation = 'in' AND code_form IS NOT NULL;
 CREATE TABLE IF NOT EXISTS bindings (
     system TEXT NOT NULL,
     page_id TEXT NOT NULL,
     project_id TEXT NOT NULL,
     bound_at REAL NOT NULL,
+    active INTEGER NOT NULL,
     PRIMARY KEY (system, page_id)
 );
 CREATE TABLE IF NOT EXISTS audit (
@@ -73,6 +86,15 @@ CREATE TABLE IF NOT EXISTS requests (
     project_id TEXT NOT NULL
 );
 """
+
+_Values: TypeAlias = Mapping[str, JsonValue]
+_Step: TypeAlias = Callable[
+    [sqlite3.Connection, RegisteredProject, float],
+    "tuple[str, _Values, _Values] | CodeHeld | PageAlreadyBound | None",
+]
+"""One change inside a transaction: what to audit (action, before, after), a
+refusal, or `None` when the Project already has the value. A step that refuses
+must not have written anything."""
 
 
 def _new_id() -> str:
@@ -101,69 +123,179 @@ class SqliteProjectRegistry:
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
-        db = sqlite3.connect(self._path, timeout=30, isolation_level=None)
         try:
-            db.execute("BEGIN IMMEDIATE")
+            db = sqlite3.connect(self._path, timeout=30, isolation_level=None)
             try:
-                yield db
-            except BaseException:
-                db.execute("ROLLBACK")
-                raise
-            db.execute("COMMIT")
-        finally:
-            db.close()
+                db.execute("BEGIN IMMEDIATE")
+                try:
+                    yield db
+                except BaseException:
+                    db.execute("ROLLBACK")
+                    raise
+                db.execute("COMMIT")
+            finally:
+                db.close()
+        except sqlite3.OperationalError as problem:
+            raise RegistryUnavailable(str(problem)) from problem
+
+    # -- register ------------------------------------------------------------
 
     def register(
-        self, *, actor: str, idempotency_key: str, notion_page_id: str | None = None
+        self,
+        *,
+        actor: str,
+        idempotency_key: str,
+        notion_page_id: str | None = None,
+        code: str | None = None,
+        rotation: Rotation = Rotation.OUT,
     ) -> RegisterOutcome:
-        if not actor.strip():
-            raise RegistryError("actor must not be blank")
-        if not idempotency_key.strip():
-            raise RegistryError("idempotency_key must not be blank")
-        page = None if notion_page_id is None else normalize_page_id(notion_page_id)
-        if page == "":
-            raise RegistryError("notion_page_id must not be blank")
-        fingerprint = json.dumps({"actor": actor, "notion_page_id": page})
+        _require(actor, idempotency_key)
+        page = None if notion_page_id is None else _page(notion_page_id)
+        entered, form = normalize_code(code)
+        fingerprint = json.dumps(
+            {"actor": actor, "register": True, "notion_page_id": page, "code": entered, "rotation": rotation.value}
+        )
         now = self._clock()
         with self._transaction() as db:
-            seen = db.execute(
-                "SELECT fingerprint, project_id FROM requests WHERE idempotency_key = ?",
-                (idempotency_key,),
-            ).fetchone()
+            seen = _seen(db, idempotency_key)
             if seen is not None:
                 if seen[0] != fingerprint:
                     return KeyReused(idempotency_key)
-                original = _read(db, seen[1])
-                assert original is not None
-                return Registered(original, created=False)
+                return Registered(_must_read(db, seen[1]), created=False)
             if page is not None:
-                holder = db.execute(
-                    "SELECT project_id FROM bindings WHERE system = ? AND page_id = ?", (NOTION, page)
-                ).fetchone()
+                holder = _page_holder(db, page)
                 if holder is not None:
-                    return PageAlreadyBound(page, holder[0])
+                    return PageAlreadyBound(page, holder)
+            if rotation is Rotation.IN and entered is not None and form is not None:
+                held = _code_held(db, entered, form, "")
+                if held is not None:
+                    return held
             project_id = self._new_id()
             db.execute("INSERT INTO requests VALUES (?, ?, ?)", (idempotency_key, fingerprint, project_id))
             if page is not None:
-                db.execute("INSERT INTO bindings VALUES (?, ?, ?, ?)", (NOTION, page, project_id, now))
+                db.execute("INSERT INTO bindings VALUES (?, ?, ?, ?, 1)", (NOTION, page, project_id, now))
             db.execute(
-                "INSERT INTO projects (id, revision, code, rotation, created_at) VALUES (?, 1, NULL, ?, ?)",
-                (project_id, Rotation.OUT.value, now),
+                "INSERT INTO projects (id, revision, code, code_form, rotation, created_at) VALUES (?, 1, ?, ?, ?, ?)",
+                (project_id, entered, form, rotation.value, now),
             )
-            _audit(db, project_id, "registered", actor, now, {"code": None, "rotation": Rotation.OUT.value})
+            _audit(db, project_id, "registered", actor, now, None, {"code": entered, "rotation": rotation.value})
             if page is not None:
-                _audit(db, project_id, "page_bound", actor, now, {"system": NOTION, "page_id": page})
-            db.execute(
-                "INSERT INTO sync_intents (project_id, revision, created_at) VALUES (?, 1, ?)",
-                (project_id, now),
-            )
-            made = _read(db, project_id)
-            assert made is not None
-            return Registered(made, created=True)
+                _audit(db, project_id, "page_bound", actor, now, {"page_id": None}, {"page_id": page})
+            _intend_sync(db, project_id, 1, now)
+            return Registered(_must_read(db, project_id), created=True)
+
+    # -- changes -------------------------------------------------------------
+
+    def set_code(
+        self, project_id: str, code: str | None, *, actor: str, idempotency_key: str, expected_revision: int
+    ) -> ChangeOutcome:
+        entered, form = normalize_code(code)
+
+        def step(
+            db: sqlite3.Connection, project: RegisteredProject, now: float
+        ) -> tuple[str, _Values, _Values] | CodeHeld | None:
+            if entered == project.code:
+                return None
+            if project.rotation is Rotation.IN and entered is not None and form is not None:
+                held = _code_held(db, entered, form, project.id)
+                if held is not None:
+                    return held
+            db.execute("UPDATE projects SET code = ?, code_form = ? WHERE id = ?", (entered, form, project.id))
+            return "code_changed", {"code": project.code}, {"code": entered}
+
+        return self._change(project_id, actor, idempotency_key, expected_revision, {"code": entered}, step)
+
+    def set_rotation(
+        self, project_id: str, rotation: Rotation, *, actor: str, idempotency_key: str, expected_revision: int
+    ) -> ChangeOutcome:
+        if rotation is Rotation.UNCLASSIFIED:
+            raise RegistryError("a Project is classified as in or out of rotation, never back to unclassified")
+
+        def step(
+            db: sqlite3.Connection, project: RegisteredProject, now: float
+        ) -> tuple[str, _Values, _Values] | CodeHeld | None:
+            if rotation is project.rotation:
+                return None
+            entered, form = normalize_code(project.code)
+            if rotation is Rotation.IN and entered is not None and form is not None:
+                held = _code_held(db, entered, form, project.id)
+                if held is not None:
+                    return held
+            db.execute("UPDATE projects SET rotation = ? WHERE id = ?", (rotation.value, project.id))
+            action = "classified" if project.rotation is Rotation.UNCLASSIFIED else "rotation_changed"
+            return action, {"rotation": project.rotation.value}, {"rotation": rotation.value}
+
+        return self._change(project_id, actor, idempotency_key, expected_revision, {"rotation": rotation.value}, step)
+
+    def bind_page(
+        self, project_id: str, notion_page_id: str, *, actor: str, idempotency_key: str, expected_revision: int
+    ) -> ChangeOutcome:
+        page = _page(notion_page_id)
+
+        def step(
+            db: sqlite3.Connection, project: RegisteredProject, now: float
+        ) -> tuple[str, _Values, _Values] | PageAlreadyBound | None:
+            holder = _page_holder(db, page)
+            if holder is not None and holder != project.id:
+                return PageAlreadyBound(page, holder)
+            active = next((binding.page_id for binding in project.bindings if binding.active), None)
+            if active == page:
+                return None
+            db.execute("UPDATE bindings SET active = 0 WHERE project_id = ?", (project.id,))
+            if holder is None:
+                db.execute("INSERT INTO bindings VALUES (?, ?, ?, ?, 1)", (NOTION, page, project.id, now))
+            else:
+                db.execute("UPDATE bindings SET active = 1 WHERE system = ? AND page_id = ?", (NOTION, page))
+            return "page_bound", {"page_id": active}, {"page_id": page}
+
+        return self._change(project_id, actor, idempotency_key, expected_revision, {"notion_page_id": page}, step)
+
+    def _change(
+        self,
+        project_id: str,
+        actor: str,
+        idempotency_key: str,
+        expected_revision: int,
+        request: Mapping[str, JsonValue],
+        step: _Step,
+    ) -> ChangeOutcome:
+        _require(actor, idempotency_key)
+        fingerprint = json.dumps({"actor": actor, "project": project_id, **request})
+        now = self._clock()
+        with self._transaction() as db:
+            seen = _seen(db, idempotency_key)
+            if seen is not None:
+                if seen[0] != fingerprint:
+                    return KeyReused(idempotency_key)
+                return Changed(_must_read(db, seen[1]), changed=False, replayed=True)
+            project = _read(db, project_id)
+            if project is None:
+                return NotFound(project_id)
+            if project.revision != expected_revision:
+                return RevisionConflict(project_id, project.revision)
+            result = step(db, project, now)
+            if result is None:
+                return Changed(project, changed=False)
+            if not isinstance(result, tuple):
+                return result
+            action, before, after = result
+            revision = project.revision + 1
+            db.execute("UPDATE projects SET revision = ? WHERE id = ?", (revision, project_id))
+            _audit(db, project_id, action, actor, now, before, after)
+            _intend_sync(db, project_id, revision, now)
+            db.execute("INSERT INTO requests VALUES (?, ?, ?)", (idempotency_key, fingerprint, project_id))
+            return Changed(_must_read(db, project_id), changed=True)
+
+    # -- reads ---------------------------------------------------------------
 
     def get(self, project_id: str) -> RegisteredProject | None:
         with self._transaction() as db:
             return _read(db, project_id)
+
+    def get_by_page(self, notion_page_id: str) -> RegisteredProject | None:
+        with self._transaction() as db:
+            holder = _page_holder(db, normalize_page_id(notion_page_id))
+            return None if holder is None else _read(db, holder)
 
     def audit(self, project_id: str) -> tuple[AuditEntry, ...]:
         with self._transaction() as db:
@@ -184,13 +316,63 @@ class SqliteProjectRegistry:
         return tuple(SyncIntent(*row) for row in rows)
 
 
+def _require(actor: str, idempotency_key: str) -> None:
+    if not actor.strip():
+        raise RegistryError("actor must not be blank")
+    if not idempotency_key.strip():
+        raise RegistryError("idempotency_key must not be blank")
+
+
+def _page(notion_page_id: str) -> str:
+    page = normalize_page_id(notion_page_id)
+    if not page:
+        raise RegistryError("notion_page_id must not be blank")
+    return page
+
+
+def _seen(db: sqlite3.Connection, idempotency_key: str) -> tuple[str, str] | None:
+    row: tuple[str, str] | None = db.execute(
+        "SELECT fingerprint, project_id FROM requests WHERE idempotency_key = ?", (idempotency_key,)
+    ).fetchone()
+    return row
+
+
+def _page_holder(db: sqlite3.Connection, page: str) -> str | None:
+    row = db.execute("SELECT project_id FROM bindings WHERE system = ? AND page_id = ?", (NOTION, page)).fetchone()
+    return None if row is None else str(row[0])
+
+
+def _code_held(db: sqlite3.Connection, code: str, form: str, project_id: str) -> CodeHeld | None:
+    """Who stops `project_id` from holding this code in rotation, if anyone."""
+    rows = db.execute(
+        "SELECT id, rotation FROM projects WHERE code_form = ? AND id != ? AND rotation IN (?, ?) ORDER BY rowid",
+        (form, project_id, Rotation.IN.value, Rotation.UNCLASSIFIED.value),
+    ).fetchall()
+    if not rows:
+        return None
+    in_rotation = any(row[1] == Rotation.IN.value for row in rows)
+    return CodeHeld(code, tuple(row[0] for row in rows), "in_rotation" if in_rotation else "unclassified")
+
+
 def _audit(
-    db: sqlite3.Connection, project_id: str, action: str, actor: str, at: float, after: dict[str, str | None]
+    db: sqlite3.Connection, project_id: str, action: str, actor: str, at: float, before: _Values | None, after: _Values
 ) -> None:
     db.execute(
-        "INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, NULL, ?)",
-        (project_id, action, actor, at, json.dumps(after)),
+        "INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)",
+        (project_id, action, actor, at, None if before is None else json.dumps(before), json.dumps(after)),
     )
+
+
+def _intend_sync(db: sqlite3.Connection, project_id: str, revision: int, now: float) -> None:
+    db.execute(
+        "INSERT INTO sync_intents (project_id, revision, created_at) VALUES (?, ?, ?)", (project_id, revision, now)
+    )
+
+
+def _must_read(db: sqlite3.Connection, project_id: str) -> RegisteredProject:
+    project = _read(db, project_id)
+    assert project is not None
+    return project
 
 
 def _read(db: sqlite3.Connection, project_id: str) -> RegisteredProject | None:
@@ -200,7 +382,7 @@ def _read(db: sqlite3.Connection, project_id: str) -> RegisteredProject | None:
     if row is None:
         return None
     bindings = db.execute(
-        "SELECT system, page_id, bound_at FROM bindings WHERE project_id = ? ORDER BY bound_at, page_id",
+        "SELECT system, page_id, bound_at, active FROM bindings WHERE project_id = ? ORDER BY bound_at, page_id",
         (project_id,),
     ).fetchall()
     pending = db.execute(
@@ -211,7 +393,7 @@ def _read(db: sqlite3.Connection, project_id: str) -> RegisteredProject | None:
         revision=row[1],
         code=row[2],
         rotation=Rotation(row[3]),
-        bindings=tuple(PageBinding(*binding) for binding in bindings),
+        bindings=tuple(PageBinding(b[0], b[1], b[2], bool(b[3])) for b in bindings),
         sync=SyncStatus.PENDING if pending else SyncStatus.SYNCED,
         created_at=row[4],
     )

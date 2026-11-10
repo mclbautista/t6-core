@@ -36,11 +36,20 @@ from t6.domain.events import (
     JsonValue,
 )
 from t6.registry import (
+    AuditEntry,
+    Changed,
+    ChangeOutcome,
+    CodeHeld,
     KeyReused,
+    NotFound,
     PageAlreadyBound,
     ProjectRegistry,
+    Registered,
     RegisteredProject,
     RegistryError,
+    RegistryUnavailable,
+    RevisionConflict,
+    Rotation,
 )
 from t6.server.queue import FRAMEIO_QUEUE, MAIN_QUEUE, JobQueue
 from t6.server.signatures import WebhookRejected, verify_frameio, verify_notion
@@ -337,58 +346,121 @@ class WebhookApp:
         grants = [g for g in self._config.grants if _same(g.secret, _bearer(request))]
         if not grants:
             return Response(401, {"error": "bad secret"})
-        steps = name.split("/")
+        try:
+            return self._registry_answer(self._registry, grants, name.split("/"), request)
+        except RegistryUnavailable:
+            return Response(503, {"error": "registry_unavailable"})
+        except RegistryError as problem:
+            return Response(400, {"error": str(problem)})
+
+    def _registry_answer(
+        self, registry: ProjectRegistry, grants: list[Grant], steps: list[str], request: Request
+    ) -> Response:
         if steps == ["projects"]:
-            if request.method != "POST":
-                return Response(405)
-            writer = next((g for g in grants if g.registry_write), None)
-            if writer is None:
-                return Response(403, {"error": "registry write not allowed"})
-            body = _json_object(request.body)
-            page = (body or {}).get("notion_page_id")
-            if body is None or not (page is None or isinstance(page, str)):
-                return Response(400, {"error": "body must be a JSON object; notion_page_id is a string"})
-            try:
-                outcome = self._registry.register(
-                    actor=writer.actor, idempotency_key=request.header("idempotency-key"), notion_page_id=page
-                )
-            except RegistryError as problem:
-                return Response(400, {"error": str(problem)})
-            if isinstance(outcome, PageAlreadyBound):
-                return Response(409, {"error": "page_already_bound", "project_id": outcome.project_id})
-            if isinstance(outcome, KeyReused):
-                return Response(409, {"error": "idempotency_key_reused"})
-            return Response(
-                201 if outcome.created else 200,
-                {"project": _project_body(outcome.project), "created": outcome.created},
-            )
-        if steps[0] != "projects" or not steps[1] or steps[2:] not in ([], ["audit"]):
+            reads = False
+        elif len(steps) == 2 and steps[0] in {"projects", "pages"} and steps[1]:
+            reads = True
+        elif len(steps) == 3 and steps[0] == "projects" and steps[1] and steps[2] in {"audit", *_REGISTRY_CHANGES}:
+            reads = steps[2] == "audit"
+        else:
             return Response(404)
-        if request.method != "GET":
+        if request.method != ("GET" if reads else "POST"):
             return Response(405)
-        if not any(g.registry_read for g in grants):
-            return Response(403, {"error": "registry read not allowed"})
-        project = self._registry.get(steps[1])
-        if project is None:
-            return Response(404, {"error": "no such project"})
-        if steps[2:]:
+
+        if reads:
+            if not any(g.registry_read for g in grants):
+                return Response(403, {"error": "registry read not allowed"})
+            project = registry.get_by_page(steps[1]) if steps[0] == "pages" else registry.get(steps[1])
+            if project is None:
+                return Response(404, {"error": "no such project"})
+            if steps[2:]:
+                return Response(200, {"entries": [_audit_body(entry) for entry in registry.audit(project.id)]})
+            return Response(200, {"project": _project_body(project)})
+
+        writer = next((g for g in grants if g.registry_write), None)
+        if writer is None:
+            return Response(403, {"error": "registry write not allowed"})
+        body = _json_object(request.body)
+        if body is None:
+            return Response(400, {"error": "body is not a JSON object"})
+        key = request.header("idempotency-key")
+        page, code, rotation = body.get("notion_page_id"), body.get("code"), body.get("rotation")
+
+        if steps == ["projects"]:
+            if not (page is None or isinstance(page, str)) or not (code is None or isinstance(code, str)):
+                return Response(400, {"error": "notion_page_id and code are strings"})
+            if rotation is not None and rotation not in {r.value for r in Rotation}:
+                return Response(400, {"error": "rotation is in, out or unclassified"})
+            made = registry.register(
+                actor=writer.actor,
+                idempotency_key=key,
+                notion_page_id=page,
+                code=code,
+                rotation=Rotation(rotation or Rotation.OUT),
+            )
+            if isinstance(made, Registered):
+                return Response(
+                    201 if made.created else 200, {"project": _project_body(made.project), "created": made.created}
+                )
+            return _refusal(made)
+
+        revision = body.get("expected_revision")
+        if not isinstance(revision, int) or isinstance(revision, bool):
+            return Response(400, {"error": "expected_revision is required"})
+        outcome: ChangeOutcome
+        if steps[2] == "code":
+            if "code" not in body or not (code is None or isinstance(code, str)):
+                return Response(400, {"error": "code is a string, or null to clear it"})
+            outcome = registry.set_code(
+                steps[1], code, actor=writer.actor, idempotency_key=key, expected_revision=revision
+            )
+        elif steps[2] == "rotation":
+            if rotation not in {Rotation.IN.value, Rotation.OUT.value}:
+                return Response(400, {"error": "rotation is in or out"})
+            outcome = registry.set_rotation(
+                steps[1], Rotation(rotation), actor=writer.actor, idempotency_key=key, expected_revision=revision
+            )
+        else:
+            if not isinstance(page, str):
+                return Response(400, {"error": "notion_page_id is required"})
+            outcome = registry.bind_page(
+                steps[1], page, actor=writer.actor, idempotency_key=key, expected_revision=revision
+            )
+        if isinstance(outcome, Changed):
             return Response(
                 200,
-                {
-                    "entries": [
-                        {
-                            "project_id": entry.project_id,
-                            "action": entry.action,
-                            "actor": entry.actor,
-                            "at": entry.at,
-                            "before": None if entry.before is None else dict(entry.before),
-                            "after": dict(entry.after),
-                        }
-                        for entry in self._registry.audit(steps[1])
-                    ]
-                },
+                {"project": _project_body(outcome.project), "changed": outcome.changed, "replayed": outcome.replayed},
             )
-        return Response(200, {"project": _project_body(project)})
+        return _refusal(outcome)
+
+
+_REGISTRY_CHANGES = frozenset({"code", "rotation", "bindings"})
+
+
+def _refusal(outcome: NotFound | RevisionConflict | CodeHeld | PageAlreadyBound | KeyReused) -> Response:
+    if isinstance(outcome, NotFound):
+        return Response(404, {"error": "no such project"})
+    if isinstance(outcome, RevisionConflict):
+        return Response(409, {"error": "revision_conflict", "revision": outcome.revision})
+    if isinstance(outcome, CodeHeld):
+        return Response(
+            409,
+            {"error": "code_held", "code": outcome.code, "held_by": list(outcome.held_by), "reason": outcome.reason},
+        )
+    if isinstance(outcome, PageAlreadyBound):
+        return Response(409, {"error": "page_already_bound", "project_id": outcome.project_id})
+    return Response(409, {"error": "idempotency_key_reused"})
+
+
+def _audit_body(entry: AuditEntry) -> dict[str, JsonValue]:
+    return {
+        "project_id": entry.project_id,
+        "action": entry.action,
+        "actor": entry.actor,
+        "at": entry.at,
+        "before": None if entry.before is None else dict(entry.before),
+        "after": dict(entry.after),
+    }
 
 
 def _project_body(project: RegisteredProject) -> dict[str, JsonValue]:
@@ -398,7 +470,12 @@ def _project_body(project: RegisteredProject) -> dict[str, JsonValue]:
         "code": project.code,
         "rotation": project.rotation.value,
         "bindings": [
-            {"system": binding.system, "page_id": binding.page_id, "bound_at": binding.bound_at}
+            {
+                "system": binding.system,
+                "page_id": binding.page_id,
+                "bound_at": binding.bound_at,
+                "status": "active" if binding.active else "legacy",
+            }
             for binding in project.bindings
         ],
         "sync": project.sync.value,

@@ -99,7 +99,7 @@ class RegisterAndReadTests(RegistryTestCase):
         project = self.project(self.register(page=PAGE_DASHED))
         self.assertEqual(
             project["bindings"],
-            [{"system": "notion", "page_id": PAGE, "bound_at": self.clock()}],
+            [{"system": "notion", "page_id": PAGE, "bound_at": self.clock(), "status": "active"}],
         )
 
 
