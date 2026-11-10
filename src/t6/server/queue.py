@@ -123,6 +123,11 @@ class JobQueue:
                 if statement.strip():
                     db.execute(statement)
 
+    @property
+    def max_attempts(self) -> int:
+        """A job that fails this many times is failed for good."""
+        return self._max_attempts
+
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
         db = sqlite3.connect(self._path, timeout=30, isolation_level=None)

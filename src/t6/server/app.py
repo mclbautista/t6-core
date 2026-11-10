@@ -16,6 +16,8 @@ t6-core#13 and are NOT yet checked against live deliveries:
 Frame.io `{"type": "comment.created", "resource": {"id": ...}, "project": {"id": ...}}`
 and Notion `{"id", "timestamp", "type": "page.properties_updated",
 "entity": {"id", "type": "page"}, "data": {"updated_properties": [...]}}`.
+Notion's `page.created`, `page.deleted` and `page.undeleted` have the same
+envelope (Notion webhook event reference, read 2026-11-10).
 """
 
 from __future__ import annotations
@@ -48,14 +50,20 @@ from t6.registry import (
     RegisteredProject,
     RegistryError,
     RegistryUnavailable,
+    ReviewItem,
     RevisionConflict,
     Rotation,
+    Shown,
 )
 from t6.server.queue import FRAMEIO_QUEUE, MAIN_QUEUE, JobQueue
 from t6.server.signatures import WebhookRejected, verify_frameio, verify_notion
 
 REVIEW_QUIET_SECONDS = 15 * 60.0
 DEFAULT_LEASE_SECONDS = 60.0
+
+NOTION_PAGE_EVENTS = frozenset({"page.properties_updated", "page.created", "page.deleted", "page.undeleted"})
+"""Notion events that queue a `notion.page_changed` job. The event only says a
+page changed; the worker reads the page's current state."""
 
 __all__ = ["Grant", "Request", "Response", "ServerConfig", "WebhookApp"]
 
@@ -92,6 +100,8 @@ class Grant:
     """Queues this holder may submit to and read results from."""
     registry_read: bool = False
     registry_write: bool = False
+    registry_sync: bool = False
+    """May report Notion sync results and page observations. Changes no Project."""
     actor: str = ""
     """Who this holder is in the registry's audit history."""
 
@@ -111,7 +121,16 @@ class ServerConfig:
         main, frameio = frozenset({MAIN_QUEUE}), frozenset({FRAMEIO_QUEUE})
         grants: list[Grant] = []
         if environ.get("T6_WORKER_SECRET"):
-            grants.append(Grant(environ["T6_WORKER_SECRET"], claim=main, submit=main | frameio))
+            grants.append(
+                Grant(
+                    environ["T6_WORKER_SECRET"],
+                    claim=main,
+                    submit=main | frameio,
+                    registry_read=True,
+                    registry_sync=True,
+                    actor="main-worker",
+                )
+            )
         if environ.get("T6_FRAMEIO_WORKER_SECRET"):
             grants.append(Grant(environ["T6_FRAMEIO_WORKER_SECRET"], claim=frameio))
         if environ.get("T6_REGISTRY_SECRET"):
@@ -151,6 +170,7 @@ class WebhookApp:
         self._config = config
         self._clock = clock
         self._on_notion_verification = on_notion_verification
+        self._dispatch_sync()  # jobs for changes accepted before a restart
 
     # -- public listener --------------------------------------------------------
 
@@ -210,7 +230,7 @@ class WebhookApp:
         verify_notion(self._config.notion_webhook_token, request.headers_lower(), request.body, self._clock())
         if body is None:
             return Response(400, {"error": "body is not a JSON object"})
-        if body.get("type") != "page.properties_updated":
+        if body.get("type") not in NOTION_PAGE_EVENTS:
             return Response(200, {"ignored": str(body.get("type"))})
         event_id, page_id = body.get("id"), _get(body, "entity", "id")
         if not isinstance(event_id, str) or not page_id:
@@ -223,6 +243,7 @@ class WebhookApp:
                 "page_id": page_id,
                 "updated_properties": properties if isinstance(properties, list) else [],
                 "event_id": event_id,
+                "event_type": body["type"],
                 "timestamp": body.get("timestamp") if isinstance(body.get("timestamp"), str) else None,
             },
         )
@@ -238,8 +259,32 @@ class WebhookApp:
         if parts.path.startswith("/queue/"):
             return self._queue_route(parts.path[len("/queue/") :], parts.query, request)
         if parts.path.startswith("/registry/"):
-            return self._registry_route(parts.path[len("/registry/") :], request)
+            answer = self._registry_route(parts.path[len("/registry/") :], request)
+            self._dispatch_sync()
+            return answer
         return Response(404)
+
+    def _dispatch_sync(self) -> None:
+        """Queue a `registry.sync` job for every sync intent that has none yet.
+
+        The intent was committed with its change, so a crash before this point
+        loses nothing: the next call (a restart, a registry request or a claim)
+        queues it. Queueing twice is harmless: the job is deduped by intent.
+        """
+        if self._registry is None:
+            return
+        try:
+            intents = self._registry.undispatched_sync()
+            for intent in intents:
+                self._queue.submit(
+                    MAIN_QUEUE,
+                    JobKind.REGISTRY_SYNC.value,
+                    f"registry.sync:{intent.id}",
+                    {"project_id": intent.project_id, "revision": intent.revision},
+                )
+            self._registry.mark_dispatched(intent.id for intent in intents)
+        except RegistryUnavailable:
+            return
 
     def _tap(self, request: Request) -> Response:
         if request.method != "POST":
@@ -303,6 +348,7 @@ class WebhookApp:
                 return Response(400, {"error": "queue and lease_seconds are required"})
             if queue not in grant.claim:
                 return Response(403, {"error": "queue not allowed"})
+            self._dispatch_sync()
             claim = self._queue.claim(queue, lease)
             if claim is None:
                 return Response(200, {"job": None})
@@ -356,6 +402,14 @@ class WebhookApp:
     def _registry_answer(
         self, registry: ProjectRegistry, grants: list[Grant], steps: list[str], request: Request
     ) -> Response:
+        if steps == ["review-items"]:
+            if request.method != "GET":
+                return Response(405)
+            if not any(g.registry_read for g in grants):
+                return Response(403, {"error": "registry read not allowed"})
+            return Response(200, {"items": [_review_body(item) for item in registry.review_items()]})
+        if len(steps) == 3 and steps[1] and (steps[0], steps[2]) in _REGISTRY_SYNC_ROUTES:
+            return self._registry_sync_answer(registry, grants, steps, request)
         if steps == ["projects"]:
             reads = False
         elif len(steps) == 2 and steps[0] in {"projects", "pages"} and steps[1]:
@@ -433,8 +487,77 @@ class WebhookApp:
             )
         return _refusal(outcome)
 
+    def _registry_sync_answer(
+        self, registry: ProjectRegistry, grants: list[Grant], steps: list[str], request: Request
+    ) -> Response:
+        """Routes for the Notion sync worker, plus an operator's request to reconcile a page."""
+        if request.method != "POST":
+            return Response(405)
+        body = _json_object(request.body)
+        if steps[2] == "reconcile":
+            if not any(g.registry_write for g in grants):
+                return Response(403, {"error": "registry write not allowed"})
+            key = request.header("idempotency-key")
+            if not key.strip():
+                return Response(400, {"error": "idempotency key is required"})
+            made = self._queue.submit(
+                MAIN_QUEUE,
+                JobKind.NOTION_PAGE_CHANGED.value,
+                f"registry.reconcile:{key}",
+                {"page_id": steps[1], "event_type": "reconcile"},
+            )
+            return Response(200, {"job_id": made.job_id, "created": made.created})
+        syncer = next((g for g in grants if g.registry_sync), None)
+        if syncer is None:
+            return Response(403, {"error": "registry sync not allowed"})
+        if body is None:
+            return Response(400, {"error": "body is not a JSON object"})
+        if steps[2] == "sync":
+            revision, ok, attempt = body.get("revision"), body.get("ok"), body.get("attempt", 1)
+            if not (isinstance(revision, int) and isinstance(ok, bool) and isinstance(attempt, int)):
+                return Response(400, {"error": "revision, ok and attempt are required"})
+            project = registry.report_sync(
+                steps[1],
+                revision,
+                ok=ok,
+                detail=str(body.get("detail", "")),
+                final=bool(body.get("final")) or attempt >= self._queue.max_attempts,
+            )
+            if project is None:
+                return Response(404, {"error": "no such project"})
+            return Response(200, {"project": _project_body(project)})
+        available, shown = body.get("available"), body.get("shown")
+        if not isinstance(available, bool) or not (shown is None or isinstance(shown, dict)):
+            return Response(400, {"error": "available is required; shown is an object"})
+        seen = None
+        if shown is not None:
+            values = [shown.get(name) for name in ("t6_id", "code", "rotation")]
+            if not all(value is None or isinstance(value, str) for value in values):
+                return Response(400, {"error": "shown values are strings or null"})
+            seen = Shown(*values)
+        observed = registry.observe_page(steps[1], actor=syncer.actor, available=available, shown=seen)
+        return Response(
+            200,
+            {
+                "outcome": observed.outcome,
+                "project": None if observed.project is None else _project_body(observed.project),
+            },
+        )
+
 
 _REGISTRY_CHANGES = frozenset({"code", "rotation", "bindings"})
+_REGISTRY_SYNC_ROUTES = frozenset({("projects", "sync"), ("pages", "observed"), ("pages", "reconcile")})
+
+
+def _review_body(item: ReviewItem) -> dict[str, JsonValue]:
+    return {
+        "id": item.id,
+        "kind": item.kind,
+        "page_id": item.page_id,
+        "project_id": item.project_id,
+        "detail": dict(item.detail),
+        "created_at": item.created_at,
+    }
 
 
 def _refusal(outcome: NotFound | RevisionConflict | CodeHeld | PageAlreadyBound | KeyReused) -> Response:
@@ -475,10 +598,12 @@ def _project_body(project: RegisteredProject) -> dict[str, JsonValue]:
                 "page_id": binding.page_id,
                 "bound_at": binding.bound_at,
                 "status": "active" if binding.active else "legacy",
+                "available": binding.available,
             }
             for binding in project.bindings
         ],
         "sync": project.sync.value,
+        "sync_error": project.sync_error,
         "created_at": project.created_at,
     }
 

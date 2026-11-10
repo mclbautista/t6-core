@@ -124,6 +124,8 @@ class JobKind(str, Enum):
     NOTION_PAGE_CHANGED = "notion.page_changed"
     """A Notion page changed. A Notion webhook names the changed properties, not
     their new values, so a worker reads the page to find the current state."""
+    REGISTRY_SYNC = "registry.sync"
+    """A Project changed in the registry. A worker shows its current state in Notion."""
     TAP = "tap"
     """A person tapped a button on a card the gateway sent for t6-core."""
 

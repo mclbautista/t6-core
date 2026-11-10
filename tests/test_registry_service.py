@@ -99,7 +99,7 @@ class RegisterAndReadTests(RegistryTestCase):
         project = self.project(self.register(page=PAGE_DASHED))
         self.assertEqual(
             project["bindings"],
-            [{"system": "notion", "page_id": PAGE, "bound_at": self.clock(), "status": "active"}],
+            [{"system": "notion", "page_id": PAGE, "bound_at": self.clock(), "status": "active", "available": True}],
         )
 
 
@@ -220,7 +220,9 @@ class AccessTests(RegistryTestCase):
         by_secret = {grant.secret: grant for grant in config.grants}
         self.assertEqual((by_secret["rw"].registry_read, by_secret["rw"].registry_write), (True, True))
         self.assertEqual((by_secret["ro"].registry_read, by_secret["ro"].registry_write), (True, False))
-        self.assertEqual((by_secret["w"].registry_read, by_secret["w"].registry_write), (False, False))
+        # The main worker reads Projects and reports Notion sync results. It changes no Project.
+        self.assertEqual((by_secret["w"].registry_write, by_secret["w"].registry_sync), (False, True))
+        self.assertEqual((by_secret["rw"].registry_sync, by_secret["ro"].registry_sync), (False, False))
         self.assertTrue(by_secret["rw"].actor and by_secret["ro"].actor)
 
 
