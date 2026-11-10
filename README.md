@@ -459,6 +459,21 @@ The other extras are declared and currently empty; their dependencies will be
 added when those adapters are implemented. The `notion` extra does not install Frame.io, Adobe sign-in, or
 LLM libraries.
 
+### Resolve project server schema status
+
+The Resolve 18 and 19 layouts are **unverified assumptions**. Their SQLite
+fixtures are synthetic and do not establish compatibility with a live server.
+`ProjectServer` rejects them by default; `allow_unverified_schema=True` is an
+explicit opt-in for controlled investigation, not production validation. This
+is a breaking change for existing callers using those layouts.
+
+A read-only inspection found Project Server app version 20.0.0 and PostgreSQL
+13.4 on Sixto. The app version does not establish the Resolve version of each
+project library. PostgreSQL authentication was unavailable, so the live schema,
+project inventory, and PostgreSQL role checks remain unverified; no Resolve 20
+layout is supplied. The External Links system `resolve` and kind `project`
+also remain assumptions, not confirmed Notion values.
+
 ## Instagantt
 
 `t6.instagantt` reads an Instagantt Standalone export saved as CSV (stdlib

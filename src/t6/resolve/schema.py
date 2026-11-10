@@ -4,11 +4,10 @@ A `ProjectServerSchema` names the tables and columns the reader selects from.
 It is the only place that knows Resolve's table layout, so a version that
 renames a column needs one new entry here and one new fixture, not a code change.
 
-The layout below is an assumption taken from the Resolve project server's
-documented shape (a project row holds a folder reference; folders form a tree).
-It has not been checked against a live server. When one is available, compare
-with `\\d` in psql and correct the entries. The fixtures in
-`tests/fixtures/resolve/` must change with them.
+The layouts below are assumptions and have not been checked against a live
+server. Their synthetic SQLite fixtures test the reader, not real schema
+compatibility. Validate the schema and inventory against the server before
+marking an entry verified.
 """
 
 from __future__ import annotations
@@ -18,7 +17,10 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ProjectServerSchema:
-    """Table and column names for one Resolve version. Names are identifiers, never user input."""
+    """Table and column names for one Resolve version. Names are identifiers, never user input.
+
+    `verified` is an explicit claim by the schema author, not a runtime check.
+    """
 
     version: str
     project_table: str
@@ -29,6 +31,7 @@ class ProjectServerSchema:
     folder_id: str
     folder_name: str
     folder_parent_id: str
+    verified: bool = False
 
 
 # Keys match the Notion Projects property `DaVinci Resolve Version`.
