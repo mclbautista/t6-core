@@ -216,7 +216,8 @@ class PerProjectImportTests(unittest.TestCase):
     def test_uncertain_rows_are_preserved_and_unreadable_rows_are_reported(self) -> None:
         not_imported = [item for item in self.result.review if item.sheet == "PAPER MOON" and 8 <= item.row <= 13]
         self.assertEqual(
-            not_imported,
+            [ReviewItem(i.sheet, i.row, i.reason, i.detail.split("\n", 1)[0], i.workbook)
+             for i in not_imported],
             [
                 ReviewItem("PAPER MOON", 8, "note in serial cell", "ZX100AA5 T6 swing drive", workbook=str(self.path.resolve())),
                 ReviewItem("PAPER MOON", 9, "shared serial", "ZX100AA6 is also on PAPER MOON row 10", workbook=str(self.path.resolve())),
@@ -236,15 +237,15 @@ class PerProjectImportTests(unittest.TestCase):
         self.assertEqual(self.result.imported, 14)
 
     def test_a_blank_serial_becomes_a_permanent_drive_and_is_reported(self) -> None:
-        provisional = [
+        drives_without_serials = [
             (drive, assignment)
             for drive, assignment in self.store.open_assignments(PAPER_MOON)
             if drive.no_serial and drive.suspected_serial is None
         ]
         # two rows with the same label and no serial are two drives
-        self.assertEqual([a.label for _, a in provisional], ["PM NO SERIAL", "PM NO SERIAL"])
-        self.assertNotEqual(provisional[0][0].key, provisional[1][0].key)
-        self.assertEqual(provisional[0][0].capacity_tb, 4.0)
+        self.assertEqual([a.label for _, a in drives_without_serials], ["PM NO SERIAL", "PM NO SERIAL"])
+        self.assertNotEqual(drives_without_serials[0][0].key, drives_without_serials[1][0].key)
+        self.assertEqual(drives_without_serials[0][0].capacity_tb, 4.0)
         detail = "no accepted serial recorded"
         for row in (7, 16):
             self.assertIn(ReviewItem("PAPER MOON", row, "blank serial", detail, workbook=str(self.path.resolve())), self.result.review)

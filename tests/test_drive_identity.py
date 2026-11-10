@@ -15,6 +15,34 @@ PARTY = Party(PartyKind.CONTACT, Ref(text="Invented Recipient"))
 
 
 class PermanentIdentityTests(unittest.TestCase):
+    def test_removing_the_sole_identifying_fact_fails_atomically_until_another_is_recorded(self) -> None:
+        store = InMemoryDriveStore()
+        drive = store.add_drive(Drive(serial="SYNTH-SOLE"))
+        store.add_assignment(drive.id, Assignment(label="assignment is not a physical fact", project=PROJECT, role=None, start=None))
+        shipment = store.release_shipment([drive.id], on=date(2024, 1, 2), party=PARTY, project=PROJECT, logged_by=LOGGER)
+        def snapshot() -> object:
+            held = store.get_drive(drive.id)
+            assert held is not None
+            return (asdict(held), store.assignment_history(drive.id), store.list_events(drive.id),
+                    store.status(drive.id), [asdict(line) for line in shipment_manifest(store, shipment)])
+        before = snapshot()
+        with self.assertRaises(ValueError):
+            store.set_serial(drive.id, None)
+        self.assertEqual(snapshot(), before)
+        self.assertEqual(store.find_by_serial("SYNTH-SOLE"), drive)
+        self.assertIsNone(store.get_drive(drive.id).suspected_serial)  # type: ignore[union-attr]
+        # A person explicitly records a different uncertain candidate; removal
+        # must not fabricate a label or automatically retain the old serial.
+        store.set_suspected_serial(drive.id, "SYNTH-EXPLICIT-CANDIDATE")
+        history, assignments, status = store.list_events(drive.id), store.assignment_history(drive.id), store.status(drive.id)
+        updated = store.set_serial(drive.id, None)
+        self.assertEqual((updated.id, updated.serial, updated.suspected_serial),
+                         (drive.id, None, "SYNTH-EXPLICIT-CANDIDATE"))
+        self.assertIsNone(store.find_by_serial("SYNTH-SOLE"))
+        self.assertEqual((store.list_events(drive.id), store.assignment_history(drive.id), store.status(drive.id)),
+                         (history, assignments, status))
+        self.assertEqual([line.drive_id for line in shipment_manifest(store, shipment)], [drive.id])
+
     def test_missing_and_disputed_serials_have_the_complete_workflow(self) -> None:
         for candidate in (None, "SYNTH-DISPUTED"):
             with self.subTest(candidate=candidate):

@@ -20,7 +20,8 @@ or owner alone does not. Blank text facts become `None`. An Assignment label may
 be absent when the physical Drive has other identifying detail.
 
 Serial normalization is unchanged: remove parenthesized/square-bracketed notes,
-trim and uppercase. It does not remove internal whitespace or other punctuation.
+trim, collapse runs of internal whitespace to one space and uppercase. It does
+not delete the remaining internal spaces or other punctuation.
 Both accepted and suspected values use it. A supplied string that normalizes to
 blank raises `ValueError`; use `None` to remove a value. The importer separately
 preserves annotated cells as raw notes and only retains a candidate as suspected.
@@ -33,6 +34,11 @@ descriptions or former serials. `add_drive` rejects duplicate IDs with
 `ValueError`, and accepted-serial collisions with `DuplicateSerial` (`serial`).
 
 `set_serial(id, value)` adds, corrects or removes an accepted value.
+The minimum-identifying-detail rule applies to edits too: removing a sole serial
+raises `ValueError` atomically. First explicitly record another meaningful detail
+(for example a genuinely suspected candidate with `set_suspected_serial`). History
+and Assignment labels do not supply physical identifying facts. Removal never
+fabricates a label or automatically retains the old accepted value as suspected.
 `set_suspected_serial(id, value)` changes only the uncertain candidate.
 `promote_suspected_serial(id)` explicitly accepts and clears the candidate;
 it raises `ValueError` if absent. All accepted-serial writes check uniqueness
@@ -92,12 +98,18 @@ meaningful facts exist. Missing labels do not discard meaningful records. Clean
 accepted serials can match across workbooks, but additional/conflicting physical
 observations are preserved in an `additional drive facts` review item rather than
 overwriting an existing record. Reused labels and descriptions never match.
-A monthly movement with exactly one explicit `S/N` can name an accepted Drive or
-create a new one; absent/multiple candidates are individual traceable review
+A monthly movement with exactly one complete, clean explicit `S/N` token can name
+an accepted Drive or create a new one. Tokens containing unsupported punctuation
+are not truncated to a prefix. A candidate recorded as suspected in the store or
+noted/shared in this workbook's inventory blocks automatic association, even when
+an inventory row is unreadable. `has_suspected_serial` is a normalized review guard,
+not an identity lookup. Absent/multiple/unsafe candidates are individual traceable review
 items containing the row's evidence, never associated by label. Duplicate
 `REMARKS` columns are joined in order. `SPACE` uses the existing capacity parser;
 invalid/conflicting capacity aliases are reported, not invented. `T6 IN` records
 receipt: date if recorded, otherwise `None`.
+Unreadable inventory and movement rows preserve all their cells alongside the
+validation error in the local review item, rather than dropping the other facts.
 
 Review items contain absolute workbook path, sheet and row, and can include raw
 private facts. Keep actual workbooks/reports local; only synthetic cases belong
@@ -118,7 +130,8 @@ operations; pass IDs to custody, shipment and Assignment methods; use
 `UnknownDrive.drive_id` instead of `.serial`; consume the new manifest fields
 and optional Assignment label. Do not introduce a fallback that treats serials
 as IDs. `set_serial` now works for any Drive, not only provisional promotion.
-Store implementers must add serial/review mutation APIs and atomic import receipts.
+Store implementers must add serial/review mutation APIs, `has_suspected_serial`
+and atomic import receipts.
 
 If an external adapter already has persisted serial/provisional keys, its owner
 must explicitly build and retain a one-to-one old-key-to-permanent-ID mapping,

@@ -12,6 +12,97 @@ from test_drives_importer import write_workbook, make_lookup, LOGGED_BY, PAPER_M
 
 
 class ImportIdentityTests(unittest.TestCase):
+    def test_suspected_serials_from_other_imports_and_unreadable_inventory_block_movements(self) -> None:
+        for existing_accepted in (False, True):
+            with self.subTest(existing_accepted=existing_accepted), tempfile.TemporaryDirectory() as folder:
+                store = InMemoryDriveStore()
+                candidate = store.add_drive(Drive(suspected_serial="synth-guard", label="invented candidate"))
+                accepted = store.add_drive(Drive(serial="SYNTH-GUARD")) if existing_accepted else None
+                path = write_workbook(folder, {"Movements": [
+                    ["HARD DRIVE LABEL", "IN/OUT", "REMARKS"], ["invented", "IN", "S/N: SYNTH-GUARD"]]})
+                result = import_log_sheet_workbook(path, store, lookup=make_lookup(), logged_by=LOGGED_BY)
+                self.assertEqual(result.imported, 0)
+                self.assertEqual(result.review[0].reason, "ambiguous serial")
+                self.assertTrue(store.has_suspected_serial(" synth-guard [note] "))
+                self.assertEqual(store.list_events(candidate.id), ())
+                if accepted is not None:
+                    self.assertEqual(store.list_events(accepted.id), ())
+        with tempfile.TemporaryDirectory() as folder:
+            path = write_workbook(folder, {
+                "Inventory": [["HARD DRIVE LABEL", "SERIAL NUMBER", "SPACE"],
+                              ["invented one", "SYNTH-BAD", "bad size"],
+                              ["invented two", "SYNTH-BAD", "bad size"]],
+                "Movements": [["HARD DRIVE LABEL", "IN/OUT", "REMARKS"],
+                              ["invented one", "IN", "S/N: SYNTH-BAD"]],
+            })
+            store = InMemoryDriveStore()
+            result = import_log_sheet_workbook(path, store, lookup=make_lookup(), logged_by=LOGGED_BY)
+            self.assertEqual(result.imported, 0)
+            self.assertIsNone(store.find_by_serial("SYNTH-BAD"))
+            self.assertTrue(any(i.sheet == "Movements" and i.reason == "ambiguous serial" for i in result.review))
+
+    def test_unreadable_rows_keep_all_other_facts_in_local_review(self) -> None:
+        for importer in (import_per_project_workbook, import_log_sheet_workbook):
+            for bad_column, bad_value in (("SPACE", "not a capacity"), ("DATE RECEIVED", "not a date")):
+                with self.subTest(importer=importer.__name__, column=bad_column), tempfile.TemporaryDirectory() as folder:
+                    path = write_workbook(folder, {"PAPER MOON": [
+                        ["HARD DRIVE LABEL", "SERIAL NUMBER", "HD DESCRIPTION", "REMARKS", bad_column],
+                        ["invented label", "SYNTH-UNREADABLE", "striped case", "keep every fact", bad_value],
+                    ]})
+                    result = importer(path, InMemoryDriveStore(), lookup=make_lookup(), logged_by=LOGGED_BY)
+                    item, = [i for i in result.review if i.reason == "unreadable"]
+                    self.assertEqual((item.workbook, item.sheet, item.row), (str(path.resolve()), "PAPER MOON", 2))
+                    for fact in ("invented label", "SYNTH-UNREADABLE", "striped case", "keep every fact", bad_value):
+                        self.assertIn(fact, item.detail)
+        for column, value in (("DATE", "not a date"), ("IN/OUT", "SIDEWAYS")):
+            with self.subTest(column=column), tempfile.TemporaryDirectory() as folder:
+                cells = {"DATE": None, "PROJECT NAME": "PAPER MOON", "HARD DRIVE LABEL": "invented label",
+                         "HD DESCRIPTION": "striped case", "IN/OUT": "IN", "REMARKS": "keep every fact S/N: SYNTH-UNREADABLE"}
+                cells[column] = value
+                path = write_workbook(folder, {"Movements": [list(cells), list(cells.values())]})
+                result = import_log_sheet_workbook(path, InMemoryDriveStore(), lookup=make_lookup(), logged_by=LOGGED_BY)
+                item, = [i for i in result.review if i.reason == "unreadable"]
+                for fact in ("invented label", "SYNTH-UNREADABLE", "striped case", "keep every fact", value):
+                    self.assertIn(fact, item.detail)
+
+    def test_movement_serial_tokens_never_match_a_prefix(self) -> None:
+        for evidence in ("ABC/123", "ABC.123", "ABC_123", "ABC(check)"):
+            with self.subTest(evidence=evidence), tempfile.TemporaryDirectory() as folder:
+                path = write_workbook(folder, {"Movements": [
+                    ["DATE", "PROJECT NAME", "HARD DRIVE LABEL", "IN/OUT", "REMARKS"],
+                    [None, "PAPER MOON", "invented", "IN", f"S/N: {evidence}"],
+                ]})
+                store = InMemoryDriveStore()
+                held = store.add_drive(Drive(serial="ABC"))
+                result = import_log_sheet_workbook(path, store, lookup=make_lookup(), logged_by=LOGGED_BY)
+                self.assertEqual(result.imported, 0)
+                self.assertEqual(store.list_events(held.id), ())
+                item, = result.review
+                self.assertEqual(item.reason, "ambiguous serial")
+                self.assertIn(evidence, item.detail)
+
+    def test_shared_inventory_serial_cannot_create_an_accepted_movement_drive(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = write_workbook(folder, {
+                "PAPER MOON": [["HARD DRIVE LABEL", "SERIAL NUMBER"],
+                               ["invented one", "SYNTH-SHARED"],
+                               ["invented two", "SYNTH-SHARED"]],
+                "Movements": [["DATE", "PROJECT NAME", "HARD DRIVE LABEL", "IN/OUT", "REMARKS"],
+                              [None, "PAPER MOON", "invented one", "IN", "S/N: SYNTH-SHARED"]],
+            })
+            store = InMemoryDriveStore()
+            def run() -> Any:
+                return import_log_sheet_workbook(path, store, lookup=make_lookup(), logged_by=LOGGED_BY)
+            result = run()
+            self.assertIsNone(store.find_by_serial("SYNTH-SHARED"))
+            drives = [d for d, _ in store.open_assignments(PAPER_MOON)]
+            self.assertEqual(len(drives), 2)
+            self.assertTrue(all(not store.list_events(d.id) for d in drives))
+            item, = [i for i in result.review if i.sheet == "Movements" and i.reason == "ambiguous serial"]
+            self.assertEqual((item.workbook, item.row), (str(path.resolve()), 2))
+            self.assertIn("S/N: SYNTH-SHARED", item.detail)
+            self.assertEqual(run(), result)
+
     def test_receipts_survive_serial_correction_and_capacity_alias_conflicts_are_reported(self) -> None:
         for importer in (import_per_project_workbook, import_log_sheet_workbook):
             with self.subTest(importer=importer.__name__), tempfile.TemporaryDirectory() as folder:

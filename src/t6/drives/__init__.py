@@ -324,10 +324,15 @@ class DriveStore(Protocol):
         """Normalize and match accepted serials only; never suspected values."""
         ...
 
+    def has_suspected_serial(self, serial: str) -> bool:
+        """Whether a normalized candidate needs review; never establishes identity."""
+        ...
+
     def set_serial(self, drive_id: str, serial: str | None) -> Drive:
         """Add/correct/remove the accepted serial; collisions raise DuplicateSerial.
 
-        Blank serial strings are invalid. Removal uses None. Validation and
+        Blank serial strings are invalid. Removal uses None and requires another
+        meaningful identifying detail; otherwise ValueError leaves state intact. Validation and
         uniqueness checks precede all changes; no automatic demotion or merge.
         """
         ...

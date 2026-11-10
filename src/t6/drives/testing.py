@@ -89,6 +89,10 @@ class InMemoryDriveStore:
     def imported_drive(self, row_key: str) -> str | None:
         return self._imports.get(row_key)
 
+    def has_suspected_serial(self, serial: str) -> bool:
+        normalized = normalize_serial(serial)
+        return any(d.suspected_serial == normalized for d in self._drives.values())
+
     def import_row(
         self, row_key: str, drive: Drive, assignment: Assignment, events: Sequence[CustodyEvent]
     ) -> None:

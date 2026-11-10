@@ -56,7 +56,7 @@ _TAB_DATE = re.compile(r"DATE\s*:\s*(.+)", re.IGNORECASE)
 _LABEL = "HARD DRIVE LABEL"
 _SERIAL_COLUMN = "SERIAL NUMBER"
 _SERIAL = re.compile(r"[A-Z0-9-]+")
-_SERIAL_IN_REMARKS = re.compile(r"S/N\s*:?\s*([A-Z0-9-]+)", re.IGNORECASE)
+_SERIAL_IN_REMARKS = re.compile(r"(?<!\w)S/N\s*:?\s*(\S+)", re.IGNORECASE)
 _OLD_NEW = re.compile(r"\b(OLD|NEW)\b")
 _DEAD = re.compile(r"\bDEAD\b", re.IGNORECASE)
 _ROLE_WORDS = {
@@ -158,7 +158,13 @@ def import_log_sheet_workbook(
     imported = _import_drive_rows(
         drive_rows, lambda row: _inventory_facts(row, lookup, logged_by), store, review
     )
-    imported += _import_movements(movements, store, lookup, logged_by, review)
+    inventory_serials = [_serial(row) for row in drive_rows]
+    uncertain_serials = {
+        serial for row, serial in zip(drive_rows, inventory_serials)
+        if serial and (inventory_serials.count(serial) > 1
+                       or not _SERIAL.fullmatch((row.text(_SERIAL_COLUMN) or "").upper()))
+    }
+    imported += _import_movements(movements, store, lookup, logged_by, review, uncertain_serials)
     return ImportResult(imported, tuple(review))
 
 
@@ -307,7 +313,7 @@ def _import_drive_rows(
             if doubts:
                 drive = replace(drive, needs_review=True, review_note="; ".join(doubts))
         except ValueError as error:
-            review.append(row.review("unreadable", str(error)))
+            review.append(row.review("unreadable", f"{error}\n{row.evidence()}"))
             continue
         _write(store, row, drive, assignment, events, review)
         imported += 1
@@ -456,23 +462,32 @@ def _write(
 
 
 def _import_movements(
-    rows: list[_Row], store: DriveStore, lookup: Lookup, logged_by: Ref, review: list[ReviewItem]
+    rows: list[_Row], store: DriveStore, lookup: Lookup, logged_by: Ref,
+    review: list[ReviewItem], uncertain_serials: set[str]
 ) -> int:
     imported = 0
     unresolved: set[str] = set()
     for row in rows:
-        serials = {normalize_serial(m) for m in _SERIAL_IN_REMARKS.findall(row.text("REMARKS") or "")}
+        tokens = _SERIAL_IN_REMARKS.findall(row.text("REMARKS") or "")
+        if any(not _SERIAL.fullmatch(token.upper()) for token in tokens):
+            review.append(row.review("ambiguous serial", row.evidence()))
+            continue
+        serials = {normalize_serial(token) for token in tokens}
         if len(serials) != 1:
             reason = "movement with no serial" if not serials else "ambiguous serial"
             review.append(row.review(reason, row.evidence()))
+            continue
+        serial = next(iter(serials))
+        if serial in uncertain_serials or store.has_suspected_serial(serial):
+            review.append(row.review("ambiguous serial", row.evidence()))
             continue
         label = row.text(_LABEL)
         if label is None:
             review.append(row.review("no label"))
         try:
-            drive, assignment, event = _movement_facts(row, next(iter(serials)), label, lookup, logged_by)
+            drive, assignment, event = _movement_facts(row, serial, label, lookup, logged_by)
         except ValueError as error:
-            review.append(row.review("unreadable", str(error)))
+            review.append(row.review("unreadable", f"{error}\n{row.evidence()}"))
             continue
         _write(store, row, drive, assignment, [event], review)
         imported += 1
