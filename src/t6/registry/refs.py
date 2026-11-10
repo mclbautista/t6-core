@@ -61,6 +61,14 @@ class ProjectRefs:
         return first == second
 
     def identified(self, project: Project) -> Project:
-        """`project` with its T6 ID filled in from its page. Unregistered pages are returned as they are."""
-        found = self.identity(project.page_id)
-        return project if found is None else dataclasses.replace(project, t6_id=found)
+        """`project` with the registry's T6 ID, rotation and code filled in, read through its page.
+
+        The registry owns those three, so its values replace what Notion shows.
+        An unregistered page is returned as it is.
+        """
+        found = self.project(project.page_id)
+        if found is None:
+            return project
+        return dataclasses.replace(
+            project, t6_id=found.id, rotation=found.rotation.value, project_code=found.code
+        )

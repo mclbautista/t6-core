@@ -164,12 +164,25 @@ class Lookup:
     def project(self, code: str | None, *, name: str | None = None) -> Resolution[Project]:
         """A Project by Project Code.
 
+        Codes are reused, so a code can belong to several Projects over time.
+        When the Projects carry their registry rotation (`ProjectRefs.identified`):
+
+        - exactly one Project in rotation holds the code: it is the answer,
+          however many historical Projects share the code;
+        - none holds it: the result needs review with every Project that has
+          the code as candidates, so old work is never picked silently;
+        - several hold it, or any Project with the code is unclassified: the
+          result needs review and `reason` says why. Nothing is chosen.
+
+        Projects with no known rotation (not registered yet) all count as
+        holders, so a code they share needs review, as before.
+
         A blank code never decides: the result needs review, ranked by `name`
         when one is given, otherwise listing the Projects that have no code.
-        A code shared by two Projects needs review with both as candidates.
+        To select one Project among those that share a code, use `project_by_id`.
         """
         if code and code.strip():
-            return self._run("project", self._project, code, self._index.projects)
+            return self._project_by_code(code)
         if name and name.strip():
             found = self._run("project_name", self._project_name, name, self._index.projects)
             ranked = found.candidates or (
@@ -178,6 +191,47 @@ class Lookup:
             return Resolution(None, "review", ranked[0].score if ranked else 0.0, ranked, True)
         uncoded = tuple(Candidate(p, 0.0) for p in self._index.projects if not p.project_code)
         return Resolution(None, "review", 0.0, uncoded, True)
+
+    def project_by_id(self, project_id: str) -> Resolution[Project]:
+        """The Project a T6 Project ID, or any page it was bound to, names.
+
+        This is the explicit selection: it does not look at codes or rotation,
+        so it finds a historical Project whose code another Project holds now.
+        """
+        wanted = project_id.strip()
+        if not wanted:
+            return _NONE
+        found = tuple(
+            p for p in self._index.projects if p.t6_id == wanted or self._same_project(p.page_id, wanted)
+        )
+        if not found:
+            return _NONE
+        if len(found) > 1:
+            return Resolution(None, "review", 1.0, tuple(Candidate(p, 1.0) for p in found), True)
+        return Resolution(found[0], "exact_id", 1.0, (Candidate(found[0], 1.0),), False)
+
+    def _project_by_code(self, code: str) -> Resolution[Project]:
+        raw = code.strip()
+        wanted = set(_clean(self._project.mention(raw)))
+        sharing = tuple(
+            p
+            for p in self._index.projects
+            if raw in _clean(self._project.ids(p)) or wanted & set(_clean(self._project.forms(p)))
+        )
+        if not any(p.rotation for p in sharing):
+            return self._run("project", self._project, code, self._index.projects)
+        everyone = tuple(Candidate(p, 1.0) for p in sharing)
+        if any(p.rotation == "unclassified" for p in sharing):
+            return Resolution(None, "review", 1.0, everyone, True, "unclassified")
+        holders = tuple(p for p in sharing if p.rotation in (None, "in"))
+        if len(holders) == 1:
+            method: Method = "exact_id" if holders[0].project_code == raw else "normalized"
+            return Resolution(holders[0], method, 1.0, everyone, False)
+        if holders:
+            return Resolution(
+                None, "review", 1.0, tuple(Candidate(p, 1.0) for p in holders), True, "several_in_rotation_holders"
+            )
+        return Resolution(None, "review", 1.0, everyone, True, "no_in_rotation_holder")
 
     def deliverable(self, text: str, *, project_id: str) -> Resolution[Deliverable]:
         """A Deliverable of one Project. Other Projects' Deliverables are never candidates."""

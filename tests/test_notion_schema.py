@@ -21,6 +21,7 @@ from t6.notion.generated import MODELS, BaysRow, JobOrdersRow, ProjectsRow
 from t6.notion.model import NotionModel
 from t6.notion.schema import check_schema, load_snapshot
 from t6.notion.testing import FakeNotion, project_properties
+from t6.registry import Rotation, SqliteProjectRegistry
 
 ROOT = Path(__file__).resolve().parents[1]
 JOB_ORDERS = "ds-job-orders"
@@ -215,14 +216,19 @@ class SelectOptionTests(unittest.TestCase):
 
 
 class SchemaCheckTests(unittest.TestCase):
-    def check(self, fake: FakeNotion, data_sources: dict[str, str]) -> dict[str, object]:
+    def check(
+        self, fake: FakeNotion, data_sources: dict[str, str], registry: SqliteProjectRegistry | None = None
+    ) -> dict[str, object]:
         with fake.client() as client:
-            return check_schema(client, load_snapshot(), data_sources)
+            return check_schema(client, load_snapshot(), data_sources, registry)
 
     def test_a_matching_schema_is_ok(self) -> None:
         fake = fake_with(bays=BAYS, projects=PROJECTS)
-        fake.add_page(PROJECTS, project_properties(name="Show A", project_code="AAA"))
-        report = self.check(fake, {"bays": BAYS, "projects": PROJECTS})
+        page = str(fake.add_page(PROJECTS, project_properties(name="Show A", project_code="AAA"))["id"])
+        with tempfile.TemporaryDirectory() as directory:
+            registry = SqliteProjectRegistry(Path(directory) / "registry.sqlite3")
+            registry.register(actor="test", idempotency_key="k", notion_page_id=page, code="AAA", rotation=Rotation.IN)
+            report = self.check(fake, {"bays": BAYS, "projects": PROJECTS}, registry)
         self.assertTrue(report["ok"])
         self.assertEqual(report["databases"]["bays"]["status"], "ok")  # type: ignore[index]
         self.assertEqual(len(report["skipped"]), 9)  # type: ignore[arg-type]
@@ -251,22 +257,6 @@ class SchemaCheckTests(unittest.TestCase):
         job_orders = report["databases"]["job_orders"]  # type: ignore[index]
         self.assertEqual(job_orders["added"], [{"name": "Blocker", "type": "rich_text"}])
         self.assertEqual(job_orders["removed"], [{"name": "Blocker ", "type": "rich_text"}])
-
-    def test_it_reports_blank_and_duplicate_project_codes(self) -> None:
-        fake = fake_with(projects=PROJECTS)
-        first = fake.add_page(PROJECTS, project_properties(name="A", project_code="DUP"))
-        second = fake.add_page(PROJECTS, project_properties(name="B", project_code="DUP"))
-        blank = fake.add_page(PROJECTS, project_properties(name="C", project_code=None))
-        fake.add_page(PROJECTS, project_properties(name="D", project_code="OK1"))
-        report = self.check(fake, {"projects": PROJECTS})
-        self.assertFalse(report["ok"])
-        codes = report["project_codes"]
-        self.assertEqual(codes["checked"], 4)  # type: ignore[index]
-        self.assertEqual(codes["blank"], [blank["id"]])  # type: ignore[index]
-        self.assertEqual(
-            codes["duplicates"],  # type: ignore[index]
-            [{"project_code": "DUP", "page_ids": [first["id"], second["id"]]}],
-        )
 
     def test_a_failed_read_is_reported_not_raised(self) -> None:
         fake = fake_with(bays=BAYS)

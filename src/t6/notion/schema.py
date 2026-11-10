@@ -4,7 +4,8 @@
 each property. Option values are left out on purpose: they hold show and
 client names, and this repository is public. The generated models in
 `t6.notion.generated` come from the snapshot, and `check_schema` diffs live
-Notion against it.
+Notion against it. It also audits the Projects pages against the Project
+registry (`t6.registry.check`).
 """
 
 from __future__ import annotations
@@ -14,16 +15,15 @@ from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from t6.notion import codec
 from t6.notion.errors import NotionError
+from t6.registry import ProjectRegistry, RegistryUnavailable
+from t6.registry.check import ProjectFindings, audit_projects
 
 if TYPE_CHECKING:
     from t6.notion.sync import NotionClient
 
 JSON = dict[str, Any]
 
-PROJECT_CODE = "Project Code"
-"""The Projects property that holds the human key of a Project."""
 
 
 def load_snapshot(path: Path | None = None) -> JSON:
@@ -67,36 +67,29 @@ def diff_properties(snapshot: list[JSON], live: JSON) -> JSON:
     }
 
 
-def project_code_problems(pages: list[JSON]) -> JSON:
-    """Blank and duplicate Project Codes among Projects pages."""
-    blank: list[str] = []
-    by_code: dict[str, list[str]] = {}
-    for page in pages:
-        code = codec.select((page.get("properties") or {}).get(PROJECT_CODE))
-        if code is None or not code.strip():
-            blank.append(str(page["id"]))
-        else:
-            by_code.setdefault(code.strip(), []).append(str(page["id"]))
-    return {
-        "checked": len(pages),
-        "blank": blank,
-        "duplicates": [
-            {"project_code": code, "page_ids": ids}
-            for code, ids in by_code.items()
-            if len(ids) > 1
-        ],
-    }
-
-
 def check_schema(
-    client: NotionClient, snapshot: JSON, data_sources: dict[str, str]
+    client: NotionClient,
+    snapshot: JSON,
+    data_sources: dict[str, str],
+    registry: ProjectRegistry | None = None,
 ) -> JSON:
-    """Diff live Notion against the snapshot and audit Project Codes.
+    """Diff live Notion against the snapshot and audit the Projects against the registry.
 
     `data_sources` maps snapshot database keys to live data source IDs. The
-    report is plain JSON data. `ok` is true when nothing drifted and every
-    Project Code is present and unique. A database with no data source ID is
-    listed under `skipped`; it is not checked.
+    report is plain JSON data. A database with no data source ID is listed
+    under `skipped`; it is not checked.
+
+    `project_codes` audits the Projects data source against `registry`. A blank
+    Project Code, a code several Projects kept on record and a Project out of
+    rotation are all fine. Each real problem is a list of its own (see
+    `t6.registry.check.KINDS`): active collisions, unclassified Projects,
+    unbound pages, unavailable bindings, missing pages and projection
+    conflicts. Its `status` is `ok`, `findings`, or `incomplete`.
+
+    `incomplete` means an input could not be read: Notion, or the registry
+    (`registry` is `None`, or raised `RegistryUnavailable`). The findings that
+    could still be worked out are listed, `reasons` says what is missing, and
+    `ok` is false: a clean report is never made from partial inputs.
     """
     unknown = sorted(set(data_sources) - set(snapshot["databases"]))
     if unknown:
@@ -119,23 +112,40 @@ def check_schema(
 
     project_codes: JSON | None = None
     if "projects" in data_sources and databases["projects"]["status"] != "error":
-        try:
-            project_codes = project_code_problems(
-                client.query_data_source(data_sources["projects"])
-            )
-        except NotionError as error:
-            project_codes = {
-                "error": {"status": error.status, "code": error.code, "message": error.message}
-            }
+        project_codes = _audit_projects(client, data_sources["projects"], registry)
 
-    clean_codes = project_codes is None or (
-        "error" not in project_codes
-        and not project_codes["blank"]
-        and not project_codes["duplicates"]
-    )
     return {
-        "ok": clean_codes and all(db["status"] == "ok" for db in databases.values()),
+        "ok": (project_codes is None or project_codes["status"] == "ok")
+        and all(db["status"] == "ok" for db in databases.values()),
         "databases": databases,
         "skipped": [key for key in snapshot["databases"] if key not in data_sources],
         "project_codes": project_codes,
+    }
+
+
+def _error(source: str, error: NotionError) -> JSON:
+    return {"source": source, "status": error.status, "code": error.code, "message": error.message}
+
+
+def _audit_projects(client: NotionClient, data_source_id: str, registry: ProjectRegistry | None) -> JSON:
+    reasons: list[JSON] = []
+    pages: list[str] | None = None
+    try:
+        pages = [str(row["id"]) for row in client.query_data_source(data_source_id)]
+    except NotionError as error:
+        reasons.append(_error("notion", error))
+    findings: ProjectFindings | None = None
+    if registry is None:
+        reasons.append({"source": "registry", "message": "no registry was given, or its file was not found"})
+    else:
+        try:
+            findings = audit_projects(registry, pages)
+        except RegistryUnavailable as error:
+            reasons.append({"source": "registry", "message": str(error)})
+    status = "incomplete" if reasons else "ok" if findings is not None and findings.empty else "findings"
+    return {
+        "status": status,
+        "checked": None if pages is None else len(pages),
+        "findings": None if findings is None else findings.to_json(),
+        "reasons": reasons,
     }
