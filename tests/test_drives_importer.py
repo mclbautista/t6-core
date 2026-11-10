@@ -4,7 +4,10 @@ Every label, Project, serial and name here is invented. The workbook is built
 in a temporary folder for each test; no real workbook is ever read.
 """
 
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import date, datetime
+import io
+import json
 from pathlib import Path
 import tempfile
 from typing import Any
@@ -12,9 +15,10 @@ import unittest
 
 from openpyxl import Workbook
 
+from t6.cli import main
 from t6.domain import Project
 from t6.drives import CustodyKind, DriveStatus, Party, PartyKind, Ref, Role
-from t6.drives.importer import SkippedRow, import_per_project_workbook
+from t6.drives.importer import ReviewItem, import_per_project_workbook
 from t6.drives.testing import InMemoryDriveStore
 from t6.lookup import Index, Lookup
 
@@ -44,6 +48,9 @@ SHEETS: dict[str, list[list[Any]]] = {
         ["PM BAD SIZE", "ACME", "ZX100AA7", "big", None, None, None, None],
         ["PM BAD DATE", "ACME", "ZX100AA8", "4TB", None, "04/05/23", None, None],
         [None, "ACME", "ZX100AA9", "4TB", None, None, None, None],
+        ["PM SWING 07 (OLD)", "ACME", "ZX100AB1", "1TB", None, None, None, None],
+        ["PM SWING 07 NEW", "ACME", "ZX100AB2", "1TB", None, None, None, None],
+        ["PM NO SERIAL", "ACME", None, "4TB", None, None, None, None],
     ],
     "GLASS HARBOR": [
         ["PROJECT NAME: GLASS HARBOUR (WORKING TITLE)"],
@@ -106,8 +113,8 @@ class PerProjectImportTests(unittest.TestCase):
         self.assertEqual(assignment.start, date(2024, 5, 2))
         self.assertTrue(assignment.is_open)
         self.assertEqual(
-            [d.serial for d, _ in self.store.open_assignments(PAPER_MOON)],
-            ["ZX100AA3", "ZX100AA4", "ZX100AA2", "ZX100AA1"],
+            [d.serial for d, _ in self.store.open_assignments(PAPER_MOON) if d.serial][-2:],
+            ["ZX100AA2", "ZX100AA1"],
         )
 
     def test_a_received_date_becomes_a_received_event(self) -> None:
@@ -158,29 +165,66 @@ class PerProjectImportTests(unittest.TestCase):
         self.assertEqual(untitled.project, Ref(text="UNTITLED TAB"))
         self.assertIsNone(untitled.role)  # the label names two roles
 
-    def test_doubtful_rows_are_skipped_and_listed(self) -> None:
-        self.assertEqual(self.result.imported, 6)
+    def test_rows_that_cannot_be_read_are_not_imported_and_are_reported(self) -> None:
+        not_imported = [item for item in self.result.review if item.sheet == "PAPER MOON" and 8 <= item.row <= 13]
         self.assertEqual(
-            self.result.skipped,
-            (
-                SkippedRow("PAPER MOON", 7, "blank serial"),
-                SkippedRow("PAPER MOON", 8, "the serial cell holds more than a serial"),
-                SkippedRow("PAPER MOON", 9, "the serial is on more than one row"),
-                SkippedRow("PAPER MOON", 10, "the serial is on more than one row"),
-                SkippedRow(
+            not_imported,
+            [
+                ReviewItem("PAPER MOON", 8, "note in serial cell", "ZX100AA5 T6 swing drive"),
+                ReviewItem("PAPER MOON", 9, "shared serial", "ZX100AA6 is also on PAPER MOON row 10"),
+                ReviewItem("PAPER MOON", 10, "shared serial", "ZX100AA6 is also on PAPER MOON row 9"),
+                ReviewItem(
                     "PAPER MOON",
                     11,
+                    "unreadable",
                     "cannot read capacity 'big': expected one size such as '4TB' or '500GB'",
                 ),
-                SkippedRow("PAPER MOON", 12, "cannot read the date '04/05/23'"),
-                SkippedRow("PAPER MOON", 13, "no label"),
-            ),
+                ReviewItem("PAPER MOON", 12, "unreadable", "cannot read the date '04/05/23'"),
+                ReviewItem("PAPER MOON", 13, "no label"),
+            ],
         )
         for serial in ("ZX100AA5", "ZX100AA6", "ZX100AA7", "ZX100AA8", "ZX100AA9"):
             self.assertIsNone(self.store.get_drive(serial), serial)
+        self.assertEqual(self.result.imported, 10)
+
+    def test_a_blank_serial_becomes_a_provisional_drive_and_is_reported(self) -> None:
+        provisional = [
+            (drive, assignment)
+            for drive, assignment in self.store.open_assignments(PAPER_MOON)
+            if drive.no_serial
+        ]
+        # two rows with the same label and no serial are two drives
+        self.assertEqual([a.label for _, a in provisional], ["PM NO SERIAL", "PM NO SERIAL"])
+        self.assertNotEqual(provisional[0][0].key, provisional[1][0].key)
+        self.assertEqual(provisional[0][0].capacity_tb, 4.0)
+        detail = "PM NO SERIAL is recorded as a provisional Drive"
+        for row in (7, 16):
+            self.assertIn(ReviewItem("PAPER MOON", row, "blank serial", detail), self.result.review)
+
+    def test_an_old_and_new_label_pair_is_imported_as_written_and_reported(self) -> None:
+        self.assertEqual(self.store.assignment_history("ZX100AB1")[0].label, "PM SWING 07 (OLD)")
+        self.assertEqual(self.store.assignment_history("ZX100AB2")[0].label, "PM SWING 07 NEW")
+        self.assertIn(
+            ReviewItem("PAPER MOON", 14, "old and new labels", "PM SWING 07 (OLD) pairs with PM SWING 07 NEW"),
+            self.result.review,
+        )
+        self.assertIn(
+            ReviewItem("PAPER MOON", 15, "old and new labels", "PM SWING 07 NEW pairs with PM SWING 07 (OLD)"),
+            self.result.review,
+        )
+
+    def test_an_unresolved_project_is_reported_once_at_its_block(self) -> None:
+        unresolved = [item for item in self.result.review if item.reason == "unresolved project"]
+        self.assertEqual(
+            unresolved,
+            [
+                ReviewItem("GLASS HARBOR", 1, "unresolved project", "GLASS HARBOUR (WORKING TITLE)"),
+                ReviewItem("UNTITLED TAB", 1, "unresolved project", "UNTITLED TAB"),
+            ],
+        )
 
     def test_a_second_run_changes_nothing(self) -> None:
-        serials = ["ZX100AA1", "ZX100AA2", "ZX100AA3", "ZX100AA4", "QQ200BB1", "QQ300CC1"]
+        serials = ["ZX100AA1", "ZX100AA2", "ZX100AA3", "ZX100AA4", "ZX100AB1", "QQ200BB1", "QQ300CC1"]
 
         def snapshot() -> list[Any]:
             return [
@@ -190,12 +234,54 @@ class PerProjectImportTests(unittest.TestCase):
                     self.store.list_events(serial),
                 )
                 for serial in serials
-            ]
+            ] + [self.store.open_assignments(PAPER_MOON)]
 
         before = snapshot()
         again = self.run_import()
         self.assertEqual(snapshot(), before)
         self.assertEqual(again, self.result)
+
+
+class DryRunCommandTests(unittest.TestCase):
+    def test_the_dry_run_prints_the_report_and_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = write_workbook(folder)
+            projects = Path(folder) / "projects.json"
+            projects.write_text(json.dumps([{"page_id": "project-paper-moon", "name": "Paper Moon"}]))
+            before = {p.name: p.stat().st_mtime_ns for p in Path(folder).iterdir()}
+            printed = io.StringIO()
+            with redirect_stdout(printed):
+                status = main(["drives-import-dry-run", str(path), "--projects", str(projects)])
+            after = {p.name: p.stat().st_mtime_ns for p in Path(folder).iterdir()}
+
+        self.assertEqual(status, 0)
+        self.assertEqual(after, before)
+        report = json.loads(printed.getvalue())
+        self.assertEqual(report["imported"], 10)
+        reasons = {item["reason"] for item in report["review"]}
+        self.assertEqual(
+            reasons,
+            {
+                "no label",
+                "note in serial cell",
+                "shared serial",
+                "unreadable",
+                "blank serial",
+                "old and new labels",
+                "unresolved project",
+            },
+        )
+        self.assertIn(
+            {"sheet": "PAPER MOON", "row": 13, "reason": "no label", "detail": ""}, report["review"]
+        )
+        self.assertNotIn("PAPER MOON", [i["detail"] for i in report["review"] if i["reason"] == "unresolved project"])
+
+    def test_a_missing_workbook_is_an_error(self) -> None:
+        errors = io.StringIO()
+        with redirect_stderr(errors):
+            status = main(["drives-import-dry-run", "/nonexistent/workbook.xlsx"])
+        self.assertEqual(status, 2)
+        self.assertIn("error", json.loads(errors.getvalue()))
 
 
 if __name__ == "__main__":

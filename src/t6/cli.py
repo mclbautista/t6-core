@@ -166,6 +166,34 @@ def _classify_projects(args: argparse.Namespace) -> int:
     return 0 if report.ok else 1
 
 
+def _drives_import_dry_run(args: argparse.Namespace) -> int:
+    try:
+        from t6.drives.importer import import_per_project_workbook
+    except ImportError:
+        return _fail("drives-import-dry-run needs the drives extra: pip install 't6[drives]'")
+    from dataclasses import asdict
+
+    from t6.domain import Project
+    from t6.drives import Ref
+    from t6.drives.testing import InMemoryDriveStore
+    from t6.lookup import Index, Lookup
+
+    try:
+        listed: Any = json.loads(args.projects.read_text(encoding="utf-8")) if args.projects else []
+        projects = tuple(Project(page_id=p["page_id"], name=p["name"]) for p in listed)
+        result = import_per_project_workbook(
+            args.workbook,
+            InMemoryDriveStore(),
+            lookup=Lookup(Index(projects=projects)),
+            logged_by=Ref(text="dry run"),
+        )
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        return _fail(str(error))
+    report = {"imported": result.imported, "review": [asdict(item) for item in result.review]}
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
 def _database_paths() -> dict[str, Path]:
     """The server's three database files, from the same variables and defaults it uses."""
     return {
@@ -301,7 +329,16 @@ def main(
         description="Verifies checksums and counts first, never overwrites, and marks unconfirmed Notion syncs for dispatch again.",
     )
     restore.add_argument("--from", dest="source", type=Path, required=True, metavar="DIR", help="a directory made by backup")
+    dry_run = commands.add_parser(
+        "drives-import-dry-run",
+        help="Import a legacy drive workbook into memory and print the review report",
+        description="Nothing is written anywhere: the import runs into an in-memory store that is thrown away.",
+    )
+    dry_run.add_argument("workbook", type=Path, help="the per-project drive workbook (.xlsx)")
+    dry_run.add_argument("--projects", type=Path, metavar="FILE", help="JSON list of {\"page_id\", \"name\"} to resolve Project names against; without it every Project is unresolved")
     args = parser.parse_args(argv)
+    if args.command == "drives-import-dry-run":
+        return _drives_import_dry_run(args)
     if args.command in {"health", "backup", "restore"}:
         return _ops(args)
     if args.command == "migrate-projects":
