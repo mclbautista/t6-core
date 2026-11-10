@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from datetime import date
 
 from t6.drives import (
     Assignment,
     CustodyEvent,
+    CustodyKind,
     Drive,
     DriveStatus,
     DuplicateSerial,
+    Party,
     Ref,
     UnknownDrive,
     derive_status,
@@ -30,6 +33,8 @@ class InMemoryDriveStore:
         self._drives: dict[str, Drive] = {}
         self._events: dict[str, list[CustodyEvent]] = {}
         self._assignments: dict[str, list[Assignment]] = {}
+        self._shipments = 0
+        self._shipped: list[tuple[str, CustodyEvent]] = []  # shipment events, in append order
 
     def add_drive(self, drive: Drive) -> None:
         if drive.serial in self._drives:
@@ -43,6 +48,37 @@ class InMemoryDriveStore:
 
     def append_event(self, serial: str, event: CustodyEvent) -> None:
         self._log(serial).append(event)
+        if event.shipment_id is not None:
+            self._shipped.append((normalize_serial(serial), event))
+
+    def release_shipment(
+        self, serials: Iterable[str], *, on: date, party: Party, project: Ref, logged_by: Ref
+    ) -> str:
+        keys = list(dict.fromkeys(normalize_serial(serial) for serial in serials))
+        if not keys:
+            raise ValueError("a shipment needs at least one Drive")
+        for key in keys:
+            self._log(key)  # refuse the whole shipment if any Drive is unknown
+        self._shipments += 1
+        event = CustodyEvent(
+            kind=CustodyKind.RELEASED,
+            on=on,
+            party=party,
+            project=project,
+            logged_by=logged_by,
+            shipment_id=f"shipment-{self._shipments}",
+        )
+        for key in keys:
+            self.append_event(key, event)
+        assert event.shipment_id is not None
+        return event.shipment_id
+
+    def shipment_events(self, shipment_id: str) -> tuple[tuple[Drive, CustodyEvent], ...]:
+        return tuple(
+            (self._drives[key], event)
+            for key, event in self._shipped
+            if event.shipment_id == shipment_id
+        )
 
     def list_events(self, serial: str) -> tuple[CustodyEvent, ...]:
         return tuple(self._log(serial))

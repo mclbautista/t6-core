@@ -418,6 +418,17 @@ I/O and needs no extra.
   reason (dead, lost, sold). `DriveStore.append_event(serial, event)` and
   `list_events(serial)` are the only ways in and out: events cannot be edited or
   deleted, so a correction is a new event and both stay in the list.
+- A shipment is several Drives released in one handover.
+  `DriveStore.release_shipment(serials, on=..., party=..., project=...,
+  logged_by=...)` appends one released event per Drive and returns the shipment
+  ID they share; if any serial is unrecorded, nothing is released. Released
+  events appended one by one can also carry a `shipment_id`.
+  `shipment_events(shipment_id)` lists a shipment's events with their Drives.
+- `shipment_manifest(store, shipment_id)` gives the manifest data from the
+  store alone: one `ManifestLine` per Drive with serial, label, capacity in TB,
+  recipient, date and who logged it. The label is the one from the Assignment
+  the Drive was on at the release date, so a manifest made after a relabel
+  still shows what went out. It is data, not a printable page.
 - `DriveStore.status(serial)` is derived from the last appended event
   (`DriveStatus.IN_CUSTODY`, `RELEASED` or `RETIRED`) and never stored. A Drive
   with no events has no status (`None`). `derive_status(events)` does the same

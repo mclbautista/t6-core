@@ -16,7 +16,7 @@ import enum
 import re
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Protocol, Sequence
+from typing import Iterable, Protocol, Sequence
 
 __all__ = [
     "Assignment",
@@ -27,6 +27,7 @@ __all__ = [
     "DriveStore",
     "DuplicateSerial",
     "FormFactor",
+    "ManifestLine",
     "Party",
     "PartyKind",
     "Ref",
@@ -35,6 +36,7 @@ __all__ = [
     "derive_status",
     "normalize_serial",
     "parse_capacity_tb",
+    "shipment_manifest",
 ]
 
 _NOTE = re.compile(r"\([^)]*\)|\[[^\]]*\]")
@@ -177,6 +179,9 @@ class CustodyEvent:
     Holds the date, the Contact or Studio involved, the Project, who logged it
     and an optional reason. Retired needs a reason (for example dead, lost,
     sold). An event is never edited: a correction is a new event.
+
+    Released events that share a `shipment_id` are one shipment: one handover
+    of several Drives. Only a released event can carry one.
     """
 
     kind: CustodyKind
@@ -185,12 +190,17 @@ class CustodyEvent:
     project: Ref
     logged_by: Ref
     reason: str | None = None
+    shipment_id: str | None = None
 
     def __post_init__(self) -> None:
         reason = _blank_to_none(self.reason)
         if self.kind is CustodyKind.RETIRED and reason is None:
             raise ValueError("a retired event needs a reason, such as dead, lost or sold")
+        shipment_id = _blank_to_none(self.shipment_id)
+        if shipment_id is not None and self.kind is not CustodyKind.RELEASED:
+            raise ValueError(f"only a released event can be part of a shipment, not {self.kind.value}")
         object.__setattr__(self, "reason", reason)
+        object.__setattr__(self, "shipment_id", shipment_id)
 
 
 _STATUS_AFTER = {
@@ -308,6 +318,26 @@ class DriveStore(Protocol):
         """
         ...
 
+    def release_shipment(
+        self, serials: Iterable[str], *, on: date, party: Party, project: Ref, logged_by: Ref
+    ) -> str:
+        """Release several Drives in one handover and return the new shipment ID.
+
+        Appends one released event per Drive, all with the same new shipment ID.
+        A serial given twice is released once. Raises ValueError if no serial is
+        given, and UnknownDrive if any serial is not recorded; then nothing is
+        released.
+        """
+        ...
+
+    def shipment_events(self, shipment_id: str) -> tuple[tuple[Drive, CustodyEvent], ...]:
+        """The released events of a shipment, each with its Drive.
+
+        In the order they were appended. An unknown shipment ID gives an empty
+        tuple.
+        """
+        ...
+
     def add_assignment(self, serial: str, assignment: Assignment) -> None:
         """Assign a recorded Drive. Raises UnknownDrive if the serial is not recorded.
 
@@ -332,3 +362,47 @@ class DriveStore(Protocol):
         UnknownDrive if the serial is not recorded.
         """
         ...
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ManifestLine:
+    """One Drive on a shipment manifest: what went out, to whom, when, logged by whom.
+
+    `label` is the label the Drive carried on the release date, or None if it
+    had no Assignment then.
+    """
+
+    serial: str
+    label: str | None
+    capacity_tb: float | None
+    recipient: Party
+    on: date
+    logged_by: Ref
+
+
+def shipment_manifest(store: DriveStore, shipment_id: str) -> tuple[ManifestLine, ...]:
+    """The manifest data for a shipment, one line per Drive, from the store alone.
+
+    The label comes from the Assignment the Drive was on at the release date,
+    so a manifest made later still shows the label that was on the sticker. If
+    several Assignments cover that date, the one that started last is used. An
+    unknown shipment ID gives an empty tuple.
+    """
+    lines = []
+    for drive, event in store.shipment_events(shipment_id):
+        current = [
+            a
+            for a in store.assignment_history(drive.serial)
+            if a.start <= event.on and (a.end is None or a.end >= event.on)
+        ]
+        lines.append(
+            ManifestLine(
+                serial=drive.serial,
+                label=current[-1].label if current else None,
+                capacity_tb=drive.capacity_tb,
+                recipient=event.party,
+                on=event.on,
+                logged_by=event.logged_by,
+            )
+        )
+    return tuple(lines)
