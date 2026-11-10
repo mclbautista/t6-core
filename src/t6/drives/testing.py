@@ -100,14 +100,27 @@ class InMemoryDriveStore:
             return
         held = self.find_by_serial(drive.serial) if drive.serial else None
         if held is None:
-            held = self.add_drive(drive)  # validates before any write
-        elif drive.needs_review:
+            if drive.id in self._drives:
+                raise ValueError(f"Drive ID {drive.id!r} is already recorded")
+            self._check_serial(drive)
+            held = drive
+        else:
             notes = list(dict.fromkeys(filter(None, (held.review_note, drive.review_note))))
-            held = self.set_review(held.id, needs_review=True, note="; ".join(notes) or None)
-        if assignment not in self.assignment_history(held.id):
-            self.add_assignment(held.id, assignment)
-        for event in events:
-            self.append_event(held.id, event)
+            held = replace(held, needs_review=held.needs_review or drive.needs_review,
+                           review_note="; ".join(notes) or None)
+        # Consume the complete source and stage every collection before publishing.
+        incoming_events = list(events)
+        assignments = list(self._assignments.get(held.id, ()))
+        if assignment not in assignments:
+            assignments.append(assignment)
+        history = [*self._events.get(held.id, ()), *incoming_events]
+        shipped = self._shipped + [
+            (held.id, event) for event in incoming_events if event.shipment_id is not None
+        ]
+        self._drives[held.id] = held
+        self._assignments[held.id] = assignments
+        self._events[held.id] = history
+        self._shipped = shipped
         self._imports[row_key] = held.id
 
     def append_event(self, drive_id: str, event: CustodyEvent) -> None:

@@ -1,4 +1,5 @@
 """Permanent Drive identity at the public store/manifest seam. Synthetic only."""
+from collections.abc import Iterator
 from dataclasses import asdict, replace
 from datetime import date
 import unittest
@@ -14,7 +15,89 @@ LOGGER = Ref(text="Invented Custodian")
 PARTY = Party(PartyKind.CONTACT, Ref(text="Invented Recipient"))
 
 
+class InterruptedEvents(list[CustodyEvent]):
+    def __iter__(self) -> Iterator[CustodyEvent]:
+        yield self[0]
+        raise OSError("synthetic event read failure")
+
+
 class PermanentIdentityTests(unittest.TestCase):
+    def test_failed_import_leaves_no_changes_and_can_be_retried(self) -> None:
+        for existing in (False, True):
+            with self.subTest(existing=existing):
+                store = InMemoryDriveStore()
+                prior = Drive(serial="SYNTH-PRIOR", description="invented enclosure",
+                              needs_review=False, review_note="prior note")
+                old_assignment = Assignment(label="OLD", project=PROJECT, role=None, start=None)
+                old_event = CustodyEvent(kind=CustodyKind.RELEASED, on=None, party=PARTY,
+                    project=PROJECT, logged_by=LOGGER, shipment_id="synthetic-prior-shipment")
+                store.import_row("prior-row", prior, old_assignment, [old_event])
+                incoming = Drive(serial=prior.serial if existing else "SYNTH-NEW",
+                    description="incoming enclosure", needs_review=True, review_note="incoming note")
+                assignment = replace(old_assignment, label="NEW")
+                events = [replace(old_event, shipment_id="synthetic-new-shipment"),
+                          replace(old_event, shipment_id="synthetic-new-shipment", reason="second release")]
+
+                def snapshot() -> object:
+                    records = []
+                    for drive in (prior, incoming):
+                        held = store.get_drive(drive.id)
+                        records.append(None if held is None else (
+                            asdict(held), store.assignment_history(held.id),
+                            store.list_events(held.id), store.status(held.id)))
+                    shipments = [[(asdict(drive), asdict(event))
+                        for drive, event in store.shipment_events(shipment)]
+                        for shipment in ("synthetic-prior-shipment", "synthetic-new-shipment")]
+                    receipts = [store.imported_drive(key) for key in ("prior-row", "new-row")]
+                    lookups = [store.find_by_serial(serial) for serial in ("SYNTH-PRIOR", "SYNTH-NEW")]
+                    return records, shipments, receipts, [asdict(d) if d else None for d in lookups]
+
+                before = snapshot()
+                with self.assertRaisesRegex(OSError, "synthetic event read failure"):
+                    store.import_row("new-row", incoming, assignment, InterruptedEvents(events))
+                self.assertEqual(snapshot(), before)
+
+                store.import_row("new-row", incoming, assignment, events)
+                target_id = prior.id if existing else incoming.id
+                self.assertEqual(store.imported_drive("new-row"), target_id)
+                self.assertEqual(store.assignment_history(target_id),
+                                 [old_assignment, assignment] if existing else [assignment])
+                self.assertEqual(store.list_events(target_id),
+                                 (old_event, *events) if existing else tuple(events))
+                self.assertEqual([(drive.id, event) for drive, event in
+                    store.shipment_events("synthetic-new-shipment")],
+                    [(target_id, event) for event in events])
+                self.assertEqual(store.imported_drive("prior-row"), prior.id)
+                self.assertEqual(store.list_events(prior.id),
+                                 (old_event, *events) if existing else (old_event,))
+                after = snapshot()
+                store.import_row("new-row", incoming, assignment, InterruptedEvents(events))
+                self.assertEqual(snapshot(), after)
+
+    def test_matching_import_keeps_unflagged_notes_and_prior_review_state_on_rerun(self) -> None:
+        for needs_review in (False, True):
+            with self.subTest(needs_review=needs_review):
+                store = InMemoryDriveStore()
+                prior = store.add_drive(Drive(serial="SYNTH-NOTES", description="original enclosure",
+                    needs_review=needs_review, review_note="prior note"))
+                incoming = Drive(serial=" synth-notes [import] ", description="incoming enclosure",
+                    needs_review=False, review_note="incoming note")
+                assignment = Assignment(label="NEW", project=PROJECT, role=None, start=None)
+                store.import_row("notes-row", incoming, assignment, [])
+                expected = replace(prior, review_note="prior note; incoming note")
+                held = store.get_drive(prior.id)
+                assert held is not None
+                self.assertEqual(asdict(held), asdict(expected))
+                self.assertIsNone(store.get_drive(incoming.id))
+                self.assertEqual(store.imported_drive("notes-row"), prior.id)
+                store.import_row("notes-row", incoming, assignment, [])
+                held = store.get_drive(prior.id)
+                assert held is not None
+                self.assertEqual(asdict(held), asdict(expected))
+                self.assertEqual(store.assignment_history(prior.id), [assignment])
+                self.assertEqual(store.list_events(prior.id), ())
+                self.assertEqual(store.imported_drive("notes-row"), prior.id)
+
     def test_manifest_uses_physical_label_when_assignment_label_is_missing(self) -> None:
         store = InMemoryDriveStore()
         drive = store.add_drive(Drive(label="invented enclosure label"))
