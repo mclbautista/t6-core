@@ -24,6 +24,10 @@ Modelled in `t6.drives`.
   released, returned or retired, with date, the Contact or Studio involved, the
   Project and who logged it. Retired needs a reason. Events are never edited or
   deleted; a correction is a new event.
+- **Shipment**: one handover of several Drives: released events that share a
+  shipment ID. A **manifest** is a view over those events: each Drive's serial,
+  label, capacity, the recipient, the date and who logged it. The core gives the
+  data; the web app prints it.
 - **Status**: where a Drive stands (in custody, released or retired), always
   derived from the last custody event and never stored. No events, no status.
 - **Assignment**: one stretch of a Drive's life on one Project: label, Project

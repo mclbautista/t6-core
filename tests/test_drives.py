@@ -16,6 +16,7 @@ from t6.drives import (
     DriveStore,
     DuplicateSerial,
     FormFactor,
+    ManifestLine,
     Party,
     PartyKind,
     Ref,
@@ -24,6 +25,7 @@ from t6.drives import (
     derive_status,
     normalize_serial,
     parse_capacity_tb,
+    shipment_manifest,
 )
 from t6.drives.testing import InMemoryDriveStore
 
@@ -466,3 +468,138 @@ class RefTests(unittest.TestCase):
         for kwargs in ({}, {"page_id": " "}, {"page_id": "p1", "text": "x"}):
             with self.assertRaises(ValueError):
                 Ref(**kwargs)
+
+
+CLIENT = Party(PartyKind.CONTACT, ref("contact-client"))
+CUSTODIAN = ref("contact-custodian")
+
+
+def release(store: DriveStore, *serials: str, day: int = 10) -> str:
+    return store.release_shipment(
+        serials, on=date(2026, 5, day), party=CLIENT, project=SHOW_A, logged_by=CUSTODIAN
+    )
+
+
+def store_with_drives(*serials: str) -> DriveStore:
+    store = make_store()
+    for serial in serials:
+        store.add_drive(Drive(serial=serial))
+    return store
+
+
+class ShipmentTests(unittest.TestCase):
+    def test_drives_released_together_share_one_shipment_id(self) -> None:
+        store = store_with_drives("D1", "D2", "D3")
+
+        shipment_id = release(store, "D1", "d2 (spare)")
+
+        for serial in ("D1", "D2"):
+            (logged,) = store.list_events(serial)
+            self.assertIs(logged.kind, CustodyKind.RELEASED)
+            self.assertEqual(logged.shipment_id, shipment_id)
+            self.assertEqual(logged.on, date(2026, 5, 10))
+            self.assertEqual(logged.party, CLIENT)
+            self.assertEqual(logged.project, SHOW_A)
+            self.assertEqual(logged.logged_by, CUSTODIAN)
+            self.assertIs(store.status(serial), DriveStatus.RELEASED)
+        self.assertEqual(store.list_events("D3"), ())
+
+    def test_each_shipment_gets_its_own_id(self) -> None:
+        store = store_with_drives("D1", "D2")
+        self.assertNotEqual(release(store, "D1"), release(store, "D2"))
+
+    def test_the_store_lists_the_events_of_a_shipment_with_their_drives(self) -> None:
+        store = store_with_drives("D1", "D2", "D3")
+        store.append_event("D1", event(CustodyKind.RECEIVED, 1))
+        shipment_id = release(store, "D2", "D1")
+        release(store, "D3")
+
+        listed = store.shipment_events(shipment_id)
+
+        self.assertEqual([drive.serial for drive, _ in listed], ["D2", "D1"])
+        self.assertTrue(all(logged.shipment_id == shipment_id for _, logged in listed))
+
+    def test_an_unknown_shipment_has_no_events(self) -> None:
+        self.assertEqual(store_with_drives("D1").shipment_events("nope"), ())
+
+    def test_a_shipment_with_an_unrecorded_drive_releases_nothing(self) -> None:
+        store = store_with_drives("D1")
+        with self.assertRaisesRegex(UnknownDrive, "NOPE"):
+            release(store, "D1", "NOPE")
+        self.assertEqual(store.list_events("D1"), ())
+
+    def test_a_shipment_needs_a_drive_and_lists_a_repeated_one_once(self) -> None:
+        store = store_with_drives("D1")
+        with self.assertRaisesRegex(ValueError, "at least one"):
+            release(store)
+        shipment_id = release(store, "D1", "d1")
+        self.assertEqual(len(store.shipment_events(shipment_id)), 1)
+
+    def test_separately_appended_releases_can_share_a_shipment_id(self) -> None:
+        store = store_with_drives("D1", "D2")
+        for serial in ("D1", "D2"):
+            store.append_event(serial, event(CustodyKind.RELEASED, 4, shipment_id=" batch-7 "))
+        self.assertEqual([d.serial for d, _ in store.shipment_events("batch-7")], ["D1", "D2"])
+
+    def test_only_a_released_event_can_carry_a_shipment_id(self) -> None:
+        self.assertIsNone(event(CustodyKind.RELEASED, 1).shipment_id)
+        self.assertIsNone(event(CustodyKind.RELEASED, 1, shipment_id="  ").shipment_id)
+        for kind in (CustodyKind.RECEIVED, CustodyKind.RETURNED, CustodyKind.RETIRED):
+            with self.assertRaisesRegex(ValueError, "shipment"):
+                event(kind, 1, reason="dead", shipment_id="batch-7")
+
+
+class ManifestTests(unittest.TestCase):
+    def test_a_manifest_lists_each_drive_with_recipient_date_and_logger(self) -> None:
+        store = make_store()
+        store.add_drive(Drive(serial="D1", capacity_tb=4.0))
+        store.add_drive(Drive(serial="D2", capacity_tb=0.5))
+        assign(store, "D1", "M01", SHOW_A, date(2026, 5, 1))
+        assign(store, "D2", "B01", SHOW_A, date(2026, 5, 1), role=Role.BACKUP)
+        shipment_id = release(store, "D1", "D2")
+
+        manifest = shipment_manifest(store, shipment_id)
+
+        self.assertEqual(
+            manifest,
+            (
+                ManifestLine(
+                    serial="D1",
+                    label="M01",
+                    capacity_tb=4.0,
+                    recipient=CLIENT,
+                    on=date(2026, 5, 10),
+                    logged_by=CUSTODIAN,
+                ),
+                ManifestLine(
+                    serial="D2",
+                    label="B01",
+                    capacity_tb=0.5,
+                    recipient=CLIENT,
+                    on=date(2026, 5, 10),
+                    logged_by=CUSTODIAN,
+                ),
+            ),
+        )
+
+    def test_the_label_is_the_one_the_drive_carried_on_the_release_date(self) -> None:
+        store = store_with_drives("D1")
+        assign(store, "D1", "OLD01", SHOW_B, date(2026, 1, 1), end=date(2026, 4, 30))
+        assign(store, "D1", "M01", SHOW_A, date(2026, 5, 1))
+        shipment_id = release(store, "D1")
+        # relabelled for another show after the shipment went out
+        assign(store, "D1", "NEW01", SHOW_B, date(2026, 6, 1))
+
+        (line,) = shipment_manifest(store, shipment_id)
+
+        self.assertEqual(line.label, "M01")
+
+    def test_a_drive_with_no_assignment_on_the_date_has_no_label(self) -> None:
+        store = store_with_drives("D1")
+        assign(store, "D1", "OLD01", SHOW_B, date(2026, 1, 1), end=date(2026, 4, 30))
+        (line,) = shipment_manifest(store, release(store, "D1"))
+        self.assertIsNone(line.label)
+        self.assertIsNone(line.capacity_tb)
+
+    def test_an_unknown_shipment_has_an_empty_manifest(self) -> None:
+        self.assertEqual(shipment_manifest(make_store(), "nope"), ())
