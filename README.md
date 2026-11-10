@@ -5,7 +5,7 @@ before its first commit. The distribution and import namespace are `t6`.
 
 Requires Python 3.11 or newer. Install the base package with `pip install t6`.
 The base package has no third-party runtime dependencies and includes
-`t6.domain`, `t6.lookup`, `t6.drives`, and the `t6` command.
+`t6.domain`, `t6.lookup`, `t6.drives`, `t6.registry`, and the `t6` command.
 
 Domain terms are defined in [`CONTEXT.md`](CONTEXT.md).
 
@@ -17,6 +17,9 @@ Camera and ExternalRef.
 
 - Each entity stored in Notion is identified by its Notion page ID. Two
   instances with the same page ID compare equal. Relations are page IDs.
+- A Project also carries `t6_id`, its T6 Project ID from the
+  [Project registry](#project-registry), or `None` when it is not known.
+  Equality still uses the page ID for now.
 - A Project's human key is its Project Code, which may be blank (`None`).
 - `Project.episodes` derives Episodes 1 to `Eps` for the series Project Types
   (`SERIES_PROJECT_TYPES`). Films and other types have no Episodes.
@@ -45,8 +48,10 @@ webhook server, the worker and poll-and-diff.
 Mac mini. Both use only the standard library.
 
 - **Two listeners.** The public one serves only `/webhook` and `/webhook/*`
-  (Frame.io and Notion). The tailnet one serves `POST /tap` (the gateway) and
-  `/queue/*` (workers and callers). Nothing else is served on the public one.
+  (Frame.io and Notion). The tailnet one serves `POST /tap` (the gateway),
+  `/queue/*` (workers and callers) and `/registry/*` (the
+  [Project registry](#project-registry)). Nothing else is served on the
+  public one.
 - **Signatures.** Frame.io: `v0:{timestamp}:{body}` HMAC-SHA256, five-minute
   window in both directions. Notion: HMAC-SHA256 of the raw body; the event's
   own timestamp must be less than 25 hours old, because Notion retries for
@@ -86,10 +91,82 @@ Mac mini. Both use only the standard library.
 | `T6_TAP_SECRET` | the gateway's `T6CORE_SECRET` |
 | `T6_WORKER_SECRET` | main worker: claims `main`, may submit to `main` and `frameio` |
 | `T6_FRAMEIO_WORKER_SECRET` | Frame.io worker: claims `frameio` |
+| `T6_REGISTRY_SECRET` | registry caller that may register and read Projects |
+| `T6_REGISTRY_READ_SECRET` | registry caller that may only read Projects |
 | `T6_QUEUE_DB`, `T6_PUBLIC_BIND`, `T6_TAILNET_BIND` | database path, listener addresses |
+| `T6_REGISTRY_DB` | Project registry database path, default `t6-registry.sqlite` |
 
 Tests use `t6.server.testing.FakeClock`; no test opens a connection to a
 provider.
+
+## Project registry
+
+`t6.registry` gives every Project a permanent T6 Project ID that does not
+depend on its Project Code or its Notion page. The registry owns identity,
+code, rotation, page bindings and audit history; Notion owns the descriptive
+fields. The decision is recorded in
+[`docs/adr/0001-project-registry-owns-project-identity.md`](docs/adr/0001-project-registry-owns-project-identity.md).
+It needs no extra.
+
+- `ProjectRegistry` is the contract. `SqliteProjectRegistry(path)` is the
+  durable implementation (SQLite WAL, standard library). Run one instance for
+  all of T6; `python -m t6.server` opens it at `T6_REGISTRY_DB`.
+- `register(actor=, idempotency_key=, notion_page_id=None)` mints a Project
+  with a new ID (`t6p_` and an opaque suffix), revision 1, no code and out of
+  rotation. It returns `Registered`, `PageAlreadyBound` or `KeyReused`.
+  Codes and rotation changes arrive with t6-core#69.
+- A registration never matches an existing Project by code or name. Two
+  registrations are two Projects.
+- A page is bound to at most one Project. Notion page IDs are compared
+  without dashes or case.
+- A repeated idempotency key returns the original Project and changes
+  nothing. The same key with a different request is refused.
+- The Project, its binding, its audit entries (actor, time, action, values)
+  and a sync intent are committed in one transaction. `pending_sync()` lists
+  the intents not yet shown in Notion; dispatching them is t6-core#70.
+
+### Service routes
+
+The routes are on the tailnet listener only. The caller sends
+`Authorization: Bearer <secret>`. A registry grant is separate from a queue
+grant: a worker secret gets 403 here. The audit actor is the name of the
+grant that made the change, never a value from the request.
+
+| Route | Grant | Answer |
+| --- | --- | --- |
+| `POST /registry/projects` | write | 201 `{"project": {...}, "created": true}`, or 200 with `"created": false` for a repeated key |
+| `GET /registry/projects/{id}` | read | 200 `{"project": {...}}` |
+| `GET /registry/projects/{id}/audit` | read | 200 `{"entries": [...]}`, oldest first |
+
+`POST /registry/projects` needs an `Idempotency-Key` header and a JSON object
+body: `{}` or `{"notion_page_id": "<page id>"}`.
+
+A project in an answer:
+
+```json
+{
+  "id": "t6p_0f3a9c1d2b4e5f6a7b8c9d0e",
+  "revision": 1,
+  "code": null,
+  "rotation": "out",
+  "bindings": [{"system": "notion", "page_id": "<32 hex characters>", "bound_at": 1700000000.0}],
+  "sync": "pending",
+  "created_at": 1700000000.0
+}
+```
+
+`sync` is `pending` while an accepted change has not reached Notion, then
+`synced`. Times are seconds since the epoch. An audit entry has `project_id`,
+`action` (`registered` or `page_bound`), `actor`, `at`, `before` and `after`.
+
+| Status | Meaning |
+| --- | --- |
+| 400 | no `Idempotency-Key`, body is not a JSON object, or a blank or non-string `notion_page_id` |
+| 401 | missing or unknown secret |
+| 403 | the secret has no registry grant for this route |
+| 404 | no such Project or route |
+| 409 | `{"error": "page_already_bound", "project_id": "..."}` or `{"error": "idempotency_key_reused"}` |
+| 503 | the server was started without a registry |
 
 ## Drives
 
@@ -546,7 +623,7 @@ described under [Schema check](#schema-check).
 
 One image, `ghcr.io/mclbautista/t6`, runs every role. It installs the `server`,
 `worker`, `notion`, `privacy`, `llm` and `frameio` extras, runs as a non-root
-user, and keeps the queue database in the `/data` volume. The command picks the
+user, and keeps the queue and Project registry databases in the `/data` volume. The command picks the
 role; the default is the server.
 
 ```sh

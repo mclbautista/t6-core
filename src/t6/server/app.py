@@ -6,8 +6,8 @@ Two listeners, two entry points:
   `/webhook` and `/webhook/*` (Frame.io and Notion). Everything else is 404, so
   the tap and queue routes are not reachable from the internet.
 - `WebhookApp.tailnet(request)` is for tailnet peers only. It serves the tap
-  endpoint (`POST /tap`, the gateway) and the queue routes (`/queue/*`,
-  workers and callers).
+  endpoint (`POST /tap`, the gateway), the queue routes (`/queue/*`, workers
+  and callers) and the Project registry routes (`/registry/*`).
 
 The server only answers requests. It never connects to a worker.
 
@@ -34,6 +34,13 @@ from t6.domain.events import (
     Job,
     JobKind,
     JsonValue,
+)
+from t6.registry import (
+    KeyReused,
+    PageAlreadyBound,
+    ProjectRegistry,
+    RegisteredProject,
+    RegistryError,
 )
 from t6.server.queue import FRAMEIO_QUEUE, MAIN_QUEUE, JobQueue
 from t6.server.signatures import WebhookRejected, verify_frameio, verify_notion
@@ -67,13 +74,17 @@ class Response:
 
 @dataclass(frozen=True, slots=True)
 class Grant:
-    """What one bearer secret may do on the queue routes."""
+    """What one bearer secret may do on the queue and registry routes."""
 
     secret: str
     claim: frozenset[str] = frozenset()
     """Queues this holder may claim from, ack and fail."""
     submit: frozenset[str] = frozenset()
     """Queues this holder may submit to and read results from."""
+    registry_read: bool = False
+    registry_write: bool = False
+    actor: str = ""
+    """Who this holder is in the registry's audit history."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +105,12 @@ class ServerConfig:
             grants.append(Grant(environ["T6_WORKER_SECRET"], claim=main, submit=main | frameio))
         if environ.get("T6_FRAMEIO_WORKER_SECRET"):
             grants.append(Grant(environ["T6_FRAMEIO_WORKER_SECRET"], claim=frameio))
+        if environ.get("T6_REGISTRY_SECRET"):
+            grants.append(
+                Grant(environ["T6_REGISTRY_SECRET"], registry_read=True, registry_write=True, actor="registry-writer")
+            )
+        if environ.get("T6_REGISTRY_READ_SECRET"):
+            grants.append(Grant(environ["T6_REGISTRY_READ_SECRET"], registry_read=True, actor="registry-reader"))
         return cls(
             frameio_webhook_secret=environ.get("T6_FRAMEIO_WEBHOOK_SECRET", ""),
             notion_webhook_token=environ.get("T6_NOTION_WEBHOOK_TOKEN", ""),
@@ -118,7 +135,9 @@ class WebhookApp:
         config: ServerConfig,
         clock: Callable[[], float] = time.time,
         on_notion_verification: Callable[[str], None] = lambda token: None,
+        registry: ProjectRegistry | None = None,
     ) -> None:
+        self._registry = registry
         self._queue = queue
         self._config = config
         self._clock = clock
@@ -209,6 +228,8 @@ class WebhookApp:
             return self._tap(request)
         if parts.path.startswith("/queue/"):
             return self._queue_route(parts.path[len("/queue/") :], parts.query, request)
+        if parts.path.startswith("/registry/"):
+            return self._registry_route(parts.path[len("/registry/") :], request)
         return Response(404)
 
     def _tap(self, request: Request) -> Response:
@@ -308,6 +329,81 @@ class WebhookApp:
                 accepted = self._queue.extend(job_id, token, lease)
             return Response(200 if accepted else 409, {"accepted": accepted})
         return Response(404)
+
+
+    def _registry_route(self, name: str, request: Request) -> Response:
+        if self._registry is None:
+            return Response(503, {"error": "registry not configured"})
+        grants = [g for g in self._config.grants if _same(g.secret, _bearer(request))]
+        if not grants:
+            return Response(401, {"error": "bad secret"})
+        steps = name.split("/")
+        if steps == ["projects"]:
+            if request.method != "POST":
+                return Response(405)
+            writer = next((g for g in grants if g.registry_write), None)
+            if writer is None:
+                return Response(403, {"error": "registry write not allowed"})
+            body = _json_object(request.body)
+            page = (body or {}).get("notion_page_id")
+            if body is None or not (page is None or isinstance(page, str)):
+                return Response(400, {"error": "body must be a JSON object; notion_page_id is a string"})
+            try:
+                outcome = self._registry.register(
+                    actor=writer.actor, idempotency_key=request.header("idempotency-key"), notion_page_id=page
+                )
+            except RegistryError as problem:
+                return Response(400, {"error": str(problem)})
+            if isinstance(outcome, PageAlreadyBound):
+                return Response(409, {"error": "page_already_bound", "project_id": outcome.project_id})
+            if isinstance(outcome, KeyReused):
+                return Response(409, {"error": "idempotency_key_reused"})
+            return Response(
+                201 if outcome.created else 200,
+                {"project": _project_body(outcome.project), "created": outcome.created},
+            )
+        if steps[0] != "projects" or not steps[1] or steps[2:] not in ([], ["audit"]):
+            return Response(404)
+        if request.method != "GET":
+            return Response(405)
+        if not any(g.registry_read for g in grants):
+            return Response(403, {"error": "registry read not allowed"})
+        project = self._registry.get(steps[1])
+        if project is None:
+            return Response(404, {"error": "no such project"})
+        if steps[2:]:
+            return Response(
+                200,
+                {
+                    "entries": [
+                        {
+                            "project_id": entry.project_id,
+                            "action": entry.action,
+                            "actor": entry.actor,
+                            "at": entry.at,
+                            "before": None if entry.before is None else dict(entry.before),
+                            "after": dict(entry.after),
+                        }
+                        for entry in self._registry.audit(steps[1])
+                    ]
+                },
+            )
+        return Response(200, {"project": _project_body(project)})
+
+
+def _project_body(project: RegisteredProject) -> dict[str, JsonValue]:
+    return {
+        "id": project.id,
+        "revision": project.revision,
+        "code": project.code,
+        "rotation": project.rotation.value,
+        "bindings": [
+            {"system": binding.system, "page_id": binding.page_id, "bound_at": binding.bound_at}
+            for binding in project.bindings
+        ],
+        "sync": project.sync.value,
+        "created_at": project.created_at,
+    }
 
 
 def _json_object(body: bytes) -> dict[str, Any] | None:
