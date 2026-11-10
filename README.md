@@ -15,11 +15,17 @@ Domain terms are defined in [`CONTEXT.md`](CONTEXT.md).
 Project, Episode, Deliverable, JobOrder, Contact, Studio, Machine (Bay),
 Camera and ExternalRef.
 
-- Each entity stored in Notion is identified by its Notion page ID. Two
-  instances with the same page ID compare equal. Relations are page IDs.
-- A Project also carries `t6_id`, its T6 Project ID from the
-  [Project registry](#project-registry), or `None` when it is not known.
-  Equality still uses the page ID for now.
+- Each entity stored in Notion, except a Project, is identified by its Notion
+  page ID. Two instances with the same page ID compare equal. Relations are
+  page IDs.
+- A Project is identified by `t6_id`, its T6 Project ID from the
+  [Project registry](#project-registry), and by its page ID until it is
+  registered (`None`). `Project.key` is that identity, and equality is on it:
+  two Projects with a T6 ID are equal when the IDs match, whatever page each
+  was read from. A Project read before registration and the same Project read
+  after are not equal values; compare through `ProjectRefs.same`. Episodes
+  carry the Project's `key`. Job Orders, Deliverables and External Links still
+  hold page IDs; see [Migrating existing Projects](#migrating-existing-projects).
 - A Project's human key is its Project Code, which may be blank (`None`).
 - `Project.episodes` derives Episodes 1 to `Eps` for the series Project Types
   (`SERIES_PROJECT_TYPES`). Films and other types have no Episodes.
@@ -215,6 +221,83 @@ the webhook to `page.created`, `page.deleted`, `page.undeleted` and
 `page.properties_updated`. Until the properties exist every sync fails with
 `validation_error` and is reported, and no Project is affected.
 
+### Migrating existing Projects
+
+`t6.registry.migration` registers the Projects that already exist in Notion,
+without breaking anything that points at their pages. Run it once, beside the
+registry file: the CLI opens the SQLite file directly, so run it on the host
+that serves it. SQLite takes turns between it and the running server.
+
+**Rollout order**
+
+1. Deploy a build with the registry (t6-core#68 to #70) and add the `T6 ID`
+   and `Rotation` properties to the Projects data source
+   ([Notion sync](#notion-sync-and-reconciliation)).
+2. **Back up** the registry file (`sqlite3 t6-registry.sqlite ".backup
+   backup.sqlite"`) and note the Notion export you would restore from.
+3. **Preview**: `t6 migrate-projects --data-sources sources.json > preview.json`.
+   `sources.json` maps `projects` (required) and `job_orders`, `deliverables`,
+   `external_links` to data source IDs. The preview lists each distinct page,
+   whether it would be registered or is already, how many Job Orders,
+   Deliverables, External Links and Episodes point at it, the codes shared by
+   several pages and the pages with no code. A reference kind whose data
+   source was not given is listed under `references_not_counted`, never shown
+   as zero. Drive Assignments are always listed there: they cannot be counted
+   per Project yet. Read the preview before the next step.
+4. **Apply**: `t6 migrate-projects --data-sources sources.json --apply --preview
+   preview.json --actor <name>`. It registers every page that has no Project,
+   **unclassified**, with its recorded code, and prints a report. It refuses
+   (exit 2) when the pages differ from the preview. Exit 1 means some pages
+   could not be registered (for example a code with no letter or digit); fix
+   them in Notion and run it again. A rerun keeps every ID it already issued
+   and registers only what is new.
+5. **Classify**: write a JSON object of T6 ID (or page ID) to `in` or `out`
+   and run `t6 classify-projects --decisions decisions.json --actor <name>`.
+   Rotation is a decision, never derived from Status. `GET
+   /registry/unclassified` lists what is left. Only unclassified Projects
+   change; a classified Project is never reclassified here.
+6. **Verify**: for each Job Order, Deliverable, External Link and Drive
+   Assignment of a sample of Projects, read it by T6 ID and by its page ID and
+   check they give the same rows (`ProjectRefs`, below). Then let the
+   [Notion sync](#notion-sync-and-reconciliation) show the T6 IDs in Notion.
+
+**Rules the migration keeps**
+
+- One Notion page is one Project. Rows are never merged by code or name, so
+  repeated and blank codes each get their own ID, and the shared codes are
+  listed in the preview for a person to see.
+- Until classified, a Project blocks its code. Two pages with the same code
+  therefore block each other: classify the one that is finished `out` in the
+  same batch (out decisions are applied first), or the other is reported as a
+  conflict with `held_by`. Nothing is freed or reassigned until then.
+- Every step is repeatable and audited with the `--actor` you gave.
+
+**Old callers keep working**
+
+`ProjectRefs(registry)` resolves a T6 ID, a page ID or a replaced page's ID to
+one Project: `identity(ref)`, `pages(ref)` (active page first, then replaced
+ones), `same(a, b)` and `identified(project)`. A reference the registry does
+not know is an unmigrated page and stands for itself. It reads the registry on
+every call and raises `RegistryUnavailable` when there is none.
+
+- `Lookup(index, same_project=refs.same)`: `deliverable(text, project_id=)`
+  takes either form.
+- `ExternalLinks(client, data_source_id, refs)`: `refs_for_project` and
+  `links_for_project` take either form and find rows related to any page the
+  Project has had. `ensure(project_id=)` relates a new row to the active page.
+  Without `refs` a Project is its page ID, as before.
+- `InMemoryDriveStore(same_project=refs.same)` finds a Project's open
+  Assignments under either form. A Drive store you write should match
+  `Ref.page_id` the same way.
+- Project Start events stay keyed by page ID (`ProjectStatusChanged`, its job
+  dedupe key and payload are unchanged). A flow that needs the Project calls
+  `refs.identity(event.page_id)`; adapting the flow itself is t6-core#73.
+
+The legacy form is not removed. Job Orders, Deliverables and External Links
+rows still hold page IDs in Notion and keep working through the registry's
+stored bindings, including the bindings of pages that were replaced. Remove it
+only after every caller above passes a `ProjectRefs`.
+
 ### Service routes
 
 The routes are on the tailnet listener only. The caller sends
@@ -233,6 +316,7 @@ grant that made the change, never a value from the request.
 | `GET /registry/projects/{id}/audit` | read | | 200 `{"entries": [...]}`, oldest first |
 | `GET /registry/pages/{page_id}` | read | | 200 `{"project": {...}}` for an active or legacy binding |
 | `GET /registry/review-items` | read | | 200 `{"items": [...]}`, open items, oldest first |
+| `GET /registry/unclassified` | read | | 200 `{"projects": [...]}`, Projects not yet classified as in or out of rotation, oldest first |
 | `POST /registry/pages/{page_id}/reconcile` | write | `{}` | 200 `{"job_id": 7, "created": true}` |
 | `POST /registry/projects/{id}/sync` | sync | `{"revision": 3, "ok": false, "detail": "validation_error", "attempt": 2}` | 200 `{"project": {...}}` |
 | `POST /registry/pages/{page_id}/observed` | sync | `{"available": true, "shown": {"t6_id": "...", "code": "ABC", "rotation": "in"}}` | 200 `{"outcome": "in_sync", "project": {...}}` |
@@ -405,7 +489,8 @@ writes the External Links database:
 
 - `refs_for_project(project_id)` returns the Project's rows as ExternalRefs,
   Internal ID included. `links_for_project` also returns the row's page ID,
-  Active and Last Activity.
+  Active and Last Activity. With a `ProjectRefs` as the third argument, either
+  accepts a T6 ID or any page of the Project.
 - `ensure(ref, project_id=...)` creates a row only when no row has the same
   System, Kind and External ID. If one exists, it is returned and nothing is
   written. It never sets Active, because people do.
@@ -728,7 +813,10 @@ $ t6 version
 ```
 
 `python -m t6 version` provides the same output. `t6 schema-check` is
-described under [Schema check](#schema-check).
+described under [Schema check](#schema-check). `t6 migrate-projects` and
+`t6 classify-projects` are described under
+[Migrating existing Projects](#migrating-existing-projects); they read the
+registry file at `--registry-db` (default `$T6_REGISTRY_DB`).
 
 ## Container image
 

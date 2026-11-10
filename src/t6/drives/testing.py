@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from t6.drives import (
     Assignment,
     CustodyEvent,
@@ -16,9 +18,15 @@ from t6.drives import (
 
 
 class InMemoryDriveStore:
-    """A DriveStore that keeps Drives in a dict keyed by normalized serial."""
+    """A DriveStore that keeps Drives in a dict keyed by normalized serial.
 
-    def __init__(self) -> None:
+    `same_project` says whether two Project page IDs name one Project. The
+    default is equality; pass `t6.registry.ProjectRefs.same` to find a Project's
+    Assignments under its T6 ID and under any page it was bound to.
+    """
+
+    def __init__(self, same_project: Callable[[str | None, str | None], bool] | None = None) -> None:
+        self._same_project = same_project or (lambda a, b: a == b)
         self._drives: dict[str, Drive] = {}
         self._events: dict[str, list[CustodyEvent]] = {}
         self._assignments: dict[str, list[Assignment]] = {}
@@ -50,9 +58,14 @@ class InMemoryDriveStore:
             (self._drives[key], assignment)
             for key, assignments in self._assignments.items()
             for assignment in assignments
-            if assignment.is_open and assignment.project == project
+            if assignment.is_open and self._matches(assignment.project, project)
         ]
         return sorted(found, key=lambda pair: (pair[1].start, pair[1].label, pair[0].serial))
+
+    def _matches(self, held: Ref, asked: Ref) -> bool:
+        if held.page_id is None or asked.page_id is None:
+            return held == asked  # unresolved text is compared as text
+        return self._same_project(held.page_id, asked.page_id)
 
     def assignment_history(self, serial: str) -> list[Assignment]:
         # sorted() is stable: assignments with the same start keep entry order

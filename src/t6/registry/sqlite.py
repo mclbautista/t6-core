@@ -310,6 +310,16 @@ class SqliteProjectRegistry:
         with self._transaction() as db:
             return _read(db, project_id)
 
+    def list_projects(self, rotation: Rotation | None = None) -> tuple[RegisteredProject, ...]:
+        with self._transaction() as db:
+            if rotation is None:
+                rows = db.execute("SELECT id FROM projects ORDER BY rowid").fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT id FROM projects WHERE rotation = ? ORDER BY rowid", (rotation.value,)
+                ).fetchall()
+            return tuple(_must_read(db, row[0]) for row in rows)
+
     def get_by_page(self, notion_page_id: str) -> RegisteredProject | None:
         with self._transaction() as db:
             holder = _page_holder(db, normalize_page_id(notion_page_id))

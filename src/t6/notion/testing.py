@@ -269,8 +269,8 @@ def _matches(page: JSON, query_filter: JSON | None) -> bool:
         return True
     prop = page["properties"].get(query_filter["property"]) or {}
     if "relation" in query_filter and "contains" in query_filter["relation"]:
-        wanted_id = query_filter["relation"]["contains"]
-        return any(item.get("id") == wanted_id for item in prop.get("relation") or [])
+        wanted_id = _plain_id(query_filter["relation"]["contains"])  # Notion takes an ID with or without dashes
+        return any(_plain_id(item.get("id")) == wanted_id for item in prop.get("relation") or [])
     for kind in ("select", "status", "rich_text", "title", "number", "checkbox"):
         if kind in query_filter and "equals" in query_filter[kind]:
             wanted = query_filter[kind]["equals"]
@@ -281,6 +281,10 @@ def _matches(page: JSON, query_filter: JSON | None) -> bool:
                 value = "".join(part.get("plain_text", "") for part in value or [])
             return bool(value == wanted)
     return True
+
+
+def _plain_id(page_id: object) -> str:
+    return str(page_id).replace("-", "").lower()
 
 
 def _as_read(properties: JSON) -> JSON:

@@ -1,7 +1,9 @@
 """JSON command-line interface for the shared library.
 
 Every command prints one JSON document on stdout. Exit status: 0 for success,
-1 when `schema-check` finds a problem, 2 when the command cannot run.
+1 when `schema-check` finds a problem or a registry command reports one (a page
+that could not be registered, a classification that was refused), 2 when the
+command cannot run.
 """
 
 from __future__ import annotations
@@ -95,6 +97,60 @@ def _schema_check(
     return 0 if report["ok"] else 1
 
 
+REGISTRY_DB_VARIABLE = "T6_REGISTRY_DB"
+DEFAULT_REGISTRY_DB = "t6-registry.sqlite"
+
+
+def _migrate_projects(
+    args: argparse.Namespace, open_notion: Callable[[str], NotionClient]
+) -> int:
+    try:
+        from t6.notion.migration import read_legacy_projects
+        from t6.registry import SqliteProjectRegistry
+        from t6.registry.migration import PreviewMismatch, apply, preview
+    except ImportError:
+        return _fail("migrate-projects needs the notion extra: pip install 't6[notion]'")
+    token = os.environ.get(TOKEN_VARIABLE)
+    if not token:
+        return _fail(f"set {TOKEN_VARIABLE} to a Notion integration token")
+    if args.apply and not (args.preview and args.actor):
+        return _fail("--apply needs --preview FILE (the exported preview) and --actor NAME")
+    try:
+        registry = SqliteProjectRegistry(args.registry_db)
+        with open_notion(token) as client:
+            projects, not_counted = read_legacy_projects(client, _read_data_sources(args.data_sources))
+        if not args.apply:
+            print(json.dumps(preview(registry, projects, not_counted=not_counted).to_json(), ensure_ascii=False, indent=2))
+            return 0
+        exported: Any = json.loads(args.preview.read_text(encoding="utf-8"))
+        report = apply(registry, projects, actor=args.actor, expected_digest=str(exported["digest"]))
+    except PreviewMismatch as error:
+        return _fail(str(error))
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        return _fail(str(error))
+    print(json.dumps(report.to_json(), ensure_ascii=False, indent=2))
+    return 0 if report.ok else 1
+
+
+def _classify_projects(args: argparse.Namespace) -> int:
+    from t6.registry import RegistryError, Rotation, SqliteProjectRegistry
+    from t6.registry.migration import classify
+
+    try:
+        decisions: Any = json.loads(args.decisions.read_text(encoding="utf-8"))
+        if not isinstance(decisions, dict):
+            raise ValueError("--decisions must be a JSON object of T6 ID or page ID to 'in' or 'out'")
+        report = classify(
+            SqliteProjectRegistry(args.registry_db),
+            {str(ref): Rotation(str(value)) for ref, value in decisions.items()},
+            actor=args.actor,
+        )
+    except (OSError, ValueError, RegistryError) as error:  # a bad rotation is a ValueError
+        return _fail(str(error))
+    print(json.dumps(report.to_json(), ensure_ascii=False, indent=2))
+    return 0 if report.ok else 1
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -152,7 +208,38 @@ def main(
             metavar="FILE",
             help="JSON object of snapshot database key to live data source ID",
         )
+    registry_db = os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)
+    migrate = commands.add_parser(
+        "migrate-projects",
+        help="Preview, or apply, registering the existing Notion Projects in the Project registry",
+        description=(
+            f"Reads the Notion token from ${TOKEN_VARIABLE} and the registry file from "
+            f"--registry-db (default ${REGISTRY_DB_VARIABLE}). Without --apply it prints a preview and "
+            "writes nothing. With --apply --preview FILE it registers the pages in that preview, "
+            "unclassified, and prints a report; it refuses if the pages changed since the preview."
+        ),
+    )
+    migrate.add_argument("--data-sources", type=Path, required=True, metavar="FILE", help="JSON object of 'projects' (and optionally 'job_orders', 'deliverables', 'external_links') to data source ID")
+    migrate.add_argument("--registry-db", type=Path, default=Path(registry_db), metavar="FILE")
+    migrate.add_argument("--apply", action="store_true", help="register the Projects in --preview")
+    migrate.add_argument("--preview", type=Path, metavar="FILE", help="the preview this run applies")
+    migrate.add_argument("--actor", help="who is applying, for the audit history")
+    classify_projects = commands.add_parser(
+        "classify-projects",
+        help="Set unclassified Projects in or out of rotation, as an operator decided",
+        description=(
+            "--decisions is a JSON object of T6 Project ID (or Notion page ID) to 'in' or 'out'. "
+            "Only the Projects named change, and only if they are unclassified."
+        ),
+    )
+    classify_projects.add_argument("--decisions", type=Path, required=True, metavar="FILE")
+    classify_projects.add_argument("--registry-db", type=Path, default=Path(registry_db), metavar="FILE")
+    classify_projects.add_argument("--actor", required=True, help="who decided, for the audit history")
     args = parser.parse_args(argv)
+    if args.command == "migrate-projects":
+        return _migrate_projects(args, open_notion)
+    if args.command == "classify-projects":
+        return _classify_projects(args)
     if args.command == "schema-check":
         return _schema_check(args, open_notion)
     if args.command == "cameras":

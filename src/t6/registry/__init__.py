@@ -34,6 +34,7 @@ from t6.registry.core import (
     normalize_code,
     normalize_page_id,
 )
+from t6.registry.refs import ProjectRefs
 from t6.registry.sqlite import SqliteProjectRegistry
 
 __all__ = [
@@ -48,6 +49,7 @@ __all__ = [
     "Observed",
     "PageAlreadyBound",
     "PageBinding",
+    "ProjectRefs",
     "ProjectRegistry",
     "RegisterOutcome",
     "Registered",

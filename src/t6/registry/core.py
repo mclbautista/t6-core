@@ -267,6 +267,10 @@ class ProjectRegistry(Protocol):
 
     def get(self, project_id: str) -> RegisteredProject | None: ...
 
+    def list_projects(self, rotation: Rotation | None = None) -> tuple[RegisteredProject, ...]:
+        """Every Project, or those in one rotation state, oldest first."""
+        ...
+
     def get_by_page(self, notion_page_id: str) -> RegisteredProject | None:
         """The Project a page is bound to, through an active or a legacy binding."""
         ...
