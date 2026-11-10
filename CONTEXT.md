@@ -59,6 +59,14 @@ fields, read from Notion) and `t6.registry` (identity).
   it, today a Notion page. A page is bound to at most one Project. The
   **active** binding is the Project's current page; a replaced page stays as a
   **legacy** binding and still points to the same Project.
+- **Migration**: registering the Projects that existed before the registry,
+  one per Notion page, unclassified. It is previewed first, never matches by
+  code or name, and keeps every ID on a rerun.
+- **Classify**: to decide an unclassified Project is in or out of rotation.
+  Only a person decides; Status never does.
+- **Legacy reference**: a page ID that still names a Project in a Job Order,
+  Deliverable, External Link, Drive Assignment or event. It resolves to the
+  Project through its binding, including a replaced page's binding.
 - **Projection**: the registry-owned values a Notion page displays: T6 ID,
   Project Code and Rotation. Notion shows them; it does not own them. An edit
   there is put back.

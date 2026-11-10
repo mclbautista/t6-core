@@ -410,6 +410,13 @@ class WebhookApp:
             return Response(200, {"items": [_review_body(item) for item in registry.review_items()]})
         if len(steps) == 3 and steps[1] and (steps[0], steps[2]) in _REGISTRY_SYNC_ROUTES:
             return self._registry_sync_answer(registry, grants, steps, request)
+        if steps == ["unclassified"]:
+            if request.method != "GET":
+                return Response(405)
+            if not any(g.registry_read for g in grants):
+                return Response(403, {"error": "registry read not allowed"})
+            found = registry.list_projects(Rotation.UNCLASSIFIED)
+            return Response(200, {"projects": [_project_body(project) for project in found]})
         if steps == ["projects"]:
             reads = False
         elif len(steps) == 2 and steps[0] in {"projects", "pages"} and steps[1]:

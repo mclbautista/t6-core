@@ -34,8 +34,11 @@ exists because someone registered it.
   cannot lose or undo an accepted change.
 - Registry routes are served on the tailnet listener only, behind their own
   read and write grants. Queue access gives no registry access.
-- During the transition the domain `Project` carries both forms: `page_id`
-  (legacy, still the equality key) and `t6_id`. References move to the T6
-  Project ID in #71.
+- The domain `Project` carries both forms: `t6_id` and `page_id`. Equality and
+  Episodes use the T6 ID once a Project is registered and the page ID before
+  (#71). Rows that point at a Project (Job Orders, Deliverables, External
+  Links, Drive Assignments, Project Start events) still hold page IDs and
+  resolve through the registry's bindings, including replaced pages
+  (`ProjectRefs`). The legacy form stays until every caller passes a resolver.
 - This supersedes the page-ID-as-identity rule in #1 and #3 for Projects
   only. Other entities are still identified by their Notion page ID.

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Final
+from typing import Any, Final, Protocol
 
 from t6.domain import ExternalRef
 from t6.notion import codec
@@ -97,21 +97,46 @@ def _relation(page_ids: list[str] | tuple[str, ...]) -> JSON:
     return {"relation": [{"id": page_id} for page_id in page_ids]}
 
 
-class ExternalLinks:
-    """Reads and creates External Links rows in one data source."""
+class ProjectPages(Protocol):
+    """Which Notion pages stand for a Project. `t6.registry.ProjectRefs` is one."""
 
-    def __init__(self, client: NotionClient, data_source_id: str) -> None:
+    def pages(self, ref: str) -> tuple[str, ...]:
+        """The page IDs of the Project `ref` names, the active page first."""
+        ...
+
+
+class ExternalLinks:
+    """Reads and creates External Links rows in one data source.
+
+    With `projects` set, a Project may be named by its T6 ID or by any page it
+    was ever bound to, and rows related to any of its pages are found. Without
+    it, a Project is its Notion page ID, as before.
+    """
+
+    def __init__(self, client: NotionClient, data_source_id: str, projects: ProjectPages | None = None) -> None:
         self._client = client
         self._data_source_id = data_source_id
+        self._projects = projects
+
+    def _pages(self, project_id: str) -> tuple[str, ...]:
+        return (project_id,) if self._projects is None else self._projects.pages(project_id)
 
     def links_for_project(self, project_id: str) -> tuple[ExternalLink, ...]:
-        """Every row related to this Project, in the order Notion returns them."""
-        rows = self._client.query_data_source(
-            self._data_source_id,
-            filter={"property": _P.PROJECTS, "relation": {"contains": project_id}},
-        )
-        links = (external_link_from_page(row) for row in rows)
-        return tuple(link for link in links if link is not None)
+        """Every row related to this Project, in the order Notion returns them.
+
+        A row related to two pages of the same Project is returned once.
+        """
+        found: dict[str, ExternalLink] = {}
+        for page in self._pages(project_id):
+            rows = self._client.query_data_source(
+                self._data_source_id,
+                filter={"property": _P.PROJECTS, "relation": {"contains": page}},
+            )
+            for row in rows:
+                link = external_link_from_page(row)
+                if link is not None:
+                    found.setdefault(link.page_id, link)
+        return tuple(found.values())
 
     def links_for_system(self, system: str, kind: str) -> tuple[ExternalLink, ...]:
         """Every row with this System and Kind."""
@@ -169,6 +194,12 @@ class ExternalLinks:
         existing = self.find(ref)
         if existing is not None:
             return existing
+        project_page = None
+        if project_id:
+            pages = self._pages(project_id)
+            if not pages:
+                raise ValueError(f"no Project is known as {project_id!r}")
+            project_page = pages[0]
         properties: JSON = {
             _P.NAME: {"title": [{"type": "text", "text": {"content": _name(ref)}}]},
             _P.SYSTEM: {"select": {"name": ref.system}},
@@ -180,7 +211,7 @@ class ExternalLinks:
         if ref.url is not None:
             properties[_P.URL] = {"url": ref.url}
         for name, ids in (
-            (_P.PROJECTS, [project_id] if project_id else []),
+            (_P.PROJECTS, [project_page] if project_page else []),
             (_P.DELIVERABLES, deliverable_ids),
             (_P.CONTACTS, contact_ids),
             (_P.BAYS, bay_ids),

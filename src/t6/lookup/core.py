@@ -125,7 +125,9 @@ class Lookup:
         normalizers: Normalizers = Normalizers(),
         policies: Mapping[str, Policy] | None = None,
         judge: Judge | None = None,
+        same_project: Callable[[str | None, str | None], bool] | None = None,
     ) -> None:
+        self._same_project = same_project or (lambda a, b: a == b)
         self._index = index
         self._n = normalizers
         self._policies = {**DEFAULT_POLICIES, **(policies or {})}
@@ -179,7 +181,7 @@ class Lookup:
 
     def deliverable(self, text: str, *, project_id: str) -> Resolution[Deliverable]:
         """A Deliverable of one Project. Other Projects' Deliverables are never candidates."""
-        pool = tuple(d for d in self._index.deliverables if d.project_id == project_id)
+        pool = tuple(d for d in self._index.deliverables if self._same_project(d.project_id, project_id))
         return self._run("deliverable", self._deliverable, text, pool)
 
     def contact(self, mention: str, *, team: Iterable[str] = ()) -> Resolution[Contact]:

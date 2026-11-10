@@ -1,7 +1,8 @@
 """T6 domain entities. Pure data: nothing here does I/O.
 
-Entities stored as Notion rows are identified by their Notion page ID. Two
-instances with the same page ID are the same entity, whatever their other
+Entities stored as Notion rows are identified by their Notion page ID, except
+a Project, which is identified by its T6 Project ID once registered. Two
+instances with the same identity are the same entity, whatever their other
 fields say, so a row read again compares equal to the row read earlier.
 Relations to other rows are held as page IDs (for example
 `Deliverable.project_id`). Links to objects in other tools are ExternalRefs.
@@ -110,13 +111,17 @@ class Episode:
     number: int
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True, kw_only=True, eq=False)
 class Project(NotionEntity):
-    """A client show. System key: Notion page ID. Human key: Project Code.
+    """A client show. Identity: T6 Project ID. Human key: Project Code.
 
-    `t6_id` is the T6 Project ID from the Project registry (`t6.registry`). It
-    is carried beside the page ID and is not yet part of equality; references
-    move to it in t6-core#71.
+    `t6_id` is the T6 Project ID from the Project registry (`t6.registry`).
+    Two Projects with a T6 ID are the same Project when the IDs match, whatever
+    their page IDs say: a replacement Notion page keeps the Project. A Project
+    not yet registered has no T6 ID and is identified by its page ID. `key` is
+    that identity in either form, and equality is on `key`. A Project read
+    before registration is therefore a different value from the same Project
+    read after it: compare through `t6.registry.ProjectRefs.same`.
     """
 
     t6_id: str | None = field(default=None, compare=False)
@@ -128,9 +133,23 @@ class Project(NotionEntity):
 
     def __post_init__(self) -> None:
         NotionEntity.__post_init__(self)
+        object.__setattr__(self, "t6_id", _blank_to_none(self.t6_id))
         object.__setattr__(self, "project_code", _blank_to_none(self.project_code))
         if self.eps is not None and self.eps < 0:
             raise ValueError(f"eps must be zero or more, got {self.eps}")
+
+    @property
+    def key(self) -> str:
+        """The T6 Project ID once the Project is registered, otherwise its page ID."""
+        return self.t6_id or self.page_id
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Project):
+            return NotImplemented
+        return self.key == other.key
+
+    def __hash__(self) -> int:
+        return hash(self.key)
 
     @property
     def is_series(self) -> bool:
@@ -142,7 +161,7 @@ class Project(NotionEntity):
         if not self.is_series:
             return ()
         return tuple(
-            Episode(project_id=self.page_id, number=n) for n in range(1, (self.eps or 0) + 1)
+            Episode(project_id=self.key, number=n) for n in range(1, (self.eps or 0) + 1)
         )
 
 

@@ -232,7 +232,8 @@ class DomainIdentityTests(unittest.TestCase):
         registered = Project(page_id="p1", name="Show", t6_id=f"{PROJECT_ID_PREFIX}abc")
         self.assertIsNone(legacy.t6_id)
         self.assertEqual(registered.t6_id, f"{PROJECT_ID_PREFIX}abc")
-        self.assertEqual(legacy, registered)  # equality stays on the page ID until the migration
+        self.assertNotEqual(legacy, registered)  # a registered Project is identified by its T6 ID (see the migration tests)
+        self.assertEqual(Project(page_id="p2", name="Show", t6_id=registered.t6_id), registered)
 
 
 if __name__ == "__main__":
