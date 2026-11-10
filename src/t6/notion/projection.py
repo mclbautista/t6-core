@@ -14,6 +14,7 @@ Both read current state and are safe to run twice or out of order.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, Final
 
 from t6.domain.events import JobKind, JsonValue
@@ -37,7 +38,14 @@ __all__ = ["ROTATION", "T6_ID", "ProjectProjection"]
 
 
 class ProjectProjection:
-    def __init__(self, notion: NotionClient, registry: RegistryClient, projects_data_source_id: str) -> None:
+    def __init__(
+        self,
+        notion: NotionClient,
+        registry: RegistryClient,
+        projects_data_source_id: str,
+        offer: Callable[[str, str], None] | None = None,
+    ) -> None:
+        self._offer = offer
         self._notion = notion
         self._registry = registry
         self._projects = normalize_page_id(projects_data_source_id)
@@ -95,7 +103,11 @@ class ProjectProjection:
             "code": codec.select(properties.get(ProjectsProperties.PROJECT_CODE)),
             "rotation": codec.select(properties.get(ROTATION)),
         }
-        return {"outcome": self._registry.observed(page_id, available=True, shown=shown)}
+        outcome = self._registry.observed(page_id, available=True, shown=shown)
+        if outcome == "unbound" and self._offer is not None:
+            heading = next((p for p in properties.values() if p.get("type") == "title"), None)
+            self._offer(page_id, codec.title(heading) or "")
+        return {"outcome": outcome}
 
 
 def _gone(page: JSON) -> bool:

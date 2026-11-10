@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 
+from t6.operator import ActionStore, OperatorService
 from t6.registry import SqliteProjectRegistry
 from t6.server.app import ServerConfig, WebhookApp
 from t6.server.http import serve
@@ -20,7 +21,12 @@ def main() -> int:
     environ = os.environ
     queue = JobQueue(environ.get("T6_QUEUE_DB", "t6-queue.sqlite"))
     registry = SqliteProjectRegistry(environ.get("T6_REGISTRY_DB", "t6-registry.sqlite"))
-    app = WebhookApp(queue, ServerConfig.from_env(environ), registry=registry)
+    config = ServerConfig.from_env(environ)
+    operator = None
+    if config.operator_ids:
+        store = ActionStore(environ.get("T6_OPERATOR_DB", "t6-operator.sqlite"))
+        operator = OperatorService(registry, store, config.operator_ids, ttl=config.operator_ttl_seconds)
+    app = WebhookApp(queue, config, registry=registry, operator=operator)
     serve(
         app,
         _address(environ.get("T6_PUBLIC_BIND", "127.0.0.1:8080")),
