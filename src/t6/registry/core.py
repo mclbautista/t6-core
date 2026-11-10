@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 import re
@@ -20,6 +20,7 @@ __all__ = [
     "CodeHeld",
     "KeyReused",
     "NotFound",
+    "Observed",
     "PageAlreadyBound",
     "PageBinding",
     "ProjectRegistry",
@@ -28,8 +29,10 @@ __all__ = [
     "RegisteredProject",
     "RegistryError",
     "RegistryUnavailable",
+    "ReviewItem",
     "RevisionConflict",
     "Rotation",
+    "Shown",
     "SyncIntent",
     "SyncStatus",
     "normalize_code",
@@ -65,6 +68,8 @@ class SyncStatus(StrEnum):
     PENDING = "pending"
     """An accepted change has not reached Notion yet."""
     SYNCED = "synced"
+    FAILED = "failed"
+    """The sync job used up its attempts. The change stands; Notion does not show it."""
 
 
 def normalize_code(code: str | None) -> tuple[str | None, str | None]:
@@ -97,6 +102,8 @@ class PageBinding:
     bound_at: float
     active: bool = True
     """False for a legacy binding: a replaced page that still resolves to its Project."""
+    available: bool = True
+    """False while the page is deleted or out of reach. The binding itself stays."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +117,8 @@ class RegisteredProject:
     bindings: tuple[PageBinding, ...]
     sync: SyncStatus
     created_at: float
+    sync_error: str | None = None
+    """Why the last sync attempt failed, while a sync is pending or failed."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +141,38 @@ class SyncIntent:
     project_id: str
     revision: int
     created_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class Shown:
+    """The registry-owned values a Notion page displays right now."""
+
+    t6_id: str | None
+    code: str | None
+    rotation: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewItem:
+    """Something a person has to look at. Open until the cause goes away."""
+
+    id: int
+    kind: str
+    """`unbound_page`, `projection_conflict` or `page_unavailable`."""
+    page_id: str
+    project_id: str | None
+    detail: Mapping[str, JsonValue]
+    created_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class Observed:
+    """What the registry made of a page as Notion shows it now."""
+
+    outcome: str
+    """`in_sync`, `pending` (a sync is on its way), `conflict`, `unbound`,
+    `unavailable`, `restored`, `legacy` or `ignored`."""
+    project: RegisteredProject | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,4 +277,26 @@ class ProjectRegistry(Protocol):
 
     def pending_sync(self) -> tuple[SyncIntent, ...]:
         """Sync intents not yet done, oldest first."""
+        ...
+
+    def undispatched_sync(self) -> tuple[SyncIntent, ...]:
+        """Sync intents that have no queue job yet, oldest first."""
+        ...
+
+    def mark_dispatched(self, intent_ids: Iterable[int]) -> None: ...
+
+    def report_sync(
+        self, project_id: str, revision: int, *, ok: bool, detail: str = "", final: bool = False
+    ) -> RegisteredProject | None:
+        """Record that Notion shows `revision`, or why it does not. Never changes the Project."""
+        ...
+
+    def observe_page(
+        self, notion_page_id: str, *, actor: str, available: bool, shown: Shown | None = None
+    ) -> Observed:
+        """Reconcile a page's current Notion state with the registry. Registers nothing."""
+        ...
+
+    def review_items(self) -> tuple[ReviewItem, ...]:
+        """Open review items, oldest first."""
         ...

@@ -259,8 +259,8 @@ class ReplacementBindingTests(CodesTestCase):
         self.assertEqual(
             self.project(bound)["bindings"],
             [
-                {"system": "notion", "page_id": PAGE, "bound_at": self.clock() - 10, "status": "legacy"},
-                {"system": "notion", "page_id": OTHER_PAGE, "bound_at": self.clock(), "status": "active"},
+                {"system": "notion", "page_id": PAGE, "bound_at": self.clock() - 10, "status": "legacy", "available": True},
+                {"system": "notion", "page_id": OTHER_PAGE, "bound_at": self.clock(), "status": "active", "available": True},
             ],
         )
         for page in (PAGE_DASHED, OTHER_PAGE):

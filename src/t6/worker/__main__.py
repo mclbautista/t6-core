@@ -13,10 +13,10 @@ from t6.worker.client import HttpTransport, QueueClient, Transport
 from t6.worker.runner import Handler, Worker
 
 HANDLERS: dict[str, dict[str, Handler]] = {}
-"""Handlers by queue name, then by job kind. Later tickets register theirs here.
+"""Handlers by queue name, then by job kind, that need no configuration.
 
 A worker refuses to start for a queue with no handler: it would claim jobs and
-fail them all.
+fail them all. Handlers that need settings are built by `configured_handlers`.
 """
 
 DEFAULT_POLL_SECONDS = 5.0
@@ -49,6 +49,26 @@ class WorkerSettings:
         return cls(environ["T6_SERVER_URL"], environ["T6_WORKER_SECRET"], environ["T6_WORKER_QUEUE"], poll)
 
 
+def configured_handlers(
+    environ: Mapping[str, str], settings: WorkerSettings, transport: Transport
+) -> dict[str, dict[str, Handler]]:
+    """Handlers that need settings from the environment.
+
+    With `T6_NOTION_TOKEN` and `T6_NOTION_PROJECTS_DATA_SOURCE` set, the main
+    queue gets the Project registry's Notion handlers: `registry.sync` and
+    `notion.page_changed` (needs the `notion` extra).
+    """
+    token, projects = environ.get("T6_NOTION_TOKEN"), environ.get("T6_NOTION_PROJECTS_DATA_SOURCE")
+    if settings.queue != "main" or not (token and projects):
+        return {}
+    from t6.notion import NotionClient
+    from t6.notion.projection import ProjectProjection
+    from t6.worker.registry import RegistryClient
+
+    projection = ProjectProjection(NotionClient(token), RegistryClient(transport, settings.secret), projects)
+    return {"main": projection.handlers()}
+
+
 def serve(worker: Worker, stop: threading.Event, poll_seconds: float) -> None:
     """Run jobs until `stop` is set; sleep `poll_seconds` after an empty poll."""
     while not stop.is_set():
@@ -63,9 +83,10 @@ def main(
     stop: threading.Event | None = None,
 ) -> int:
     environ = os.environ if environ is None else environ
-    table = HANDLERS if handlers is None else handlers
     try:
         settings = WorkerSettings.from_env(environ)
+        transport = transport or HttpTransport(settings.server_url)
+        table = handlers if handlers is not None else {**HANDLERS, **configured_handlers(environ, settings, transport)}
         queue_handlers = table.get(settings.queue)
         if not queue_handlers:
             raise ConfigError(f"no handler is registered for queue {settings.queue!r}")
@@ -76,7 +97,7 @@ def main(
         stop = threading.Event()
         for signum in (signal.SIGTERM, signal.SIGINT):
             signal.signal(signum, lambda _signum, _frame: stop.set())
-    client = QueueClient(transport or HttpTransport(settings.server_url), settings.secret)
+    client = QueueClient(transport, settings.secret)
     serve(Worker(client, settings.queue, queue_handlers), stop, settings.poll_seconds)
     return 0
 

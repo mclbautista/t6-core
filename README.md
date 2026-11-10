@@ -63,7 +63,8 @@ Mac mini. Both use only the standard library.
   that loses its lease five times is failed.
 - **Events.** A Frame.io `comment.created` starts or resets a 15-minute timer
   for its Frame.io project; when it fires it becomes a `frameio.review_done`
-  job with the comment count. A Notion `page.properties_updated` becomes a
+  job with the comment count. A Notion `page.properties_updated`,
+  `page.created`, `page.deleted` or `page.undeleted` becomes a
   `notion.page_changed` job (Notion names the changed properties, not the new
   value, so a worker reads the page). A tap becomes a `tap` job keyed by the
   gateway's `Idempotency-Key`.
@@ -73,9 +74,10 @@ Mac mini. Both use only the standard library.
 - **Worker entrypoint.** `python -m t6.worker` polls one queue in a loop,
   sleeps between empty polls and exits cleanly on SIGTERM. It exits with code 2
   and a message on stderr when a required variable is missing or no handler is
-  registered for its queue (`t6.worker.__main__.HANDLERS`, filled by later
-  tickets). Until then the table is empty, so the entrypoint always refuses to
-  start.
+  registered for its queue. The `main` queue gets the
+  [Notion sync](#notion-sync-and-reconciliation) handlers when the two Notion
+  variables below are set. No other handler exists yet, so a worker without
+  them refuses to start.
 
 | Worker variable | Use |
 | --- | --- |
@@ -83,13 +85,15 @@ Mac mini. Both use only the standard library.
 | `T6_WORKER_SECRET` | required: the bearer secret for the queue (the server's `T6_WORKER_SECRET` or `T6_FRAMEIO_WORKER_SECRET`) |
 | `T6_WORKER_QUEUE` | required: the queue to poll (`main` or `frameio`) |
 | `T6_WORKER_POLL_SECONDS` | optional: sleep after an empty poll, default `5` |
+| `T6_NOTION_TOKEN` | main worker: Notion integration token, for the Project registry sync |
+| `T6_NOTION_PROJECTS_DATA_SOURCE` | main worker: ID of the Projects data source |
 
 | Variable | Use |
 | --- | --- |
 | `T6_FRAMEIO_WEBHOOK_SECRET` | Frame.io signing secret |
 | `T6_NOTION_WEBHOOK_TOKEN` | Notion `verification_token` |
 | `T6_TAP_SECRET` | the gateway's `T6CORE_SECRET` |
-| `T6_WORKER_SECRET` | main worker: claims `main`, may submit to `main` and `frameio` |
+| `T6_WORKER_SECRET` | main worker: claims `main`, may submit to `main` and `frameio`, reads Projects and reports Notion sync results |
 | `T6_FRAMEIO_WORKER_SECRET` | Frame.io worker: claims `frameio` |
 | `T6_REGISTRY_SECRET` | registry caller that may register and read Projects |
 | `T6_REGISTRY_READ_SECRET` | registry caller that may only read Projects |
@@ -124,8 +128,8 @@ It needs no extra.
 - Every accepted change raises the revision by one and commits the new state,
   an audit entry (actor, time, action, previous and new values) and a sync
   intent in one transaction. A refused change writes nothing.
-  `pending_sync()` lists the intents not yet shown in Notion; dispatching
-  them is t6-core#70.
+  `pending_sync()` lists the intents not yet shown in Notion; see
+  [Notion sync and reconciliation](#notion-sync-and-reconciliation).
 - A repeated idempotency key returns the Project and does nothing again, even
   when its revision is stale by then. The same key with a different request
   is refused.
@@ -164,11 +168,59 @@ It needs no extra.
   Project with `get_by_page`. A page that was ever bound to one Project is
   never bound to another.
 
+### Notion sync and reconciliation
+
+The registry never calls Notion. An accepted change is committed first and
+answered with `sync: pending`; a worker shows it in Notion afterwards.
+
+- **Out to Notion.** The server queues one `registry.sync` job per sync
+  intent on the `main` queue: at start, after each registry request and before
+  each claim. A crash between the commit and the queueing loses nothing. The
+  worker reads the Project as it is *now* and writes three properties to its
+  active page: `T6 ID` (rich text), `Project Code` (select) and `Rotation`
+  (select). An old or repeated job therefore writes current values, never old
+  ones.
+- **Failure.** A Notion failure never undoes the change. The job is retried
+  (five attempts, 30 seconds apart) and the Project shows `sync: pending` with
+  the Notion error code in `sync_error`. After the last attempt it shows
+  `sync: failed`. The next accepted change or reconciliation of that Project
+  starts a new sync.
+- **In from Notion.** A `notion.page_changed` job reads the page as it is now
+  and reports what it shows. The event's own content and order are not
+  trusted, so duplicates and late events are harmless.
+  - A registry-owned value that differs from the registry is put back, and a
+    `projection_conflict` review item records what was shown. Notion never
+    changes a Project. While a sync is already on its way, a difference is
+    not a conflict.
+  - Descriptive fields (name, Status, dates and the rest) are Notion's and are
+    left alone.
+  - A page in the Projects data source with no binding becomes one
+    `unbound_page` review item. It never becomes a Project by itself and is
+    never matched by code or name. Registering or binding it closes the item.
+  - A page that is in the trash or that Notion no longer returns marks its
+    binding `available: false`, writes a `page_unavailable` audit entry and
+    opens a `page_unavailable` review item. The Project, its ID, code,
+    rotation and bindings stay. A restored page is reconciled through the
+    same binding (`page_restored`).
+  - A page outside the Projects data source is ignored.
+- **Review items** are open until their cause goes away:
+  `GET /registry/review-items`.
+- **Operator.** `POST /registry/pages/{page_id}/reconcile` queues the same
+  reconciliation for one page, for a missed webhook.
+
+Set-up in Notion, not yet done or checked against the live workspace
+(t6-core#13, t6-core#21): add the `T6 ID` (text) and `Rotation` (select: `in`,
+`out`, `unclassified`) properties to the Projects data source, and subscribe
+the webhook to `page.created`, `page.deleted`, `page.undeleted` and
+`page.properties_updated`. Until the properties exist every sync fails with
+`validation_error` and is reported, and no Project is affected.
+
 ### Service routes
 
 The routes are on the tailnet listener only. The caller sends
 `Authorization: Bearer <secret>`. A registry grant is separate from a queue
-grant: a worker secret gets 403 here. The audit actor is the name of the
+grant. The main worker's secret may read and use the two `sync` routes; it
+gets 403 on every route that changes a Project. The audit actor is the name of the
 grant that made the change, never a value from the request.
 
 | Route | Grant | Body | Answer |
@@ -180,8 +232,14 @@ grant that made the change, never a value from the request.
 | `GET /registry/projects/{id}` | read | | 200 `{"project": {...}}` |
 | `GET /registry/projects/{id}/audit` | read | | 200 `{"entries": [...]}`, oldest first |
 | `GET /registry/pages/{page_id}` | read | | 200 `{"project": {...}}` for an active or legacy binding |
+| `GET /registry/review-items` | read | | 200 `{"items": [...]}`, open items, oldest first |
+| `POST /registry/pages/{page_id}/reconcile` | write | `{}` | 200 `{"job_id": 7, "created": true}` |
+| `POST /registry/projects/{id}/sync` | sync | `{"revision": 3, "ok": false, "detail": "validation_error", "attempt": 2}` | 200 `{"project": {...}}` |
+| `POST /registry/pages/{page_id}/observed` | sync | `{"available": true, "shown": {"t6_id": "...", "code": "ABC", "rotation": "in"}}` | 200 `{"outcome": "in_sync", "project": {...}}` |
 
-Every `POST` needs an `Idempotency-Key` header and a JSON object body.
+Every `POST` with the write grant needs an `Idempotency-Key` header and a
+JSON object body. The two `sync` routes are for the worker and need no key:
+both only record what Notion shows.
 
 A project in an answer:
 
@@ -192,17 +250,22 @@ A project in an answer:
   "code": "ABC",
   "rotation": "in",
   "bindings": [
-    {"system": "notion", "page_id": "<32 hex characters>", "bound_at": 1700000000.0, "status": "active"}
+    {"system": "notion", "page_id": "<32 hex characters>", "bound_at": 1700000000.0, "status": "active", "available": true}
   ],
   "sync": "pending",
+  "sync_error": null,
   "created_at": 1700000000.0
 }
 ```
 
 `sync` is `pending` while an accepted change has not reached Notion, then
-`synced`. Times are seconds since the epoch. A binding's `status` is `active`
-or `legacy`. An audit entry has `project_id`, `action` (`registered`,
-`page_bound`, `code_changed`, `rotation_changed` or `classified`), `actor`,
+`synced`, or `failed` when the sync used up its attempts; `sync_error` says
+why the last attempt failed. Times are seconds since the epoch. A binding's
+`status` is `active` or `legacy`; `available` is false while its page is
+deleted or out of reach. A review item has `id`, `kind`, `page_id`,
+`project_id`, `detail` and `created_at`. An audit entry has `project_id`,
+`action` (`registered`, `page_bound`, `code_changed`, `rotation_changed`,
+`classified`, `page_unavailable` or `page_restored`), `actor`,
 `at`, `before` and `after`.
 
 | Status | Meaning |

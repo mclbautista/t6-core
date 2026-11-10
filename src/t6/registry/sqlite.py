@@ -9,7 +9,7 @@ all. A refused change writes nothing.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 import json
 from pathlib import Path
@@ -28,6 +28,7 @@ from t6.registry.core import (
     CodeHeld,
     KeyReused,
     NotFound,
+    Observed,
     PageAlreadyBound,
     PageBinding,
     RegisterOutcome,
@@ -35,8 +36,10 @@ from t6.registry.core import (
     RegisteredProject,
     RegistryError,
     RegistryUnavailable,
+    ReviewItem,
     RevisionConflict,
     Rotation,
+    Shown,
     SyncIntent,
     SyncStatus,
     normalize_code,
@@ -62,6 +65,7 @@ CREATE TABLE IF NOT EXISTS bindings (
     project_id TEXT NOT NULL,
     bound_at REAL NOT NULL,
     active INTEGER NOT NULL,
+    available INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (system, page_id)
 );
 CREATE TABLE IF NOT EXISTS audit (
@@ -78,8 +82,22 @@ CREATE TABLE IF NOT EXISTS sync_intents (
     project_id TEXT NOT NULL,
     revision INTEGER NOT NULL,
     created_at REAL NOT NULL,
-    done_at REAL
+    done_at REAL,
+    dispatched_at REAL,
+    error TEXT,
+    error_final INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS review_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    page_id TEXT NOT NULL,
+    project_id TEXT,
+    detail TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    resolved_at REAL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS one_open_review_item ON review_items (kind, page_id)
+    WHERE resolved_at IS NULL;
 CREATE TABLE IF NOT EXISTS requests (
     idempotency_key TEXT PRIMARY KEY,
     fingerprint TEXT NOT NULL,
@@ -173,7 +191,7 @@ class SqliteProjectRegistry:
             project_id = self._new_id()
             db.execute("INSERT INTO requests VALUES (?, ?, ?)", (idempotency_key, fingerprint, project_id))
             if page is not None:
-                db.execute("INSERT INTO bindings VALUES (?, ?, ?, ?, 1)", (NOTION, page, project_id, now))
+                _bind(db, page, project_id, now)
             db.execute(
                 "INSERT INTO projects (id, revision, code, code_form, rotation, created_at) VALUES (?, 1, ?, ?, ?, ?)",
                 (project_id, entered, form, rotation.value, now),
@@ -243,7 +261,7 @@ class SqliteProjectRegistry:
                 return None
             db.execute("UPDATE bindings SET active = 0 WHERE project_id = ?", (project.id,))
             if holder is None:
-                db.execute("INSERT INTO bindings VALUES (?, ?, ?, ?, 1)", (NOTION, page, project.id, now))
+                _bind(db, page, project.id, now)
             else:
                 db.execute("UPDATE bindings SET active = 1 WHERE system = ? AND page_id = ?", (NOTION, page))
             return "page_bound", {"page_id": active}, {"page_id": page}
@@ -309,11 +327,98 @@ class SqliteProjectRegistry:
         )
 
     def pending_sync(self) -> tuple[SyncIntent, ...]:
+        return self._intents("done_at IS NULL")
+
+    # -- sync and reconciliation ---------------------------------------------
+
+    def undispatched_sync(self) -> tuple[SyncIntent, ...]:
+        return self._intents("done_at IS NULL AND dispatched_at IS NULL")
+
+    def _intents(self, where: str) -> tuple[SyncIntent, ...]:
         with self._transaction() as db:
             rows = db.execute(
-                "SELECT id, project_id, revision, created_at FROM sync_intents WHERE done_at IS NULL ORDER BY id"
+                f"SELECT id, project_id, revision, created_at FROM sync_intents WHERE {where} ORDER BY id"
             ).fetchall()
         return tuple(SyncIntent(*row) for row in rows)
+
+    def mark_dispatched(self, intent_ids: Iterable[int]) -> None:
+        now = self._clock()
+        with self._transaction() as db:
+            db.executemany(
+                "UPDATE sync_intents SET dispatched_at = ? WHERE id = ? AND dispatched_at IS NULL",
+                [(now, intent_id) for intent_id in intent_ids],
+            )
+
+    def report_sync(
+        self, project_id: str, revision: int, *, ok: bool, detail: str = "", final: bool = False
+    ) -> RegisteredProject | None:
+        now = self._clock()
+        with self._transaction() as db:
+            covered = "project_id = ? AND done_at IS NULL AND revision <= ?"
+            if ok:
+                db.execute(f"UPDATE sync_intents SET done_at = ? WHERE {covered}", (now, project_id, revision))
+            else:
+                db.execute(
+                    f"UPDATE sync_intents SET error = ?, error_final = MAX(error_final, ?) WHERE {covered}",
+                    (detail or "failed", int(final), project_id, revision),
+                )
+            return _read(db, project_id)
+
+    def observe_page(
+        self, notion_page_id: str, *, actor: str, available: bool, shown: Shown | None = None
+    ) -> Observed:
+        page = _page(notion_page_id)
+        now = self._clock()
+        with self._transaction() as db:
+            holder = _page_holder(db, page)
+            if holder is None:
+                if not available:
+                    return Observed("ignored", None)
+                _open_review(db, "unbound_page", page, None, {}, now)
+                return Observed("unbound", None)
+            project = _must_read(db, holder)
+            binding = next(b for b in project.bindings if b.page_id == page)
+            here = {"page_id": page}
+            if not available:
+                if binding.available:
+                    db.execute("UPDATE bindings SET available = 0 WHERE system = ? AND page_id = ?", (NOTION, page))
+                    _audit(db, holder, "page_unavailable", actor, now, {**here, "available": True}, {**here, "available": False})
+                    _open_review(db, "page_unavailable", page, holder, {}, now)
+                return Observed("unavailable", _must_read(db, holder))
+            restored = not binding.available
+            if restored:
+                db.execute("UPDATE bindings SET available = 1 WHERE system = ? AND page_id = ?", (NOTION, page))
+                _audit(db, holder, "page_restored", actor, now, {**here, "available": False}, {**here, "available": True})
+                _close_review(db, "page_unavailable", page, now)
+            if not binding.active:
+                return Observed("restored" if restored else "legacy", _must_read(db, holder))
+            expected = Shown(project.id, project.code, project.rotation.value)
+            if shown == expected:
+                _close_review(db, "projection_conflict", page, now)
+                outcome = "restored" if restored else "in_sync"
+            elif project.sync is SyncStatus.PENDING:
+                outcome = "restored" if restored else "pending"  # a sync job is already on its way
+            else:
+                # Notion shows something else and nothing is on its way: put the registry's values back.
+                _intend_sync(db, holder, project.revision, now)
+                if restored:
+                    outcome = "restored"
+                else:
+                    detail: dict[str, JsonValue] = {
+                        "shown": None if shown is None else {"t6_id": shown.t6_id, "code": shown.code, "rotation": shown.rotation},
+                        "expected": {"t6_id": expected.t6_id, "code": expected.code, "rotation": expected.rotation},
+                    }
+                    _open_review(db, "projection_conflict", page, holder, detail, now)
+                    outcome = "conflict"
+            return Observed(outcome, _must_read(db, holder))
+
+    def review_items(self) -> tuple[ReviewItem, ...]:
+        with self._transaction() as db:
+            rows = db.execute(
+                "SELECT id, kind, page_id, project_id, detail, created_at FROM review_items "
+                "WHERE resolved_at IS NULL ORDER BY id"
+            ).fetchall()
+        return tuple(ReviewItem(row[0], row[1], row[2], row[3], json.loads(row[4]), row[5]) for row in rows)
 
 
 def _require(actor: str, idempotency_key: str) -> None:
@@ -340,6 +445,31 @@ def _seen(db: sqlite3.Connection, idempotency_key: str) -> tuple[str, str] | Non
 def _page_holder(db: sqlite3.Connection, page: str) -> str | None:
     row = db.execute("SELECT project_id FROM bindings WHERE system = ? AND page_id = ?", (NOTION, page)).fetchone()
     return None if row is None else str(row[0])
+
+
+def _bind(db: sqlite3.Connection, page: str, project_id: str, now: float) -> None:
+    db.execute(
+        "INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES (?, ?, ?, ?, 1)",
+        (NOTION, page, project_id, now),
+    )
+    _close_review(db, "unbound_page", page, now)
+
+
+def _open_review(
+    db: sqlite3.Connection, kind: str, page: str, project_id: str | None, detail: _Values, now: float
+) -> None:
+    """Add a review item unless the same one is already open."""
+    db.execute(
+        "INSERT OR IGNORE INTO review_items (kind, page_id, project_id, detail, created_at) VALUES (?, ?, ?, ?, ?)",
+        (kind, page, project_id, json.dumps(detail), now),
+    )
+
+
+def _close_review(db: sqlite3.Connection, kind: str, page: str, now: float) -> None:
+    db.execute(
+        "UPDATE review_items SET resolved_at = ? WHERE kind = ? AND page_id = ? AND resolved_at IS NULL",
+        (now, kind, page),
+    )
 
 
 def _code_held(db: sqlite3.Connection, code: str, form: str, project_id: str) -> CodeHeld | None:
@@ -382,18 +512,27 @@ def _read(db: sqlite3.Connection, project_id: str) -> RegisteredProject | None:
     if row is None:
         return None
     bindings = db.execute(
-        "SELECT system, page_id, bound_at, active FROM bindings WHERE project_id = ? ORDER BY bound_at, page_id",
+        "SELECT system, page_id, bound_at, active, available FROM bindings "
+        "WHERE project_id = ? ORDER BY bound_at, page_id",
         (project_id,),
     ).fetchall()
-    pending = db.execute(
-        "SELECT 1 FROM sync_intents WHERE project_id = ? AND done_at IS NULL LIMIT 1", (project_id,)
-    ).fetchone()
+    undone = db.execute(
+        "SELECT error, error_final FROM sync_intents WHERE project_id = ? AND done_at IS NULL ORDER BY id",
+        (project_id,),
+    ).fetchall()
+    if not undone:
+        sync = SyncStatus.SYNCED
+    elif any(row[1] for row in undone):
+        sync = SyncStatus.FAILED
+    else:
+        sync = SyncStatus.PENDING
     return RegisteredProject(
         id=row[0],
         revision=row[1],
         code=row[2],
         rotation=Rotation(row[3]),
-        bindings=tuple(PageBinding(b[0], b[1], b[2], bool(b[3])) for b in bindings),
-        sync=SyncStatus.PENDING if pending else SyncStatus.SYNCED,
+        bindings=tuple(PageBinding(b[0], b[1], b[2], bool(b[3]), bool(b[4])) for b in bindings),
+        sync=sync,
         created_at=row[4],
+        sync_error=next((row[0] for row in reversed(undone) if row[0]), None),
     )

@@ -59,5 +59,14 @@ fields, read from Notion) and `t6.registry` (identity).
   it, today a Notion page. A page is bound to at most one Project. The
   **active** binding is the Project's current page; a replaced page stays as a
   **legacy** binding and still points to the same Project.
+- **Projection**: the registry-owned values a Notion page displays: T6 ID,
+  Project Code and Rotation. Notion shows them; it does not own them. An edit
+  there is put back.
+- **Sync**: showing an accepted registry change in Notion. It happens after
+  the change is committed and its failure never undoes the change.
+- **Reconcile**: to compare a Notion page as it is now with the registry and
+  act on the difference. Reconciliation changes no Project.
+- **Review item**: something reconciliation found that a person must look at:
+  an unbound page, an edited projection, or an unavailable page.
 - **Register**: to create a Project in the registry. Registration is always
   explicit; nothing is registered or merged by matching a code or a name.
