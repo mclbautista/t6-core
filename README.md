@@ -465,18 +465,32 @@ result = import_per_project_workbook(path, store, lookup=lookup, logged_by=Ref(t
 - The per-project workbook has one tab per Project: an optional
   `PROJECT NAME: ...` row, a header row starting with `HARD DRIVE LABEL`, then
   one row per drive. A tab with no project name row uses the tab title.
-- A clean row becomes a Drive (brand, capacity, format) with an Assignment for
-  the tab's Project, a received event when the row has a received date and a
+- A row becomes a Drive (brand, capacity, format) with an Assignment for the
+  tab's Project, a received event when the row has a received date and a
   released event when it has a release date. The release recipient is the
   person in charge or, failing that, the remarks, kept as text.
 - The Project is a page ID only when `t6.lookup` finds exactly one Project
   with that name; otherwise the name is kept as text. The role is read from
   the label only when it names exactly one role; otherwise it is `None`.
-- A row is skipped and listed in `result.skipped` (tab, row number, reason)
-  when it has no label, a blank serial, more than a serial in the serial cell,
-  a serial that is on more than one row, or a capacity or date that cannot be
-  read. Nothing is guessed.
+- Nothing is guessed. `result.review` is the review report: one `ReviewItem`
+  (tab, row number, reason, detail) for everything a person has to look at.
+
+  | Reason | What happened to the row |
+  | --- | --- |
+  | `no label` | not imported |
+  | `note in serial cell` | not imported; the detail is the cell |
+  | `shared serial` | not imported; the detail names the other rows |
+  | `unreadable` | not imported; a capacity or date could not be read |
+  | `blank serial` | imported as a provisional Drive |
+  | `old and new labels` | imported with its label as written; the detail names its pair |
+  | `unresolved project` | its rows are imported with the name as text; listed once, at the row where the Project's block starts |
+
 - It writes only through `DriveStore`, and a second run adds nothing.
+- `t6 drives-import-dry-run WORKBOOK [--projects FILE]` runs the import into an
+  in-memory store that is thrown away and prints `{"imported": n, "review":
+  [...]}`. Nothing is written anywhere. `--projects` is a JSON list of
+  `{"page_id", "name"}` to resolve Project names against; without it every
+  Project is reported as unresolved.
 
 ## Lookup
 
@@ -960,7 +974,9 @@ $ t6 version
 described under [Schema check](#schema-check). `t6 migrate-projects` and
 `t6 classify-projects` are described under
 [Migrating existing Projects](#migrating-existing-projects); they read the
-registry file at `--registry-db` (default `$T6_REGISTRY_DB`). `t6 health`,
+registry file at `--registry-db` (default `$T6_REGISTRY_DB`). `t6
+drives-import-dry-run` is described under
+[Importing the legacy workbooks](#importing-the-legacy-workbooks). `t6 health`,
 `t6 backup --into DIR` and `t6 restore --from DIR` use the server's database
 variables and are described in `docs/deployment.md`.
 
