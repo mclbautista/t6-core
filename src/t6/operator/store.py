@@ -259,6 +259,16 @@ class ActionStore:
             assert done is not None
             return done
 
+    def undelivered(self) -> tuple[Action, ...]:
+        """Cards never confirmed in Telegram. Their delivery job may be lost (a restore), so it is queued again."""
+        with self._transaction() as db:
+            rows = db.execute(
+                f"SELECT {_COLUMNS} FROM actions WHERE message_id IS NULL AND state IN ('pending', 'claimed') "
+                "AND expires_at > ? ORDER BY created_at",
+                (self._clock(),),
+            ).fetchall()
+        return tuple(_action(row) for row in rows)
+
     def done_for_project(self, project_id: str) -> tuple[Action, ...]:
         with self._transaction() as db:
             rows = db.execute(

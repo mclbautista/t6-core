@@ -389,6 +389,12 @@ loses nothing.
 
 `docs/operator-actions.md` is the contract the gateway's workflows consume.
 
+### Deployment, health and recovery
+
+`docs/deployment.md` is the runbook for the VPS: process layout, configuration,
+rollout order, `t6 health`, `t6 backup` and `t6 restore`, and a verification log
+that separates what the tests prove from what still has to be run on the VPS.
+
 ## Drives
 
 `t6.drives` models physical external drives (never Google Drive). It does no
@@ -908,7 +914,9 @@ $ t6 version
 described under [Schema check](#schema-check). `t6 migrate-projects` and
 `t6 classify-projects` are described under
 [Migrating existing Projects](#migrating-existing-projects); they read the
-registry file at `--registry-db` (default `$T6_REGISTRY_DB`).
+registry file at `--registry-db` (default `$T6_REGISTRY_DB`). `t6 health`,
+`t6 backup --into DIR` and `t6 restore --from DIR` use the server's database
+variables and are described in `docs/deployment.md`.
 
 ## Container image
 

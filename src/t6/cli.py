@@ -166,6 +166,31 @@ def _classify_projects(args: argparse.Namespace) -> int:
     return 0 if report.ok else 1
 
 
+def _database_paths() -> dict[str, Path]:
+    """The server's three database files, from the same variables and defaults it uses."""
+    return {
+        "registry": Path(os.environ.get(REGISTRY_DB_VARIABLE, "t6-registry.sqlite")),
+        "queue": Path(os.environ.get("T6_QUEUE_DB", "t6-queue.sqlite")),
+        "operator": Path(os.environ.get("T6_OPERATOR_DB", "t6-operator.sqlite")),
+    }
+
+
+def _ops(args: argparse.Namespace) -> int:
+    from t6 import ops
+
+    try:
+        if args.command == "backup":
+            result: Any = ops.backup(_database_paths(), args.into)
+        elif args.command == "restore":
+            result = ops.restore(args.source, _database_paths())
+        else:
+            result = ops.health(_database_paths())
+    except (OSError, ops.OpsError) as error:
+        return _fail(str(error))
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if args.command != "health" or result["ok"] else 1
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -259,7 +284,26 @@ def main(
     classify_projects.add_argument("--decisions", type=Path, required=True, metavar="FILE")
     classify_projects.add_argument("--registry-db", type=Path, default=Path(registry_db), metavar="FILE")
     classify_projects.add_argument("--actor", required=True, help="who decided, for the audit history")
+    commands.add_parser(
+        "health",
+        help="Report sync lag, persistent Notion failures and failed jobs; exits 1 on a problem",
+        description="Reads the server's databases (T6_REGISTRY_DB, T6_QUEUE_DB, T6_OPERATOR_DB) and changes nothing.",
+    )
+    backup = commands.add_parser(
+        "backup",
+        help="Snapshot the registry, queue and operator databases into a new directory",
+        description="Safe while the server runs. Writes a manifest with checksums and counts.",
+    )
+    backup.add_argument("--into", type=Path, required=True, metavar="DIR", help="an empty or new directory")
+    restore = commands.add_parser(
+        "restore",
+        help="Restore a backup onto databases that do not exist yet (stop the server first)",
+        description="Verifies checksums and counts first, never overwrites, and marks unconfirmed Notion syncs for dispatch again.",
+    )
+    restore.add_argument("--from", dest="source", type=Path, required=True, metavar="DIR", help="a directory made by backup")
     args = parser.parse_args(argv)
+    if args.command in {"health", "backup", "restore"}:
+        return _ops(args)
     if args.command == "migrate-projects":
         return _migrate_projects(args, open_notion)
     if args.command == "classify-projects":
