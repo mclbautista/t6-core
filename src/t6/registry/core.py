@@ -9,12 +9,17 @@ import re
 from typing import Protocol, TypeAlias
 
 from t6.domain.events import JsonValue
+from t6.lookup.normalize import Normalizers
 
 __all__ = [
     "NOTION",
     "PROJECT_ID_PREFIX",
     "AuditEntry",
+    "ChangeOutcome",
+    "Changed",
+    "CodeHeld",
     "KeyReused",
+    "NotFound",
     "PageAlreadyBound",
     "PageBinding",
     "ProjectRegistry",
@@ -22,9 +27,12 @@ __all__ = [
     "Registered",
     "RegisteredProject",
     "RegistryError",
+    "RegistryUnavailable",
+    "RevisionConflict",
     "Rotation",
     "SyncIntent",
     "SyncStatus",
+    "normalize_code",
     "normalize_page_id",
 ]
 
@@ -40,15 +48,37 @@ class RegistryError(ValueError):
     """A bad argument, such as a blank actor or idempotency key."""
 
 
+class RegistryUnavailable(Exception):
+    """The registry cannot be reached. Nothing was changed and nothing may be assumed."""
+
+
 class Rotation(StrEnum):
     IN = "in"
+    """Holds its code: no other Project may take it."""
     OUT = "out"
+    """Keeps its code on record but does not hold it."""
+    UNCLASSIFIED = "unclassified"
+    """Imported and not reviewed yet. Blocks its code until someone classifies it."""
 
 
 class SyncStatus(StrEnum):
     PENDING = "pending"
     """An accepted change has not reached Notion yet."""
     SYNCED = "synced"
+
+
+def normalize_code(code: str | None) -> tuple[str | None, str | None]:
+    """A code as entered (trimmed) and its comparison form. Blank is no code.
+
+    The comparison form is `t6.lookup`'s code normalization, so `BH-101` and
+    `bh 101` are the same code here and in lookup.
+    """
+    if code is None or not code.strip():
+        return None, None
+    form = Normalizers().code(code)
+    if not form:
+        raise RegistryError("a code needs at least one letter or digit")
+    return code.strip(), form
 
 
 def normalize_page_id(page_id: str) -> str:
@@ -65,6 +95,8 @@ class PageBinding:
     system: str
     page_id: str
     bound_at: float
+    active: bool = True
+    """False for a legacy binding: a replaced page that still resolves to its Project."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,17 +155,80 @@ class KeyReused:
     idempotency_key: str
 
 
-RegisterOutcome: TypeAlias = Registered | PageAlreadyBound | KeyReused
+@dataclass(frozen=True, slots=True)
+class CodeHeld:
+    """The code is taken, so the Project cannot hold it in rotation. Nothing changed."""
+
+    code: str
+    held_by: tuple[str, ...]
+    """The Projects in the way, oldest first."""
+    reason: str
+    """`in_rotation`, or `unclassified` when only unreviewed imports hold it."""
+
+
+@dataclass(frozen=True, slots=True)
+class NotFound:
+    project_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class RevisionConflict:
+    """The Project changed since the caller read it."""
+
+    project_id: str
+    revision: int
+    """The Project's revision now."""
+
+
+@dataclass(frozen=True, slots=True)
+class Changed:
+    project: RegisteredProject
+    changed: bool
+    """False when the Project already had the value, or for a replay."""
+    replayed: bool = False
+    """True when the idempotency key was seen before: nothing was done again."""
+
+
+RegisterOutcome: TypeAlias = Registered | PageAlreadyBound | KeyReused | CodeHeld
+ChangeOutcome: TypeAlias = Changed | NotFound | RevisionConflict | CodeHeld | PageAlreadyBound | KeyReused
 
 
 class ProjectRegistry(Protocol):
     def register(
-        self, *, actor: str, idempotency_key: str, notion_page_id: str | None = None
+        self,
+        *,
+        actor: str,
+        idempotency_key: str,
+        notion_page_id: str | None = None,
+        code: str | None = None,
+        rotation: Rotation = Rotation.OUT,
     ) -> RegisterOutcome:
-        """Mint a Project, out of rotation and without a code. Never matches by code or name."""
+        """Mint a Project. Never matches by code or name."""
+        ...
+
+    def set_code(
+        self, project_id: str, code: str | None, *, actor: str, idempotency_key: str, expected_revision: int
+    ) -> ChangeOutcome:
+        """Change the code, or clear it with `None`. Checked when the Project is in rotation."""
+        ...
+
+    def set_rotation(
+        self, project_id: str, rotation: Rotation, *, actor: str, idempotency_key: str, expected_revision: int
+    ) -> ChangeOutcome:
+        """Enter or leave rotation. Also classifies an unclassified Project."""
+        ...
+
+    def bind_page(
+        self, project_id: str, notion_page_id: str, *, actor: str, idempotency_key: str, expected_revision: int
+    ) -> ChangeOutcome:
+        """Make this page the Project's active page. Earlier pages stay as legacy bindings."""
         ...
 
     def get(self, project_id: str) -> RegisteredProject | None: ...
+
+    def get_by_page(self, notion_page_id: str) -> RegisteredProject | None:
+        """The Project a page is bound to, through an active or a legacy binding."""
+        ...
 
     def audit(self, project_id: str) -> tuple[AuditEntry, ...]:
         """The Project's audit entries, oldest first."""

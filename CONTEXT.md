@@ -49,7 +49,15 @@ fields, read from Notion) and `t6.registry` (identity).
 - **Rotation**: whether a Project currently holds its code. A Project is **in
   rotation** or **out of rotation**, set explicitly and never derived from
   production Status. A new Project starts out of rotation.
+- **Hold** (a code): only a Project in rotation holds its code, and only one
+  Project across T6 holds a given code at a time. A Project out of rotation
+  keeps its code on record without holding it, so another Project can take it.
+- **Unclassified**: the rotation of an imported Project that nobody has
+  reviewed yet. It blocks its recorded code until someone **classifies** it as
+  in or out of rotation.
 - **Binding**: the link from a Project to one external page that stands for
-  it, today a Notion page. A page is bound to at most one Project.
+  it, today a Notion page. A page is bound to at most one Project. The
+  **active** binding is the Project's current page; a replaced page stays as a
+  **legacy** binding and still points to the same Project.
 - **Register**: to create a Project in the registry. Registration is always
   explicit; nothing is registered or merged by matching a code or a name.

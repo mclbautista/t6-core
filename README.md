@@ -111,19 +111,58 @@ It needs no extra.
 - `ProjectRegistry` is the contract. `SqliteProjectRegistry(path)` is the
   durable implementation (SQLite WAL, standard library). Run one instance for
   all of T6; `python -m t6.server` opens it at `T6_REGISTRY_DB`.
-- `register(actor=, idempotency_key=, notion_page_id=None)` mints a Project
-  with a new ID (`t6p_` and an opaque suffix), revision 1, no code and out of
-  rotation. It returns `Registered`, `PageAlreadyBound` or `KeyReused`.
-  Codes and rotation changes arrive with t6-core#69.
+- `register(actor=, idempotency_key=, notion_page_id=None, code=None, rotation=Rotation.OUT)`
+  mints a Project with a new ID (`t6p_` and an opaque suffix) at revision 1.
+  It returns `Registered`, `PageAlreadyBound`, `CodeHeld` or `KeyReused`.
 - A registration never matches an existing Project by code or name. Two
-  registrations are two Projects.
+  registrations are two Projects, even with the same code.
+- `set_code`, `set_rotation` and `bind_page` change one Project. Each takes
+  the actor, an idempotency key and the `expected_revision` the caller last
+  read, and returns `Changed`, `NotFound`, `RevisionConflict`, `CodeHeld`,
+  `PageAlreadyBound` or `KeyReused`. A change to the value the Project
+  already has is accepted and changes nothing.
+- Every accepted change raises the revision by one and commits the new state,
+  an audit entry (actor, time, action, previous and new values) and a sync
+  intent in one transaction. A refused change writes nothing.
+  `pending_sync()` lists the intents not yet shown in Notion; dispatching
+  them is t6-core#70.
+- A repeated idempotency key returns the Project and does nothing again, even
+  when its revision is stale by then. The same key with a different request
+  is refused.
+- When the registry database cannot be opened, every operation raises
+  `RegistryUnavailable`. No cached or stale read is offered: a caller that
+  cannot reach the registry has no answer.
+
+### Codes and rotation
+
+- A code is optional, in or out of rotation. A blank code is no code.
+- The spelling is kept as entered. Codes are compared with the lookup
+  normalization (`Normalizers.code`: case, spaces and punctuation ignored), so
+  `BH-101`, `bh 101` and `BH101` are one code. A code with no letter or digit
+  is refused.
+- **Rotation** is `in`, `out` or `unclassified`, and is never derived from
+  production Status. A new Project is `out` unless the registration says
+  otherwise.
+- Across all of T6, at most one Project in rotation holds a code. The check
+  and the change are one transaction, and a unique index backs it, so of
+  several concurrent claims exactly one wins.
+- Leaving rotation keeps the code on the Project's record and frees it for
+  another Project. A Project that returns keeps its ID. If its code is held by
+  then, the return is refused with `CodeHeld` until someone changes or clears
+  its code, or takes the holder out of rotation.
+- `unclassified` is for imported Projects (t6-core#71) that nobody has
+  reviewed. An unclassified Project blocks its recorded code for everyone else,
+  including other unclassified Projects with the same code. `set_rotation` to
+  `in` or `out` classifies it. Nothing can be set back to `unclassified`.
+
+### Bindings
+
 - A page is bound to at most one Project. Notion page IDs are compared
   without dashes or case.
-- A repeated idempotency key returns the original Project and changes
-  nothing. The same key with a different request is refused.
-- The Project, its binding, its audit entries (actor, time, action, values)
-  and a sync intent are committed in one transaction. `pending_sync()` lists
-  the intents not yet shown in Notion; dispatching them is t6-core#70.
+- `bind_page` makes a page the Project's **active** binding. The page it
+  replaces stays as a **legacy** binding and still resolves to the same
+  Project with `get_by_page`. A page that was ever bound to one Project is
+  never bound to another.
 
 ### Service routes
 
@@ -132,41 +171,50 @@ The routes are on the tailnet listener only. The caller sends
 grant: a worker secret gets 403 here. The audit actor is the name of the
 grant that made the change, never a value from the request.
 
-| Route | Grant | Answer |
-| --- | --- | --- |
-| `POST /registry/projects` | write | 201 `{"project": {...}, "created": true}`, or 200 with `"created": false` for a repeated key |
-| `GET /registry/projects/{id}` | read | 200 `{"project": {...}}` |
-| `GET /registry/projects/{id}/audit` | read | 200 `{"entries": [...]}`, oldest first |
+| Route | Grant | Body | Answer |
+| --- | --- | --- | --- |
+| `POST /registry/projects` | write | `{}`, with optional `notion_page_id`, `code`, `rotation` | 201 `{"project": {...}, "created": true}`, or 200 with `"created": false` for a repeated key |
+| `POST /registry/projects/{id}/code` | write | `{"code": "ABC", "expected_revision": 1}`; `null` clears the code | 200 `{"project": {...}, "changed": true, "replayed": false}` |
+| `POST /registry/projects/{id}/rotation` | write | `{"rotation": "in", "expected_revision": 2}`; `in` or `out` | as above |
+| `POST /registry/projects/{id}/bindings` | write | `{"notion_page_id": "...", "expected_revision": 3}` | as above |
+| `GET /registry/projects/{id}` | read | | 200 `{"project": {...}}` |
+| `GET /registry/projects/{id}/audit` | read | | 200 `{"entries": [...]}`, oldest first |
+| `GET /registry/pages/{page_id}` | read | | 200 `{"project": {...}}` for an active or legacy binding |
 
-`POST /registry/projects` needs an `Idempotency-Key` header and a JSON object
-body: `{}` or `{"notion_page_id": "<page id>"}`.
+Every `POST` needs an `Idempotency-Key` header and a JSON object body.
 
 A project in an answer:
 
 ```json
 {
   "id": "t6p_0f3a9c1d2b4e5f6a7b8c9d0e",
-  "revision": 1,
-  "code": null,
-  "rotation": "out",
-  "bindings": [{"system": "notion", "page_id": "<32 hex characters>", "bound_at": 1700000000.0}],
+  "revision": 3,
+  "code": "ABC",
+  "rotation": "in",
+  "bindings": [
+    {"system": "notion", "page_id": "<32 hex characters>", "bound_at": 1700000000.0, "status": "active"}
+  ],
   "sync": "pending",
   "created_at": 1700000000.0
 }
 ```
 
 `sync` is `pending` while an accepted change has not reached Notion, then
-`synced`. Times are seconds since the epoch. An audit entry has `project_id`,
-`action` (`registered` or `page_bound`), `actor`, `at`, `before` and `after`.
+`synced`. Times are seconds since the epoch. A binding's `status` is `active`
+or `legacy`. An audit entry has `project_id`, `action` (`registered`,
+`page_bound`, `code_changed`, `rotation_changed` or `classified`), `actor`,
+`at`, `before` and `after`.
 
 | Status | Meaning |
 | --- | --- |
-| 400 | no `Idempotency-Key`, body is not a JSON object, or a blank or non-string `notion_page_id` |
+| 400 | no `Idempotency-Key`, body is not a JSON object, or a missing or wrong-typed field (`expected_revision` is required on a change) |
 | 401 | missing or unknown secret |
 | 403 | the secret has no registry grant for this route |
-| 404 | no such Project or route |
+| 404 | no such Project, page or route |
+| 409 | `{"error": "code_held", "code": "...", "held_by": ["t6p_..."], "reason": "in_rotation"}` (or `"unclassified"`) |
+| 409 | `{"error": "revision_conflict", "revision": 4}`: read the Project again |
 | 409 | `{"error": "page_already_bound", "project_id": "..."}` or `{"error": "idempotency_key_reused"}` |
-| 503 | the server was started without a registry |
+| 503 | `{"error": "registry_unavailable"}`, or the server was started without a registry |
 
 ## Drives
 
