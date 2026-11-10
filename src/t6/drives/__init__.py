@@ -2,7 +2,8 @@
 
 A Drive is a physical external drive (portable or powered desktop), owned by
 T6 or by a Studio. It is never Google Drive. A Drive is identified by its
-normalized serial number, so one drive can be recorded only once. It is not a
+normalized serial number, so one drive can be recorded only once. A drive whose
+serial is not known yet is a provisional Drive, flagged "no serial". It is not a
 Notion entity: it has no Notion row. Relations, such as the owning Studio, are
 Notion page IDs.
 
@@ -88,12 +89,15 @@ class Drive:
     """One physical external drive, identified by its normalized serial.
 
     Two Drives with the same serial are the same drive, whatever their other
-    facts say. `owner_studio_id` is the owning Studio's Notion page ID; `None`
+    facts say. A Drive made with `serial=None` is provisional: `no_serial` is
+    True, and the store that records it gives it a `provisional_id` to find it
+    by until `DriveStore.set_serial` makes it a normal Drive. `owner_studio_id` is the owning Studio's Notion page ID; `None`
     means T6 owns the drive. Capacity is in terabytes; use `parse_capacity_tb`
     for sheet text.
     """
 
-    serial: str
+    serial: str | None
+    provisional_id: str | None = None
     brand: str | None = field(default=None, compare=False)
     model: str | None = field(default=None, compare=False)
     capacity_tb: float | None = field(default=None, compare=False)
@@ -105,9 +109,15 @@ class Drive:
     remarks: str | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
-        serial = normalize_serial(self.serial)
-        if not serial:
-            raise ValueError(f"a Drive needs a serial; {self.serial!r} has none")
+        serial = None
+        if self.serial is not None:
+            serial = normalize_serial(self.serial)
+            if not serial:
+                raise ValueError(
+                    f"{self.serial!r} holds no serial; pass serial=None for a Drive with no serial"
+                )
+            if self.provisional_id is not None:
+                raise ValueError("a Drive with a serial has no provisional ID")
         if self.capacity_tb is not None and self.capacity_tb <= 0:
             raise ValueError(f"capacity must be more than 0 TB, got {self.capacity_tb}")
         object.__setattr__(self, "serial", serial)
@@ -117,6 +127,19 @@ class Drive:
     @property
     def owned_by_t6(self) -> bool:
         return self.owner_studio_id is None
+
+    @property
+    def no_serial(self) -> bool:
+        """True for a provisional Drive: its serial is not known yet."""
+        return self.serial is None
+
+    @property
+    def key(self) -> str:
+        """What a store finds this Drive by: its serial, or its provisional ID."""
+        key = self.serial or self.provisional_id
+        if key is None:
+            raise ValueError("a Drive with no serial has no key until a store records it")
+        return key
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -283,15 +306,32 @@ class DriveStore(Protocol):
     """Where Drive records live. The custodian's web app implements it.
 
     Serials passed in are normalized by the store, so any spelling of a serial
-    finds the same Drive.
+    finds the same Drive. Wherever a method takes a serial, a provisional
+    Drive's `provisional_id` works too.
     """
 
-    def add_drive(self, drive: Drive) -> None:
-        """Record a new Drive. Raises DuplicateSerial if its serial is taken."""
+    def add_drive(self, drive: Drive) -> Drive:
+        """Record a new Drive and return it as recorded.
+
+        Raises DuplicateSerial if its serial is taken. A Drive with no serial
+        is recorded as provisional and comes back with the `provisional_id` the
+        store gave it.
+        """
         ...
 
     def get_drive(self, serial: str) -> Drive | None:
         """The Drive with this serial, or None if none is recorded."""
+        ...
+
+    def set_serial(self, provisional_id: str, serial: str) -> Drive:
+        """Give a provisional Drive its serial and return the normal Drive.
+
+        Its Assignments and custody events are kept, and from then on it is
+        found by the serial, not the provisional ID. Raises UnknownDrive if no
+        Drive has this provisional ID, DuplicateSerial if another Drive already
+        has the serial, and ValueError if the Drive already has a serial or the
+        new one is blank.
+        """
         ...
 
     def append_event(self, serial: str, event: CustodyEvent) -> None:
@@ -369,10 +409,10 @@ class ManifestLine:
     """One Drive on a shipment manifest: what went out, to whom, when, logged by whom.
 
     `label` is the label the Drive carried on the release date, or None if it
-    had no Assignment then.
+    had no Assignment then. `serial` is None for a provisional Drive.
     """
 
-    serial: str
+    serial: str | None
     label: str | None
     capacity_tb: float | None
     recipient: Party
@@ -392,7 +432,7 @@ def shipment_manifest(store: DriveStore, shipment_id: str) -> tuple[ManifestLine
     for drive, event in store.shipment_events(shipment_id):
         current = [
             a
-            for a in store.assignment_history(drive.serial)
+            for a in store.assignment_history(drive.key)
             if a.start <= event.on and (a.end is None or a.end >= event.on)
         ]
         lines.append(

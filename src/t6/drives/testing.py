@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from dataclasses import replace
 from datetime import date
 
 from t6.drives import (
@@ -23,6 +24,8 @@ from t6.drives import (
 class InMemoryDriveStore:
     """A DriveStore that keeps Drives in a dict keyed by normalized serial.
 
+    A provisional Drive is keyed by the provisional ID it is given here.
+
     `same_project` says whether two Project page IDs name one Project. The
     default is equality; pass `t6.registry.ProjectRefs.same` to find a Project's
     Assignments under its T6 ID and under any page it was bound to.
@@ -34,14 +37,35 @@ class InMemoryDriveStore:
         self._events: dict[str, list[CustodyEvent]] = {}
         self._assignments: dict[str, list[Assignment]] = {}
         self._shipments = 0
+        self._provisional = 0
         self._shipped: list[tuple[str, CustodyEvent]] = []  # shipment events, in append order
 
-    def add_drive(self, drive: Drive) -> None:
-        if drive.serial in self._drives:
-            raise DuplicateSerial(drive.serial)
-        self._drives[drive.serial] = drive
-        self._events[drive.serial] = []
-        self._assignments[drive.serial] = []
+    def add_drive(self, drive: Drive) -> Drive:
+        if drive.serial is None:
+            self._provisional += 1
+            drive = replace(drive, provisional_id=f"NO-SERIAL-{self._provisional}")
+        if drive.key in self._drives:
+            raise DuplicateSerial(drive.key)
+        self._drives[drive.key] = drive
+        self._events[drive.key] = []
+        self._assignments[drive.key] = []
+        return drive
+
+    def set_serial(self, provisional_id: str, serial: str) -> Drive:
+        old = normalize_serial(provisional_id)
+        if old not in self._drives:
+            raise UnknownDrive(old)
+        if not self._drives[old].no_serial:
+            raise ValueError(f"the Drive {old!r} already has a serial")
+        drive = replace(self._drives[old], serial=serial, provisional_id=None)
+        if drive.key in self._drives:
+            raise DuplicateSerial(drive.key)
+        del self._drives[old]
+        self._drives[drive.key] = drive
+        self._events[drive.key] = self._events.pop(old)
+        self._assignments[drive.key] = self._assignments.pop(old)
+        self._shipped = [(drive.key if key == old else key, event) for key, event in self._shipped]
+        return drive
 
     def get_drive(self, serial: str) -> Drive | None:
         return self._drives.get(normalize_serial(serial))
@@ -96,7 +120,7 @@ class InMemoryDriveStore:
             for assignment in assignments
             if assignment.is_open and self._matches(assignment.project, project)
         ]
-        return sorted(found, key=lambda pair: (pair[1].start, pair[1].label, pair[0].serial))
+        return sorted(found, key=lambda pair: (pair[1].start, pair[1].label, pair[0].key))
 
     def _matches(self, held: Ref, asked: Ref) -> bool:
         if held.page_id is None or asked.page_id is None:

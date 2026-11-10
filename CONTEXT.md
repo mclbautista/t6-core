@@ -11,6 +11,9 @@ Modelled in `t6.drives`.
 - A Drive is identified by its **serial**, normalized: notes in brackets are
   removed, then it is trimmed and upper-cased, so `" abc123 (old) "` and
   `"ABC123"` are the same Drive. One drive is recorded only once.
+- A drive whose serial is not known yet is a **provisional Drive**, flagged
+  "no serial". The store finds it by a provisional ID until its serial is
+  added; then it is a normal Drive with the same history.
 - A Drive is not a Notion entity; it has no Notion row. Its owner is T6 or a
   Studio (a Notion page ID).
 - "Drive" never means Google Drive. Always write **Google Drive** in full for

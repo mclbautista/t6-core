@@ -603,3 +603,95 @@ class ManifestTests(unittest.TestCase):
 
     def test_an_unknown_shipment_has_an_empty_manifest(self) -> None:
         self.assertEqual(shipment_manifest(make_store(), "nope"), ())
+
+
+class ProvisionalDriveTests(unittest.TestCase):
+    def test_a_drive_added_with_no_serial_is_flagged_no_serial(self) -> None:
+        store = make_store()
+
+        recorded = store.add_drive(Drive(serial=None, brand="Acme", capacity_tb=2.0))
+
+        self.assertTrue(recorded.no_serial)
+        self.assertIsNone(recorded.serial)
+        assert recorded.provisional_id is not None
+        self.assertEqual(store.get_drive(recorded.provisional_id), recorded)
+        self.assertEqual(recorded.brand, "Acme")
+        self.assertFalse(store.add_drive(Drive(serial="D1")).no_serial)
+
+    def test_each_provisional_drive_is_its_own_drive(self) -> None:
+        store = make_store()
+        first = store.add_drive(Drive(serial=None))
+        second = store.add_drive(Drive(serial=None))
+        self.assertNotEqual(first.key, second.key)
+        self.assertNotEqual(first, second)
+
+    def test_a_blank_serial_text_is_still_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "serial=None"):
+            Drive(serial=" (sticker torn) ")
+
+    def test_a_provisional_drive_takes_assignments_and_custody_events(self) -> None:
+        store = make_store()
+        key = store.add_drive(Drive(serial=None)).key
+        assign(store, key, "M01", SHOW_A, date(2026, 5, 1))
+        store.append_event(key, event(CustodyKind.RECEIVED, 1))
+
+        self.assertEqual([a.label for a in store.assignment_history(key)], ["M01"])
+        self.assertIs(store.status(key), DriveStatus.IN_CUSTODY)
+        ((drive, _),) = store.open_assignments(SHOW_A)
+        self.assertTrue(drive.no_serial)
+        self.assertEqual(drive.key, key)
+
+    def test_adding_the_serial_makes_a_normal_drive_and_keeps_its_history(self) -> None:
+        store = make_store()
+        key = store.add_drive(Drive(serial=None, brand="Acme")).key
+        assign(store, key, "M01", SHOW_A, date(2026, 5, 1))
+        received = event(CustodyKind.RECEIVED, 1)
+        store.append_event(key, received)
+        shipment_id = release(store, key)
+
+        drive = store.set_serial(key, " zx900bb7 (read under the sticker) ")
+
+        self.assertFalse(drive.no_serial)
+        self.assertEqual(drive.serial, "ZX900BB7")
+        self.assertIsNone(drive.provisional_id)
+        self.assertEqual(drive.brand, "Acme")
+        self.assertEqual(store.get_drive("ZX900BB7"), drive)
+        self.assertIsNone(store.get_drive(key))
+        self.assertEqual([a.label for a in store.assignment_history("ZX900BB7")], ["M01"])
+        events = store.list_events("ZX900BB7")
+        self.assertEqual(events[0], received)
+        self.assertEqual(len(events), 2)
+        self.assertIs(store.status("ZX900BB7"), DriveStatus.RELEASED)
+        (line,) = shipment_manifest(store, shipment_id)
+        self.assertEqual((line.serial, line.label), ("ZX900BB7", "M01"))
+
+    def test_a_serial_another_drive_has_is_refused_with_a_clear_message(self) -> None:
+        store = make_store()
+        store.add_drive(Drive(serial="ABC123"))
+        key = store.add_drive(Drive(serial=None)).key
+        assign(store, key, "M01", SHOW_A, date(2026, 5, 1))
+
+        with self.assertRaisesRegex(DuplicateSerial, "'ABC123' is already recorded"):
+            store.set_serial(key, "abc123")
+
+        still = store.get_drive(key)
+        assert still is not None
+        self.assertTrue(still.no_serial)
+        self.assertEqual(len(store.assignment_history(key)), 1)
+
+    def test_only_a_recorded_provisional_drive_can_be_given_a_serial(self) -> None:
+        store = make_store()
+        store.add_drive(Drive(serial="ABC123"))
+        key = store.add_drive(Drive(serial=None)).key
+        with self.assertRaises(UnknownDrive):
+            store.set_serial("NOPE", "NEW1")
+        with self.assertRaisesRegex(ValueError, "already has a serial"):
+            store.set_serial("ABC123", "NEW1")
+        with self.assertRaises(ValueError):
+            store.set_serial(key, "  ")
+
+    def test_a_provisional_drive_on_a_manifest_has_no_serial(self) -> None:
+        store = make_store()
+        key = store.add_drive(Drive(serial=None)).key
+        (line,) = shipment_manifest(store, release(store, key))
+        self.assertIsNone(line.serial)

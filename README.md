@@ -404,8 +404,14 @@ I/O and needs no extra.
   (`FormFactor.PORTABLE` or `FormFactor.POWERED_DESKTOP`), owner (a Studio page
   ID, or `None` for T6), purchase date, warranty and remarks.
 - The serial is the identity. `normalize_serial` removes notes in brackets,
-  trims and upper-cases, so `" abc123 (old) "` is `"ABC123"`. A Drive needs a
-  serial.
+  trims and upper-cases, so `" abc123 (old) "` is `"ABC123"`.
+- A drive whose serial is unknown is a provisional Drive: `Drive(serial=None)`.
+  `add_drive` returns the Drive as recorded, with `no_serial` True and the
+  `provisional_id` the store gave it. `drive.key` is the serial or, for a
+  provisional Drive, that ID, and every store method that takes a serial takes
+  it too. `DriveStore.set_serial(provisional_id, serial)` turns it into a
+  normal Drive and keeps its Assignments and events; a serial another Drive
+  has raises `DuplicateSerial`.
 - `parse_capacity_tb` reads sheet text: `"4TB, P"` is 4.0 and `"500GB"` is 0.5.
   Text it cannot read raises `ValueError` naming the text.
 - `DriveStore` is the interface the custodian's web app implements:
