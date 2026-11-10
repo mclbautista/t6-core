@@ -723,3 +723,18 @@ class NotRecordedTests(unittest.TestCase):
         store.append_event("D1", event(CustodyKind.RECEIVED, 1, party=None))
         self.assertIsNone(store.list_events("D1")[0].party)
         self.assertIs(store.status("D1"), DriveStatus.IN_CUSTODY)
+
+    def test_a_retired_event_can_have_no_date(self) -> None:
+        store = store_with_drives("D1")
+        store.append_event("D1", event(CustodyKind.RETIRED, 1, reason="dead", on=None))
+        self.assertIsNone(store.list_events("D1")[0].on)
+        self.assertIs(store.status("D1"), DriveStatus.RETIRED)
+
+    def test_a_manifest_for_an_undated_release_uses_the_open_assignment(self) -> None:
+        store = store_with_drives("D1")
+        assign(store, "D1", "OLD01", SHOW_B, date(2026, 1, 1), end=date(2026, 4, 30))
+        assign(store, "D1", "M01", SHOW_A, date(2026, 5, 1))
+        store.append_event("D1", event(CustodyKind.RELEASED, 1, on=None, shipment_id="batch-9"))
+        (line,) = shipment_manifest(store, "batch-9")
+        self.assertEqual(line.label, "M01")
+        self.assertIsNone(line.on)

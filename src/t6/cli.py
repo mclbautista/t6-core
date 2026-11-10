@@ -168,7 +168,7 @@ def _classify_projects(args: argparse.Namespace) -> int:
 
 def _drives_import_dry_run(args: argparse.Namespace) -> int:
     try:
-        from t6.drives.importer import import_per_project_workbook
+        from t6.drives.importer import import_log_sheet_workbook, import_per_project_workbook
     except ImportError:
         return _fail("drives-import-dry-run needs the drives extra: pip install 't6[drives]'")
     from dataclasses import asdict
@@ -181,15 +181,16 @@ def _drives_import_dry_run(args: argparse.Namespace) -> int:
     try:
         listed: Any = json.loads(args.projects.read_text(encoding="utf-8")) if args.projects else []
         projects = tuple(Project(page_id=p["page_id"], name=p["name"]) for p in listed)
-        result = import_per_project_workbook(
-            args.workbook,
-            InMemoryDriveStore(),
-            lookup=Lookup(Index(projects=projects)),
-            logged_by=Ref(text="dry run"),
-        )
+        store, lookup, logged_by = InMemoryDriveStore(), Lookup(Index(projects=projects)), Ref(text="dry run")
+        results = [import_per_project_workbook(args.workbook, store, lookup=lookup, logged_by=logged_by)]
+        if args.log_sheet:
+            results.append(import_log_sheet_workbook(args.log_sheet, store, lookup=lookup, logged_by=logged_by))
     except (OSError, ValueError, KeyError, TypeError) as error:
         return _fail(str(error))
-    report = {"imported": result.imported, "review": [asdict(item) for item in result.review]}
+    report = {
+        "imported": sum(result.imported for result in results),
+        "review": [asdict(item) for result in results for item in result.review],
+    }
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
 
@@ -331,10 +332,11 @@ def main(
     restore.add_argument("--from", dest="source", type=Path, required=True, metavar="DIR", help="a directory made by backup")
     dry_run = commands.add_parser(
         "drives-import-dry-run",
-        help="Import a legacy drive workbook into memory and print the review report",
+        help="Import the legacy drive workbooks into memory and print the review report",
         description="Nothing is written anywhere: the import runs into an in-memory store that is thrown away.",
     )
     dry_run.add_argument("workbook", type=Path, help="the per-project drive workbook (.xlsx)")
+    dry_run.add_argument("--log-sheet", type=Path, metavar="FILE", help="also import the drive log sheet workbook (.xlsx) into the same store")
     dry_run.add_argument("--projects", type=Path, metavar="FILE", help="JSON list of {\"page_id\", \"name\"} to resolve Project names against; without it every Project is unresolved")
     args = parser.parse_args(argv)
     if args.command == "drives-import-dry-run":

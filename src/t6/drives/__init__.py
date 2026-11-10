@@ -200,8 +200,9 @@ class CustodyEvent:
     """One entry in a Drive's custody log: received, released, returned or retired.
 
     Holds the date, the Contact or Studio involved, the Project, who logged it
-    and an optional reason. `party` is None when nobody recorded who was
-    involved, as in rows imported from the old workbooks. Retired needs a reason (for example dead, lost,
+    and an optional reason. `on` and `party` are None when the date or who
+    was involved was never recorded, as in rows imported from the old
+    workbooks. Retired needs a reason (for example dead, lost,
     sold). An event is never edited: a correction is a new event.
 
     Released events that share a `shipment_id` are one shipment: one handover
@@ -209,7 +210,7 @@ class CustodyEvent:
     """
 
     kind: CustodyKind
-    on: date
+    on: date | None
     party: Party | None
     project: Ref
     logged_by: Ref
@@ -419,7 +420,7 @@ class ManifestLine:
     label: str | None
     capacity_tb: float | None
     recipient: Party | None
-    on: date
+    on: date | None
     logged_by: Ref
 
 
@@ -429,15 +430,18 @@ def shipment_manifest(store: DriveStore, shipment_id: str) -> tuple[ManifestLine
     The label comes from the Assignment the Drive was on at the release date,
     so a manifest made later still shows the label that was on the sticker. If
     several Assignments cover that date, the one that started last is used; an
-    Assignment with no recorded start counts as started before any date. An
+    Assignment with no recorded start counts as started before any date. When
+    the release has no recorded date, the Drive's open Assignments are used. An
     unknown shipment ID gives an empty tuple.
     """
     lines = []
     for drive, event in store.shipment_events(shipment_id):
+        on = event.on
         current = [
             a
             for a in store.assignment_history(drive.key)
-            if (a.start is None or a.start <= event.on) and (a.end is None or a.end >= event.on)
+            if (on is None or a.start is None or a.start <= on)
+            and (a.end is None or (on is not None and a.end >= on))
         ]
         lines.append(
             ManifestLine(
