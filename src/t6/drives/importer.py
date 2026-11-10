@@ -56,7 +56,7 @@ _TAB_DATE = re.compile(r"DATE\s*:\s*(.+)", re.IGNORECASE)
 _LABEL = "HARD DRIVE LABEL"
 _SERIAL_COLUMN = "SERIAL NUMBER"
 _SERIAL = re.compile(r"[A-Z0-9-]+")
-_SERIAL_IN_REMARKS = re.compile(r"(?<!\w)S/N\s*:?\s*(\S+)", re.IGNORECASE)
+_SERIAL_IN_REMARKS = re.compile(r"(?<!\w)S/N\s*:?\s*", re.IGNORECASE)
 _OLD_NEW = re.compile(r"\b(OLD|NEW)\b")
 _DEAD = re.compile(r"\bDEAD\b", re.IGNORECASE)
 _ROLE_WORDS = {
@@ -327,10 +327,9 @@ def _serial(row: _Row) -> str | None:
     text = row.text(_SERIAL_COLUMN)
     if not text:
         return None
-    normalized = normalize_serial(text)
-    # The serial prefix is only a candidate when the cell also contains notes.
-    found = re.match(r"[A-Z0-9-]+", normalized)
-    return found.group(0) if found else None
+    # Preserve the complete candidate, including internal spaces/punctuation.
+    # The caller marks non-clean cells as suspected rather than accepting them.
+    return normalize_serial(text) or None
 
 
 def _old_new_pairs(rows: list[_Row]) -> dict[int, str]:
@@ -368,7 +367,7 @@ def _per_project_facts(row: _Row, lookup: Lookup, logged_by: Ref) -> _Facts:
         capacity_tb=_capacity(row),
         label=label,
         description=row.text("HD DESCRIPTION"),
-        remarks="\n".join(filter(None, (row.text("REMARKS"), row.text(_SERIAL_COLUMN)))) or None,
+        remarks=row.text("REMARKS"),
         format=row.text("FORMAT"),
     )
     assignment = Assignment(
@@ -400,7 +399,7 @@ def _inventory_facts(row: _Row, lookup: Lookup, logged_by: Ref) -> _Facts:
         capacity_tb=_capacity(row),
         label=label,
         description=row.text("HD DESCRIPTION"),
-        remarks="\n".join(filter(None, (row.text("REMARKS"), row.text(_SERIAL_COLUMN)))) or None,
+        remarks=row.text("REMARKS"),
         format=row.text("FORMAT"),
     )
     assignment = Assignment(
@@ -468,16 +467,19 @@ def _import_movements(
     imported = 0
     unresolved: set[str] = set()
     for row in rows:
-        tokens = _SERIAL_IN_REMARKS.findall(row.text("REMARKS") or "")
-        if any(not _SERIAL.fullmatch(token.upper()) for token in tokens):
-            review.append(row.review("ambiguous serial", row.evidence()))
-            continue
-        serials = {normalize_serial(token) for token in tokens}
-        if len(serials) != 1:
-            reason = "movement with no serial" if not serials else "ambiguous serial"
+        remarks = row.text("REMARKS") or ""
+        markers = list(_SERIAL_IN_REMARKS.finditer(remarks))
+        if len(markers) != 1:
+            reason = "movement with no serial" if not markers else "ambiguous serial"
             review.append(row.review(reason, row.evidence()))
             continue
-        serial = next(iter(serials))
+        # The whole suffix must be clean: whitespace or punctuation may be part
+        # of an uncertain serial, never evidence for accepting just its prefix.
+        token = remarks[markers[0].end():].strip()
+        if not _SERIAL.fullmatch(token.upper()):
+            review.append(row.review("ambiguous serial", row.evidence()))
+            continue
+        serial = normalize_serial(token)
         if serial in uncertain_serials or store.has_suspected_serial(serial):
             review.append(row.review("ambiguous serial", row.evidence()))
             continue
@@ -535,8 +537,9 @@ def _movement_facts(
     remarks = row.text("REMARKS")
     reason = "\n".join(filter(None, (event.reason, remarks))) or None
     event = replace(event, reason=reason)
+    physical_remarks = _SERIAL_IN_REMARKS.split(remarks or "", maxsplit=1)[0].strip() or None
     return Drive(serial=serial, label=label, description=row.text("HD DESCRIPTION"),
-                 remarks=remarks, capacity_tb=capacity, needs_review=label is None,
+                 remarks=physical_remarks, capacity_tb=capacity, needs_review=label is None,
                  review_note="no label" if label is None else None), assignment, event
 
 

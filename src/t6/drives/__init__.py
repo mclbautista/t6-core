@@ -490,7 +490,7 @@ def shipment_manifest(store: DriveStore, shipment_id: str) -> tuple[ManifestLine
                 description=drive.description,
                 needs_review=drive.needs_review,
                 review_note=drive.review_note,
-                label=current[-1].label if current else drive.label,
+                label=(current[-1].label or drive.label) if current else drive.label,
                 capacity_tb=drive.capacity_tb,
                 recipient=event.party,
                 on=event.on,

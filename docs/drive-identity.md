@@ -24,7 +24,9 @@ trim, collapse runs of internal whitespace to one space and uppercase. It does
 not delete the remaining internal spaces or other punctuation.
 Both accepted and suspected values use it. A supplied string that normalizes to
 blank raises `ValueError`; use `None` to remove a value. The importer separately
-preserves annotated cells as raw notes and only retains a candidate as suspected.
+preserves annotated cells in traceable review items/notes and only retains the
+complete normalized candidate as suspected. Serial-cell text is not copied into
+physical remarks and cannot supply a second identifying fact.
 
 All store operations take exact, case-sensitive permanent IDs. `get_drive(id)`
 returns `None` for unknown IDs; history/mutation operations raise `UnknownDrive`
@@ -99,8 +101,12 @@ accepted serials can match across workbooks, but additional/conflicting physical
 observations are preserved in an `additional drive facts` review item rather than
 overwriting an existing record. Reused labels and descriptions never match.
 A monthly movement with exactly one complete, clean explicit `S/N` token can name
-an accepted Drive or create a new one. Tokens containing unsupported punctuation
-are not truncated to a prefix. A candidate recorded as suspected in the store or
+an accepted Drive or create a new one. Repeated markers are ambiguous even when
+the candidates are identical. The entire suffix after the marker must be one
+clean token; trailing notes, internal whitespace and unsupported punctuation go
+to review rather than matching a prefix. Remarks preceding the marker can supply
+physical notes; the full movement remarks remain in the custody event reason.
+A candidate recorded as suspected in the store or
 noted/shared in this workbook's inventory blocks automatic association, even when
 an inventory row is unreadable. `has_suspected_serial` is a normalized review guard,
 not an identity lookup. Absent/multiple/unsafe candidates are individual traceable review

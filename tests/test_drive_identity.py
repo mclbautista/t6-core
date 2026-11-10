@@ -15,6 +15,14 @@ PARTY = Party(PartyKind.CONTACT, Ref(text="Invented Recipient"))
 
 
 class PermanentIdentityTests(unittest.TestCase):
+    def test_manifest_uses_physical_label_when_assignment_label_is_missing(self) -> None:
+        store = InMemoryDriveStore()
+        drive = store.add_drive(Drive(label="invented enclosure label"))
+        store.add_assignment(drive.id, Assignment(label=None, project=PROJECT, role=None, start=None))
+        shipment = store.release_shipment([drive.id], on=date(2024, 1, 2), party=PARTY, project=PROJECT, logged_by=LOGGER)
+        line, = shipment_manifest(store, shipment)
+        self.assertEqual(line.label, "invented enclosure label")
+
     def test_removing_the_sole_identifying_fact_fails_atomically_until_another_is_recorded(self) -> None:
         store = InMemoryDriveStore()
         drive = store.add_drive(Drive(serial="SYNTH-SOLE"))
