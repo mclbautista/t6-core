@@ -461,6 +461,7 @@ class RefTests(unittest.TestCase):
         store = store_with_drive()
         store.append_event("ZX900AA1", stored)
         (back,) = store.list_events("ZX900AA1")
+        assert back.party is not None
         self.assertTrue(back.party.ref.unresolved)
         self.assertEqual(back.party.ref.text, "Some Studio")
 
@@ -695,3 +696,30 @@ class ProvisionalDriveTests(unittest.TestCase):
         key = store.add_drive(Drive(serial=None)).key
         (line,) = shipment_manifest(store, release(store, key))
         self.assertIsNone(line.serial)
+
+
+class NotRecordedTests(unittest.TestCase):
+    """Facts the old workbooks never recorded are None, not a guess."""
+
+    def test_an_assignment_can_have_no_role_and_no_start(self) -> None:
+        store = store_with_drives("D1")
+        store.add_assignment(
+            "D1", Assignment(label="EDIT", project=SHOW_A, role=None, start=None, end=date(2026, 1, 1))
+        )
+        assign(store, "D1", "M01", SHOW_A, date(2020, 1, 1))
+
+        self.assertEqual([a.label for a in store.assignment_history("D1")], ["EDIT", "M01"])
+        self.assertIsNone(store.assignment_history("D1")[0].role)
+
+    def test_an_assignment_with_no_start_counts_as_started_for_a_manifest(self) -> None:
+        store = store_with_drives("D1")
+        store.add_assignment("D1", Assignment(label="EDIT", project=SHOW_A, role=None, start=None))
+        (line,) = shipment_manifest(store, release(store, "D1"))
+        self.assertEqual(line.label, "EDIT")
+        self.assertEqual([a.label for _, a in store.open_assignments(SHOW_A)], ["EDIT"])
+
+    def test_an_event_can_have_no_party(self) -> None:
+        store = store_with_drives("D1")
+        store.append_event("D1", event(CustodyKind.RECEIVED, 1, party=None))
+        self.assertIsNone(store.list_events("D1")[0].party)
+        self.assertIs(store.status("D1"), DriveStatus.IN_CUSTODY)

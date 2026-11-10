@@ -200,7 +200,8 @@ class CustodyEvent:
     """One entry in a Drive's custody log: received, released, returned or retired.
 
     Holds the date, the Contact or Studio involved, the Project, who logged it
-    and an optional reason. Retired needs a reason (for example dead, lost,
+    and an optional reason. `party` is None when nobody recorded who was
+    involved, as in rows imported from the old workbooks. Retired needs a reason (for example dead, lost,
     sold). An event is never edited: a correction is a new event.
 
     Released events that share a `shipment_id` are one shipment: one handover
@@ -209,7 +210,7 @@ class CustodyEvent:
 
     kind: CustodyKind
     on: date
-    party: Party
+    party: Party | None
     project: Ref
     logged_by: Ref
     reason: str | None = None
@@ -262,13 +263,14 @@ class Assignment:
     `project` is a `Ref`: a Notion page ID, or the Project's name as text when
     it could not be resolved. An Assignment with no `end` is open: the Drive is
     still out for that Project. The same label may be on different Drives in
-    different Projects.
+    different Projects. `role` and `start` are None when they were never
+    recorded, as in rows imported from the old workbooks.
     """
 
     label: str
     project: Ref
-    role: Role
-    start: date
+    role: Role | None
+    start: date | None
     end: date | None = None
     remarks: str | None = None
 
@@ -276,7 +278,7 @@ class Assignment:
         label = _blank_to_none(self.label)
         if label is None:
             raise ValueError("an Assignment needs a label")
-        if self.end is not None and self.end < self.start:
+        if self.end is not None and self.start is not None and self.end < self.start:
             raise ValueError(f"an Assignment cannot end ({self.end}) before it starts ({self.start})")
         object.__setattr__(self, "label", label)
         object.__setattr__(self, "remarks", _blank_to_none(self.remarks))
@@ -390,7 +392,7 @@ class DriveStore(Protocol):
     def open_assignments(self, project: Ref) -> list[tuple[Drive, Assignment]]:
         """The Drives still out for a Project, with their open Assignments.
 
-        Ordered by start date, then label. Another Project that has the same
+        Ordered by start date (unknown starts first), then label. Another Project that has the same
         label is not included.
         """
         ...
@@ -398,8 +400,9 @@ class DriveStore(Protocol):
     def assignment_history(self, serial: str) -> list[Assignment]:
         """A Drive's Assignments across all Projects, oldest start first.
 
-        Returns an empty list for a recorded Drive with none. Raises
-        UnknownDrive if the serial is not recorded.
+        Assignments with no recorded start come first. Returns an empty list
+        for a recorded Drive with none. Raises UnknownDrive if the serial is not
+        recorded.
         """
         ...
 
@@ -415,7 +418,7 @@ class ManifestLine:
     serial: str | None
     label: str | None
     capacity_tb: float | None
-    recipient: Party
+    recipient: Party | None
     on: date
     logged_by: Ref
 
@@ -425,7 +428,8 @@ def shipment_manifest(store: DriveStore, shipment_id: str) -> tuple[ManifestLine
 
     The label comes from the Assignment the Drive was on at the release date,
     so a manifest made later still shows the label that was on the sticker. If
-    several Assignments cover that date, the one that started last is used. An
+    several Assignments cover that date, the one that started last is used; an
+    Assignment with no recorded start counts as started before any date. An
     unknown shipment ID gives an empty tuple.
     """
     lines = []
@@ -433,7 +437,7 @@ def shipment_manifest(store: DriveStore, shipment_id: str) -> tuple[ManifestLine
         current = [
             a
             for a in store.assignment_history(drive.key)
-            if a.start <= event.on and (a.end is None or a.end >= event.on)
+            if (a.start is None or a.start <= event.on) and (a.end is None or a.end >= event.on)
         ]
         lines.append(
             ManifestLine(
