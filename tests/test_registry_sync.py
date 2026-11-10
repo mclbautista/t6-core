@@ -241,6 +241,19 @@ class ReconciliationTests(SyncTestCase):
         self.drain()
         self.assertEqual(self.shown(page)[0], bound["id"])
 
+    def test_an_unbound_page_is_offered_to_the_operator_with_its_title(self) -> None:
+        page = self.page(name="Some Show")
+        offered: list[tuple[str, str]] = []
+        transport = InProcess(self.app)
+        projection = ProjectProjection(
+            self.client, RegistryClient(transport, WORKER_SECRET), PROJECTS, offer=lambda p, label: offered.append((p, label))
+        )
+        self.webhook(page)
+        worker = Worker(QueueClient(transport, WORKER_SECRET), "main", projection.handlers())
+        while worker.run_once():
+            pass
+        self.assertEqual(offered, [(page, "Some Show")])
+
     def test_a_page_outside_the_projects_data_source_is_ignored(self) -> None:
         page = self.page(source=OTHER_SOURCE)
         self.webhook(page)

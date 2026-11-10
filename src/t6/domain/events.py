@@ -126,6 +126,8 @@ class JobKind(str, Enum):
     their new values, so a worker reads the page to find the current state."""
     REGISTRY_SYNC = "registry.sync"
     """A Project changed in the registry. A worker shows its current state in Notion."""
+    OPERATOR_DELIVER = "operator.deliver"
+    """An operator card is new or changed. A worker sends it to Sixto, or edits the one already sent."""
     TAP = "tap"
     """A person tapped a button on a card the gateway sent for t6-core."""
 

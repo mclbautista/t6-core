@@ -10,6 +10,8 @@ import sys
 import threading
 
 from t6.worker.client import HttpTransport, QueueClient, Transport
+from t6.worker.gateway import GatewayClient
+from t6.worker.operator import CardDelivery, OperatorClient
 from t6.worker.runner import Handler, Worker
 
 HANDLERS: dict[str, dict[str, Handler]] = {}
@@ -56,17 +58,29 @@ def configured_handlers(
 
     With `T6_NOTION_TOKEN` and `T6_NOTION_PROJECTS_DATA_SOURCE` set, the main
     queue gets the Project registry's Notion handlers: `registry.sync` and
-    `notion.page_changed` (needs the `notion` extra).
+    `notion.page_changed` (needs the `notion` extra). With `T6_GATEWAY_URL` and
+    `T6_GATEWAY_SECRET` set, it also gets `operator.deliver` (operator cards in
+    Sixto), and a Projects page no Project owns is offered to the operator.
     """
-    token, projects = environ.get("T6_NOTION_TOKEN"), environ.get("T6_NOTION_PROJECTS_DATA_SOURCE")
-    if settings.queue != "main" or not (token and projects):
+    if settings.queue != "main":
         return {}
-    from t6.notion import NotionClient
-    from t6.notion.projection import ProjectProjection
-    from t6.worker.registry import RegistryClient
+    handlers: dict[str, Handler] = {}
+    gateway_url, gateway_secret = environ.get("T6_GATEWAY_URL"), environ.get("T6_GATEWAY_SECRET")
+    operator = OperatorClient(transport, settings.secret)
+    if gateway_url and gateway_secret:
+        handlers.update(CardDelivery(operator, GatewayClient(HttpTransport(gateway_url), gateway_secret)).handlers())
+    token, projects = environ.get("T6_NOTION_TOKEN"), environ.get("T6_NOTION_PROJECTS_DATA_SOURCE")
+    if token and projects:
+        from t6.notion import NotionClient
+        from t6.notion.projection import ProjectProjection
+        from t6.worker.registry import RegistryClient
 
-    projection = ProjectProjection(NotionClient(token), RegistryClient(transport, settings.secret), projects)
-    return {"main": projection.handlers()}
+        offer = operator.offer_unbound_page if gateway_url and gateway_secret else None
+        projection = ProjectProjection(
+            NotionClient(token), RegistryClient(transport, settings.secret), projects, offer=offer
+        )
+        handlers.update(projection.handlers())
+    return {"main": handlers} if handlers else {}
 
 
 def serve(worker: Worker, stop: threading.Event, poll_seconds: float) -> None:

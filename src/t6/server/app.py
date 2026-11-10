@@ -37,6 +37,8 @@ from t6.domain.events import (
     JobKind,
     JsonValue,
 )
+from t6.operator import PREFIX as OPERATOR_PREFIX
+from t6.operator import Card, OperatorService
 from t6.registry import (
     AuditEntry,
     Changed,
@@ -102,6 +104,8 @@ class Grant:
     registry_write: bool = False
     registry_sync: bool = False
     """May report Notion sync results and page observations. Changes no Project."""
+    operator: bool = False
+    """May offer operator cards and deliver them (read a card, record that it was sent)."""
     actor: str = ""
     """Who this holder is in the registry's audit history."""
 
@@ -115,6 +119,9 @@ class ServerConfig:
     tap_secret: str = ""
     grants: tuple[Grant, ...] = ()
     review_quiet_seconds: float = REVIEW_QUIET_SECONDS
+    operator_ids: tuple[int, ...] = ()
+    """Telegram user IDs allowed to tap operator cards. The first one receives the cards."""
+    operator_ttl_seconds: float = 7 * 24 * 3600.0
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str]) -> ServerConfig:
@@ -128,6 +135,7 @@ class ServerConfig:
                     submit=main | frameio,
                     registry_read=True,
                     registry_sync=True,
+                    operator=True,
                     actor="main-worker",
                 )
             )
@@ -144,6 +152,8 @@ class ServerConfig:
             notion_webhook_token=environ.get("T6_NOTION_WEBHOOK_TOKEN", ""),
             tap_secret=environ.get("T6_TAP_SECRET", ""),
             grants=tuple(grants),
+            operator_ids=tuple(int(part) for part in environ.get("T6_OPERATOR_IDS", "").replace(",", " ").split()),
+            operator_ttl_seconds=float(environ.get("T6_OPERATOR_TTL_SECONDS") or 7 * 24 * 3600.0),
         )
 
 
@@ -164,8 +174,10 @@ class WebhookApp:
         clock: Callable[[], float] = time.time,
         on_notion_verification: Callable[[str], None] = lambda token: None,
         registry: ProjectRegistry | None = None,
+        operator: OperatorService | None = None,
     ) -> None:
         self._registry = registry
+        self._operator = operator
         self._queue = queue
         self._config = config
         self._clock = clock
@@ -262,6 +274,8 @@ class WebhookApp:
             answer = self._registry_route(parts.path[len("/registry/") :], request)
             self._dispatch_sync()
             return answer
+        if parts.path.startswith("/operator/"):
+            return self._operator_route(parts.path[len("/operator/") :], request)
         return Response(404)
 
     def _dispatch_sync(self) -> None:
@@ -298,18 +312,108 @@ class WebhookApp:
         if body is None or not isinstance(key, str) or not key.strip():
             return Response(400, {"error": "tap needs a JSON body and an idempotency key"})
         sender = body.get("from")
+        raw = body.get("data")
+        data = raw if isinstance(raw, str) else ""
+        if data.startswith(OPERATOR_PREFIX):
+            return self._operator_tap(data, body, key)
         job = Job(
             kind=JobKind.TAP,
             dedupe_key=f"tap:{key}",
             payload={
-                "data": body.get("data") if isinstance(body.get("data"), str) else "",
+                "data": data,
                 "from_id": sender.get("id") if isinstance(sender, dict) else None,
                 "chat": body.get("chat"),
                 "message_id": body.get("message_id"),
+                "project_id": self._project_of_tap(data),
             },
         )
         made = self._queue.submit(MAIN_QUEUE, job.kind.value, job.dedupe_key, job.payload)
         return Response(200, {"job_id": made.job_id, "created": made.created})
+
+    def _project_of_tap(self, data: str) -> str | None:
+        """The T6 Project ID for a Project Start tap (`approve:<page>`, `retry:<page>`), else None."""
+        action, _, page = data.partition(":")
+        if self._registry is None or action not in {"approve", "retry"} or not page:
+            return None
+        try:
+            project = self._registry.get_by_page(page)
+        except RegistryUnavailable:
+            return None
+        return None if project is None else project.id
+
+    # -- operator actions -----------------------------------------------------------
+
+    def _operator_tap(self, data: str, body: dict[str, Any], key: str) -> Response:
+        if self._operator is None:
+            return Response(503, {"error": "operator actions not configured"})
+        sender = body.get("from")
+        who = sender.get("id") if isinstance(sender, dict) else None
+        result = self._operator.tap(
+            data,
+            operator=who if isinstance(who, int) and not isinstance(who, bool) else None,
+            chat=body.get("chat"),
+            message_id=body.get("message_id"),
+            tap_key=key,
+        )
+        if not result.accepted:
+            return Response(503, {"error": result.outcome})
+        if result.changed and result.action is not None:
+            self._deliver(result.action.token, result.action.version)
+        self._dispatch_sync()
+        return Response(200, {"outcome": result.outcome})
+
+    def _deliver(self, token: str, version: int) -> None:
+        self._queue.submit(
+            MAIN_QUEUE,
+            JobKind.OPERATOR_DELIVER.value,
+            f"operator.deliver:{token}:{version}",
+            {"token": token, "version": version},
+        )
+
+    def _operator_route(self, name: str, request: Request) -> Response:
+        if self._operator is None:
+            return Response(503, {"error": "operator actions not configured"})
+        grant = next((g for g in self._config.grants if _same(g.secret, _bearer(request))), None)
+        if grant is None:
+            return Response(401, {"error": "bad secret"})
+        if not (grant.operator or grant.registry_write):
+            return Response(403, {"error": "operator actions not allowed"})
+        steps = name.split("/")
+        try:
+            if steps == ["offers"]:
+                return self._operator_offer(self._operator, request)
+            if len(steps) == 3 and steps[0] == "actions" and steps[1] and grant.operator:
+                if steps[2] == "card" and request.method == "GET":
+                    card = self._operator.card(steps[1])
+                    return Response(404) if card is None else Response(200, {"card": _card_body(card)})
+                if steps[2] == "delivered" and request.method == "POST":
+                    body = _json_object(request.body) or {}
+                    ref, mid = body.get("message_ref"), body.get("message_id")
+                    if not (isinstance(ref, int) and isinstance(mid, int)):
+                        return Response(400, {"error": "message_ref and message_id are required"})
+                    return Response(200 if self._operator.delivered(steps[1], ref, mid) else 404)
+        except RegistryUnavailable:
+            return Response(503, {"error": "registry_unavailable"})
+        return Response(404)
+
+    def _operator_offer(self, operator: OperatorService, request: Request) -> Response:
+        if request.method != "POST":
+            return Response(405)
+        body = _json_object(request.body)
+        if body is None:
+            return Response(400, {"error": "body is not a JSON object"})
+        if body.get("kind") == "unbound_page" and isinstance(body.get("page_id"), str):
+            offered = operator.offer_unbound_page(body["page_id"], str(body.get("label") or ""))
+        elif body.get("kind") == "classify" and isinstance(body.get("project_id"), str):
+            maybe = operator.offer_classification(body["project_id"])
+            if maybe is None:
+                return Response(200, {"offered": False})
+            offered = maybe
+        else:
+            return Response(400, {"error": "kind is unbound_page (page_id) or classify (project_id)"})
+        action, created = offered
+        self._deliver(action.token, action.version)
+        return Response(200, {"offered": True, "created": created, "token": action.token})
 
     def _queue_route(self, name: str, query: str, request: Request) -> Response:
         grant = next((g for g in self._config.grants if _same(g.secret, _bearer(request))), None)
@@ -532,6 +636,9 @@ class WebhookApp:
             )
             if project is None:
                 return Response(404, {"error": "no such project"})
+            if self._operator is not None:
+                for moved in self._operator.sync_changed(project.id):
+                    self._deliver(moved.token, moved.version)
             return Response(200, {"project": _project_body(project)})
         available, shown = body.get("available"), body.get("shown")
         if not isinstance(available, bool) or not (shown is None or isinstance(shown, dict)):
@@ -554,6 +661,18 @@ class WebhookApp:
 
 _REGISTRY_CHANGES = frozenset({"code", "rotation", "bindings"})
 _REGISTRY_SYNC_ROUTES = frozenset({("projects", "sync"), ("pages", "observed"), ("pages", "reconcile")})
+
+
+def _card_body(card: Card) -> dict[str, JsonValue]:
+    return {
+        "token": card.token,
+        "version": card.version,
+        "chat": card.chat,
+        "message_ref": card.message_ref,
+        "message_id": card.message_id,
+        "text": card.text,
+        "buttons": [[{"text": b.text, "payload": b.payload} for b in row] for row in card.buttons],
+    }
 
 
 def _review_body(item: ReviewItem) -> dict[str, JsonValue]:

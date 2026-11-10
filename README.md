@@ -105,6 +105,9 @@ Mac mini. Both use only the standard library.
 | `T6_REGISTRY_READ_SECRET` | registry caller that may only read Projects |
 | `T6_QUEUE_DB`, `T6_PUBLIC_BIND`, `T6_TAILNET_BIND` | database path, listener addresses |
 | `T6_REGISTRY_DB` | Project registry database path, default `t6-registry.sqlite` |
+| `T6_OPERATOR_IDS` | Telegram user IDs allowed to tap operator cards, comma separated; the first receives the cards. Unset turns operator actions off |
+| `T6_OPERATOR_DB`, `T6_OPERATOR_TTL_SECONDS` | operator action database, default `t6-operator.sqlite`; how long a card stays live, default 7 days |
+| `T6_GATEWAY_URL`, `T6_GATEWAY_SECRET` | main worker: the Sixto gateway and this module's secret there; turn on delivery of operator cards |
 
 Tests use `t6.server.testing.FakeClock`; no test opens a connection to a
 provider.
@@ -362,6 +365,29 @@ deleted or out of reach. A review item has `id`, `kind`, `page_id`,
 | 409 | `{"error": "revision_conflict", "revision": 4}`: read the Project again |
 | 409 | `{"error": "page_already_bound", "project_id": "..."}` or `{"error": "idempotency_key_reused"}` |
 | 503 | `{"error": "registry_unavailable"}`, or the server was started without a registry |
+
+### Operator actions
+
+An authorized person registers, binds and classifies Projects from Sixto cards
+in Telegram. Core owns the rules; the gateway only carries a card out and a tap
+back. Two cards:
+
+- A Projects page no Project owns: **New Project** registers it out of rotation
+  with no code, **Existing Project** binds it to a Project that has no working page
+  (the old page stays as a legacy binding), **Skip** leaves it.
+- An unclassified Project: **In rotation**, **Out of rotation** or **Later**.
+  A held code refuses *In rotation* and changes nothing.
+
+A tap changes the registry only from an operator on `T6_OPERATOR_IDS`, from the
+chat and message the card was sent to, once, before the card expires, and only
+if the Project is still at the revision the card was made from. Anything else
+changes nothing and is recorded as a rejection. The registry actor is
+`telegram:<user id>`. The card is edited to show the outcome, and later whether
+Notion shows it yet (pending, updated, or failed after retries; the change stands
+either way). Cards and their state are kept in `T6_OPERATOR_DB`, so a restart
+loses nothing.
+
+`docs/operator-actions.md` is the contract the gateway's workflows consume.
 
 ## Drives
 
