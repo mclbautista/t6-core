@@ -24,6 +24,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 import hmac
 import json
+import logging
 import time
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -56,6 +57,8 @@ from t6.server.signatures import WebhookRejected, verify_frameio, verify_notion
 
 REVIEW_QUIET_SECONDS = 15 * 60.0
 DEFAULT_LEASE_SECONDS = 60.0
+DIAGNOSTIC_TAP = "t6:diagnostic:v1"
+log = logging.getLogger(__name__)
 
 __all__ = ["Grant", "Request", "Response", "ServerConfig", "WebhookApp"]
 
@@ -105,6 +108,7 @@ class ServerConfig:
     tap_secret: str = ""
     grants: tuple[Grant, ...] = ()
     review_quiet_seconds: float = REVIEW_QUIET_SECONDS
+    diagnostic_taps: bool = False
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str]) -> ServerConfig:
@@ -124,6 +128,7 @@ class ServerConfig:
             frameio_webhook_secret=environ.get("T6_FRAMEIO_WEBHOOK_SECRET", ""),
             notion_webhook_token=environ.get("T6_NOTION_WEBHOOK_TOKEN", ""),
             tap_secret=environ.get("T6_TAP_SECRET", ""),
+            diagnostic_taps=environ.get("T6_DIAGNOSTIC_TAPS") == "1",
             grants=tuple(grants),
         )
 
@@ -252,6 +257,15 @@ class WebhookApp:
         key = request.header("idempotency-key") or (body or {}).get("idempotency_key")
         if body is None or not isinstance(key, str) or not key.strip():
             return Response(400, {"error": "tap needs a JSON body and an idempotency key"})
+        if body.get("data") == DIAGNOSTIC_TAP:
+            if not self._config.diagnostic_taps:
+                return Response(503, {"error": "diagnostic taps disabled"})
+            update_id = body.get("update_id")
+            if (body.get("kind") != "tap" or type(update_id) is not int or not 0 <= update_id < 10**20
+                    or key != f"tap-{update_id}"):
+                return Response(400, {"error": "invalid diagnostic tap"})
+            log.warning("diagnostic tap accepted key=%s", key)
+            return Response(200, {"diagnostic": "accepted"})
         sender = body.get("from")
         job = Job(
             kind=JobKind.TAP,

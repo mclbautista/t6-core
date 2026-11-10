@@ -181,6 +181,45 @@ class DedupeTests(ServerTestCase):
 
 
 class TapTests(ServerTestCase):
+    def test_enabled_diagnostic_is_acknowledged_without_a_job(self) -> None:
+        app = WebhookApp(self.queue, ServerConfig(tap_secret=TAP_SECRET, diagnostic_taps=True), self.clock)
+        body = {"kind": "tap", "data": "t6:diagnostic:v1", "update_id": 7}
+        request = Request("POST", "/tap", {"Authorization": f"Bearer {TAP_SECRET}", "Idempotency-Key": "tap-7"}, json.dumps(body).encode())
+        with self.assertLogs("t6.server.app", level="WARNING") as logs:
+            answer = app.tailnet(request)
+        self.assertEqual((answer.status, answer.body), (200, {"diagnostic": "accepted"}))
+        self.assertIn("tap-7", logs.output[0])
+        self.assertEqual(self.pending(), 0)
+
+    def test_diagnostic_fails_closed_and_requires_auth(self) -> None:
+        body = json.dumps({"kind": "tap", "data": "t6:diagnostic:v1", "update_id": 7}).encode()
+        headers = {"Authorization": f"Bearer {TAP_SECRET}", "Idempotency-Key": "tap-7"}
+        request = Request("POST", "/tap", headers, body)
+        self.assertEqual(self.app.tailnet(request).status, 503)
+        self.assertEqual(self.app.public(request).status, 404)
+        app = WebhookApp(self.queue, ServerConfig(tap_secret=TAP_SECRET, diagnostic_taps=True), self.clock)
+        self.assertEqual(app.tailnet(Request("POST", "/tap", {"Idempotency-Key": "tap-7"}, body)).status, 401)
+        self.assertEqual(app.tailnet(Request("POST", "/tap", {**headers, "Authorization": "Bearer wrong"}, body)).status, 401)
+        self.assertEqual(self.pending(), 0)
+
+    def test_diagnostic_retries_and_malformed_requests_never_enqueue(self) -> None:
+        app = WebhookApp(self.queue, ServerConfig(tap_secret=TAP_SECRET, diagnostic_taps=True), self.clock)
+        headers = {"Authorization": f"Bearer {TAP_SECRET}", "Idempotency-Key": "tap-7"}
+        for update_id in (True, -1, 8, "7", 10**20):
+            body = json.dumps({"kind": "tap", "data": "t6:diagnostic:v1", "update_id": update_id}).encode()
+            self.assertEqual(app.tailnet(Request("POST", "/tap", headers, body)).status, 400)
+        body = json.dumps({"kind": "tap", "data": "t6:diagnostic:v1", "update_id": 7}).encode()
+        with self.assertLogs("t6.server.app", level="WARNING") as logs:
+            for _ in range(2):
+                self.assertEqual(app.tailnet(Request("POST", "/tap", headers, body)).status, 200)
+        self.assertEqual(len(logs.output), 2)
+        self.assertEqual(self.pending(), 0)
+
+    def test_diagnostic_env_is_explicit_opt_in(self) -> None:
+        self.assertFalse(ServerConfig.from_env({}).diagnostic_taps)
+        self.assertFalse(ServerConfig.from_env({"T6_DIAGNOSTIC_TAPS": "true"}).diagnostic_taps)
+        self.assertTrue(ServerConfig.from_env({"T6_DIAGNOSTIC_TAPS": "1"}).diagnostic_taps)
+
     def test_tap_with_the_secret_becomes_one_job(self) -> None:
         answer = self.app.tailnet(tap_request())
         self.assertEqual((answer.status, answer.body["created"]), (200, True))

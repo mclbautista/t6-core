@@ -89,6 +89,7 @@ Mac mini. Both use only the standard library.
 | `T6_FRAMEIO_WEBHOOK_SECRET` | Frame.io signing secret |
 | `T6_NOTION_WEBHOOK_TOKEN` | Notion `verification_token` |
 | `T6_TAP_SECRET` | the gateway's `T6CORE_SECRET` |
+| `T6_DIAGNOSTIC_TAPS` | optional: exactly `1` enables reserved diagnostic taps; otherwise disabled |
 | `T6_WORKER_SECRET` | main worker: claims `main`, may submit to `main` and `frameio` |
 | `T6_FRAMEIO_WORKER_SECRET` | Frame.io worker: claims `frameio` |
 | `T6_REGISTRY_SECRET` | registry caller that may register and read Projects |
@@ -98,6 +99,34 @@ Mac mini. Both use only the standard library.
 
 Tests use `t6.server.testing.FakeClock`; no test opens a connection to a
 provider.
+
+### Diagnostic tap contract
+
+The module button payload `t6:diagnostic:v1` is reserved and must never be
+used for real work. **Before sending it, verify the running server is this
+version or newer**: older servers enqueue it as a real tap. Enable the contract
+explicitly with `T6_DIAGNOSTIC_TAPS=1`; it is off by default. A disabled server
+returns 503 for this payload rather than enqueueing it, so the gateway will
+retry until enabled. Do not send a diagnostic unless that retry is intended.
+
+An authorized t6core client creates a button with that exact payload through
+the gateway; an operator taps it. The gateway routes `mod:t6core:` callback
+data, strips the prefix, and pushes its usual tap item to tailnet `POST /tap`
+with the existing bearer secret and `Idempotency-Key: tap-<update_id>`. The
+item must have `kind: "tap"`, the reserved `data`, and a nonnegative integer
+`update_id` below 10^20 matching that key. After authentication, an enabled
+server returns `200 {"diagnostic":"accepted"}` and logs at WARNING
+`diagnostic tap accepted key=tap-<update_id>` without logging the tap body or
+creating any job. Invalid diagnostic items return 400; neither invalid nor
+repeated diagnostic items create jobs. The public listener still returns 404.
+The gateway treats any 2xx as accepted and does not expose the response body;
+verify the receipt in restricted server logs and correlate with the gateway's
+update ID. Retries can produce multiple receipt lines. A direct POST alone does
+not verify Telegram, gateway routing, or the gateway-to-server push path.
+Disable the setting after testing; remove the test button so a later tap does
+not leave a perpetually retried push. Restrict log access and retention: an
+update ID is an operational identifier. No diagnostic receipt is persisted in
+the queue or available via a new endpoint.
 
 ## Project registry
 
