@@ -120,7 +120,9 @@ class InMemoryDriveStore:
             for assignment in assignments
             if assignment.is_open and self._matches(assignment.project, project)
         ]
-        return sorted(found, key=lambda pair: (pair[1].start, pair[1].label, pair[0].key))
+        return sorted(
+            found, key=lambda pair: (pair[1].start or date.min, pair[1].label, pair[0].key)
+        )
 
     def _matches(self, held: Ref, asked: Ref) -> bool:
         if held.page_id is None or asked.page_id is None:
@@ -129,7 +131,7 @@ class InMemoryDriveStore:
 
     def assignment_history(self, serial: str) -> list[Assignment]:
         # sorted() is stable: assignments with the same start keep entry order
-        return sorted(self._assigned(serial), key=lambda a: a.start)
+        return sorted(self._assigned(serial), key=lambda a: a.start or date.min)
 
     def _assigned(self, serial: str) -> list[Assignment]:
         key = normalize_serial(serial)

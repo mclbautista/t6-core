@@ -444,11 +444,39 @@ I/O and needs no extra.
   reviewed.
 - An `Assignment` holds label, `project` (a `Ref`), `role` (`Role.MASTER`,
   `BACKUP`, `OFFLINE`, `SWING` or `ARCHIVE`), start, end and remarks. No end
-  means the Assignment is open. `DriveStore.add_assignment(serial, assignment)`
+  means the Assignment is open. `role` and `start`, and a custody event's
+  `party`, are `None` when they were never recorded, as in imported rows. `DriveStore.add_assignment(serial, assignment)`
   adds one and never edits or closes earlier ones. `open_assignments(project)`
   lists the Drives still out for a Project; `assignment_history(serial)` lists a
   Drive's Assignments across Projects, oldest start first. An unknown serial
   raises `UnknownDrive`. A label can repeat on different Drives and Projects.
+
+### Importing the legacy workbooks
+
+`t6.drives.importer` needs the `drives` extra. It is a one-off: after the
+import the workbooks are frozen.
+
+```python
+from t6.drives.importer import import_per_project_workbook
+
+result = import_per_project_workbook(path, store, lookup=lookup, logged_by=Ref(text="workbook import"))
+```
+
+- The per-project workbook has one tab per Project: an optional
+  `PROJECT NAME: ...` row, a header row starting with `HARD DRIVE LABEL`, then
+  one row per drive. A tab with no project name row uses the tab title.
+- A clean row becomes a Drive (brand, capacity, format) with an Assignment for
+  the tab's Project, a received event when the row has a received date and a
+  released event when it has a release date. The release recipient is the
+  person in charge or, failing that, the remarks, kept as text.
+- The Project is a page ID only when `t6.lookup` finds exactly one Project
+  with that name; otherwise the name is kept as text. The role is read from
+  the label only when it names exactly one role; otherwise it is `None`.
+- A row is skipped and listed in `result.skipped` (tab, row number, reason)
+  when it has no label, a blank serial, more than a serial in the serial cell,
+  a serial that is on more than one row, or a capacity or date that cannot be
+  read. Nothing is guessed.
+- It writes only through `DriveStore`, and a second run adds nothing.
 
 ## Lookup
 
@@ -500,10 +528,11 @@ Install only the adapters an application needs, for example
 | `frameio` | Frame.io integration |
 | `resolve` | DaVinci Resolve integration |
 | `instagantt` | Instagantt export reader |
+| `drives` | One-off importer for the legacy drive workbooks |
 | `server` | Webhook server and queue (stdlib only) |
 | `worker` | Job workers (stdlib only) |
 
-The `notion` extra installs `httpx`, the `llm` extra installs `pydantic` and the `resolve` extra installs `psycopg`.
+The `notion` extra installs `httpx`, the `llm` extra installs `pydantic`, the `resolve` extra installs `psycopg` and the `drives` extra installs `openpyxl`.
 The other extras are declared and currently empty; their dependencies will be
 added when those adapters are implemented. The `notion` extra does not install Frame.io, Adobe sign-in, or
 LLM libraries.
