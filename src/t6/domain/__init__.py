@@ -125,6 +125,8 @@ class Project(NotionEntity):
     """
 
     t6_id: str | None = field(default=None, compare=False)
+    rotation: str | None = field(default=None, compare=False)
+    """`in`, `out` or `unclassified`, from the registry. `None` when it is not known."""
     project_code: str | None = field(default=None, compare=False)
     project_type: str | None = field(default=None, compare=False)
     eps: int | None = field(default=None, compare=False)
@@ -134,6 +136,7 @@ class Project(NotionEntity):
     def __post_init__(self) -> None:
         NotionEntity.__post_init__(self)
         object.__setattr__(self, "t6_id", _blank_to_none(self.t6_id))
+        object.__setattr__(self, "rotation", _blank_to_none(self.rotation))
         object.__setattr__(self, "project_code", _blank_to_none(self.project_code))
         if self.eps is not None and self.eps < 0:
             raise ValueError(f"eps must be zero or more, got {self.eps}")

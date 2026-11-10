@@ -49,6 +49,9 @@ fields, read from Notion) and `t6.registry` (identity).
 - **Rotation**: whether a Project currently holds its code. A Project is **in
   rotation** or **out of rotation**, set explicitly and never derived from
   production Status. A new Project starts out of rotation.
+- **Historical Project**: a Project out of rotation. It keeps its code on
+  record, and a bare-code lookup does not return it while another Project
+  holds the code. It is found by its T6 Project ID.
 - **Hold** (a code): only a Project in rotation holds its code, and only one
   Project across T6 holds a given code at a time. A Project out of rotation
   keeps its code on record without holding it, so another Project can take it.

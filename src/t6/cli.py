@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     from t6.notion.sync import NotionClient
 
 TOKEN_VARIABLE = "T6_NOTION_TOKEN"
+REGISTRY_DB_VARIABLE = "T6_REGISTRY_DB"
+DEFAULT_REGISTRY_DB = "t6-registry.sqlite"
 
 
 def _open_notion(token: str) -> NotionClient:
@@ -76,6 +78,22 @@ def _cameras(
     return 0
 
 
+def _open_registry(path: Path) -> Any:
+    """The registry at `path`, or `None` when there is no file or it cannot be opened.
+
+    A missing file is not created: an empty registry would make every page look
+    unbound. The check reports `None` as an incomplete audit.
+    """
+    from t6.registry import RegistryUnavailable, SqliteProjectRegistry
+
+    if not path.is_file():
+        return None
+    try:
+        return SqliteProjectRegistry(path)
+    except RegistryUnavailable:
+        return None
+
+
 def _schema_check(
     args: argparse.Namespace, open_notion: Callable[[str], NotionClient]
 ) -> int:
@@ -89,16 +107,13 @@ def _schema_check(
     try:
         snapshot = load_snapshot(args.snapshot)
         data_sources = _read_data_sources(args.data_sources)
+        registry = _open_registry(args.registry_db)
         with open_notion(token) as client:
-            report = check_schema(client, snapshot, data_sources)
+            report = check_schema(client, snapshot, data_sources, registry)
     except (OSError, ValueError) as error:
         return _fail(str(error))
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report["ok"] else 1
-
-
-REGISTRY_DB_VARIABLE = "T6_REGISTRY_DB"
-DEFAULT_REGISTRY_DB = "t6-registry.sqlite"
 
 
 def _migrate_projects(
@@ -162,12 +177,21 @@ def main(
     commands.add_parser("version", help="Print the installed version as JSON")
     check = commands.add_parser(
         "schema-check",
-        help="Diff live Notion against the schema snapshot; report Project Code problems",
+        help="Diff live Notion against the schema snapshot; audit Projects against the registry",
         description=(
-            f"Reads the Notion token from ${TOKEN_VARIABLE}. Prints a JSON report and "
-            "exits 1 if any property was added, removed or changed, or a Project Code "
-            "is blank or duplicated."
+            f"Reads the Notion token from ${TOKEN_VARIABLE} and the registry file from "
+            f"--registry-db (default ${REGISTRY_DB_VARIABLE}). Prints a JSON report and exits 1 if any "
+            "property was added, removed or changed, if the Projects audit has findings, or if the "
+            "audit is incomplete because Notion or the registry could not be read. A blank or "
+            "reused Project Code is not a problem."
         ),
+    )
+    check.add_argument(
+        "--registry-db",
+        type=Path,
+        default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)),
+        metavar="FILE",
+        help="the Project registry file to audit the Projects against",
     )
     check.add_argument(
         "--data-sources",

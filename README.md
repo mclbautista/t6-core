@@ -406,8 +406,8 @@ I/O and needs no extra.
 `t6.lookup` turns a loose mention into the right entity, over an `Index` of
 `t6.domain` entities the caller supplies (no I/O). `Lookup` has one method per
 entity type: `job_order(telegram_key)`, `project(code, name=)`,
-`deliverable(text, project_id=)`, `contact(mention, team=)`, `machine(text)`
-and `studio(name)`. Each runs its pipeline cheapest first (exact ID,
+`project_by_id(id)`, `deliverable(text, project_id=)`, `contact(mention, team=)`,
+`machine(text)` and `studio(name)`. Each runs its pipeline cheapest first (exact ID,
 normalized, fuzzy, optional LLM `judge`, human review) and returns a
 `Resolution` (entity or none, method, score, ranked candidates,
 `needs_review`). Below the policy thresholds it never picks. Deliverables are
@@ -416,6 +416,27 @@ resolved within one Project; Contacts within the Project team first, then all.
 writes. Honorifics and other normalizers are configuration (`Normalizers`).
 The default fuzzy scorer is stdlib-only; set `Policy(scorer=...)` to use
 another.
+
+### Reusable Project Codes
+
+A Project Code can belong to several Projects over time, so `project(code)`
+looks at rotation. Build the index with `ProjectRefs.identified(project)`, which
+fills in each registered Project's T6 ID, rotation and code from the registry:
+
+| Projects with the code | Result |
+| --- | --- |
+| exactly one in rotation (any number out) | that Project, `needs_review` false |
+| none in rotation | `needs_review`, `reason="no_in_rotation_holder"`, every Project with the code as candidates |
+| several in rotation | `needs_review`, `reason="several_in_rotation_holders"`, the holders as candidates |
+| any unclassified | `needs_review`, `reason="unclassified"`, all as candidates |
+| not registered yet (no rotation known) | as before: one match decides, several need review |
+
+Codes compare with the same normalization the registry reserves with, so
+`BH-101` and `bh 101` are one code; the Project keeps the spelling it was
+entered with. `project_by_id(id)` takes a T6 ID, or any page the Project was
+bound to, and returns that Project whoever holds its code now: this is how a
+reviewer selects a historical Project. Existing relationships are never looked
+up by code. `Resolution.reason` is `None` for every other lookup.
 
 ## Optional extras
 
@@ -573,11 +594,56 @@ $ t6 schema-check --data-sources data-sources.json
 ```
 
 The report is JSON. For each database it lists `added`, `removed` and
-`changed` (type) properties. For `projects` it also lists `blank` Project
-Codes and `duplicates` (codes on more than one page). Databases without an ID
-are listed under `skipped`. The exit status is 0 when everything matches, 1
-when something drifted or a Project Code is blank or duplicated, and 2 when
-the command cannot run (for example, no token).
+`changed` (type) properties. Databases without an ID are listed under
+`skipped`.
+
+**Projects are audited against the registry.** When `projects` is in the data
+sources, `project_codes` compares the Projects pages with the
+[Project registry](#project-registry) at `--registry-db` (default
+`$T6_REGISTRY_DB`, then `t6-registry.sqlite`). This supersedes the earlier
+rule that every blank or repeated Project Code fails (core #10 and #12): a
+Project with no code, in rotation or not, passes, and so does a code that
+older Projects keep on record while one other Project holds it. These do not:
+
+```json
+{"project_codes": {
+  "status": "findings",
+  "checked": 42,
+  "reasons": [],
+  "findings": {
+    "active_collisions": [{"code": "ABC", "t6_ids": ["t6p_...", "t6p_..."]}],
+    "unclassified": [{"t6_id": "t6p_...", "code": "ABC", "page_ids": ["..."]}],
+    "unbound_pages": [{"page_id": "..."}],
+    "unavailable_bindings": [{"t6_id": "t6p_...", "page_id": "..."}],
+    "missing_pages": [{"t6_id": "t6p_...", "page_id": "..."}],
+    "projection_conflicts": [{"t6_id": "t6p_...", "page_id": "...", "detail": {}}]
+  }}}
+```
+
+- `active_collisions`: several in-rotation Projects share one normalized code.
+  The registry prevents it, so this means a damaged or hand-edited file. Take
+  all but one out of rotation, or change their codes.
+- `unclassified`: imported Projects nobody has classified; they block their
+  codes ([classify them](#migrating-existing-projects)).
+- `unbound_pages`: a Projects page no Project is bound to. Register or bind it
+  explicitly; it is never matched by code or name.
+- `unavailable_bindings`: a Project's active page is deleted or out of reach.
+- `missing_pages`: a Project's active page is not among the Notion pages and
+  nothing flagged it. A replaced page that has gone is not a finding.
+- `projection_conflicts`: someone edited a registry-owned value in Notion and
+  reconciliation put it back.
+
+`status` is `ok`, `findings` or `incomplete`. **`incomplete` is never a pass:**
+it means Notion or the registry could not be read (no registry file was found,
+it was locked, or the Notion query failed). `reasons` says which, `findings`
+lists what could still be worked out, and `ok` is false. The command does not
+create a missing registry file, because an empty one would make every page
+look unbound. No stale or cached read is offered; there is nothing to mark as
+stale.
+
+The exit status is 0 when everything matches and the audit is complete, 1 when
+something drifted, the audit has findings, or the audit is incomplete, and 2
+when the command cannot run (for example, no token).
 
 ### Cameras
 

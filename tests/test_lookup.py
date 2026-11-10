@@ -302,7 +302,7 @@ class ResolutionShapeTests(unittest.TestCase):
         for r in (lookup.machine("bay"), lookup.machine("zzz"), lookup.contact("anyone")):
             self.assertEqual(
                 [f.name for f in dataclasses.fields(r)],
-                ["entity", "method", "score", "candidates", "needs_review"],
+                ["entity", "method", "score", "candidates", "needs_review", "reason"],
             )
 
     def test_results_are_json_friendly_to_log(self) -> None:
