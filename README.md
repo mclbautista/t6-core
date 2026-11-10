@@ -445,7 +445,8 @@ I/O and needs no extra.
 - An `Assignment` holds label, `project` (a `Ref`), `role` (`Role.MASTER`,
   `BACKUP`, `OFFLINE`, `SWING` or `ARCHIVE`), start, end and remarks. No end
   means the Assignment is open. `role` and `start`, and a custody event's
-  `party`, are `None` when they were never recorded, as in imported rows. `DriveStore.add_assignment(serial, assignment)`
+  date and `party`, are `None` when they were never recorded, as in imported
+  rows. `DriveStore.add_assignment(serial, assignment)`
   adds one and never edits or closes earlier ones. `open_assignments(project)`
   lists the Drives still out for a Project; `assignment_history(serial)` lists a
   Drive's Assignments across Projects, oldest start first. An unknown serial
@@ -484,11 +485,30 @@ result = import_per_project_workbook(path, store, lookup=lookup, logged_by=Ref(t
   | `blank serial` | imported as a provisional Drive |
   | `old and new labels` | imported with its label as written; the detail names its pair |
   | `unresolved project` | its rows are imported with the name as text; listed once, at the row where the Project's block starts |
+  | `movements with no serial` | log sheet only: one per monthly tab, counting the movements that were not imported |
 
 - It writes only through `DriveStore`, and a second run adds nothing.
-- `t6 drives-import-dry-run WORKBOOK [--projects FILE]` runs the import into an
-  in-memory store that is thrown away and prints `{"imported": n, "review":
-  [...]}`. Nothing is written anywhere. `--projects` is a JSON list of
+- `import_log_sheet_workbook(path, store, lookup=..., logged_by=...)` reads the
+  log sheet workbook and returns the same kind of result. Its tabs are told
+  apart by their header row:
+  - An inventory tab (swing drives, archive drives) has a serial column. A row
+    becomes a Drive with an Assignment under the tab's title. Remarks that say
+    DEAD become a retired event with the remark as the reason and no date.
+  - A released-batch tab has a `DATE: ...` line above its header. Every Drive
+    on it gets a released event on that date and they share one shipment ID.
+    A row with a label, no serial and a quantity is a group heading: the
+    Project of the rows under it.
+  - A monthly log tab has `DATE` and `IN/OUT` columns and no serial column. A
+    movement is imported only when its remarks hold `S/N: <serial>`: IN is a
+    received event, OUT is a released event to the RECEIVED BY name. Releases
+    on one date to one name share a shipment ID. The other movements are not
+    imported, because a label alone does not identify a Drive.
+  - A Drive already in the store, for example from the per-project workbook,
+    keeps its record and gains the new Assignment and events.
+- `t6 drives-import-dry-run WORKBOOK [--log-sheet FILE] [--projects FILE]` runs
+  the import into an in-memory store that is thrown away and prints
+  `{"imported": n, "review": [...]}`. `WORKBOOK` is the per-project workbook.
+  Nothing is written anywhere. `--projects` is a JSON list of
   `{"page_id", "name"}` to resolve Project names against; without it every
   Project is reported as unresolved.
 

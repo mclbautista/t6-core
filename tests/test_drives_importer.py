@@ -1,6 +1,6 @@
-"""Import a synthetic per-project drive workbook into the in-memory DriveStore.
+"""Import synthetic drive workbooks into the in-memory DriveStore.
 
-Every label, Project, serial and name here is invented. The workbook is built
+Every label, Project, serial and name here is invented. The workbooks are built
 in a temporary folder for each test; no real workbook is ever read.
 """
 
@@ -18,7 +18,11 @@ from openpyxl import Workbook
 from t6.cli import main
 from t6.domain import Project
 from t6.drives import CustodyKind, DriveStatus, Party, PartyKind, Ref, Role
-from t6.drives.importer import ReviewItem, import_per_project_workbook
+from t6.drives.importer import (
+    ReviewItem,
+    import_log_sheet_workbook,
+    import_per_project_workbook,
+)
 from t6.drives.testing import InMemoryDriveStore
 from t6.lookup import Index, Lookup
 
@@ -67,13 +71,56 @@ PAPER_MOON = Ref(page_id="project-paper-moon")
 LOGGED_BY = Ref(text="workbook import")
 
 
-def write_workbook(folder: str) -> Path:
+LOG_SHEETS: dict[str, list[list[Any]]] = {
+    "Swing Drive": [
+        ["SWING DRIVE"],
+        ["HARD DRIVE LABEL", "TOTAL DISK SPACE", "FORMAT", "SERIAL #", "REMARKS"],
+        ["SWING 01", "2TB, WD", None, "SW100AA1", None],
+        ["SWING 02", "4TB, WD", None, "SW100AA2", "DEAD DRIVE"],
+        ["SWING 03", "2TB, WD", None, None, None],
+        ["SWING 04 (OLD)", "2TB, WD", None, "SW100AA4", "now an archive"],
+        ["SWING 04 (NEW)", "1TB, WD", None, "SW100AA5", None],
+        ["SWING 05", "2TB, WD", None, "SW100AA6", None],
+        ["SWING 06", "2TB, WD", None, "zx100aa1", None],  # also in the per-project workbook
+    ],
+    "Released Batch": [
+        ["DATE: JUNE 20, 2024"],
+        ["HARD DRIVE LABEL", "SERIAL NUMBER", "QUANTITY"],
+        ["PAPER MOON", None, 2],
+        ["PM MASTER 02", "RB200AA1", None],
+        ["PM BU 03", "RB200AA2", None],
+        ["GLASS HARBOUR", None, 1],
+        ["GH MASTER", "RB200AA3", None],
+        [None, "TOTAL", 3],
+    ],
+    "Archive HD": [
+        ["HARD DRIVE LABEL", "HD DESCRIPTION", "FORMAT", "SERIAL #", "TOTAL DISK SPACE", "REMARKS"],
+        ["ARCHIVE 01", "PAPER MOON- 1.2TB", None, "AR300AA1", "4TB", None],
+        [None, "GLASS HARBOUR- 80GB", None, None, None, None],
+        ["ARCHIVE 02", None, None, "SW100AA6", None, "was SWING 05"],
+    ],
+    "January": [
+        ["HARD DRIVE LOG SHEET"],
+        ["DATE", "PROJECT NAME", "HARD DRIVE LABEL", "HD DESCRIPTION", "IN/OUT", "RECEIVED BY", "REMARKS"],
+        ["January 4, 2024", "PAPER MOON", "PM DAY 1 MASTER", "6TB, WD", "IN", "KIM SAMPLE", "S/N: MV400AA1"],
+        ["January 9, 2024", "PAPER MOON", "PM DAY 1 MASTER", "6TB, WD", "OUT", "LEE EXAMPLE", "S/N: MV400AA1"],
+        ["January 9, 2024", "PAPER MOON", "PM DAY 1 BACK UP", "WD", "OUT", "Lee Example", "S/N:MV400AA2"],
+        ["January 10, 2024", "PAPER MOON", "PM EDIT", "2TB, WD", "IN", "KIM SAMPLE", None],
+        ["SEPT 1, 2024", "GLASS HARBOUR", "GH TRANSIT", "PORTABLE", "OUT", "PROD", None],
+        ["January 11, 2024", "PAPER MOON", "PM DCP", "1TB", "IN/OUT", "KIM SAMPLE", "S/N: MV400AA3"],
+    ],
+}
+
+
+def write_workbook(
+    folder: str, sheets: dict[str, list[list[Any]]] = SHEETS, name: str = "per-project.xlsx"
+) -> Path:
     workbook = Workbook(write_only=True)
-    for title, rows in SHEETS.items():
+    for title, rows in sheets.items():
         sheet = workbook.create_sheet(title)
         for row in rows:
             sheet.append(row)
-    path = Path(folder) / "per-project.xlsx"
+    path = Path(folder) / name
     workbook.save(path)
     return path
 
@@ -242,6 +289,129 @@ class PerProjectImportTests(unittest.TestCase):
         self.assertEqual(again, self.result)
 
 
+class LogSheetImportTests(unittest.TestCase):
+    def setUp(self) -> None:
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.per_project = write_workbook(folder.name)
+        self.path = write_workbook(folder.name, LOG_SHEETS, "log-sheet.xlsx")
+        self.store = InMemoryDriveStore()
+        import_per_project_workbook(
+            self.per_project, self.store, lookup=make_lookup(), logged_by=LOGGED_BY
+        )
+        self.result = self.run_import()
+
+    def run_import(self) -> Any:
+        return import_log_sheet_workbook(
+            self.path, self.store, lookup=make_lookup(), logged_by=LOGGED_BY
+        )
+
+    def test_an_inventory_row_becomes_a_drive_under_its_tab(self) -> None:
+        drive = self.store.get_drive("SW100AA1")
+        assert drive is not None
+        self.assertEqual(drive.capacity_tb, 2.0)
+        (assignment,) = self.store.assignment_history("SW100AA1")
+        self.assertEqual((assignment.label, assignment.project), ("SWING 01", Ref(text="Swing Drive")))
+        self.assertIs(assignment.role, Role.SWING)
+        self.assertEqual(self.store.list_events("SW100AA1"), ())
+        (archived,) = self.store.assignment_history("AR300AA1")
+        self.assertIs(archived.role, Role.ARCHIVE)
+
+    def test_a_batch_released_on_one_date_is_one_shipment(self) -> None:
+        shipment = self.store.shipment_events("2024-06-20 Released Batch")
+        self.assertEqual([drive.serial for drive, _ in shipment], ["RB200AA1", "RB200AA2", "RB200AA3"])
+        for _, released in shipment:
+            self.assertIs(released.kind, CustodyKind.RELEASED)
+            self.assertEqual(released.on, date(2024, 6, 20))
+        # the group heading above each drive is its Project
+        self.assertEqual(self.store.assignment_history("RB200AA1")[0].project, PAPER_MOON)
+        self.assertEqual(self.store.assignment_history("RB200AA3")[0].project, Ref(text="GLASS HARBOUR"))
+        self.assertIs(self.store.status("RB200AA2"), DriveStatus.RELEASED)
+
+    def test_movements_out_on_one_date_to_one_recipient_are_one_shipment(self) -> None:
+        shipment = self.store.shipment_events("2024-01-09 to LEE EXAMPLE")
+        self.assertEqual([drive.serial for drive, _ in shipment], ["MV400AA1", "MV400AA2"])
+        self.assertEqual(shipment[0][1].party, Party(PartyKind.CONTACT, Ref(text="LEE EXAMPLE")))
+
+    def test_a_movement_with_a_serial_becomes_a_custody_event(self) -> None:
+        received, released = self.store.list_events("MV400AA1")
+        self.assertIs(received.kind, CustodyKind.RECEIVED)
+        self.assertEqual(received.on, date(2024, 1, 4))
+        self.assertEqual(received.reason, "received by KIM SAMPLE")
+        self.assertIs(released.kind, CustodyKind.RELEASED)
+        (assignment,) = self.store.assignment_history("MV400AA1")
+        self.assertEqual((assignment.label, assignment.project), ("PM DAY 1 MASTER", PAPER_MOON))
+        drive = self.store.get_drive("MV400AA1")
+        assert drive is not None
+        self.assertEqual(drive.capacity_tb, 6.0)
+        other = self.store.get_drive("MV400AA2")
+        assert other is not None
+        self.assertIsNone(other.capacity_tb)  # "WD" names no size
+
+    def test_a_row_marked_dead_becomes_a_retired_event_with_the_remark(self) -> None:
+        (retired,) = self.store.list_events("SW100AA2")
+        self.assertIs(retired.kind, CustodyKind.RETIRED)
+        self.assertEqual(retired.reason, "DEAD DRIVE")
+        self.assertIsNone(retired.on)
+        self.assertIs(self.store.status("SW100AA2"), DriveStatus.RETIRED)
+
+    def test_a_drive_in_both_workbooks_is_one_drive_with_the_combined_history(self) -> None:
+        drive = self.store.get_drive("ZX100AA1")
+        assert drive is not None
+        self.assertEqual(drive.brand, "ACME")  # the record from the first workbook is kept
+        self.assertEqual(
+            {a.label for a in self.store.assignment_history("ZX100AA1")}, {"PM MASTER 01", "SWING 06"}
+        )
+        self.assertEqual(len(self.store.list_events("ZX100AA1")), 2)
+
+    def test_doubtful_rows_go_to_the_review_report(self) -> None:
+        self.assertEqual(self.result.imported, 13)
+        self.assertEqual(
+            list(self.result.review),
+            [
+                ReviewItem("Swing Drive", 1, "unresolved project", "Swing Drive"),
+                ReviewItem("Swing Drive", 5, "blank serial", "SWING 03 is recorded as a provisional Drive"),
+                ReviewItem("Swing Drive", 6, "old and new labels", "SWING 04 (OLD) pairs with SWING 04 (NEW)"),
+                ReviewItem("Swing Drive", 7, "old and new labels", "SWING 04 (NEW) pairs with SWING 04 (OLD)"),
+                ReviewItem("Swing Drive", 8, "shared serial", "SW100AA6 is also on Archive HD row 4"),
+                ReviewItem("Released Batch", 6, "unresolved project", "GLASS HARBOUR"),
+                ReviewItem("Released Batch", 8, "no label"),
+                ReviewItem("Archive HD", 1, "unresolved project", "Archive HD"),
+                ReviewItem("Archive HD", 4, "shared serial", "SW100AA6 is also on Swing Drive row 8"),
+                ReviewItem("January", 8, "unreadable", "cannot read IN/OUT 'IN/OUT'"),
+                ReviewItem(
+                    "January",
+                    1,
+                    "movements with no serial",
+                    "2 rows have no S/N in remarks and were not imported",
+                ),
+            ],
+        )
+        self.assertIsNone(self.store.get_drive("SW100AA6"))
+        self.assertIsNone(self.store.get_drive("MV400AA3"))
+
+    def test_a_second_run_changes_nothing(self) -> None:
+        serials = ["SW100AA1", "SW100AA2", "SW100AA4", "ZX100AA1", "RB200AA1", "AR300AA1", "MV400AA1", "MV400AA2"]
+
+        def snapshot() -> list[Any]:
+            return [
+                (
+                    self.store.get_drive(serial),
+                    self.store.assignment_history(serial),
+                    self.store.list_events(serial),
+                )
+                for serial in serials
+            ] + [
+                self.store.open_assignments(Ref(text="Swing Drive")),
+                self.store.shipment_events("2024-06-20 Released Batch"),
+            ]
+
+        before = snapshot()
+        again = self.run_import()
+        self.assertEqual(snapshot(), before)
+        self.assertEqual(again, self.result)
+
+
 class DryRunCommandTests(unittest.TestCase):
     def test_the_dry_run_prints_the_report_and_writes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -275,6 +445,19 @@ class DryRunCommandTests(unittest.TestCase):
             {"sheet": "PAPER MOON", "row": 13, "reason": "no label", "detail": ""}, report["review"]
         )
         self.assertNotIn("PAPER MOON", [i["detail"] for i in report["review"] if i["reason"] == "unresolved project"])
+
+    def test_the_dry_run_can_add_the_log_sheet(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = write_workbook(folder)
+            log_sheet = write_workbook(folder, LOG_SHEETS, "log-sheet.xlsx")
+            printed = io.StringIO()
+            with redirect_stdout(printed):
+                status = main(["drives-import-dry-run", str(path), "--log-sheet", str(log_sheet)])
+
+        self.assertEqual(status, 0)
+        report = json.loads(printed.getvalue())
+        self.assertEqual(report["imported"], 23)
+        self.assertIn("movements with no serial", {item["reason"] for item in report["review"]})
 
     def test_a_missing_workbook_is_an_error(self) -> None:
         errors = io.StringIO()

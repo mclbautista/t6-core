@@ -25,7 +25,8 @@ Modelled in `t6.drives`.
   tests.
 - **Custody event**: one entry in a Drive's append-only custody log: received,
   released, returned or retired, with date, the Contact or Studio involved, the
-  Project and who logged it. Retired needs a reason. Events are never edited or
+  Project and who logged it. The date and the party are blank when they were
+  never recorded. Retired needs a reason. Events are never edited or
   deleted; a correction is a new event.
 - **Shipment**: one handover of several Drives: released events that share a
   shipment ID. A **manifest** is a view over those events: each Drive's serial,
