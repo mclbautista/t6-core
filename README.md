@@ -985,9 +985,11 @@ index. CI runs these checks on push and pull request for Python 3.11–3.14.
 `t6.resolve` reads the DaVinci Resolve PostgreSQL project server. Install it
 with `pip install 't6[resolve]'`.
 
-- `ProjectServer(db, database, schema_for(version))` lists every project with
-  database, folder path, name and internal ID. It refuses to start when the
-  database role can write (`ReadOnlyViolation`). Connect with
+- `ProjectServer(db, database, schema_for(version))` is intended to list
+  projects with database, folder path, name and internal ID. All supplied
+  schemas are unverified and rejected by default. For controlled investigation
+  only, pass `allow_unverified_schema=True`; this does not establish correctness.
+  Roles detected as writable are refused (`ReadOnlyViolation`). Connect with
   `t6.resolve.postgres.PostgresDatabase(dsn)`, which also sets the session
   read-only.
 - A project's External ID is `<database>/<folder path>/<project name>`; a
@@ -997,8 +999,8 @@ with `pip install 't6[resolve]'`.
 - `map_projects(projects, external_links)` matches projects to External Links
   rows. `unmapped` holds projects with no row or no Notion Project;
   `orphan_links` holds rows whose project is no longer on the server.
-- `schema_for(version)` gives the table layout per `DaVinci Resolve Version`.
-  Tests run against a SQLite fixture per version in `tests/fixtures/resolve/`.
+- `schema_for(version)` returns an assumed table layout per `DaVinci Resolve
+  Version`. Tests use synthetic SQLite fixtures in `tests/fixtures/resolve/`.
 
 The table layout in `t6.resolve.schema` and the SQL in `t6.resolve.postgres`
 have not been run against a live server. Check them first, then correct the
