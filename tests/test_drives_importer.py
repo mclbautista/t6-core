@@ -232,9 +232,16 @@ class PerProjectImportTests(unittest.TestCase):
                 ReviewItem("PAPER MOON", 13, "no label", workbook=str(self.path.resolve())),
             ],
         )
-        for serial in ("ZX100AA5", "ZX100AA6", "ZX100AA7", "ZX100AA8"):
+        for serial in ("ZX100AA5", "ZX100AA6"):
             self.assertIsNone(self.store.find_by_serial(serial), serial)
-        self.assertEqual(self.result.imported, 14)
+        bad_size = self.store.find_by_serial("ZX100AA7")
+        assert bad_size is not None
+        self.assertEqual((bad_size.capacity_tb, bad_size.needs_review), (None, True))
+        bad_date = self.store.find_by_serial("ZX100AA8")
+        assert bad_date is not None
+        self.assertEqual(bad_date.capacity_tb, 4)
+        self.assertEqual([e.on for e in self.store.list_events(bad_date.id)], [None])
+        self.assertEqual(self.result.imported, 16)
 
     def test_a_blank_serial_becomes_a_permanent_drive_and_is_reported(self) -> None:
         drives_without_serials = [
@@ -432,7 +439,7 @@ class DryRunCommandTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(after, before)
         report = json.loads(printed.getvalue())
-        self.assertEqual(report["imported"], 14)
+        self.assertEqual(report["imported"], 16)
         reasons = {item["reason"] for item in report["review"]}
         self.assertEqual(
             reasons,
@@ -461,7 +468,7 @@ class DryRunCommandTests(unittest.TestCase):
 
         self.assertEqual(status, 0)
         report = json.loads(printed.getvalue())
-        self.assertEqual(report["imported"], 30)
+        self.assertEqual(report["imported"], 32)
         self.assertIn("movement with no serial", {item["reason"] for item in report["review"]})
 
     def test_a_missing_workbook_is_an_error(self) -> None:

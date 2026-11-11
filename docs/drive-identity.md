@@ -114,8 +114,13 @@ items containing the row's evidence, never associated by label. Duplicate
 `REMARKS` columns are joined in order. `SPACE` uses the existing capacity parser;
 invalid/conflicting capacity aliases are reported, not invented. `T6 IN` records
 receipt: date if recorded, otherwise `None`.
-Unreadable inventory and movement rows preserve all their cells alongside the
-validation error in the local review item, rather than dropping the other facts.
+An unreadable or conflicting capacity or date does not drop the row: the Drive
+and its other facts are imported, the offending fact is left blank (`capacity_tb`
+or the event's `on` is `None`; a recorded but unreadable date still records its
+event, undated), and the Drive is flagged for review. The local `unreadable`
+review item preserves all the row's cells alongside the reason. A row with no
+identifying detail beyond the unreadable cell creates no Drive, and a movement
+whose `IN/OUT` cannot be read appends no event; both stay `unreadable` review items.
 
 Review items contain absolute workbook path, sheet and row, and can include raw
 private facts. Keep actual workbooks/reports local; only synthetic cases belong
