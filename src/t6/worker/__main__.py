@@ -9,12 +9,18 @@ import signal
 import sys
 import threading
 
-from t6.worker.client import HttpTransport, QueueClient, Transport
+from t6.domain.events import JsonValue
+from t6.server.queue import DIAGNOSTIC_QUEUE
+from t6.worker.client import HttpTransport, QueueClient, Transport, WorkerJob
 from t6.worker.gateway import GatewayClient
 from t6.worker.operator import CardDelivery, OperatorClient
 from t6.worker.runner import Handler, Worker
 
-HANDLERS: dict[str, dict[str, Handler]] = {}
+def diagnostic_echo(job: WorkerJob) -> dict[str, JsonValue]:
+    return dict(job.payload)
+
+
+HANDLERS: dict[str, dict[str, Handler]] = {DIAGNOSTIC_QUEUE: {"diagnostic.echo": diagnostic_echo}}
 """Handlers by queue name, then by job kind, that need no configuration.
 
 A worker refuses to start for a queue with no handler: it would claim jobs and

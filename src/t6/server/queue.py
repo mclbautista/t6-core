@@ -34,6 +34,7 @@ __all__ = ["Claim", "JobQueue", "JobResult", "QueueError", "Submitted"]
 
 MAIN_QUEUE = "main"
 FRAMEIO_QUEUE = "frameio"
+DIAGNOSTIC_QUEUE = "diagnostic"
 DEFAULT_MAX_ATTEMPTS = 5
 
 _SCHEMA = """
@@ -188,7 +189,7 @@ class JobQueue:
         _require_name(queue, "queue")
         now = self._clock()
         with self._transaction() as db:
-            _promote_timers(db, now)
+            _promote_timers(db, now, queue if queue == DIAGNOSTIC_QUEUE else None)
             db.execute(
                 "UPDATE jobs SET state = 'failed', lease_token = NULL, result = ? "
                 "WHERE queue = ? AND state = 'claimed' AND lease_until <= ? AND attempts >= ?",
@@ -352,9 +353,10 @@ def _insert_job(
     return Submitted(job_id=row[0], created=False)
 
 
-def _promote_timers(db: sqlite3.Connection, now: float) -> int:
+def _promote_timers(db: sqlite3.Connection, now: float, only_queue: str | None = None) -> int:
     due = db.execute(
-        "SELECT queue, key, kind, payload, fire_at, count FROM timers WHERE fire_at <= ?", (now,)
+        "SELECT queue, key, kind, payload, fire_at, count FROM timers "
+        "WHERE fire_at <= ? AND (? IS NULL OR queue = ?)", (now, only_queue, only_queue)
     ).fetchall()
     for queue, key, kind, payload, fire_at, count in due:
         body = {**json.loads(payload), "count": count}

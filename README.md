@@ -82,14 +82,16 @@ Mac mini. Both use only the standard library.
   and a message on stderr when a required variable is missing or no handler is
   registered for its queue. The `main` queue gets the
   [Notion sync](#notion-sync-and-reconciliation) handlers when the two Notion
-  variables below are set. No other handler exists yet, so a worker without
-  them refuses to start.
+  variables below are set. The isolated `diagnostic` queue has a built-in
+  `diagnostic.echo` handler that returns its input payload. It is for test
+  payloads only: do not put secrets or real jobs in it. The `frameio` queue
+  has no handler yet.
 
 | Worker variable | Use |
 | --- | --- |
 | `T6_SERVER_URL` | required: the server's tailnet address, for example `http://100.64.0.1:8081` |
-| `T6_WORKER_SECRET` | required: the bearer secret for the queue (the server's `T6_WORKER_SECRET` or `T6_FRAMEIO_WORKER_SECRET`) |
-| `T6_WORKER_QUEUE` | required: the queue to poll (`main` or `frameio`) |
+| `T6_WORKER_SECRET` | required: the queue bearer secret; for `diagnostic`, use the server's `T6_DIAGNOSTIC_SECRET` |
+| `T6_WORKER_QUEUE` | required: the queue to poll (`main`, `frameio`, or `diagnostic`) |
 | `T6_WORKER_POLL_SECONDS` | optional: sleep after an empty poll, default `5` |
 | `T6_NOTION_TOKEN` | main worker: Notion integration token, for the Project registry sync |
 | `T6_NOTION_PROJECTS_DATA_SOURCE` | main worker: ID of the Projects data source |
@@ -101,6 +103,7 @@ Mac mini. Both use only the standard library.
 | `T6_TAP_SECRET` | the gateway's `T6CORE_SECRET` |
 | `T6_WORKER_SECRET` | main worker: claims `main`, may submit to `main` and `frameio`, reads Projects and reports Notion sync results |
 | `T6_FRAMEIO_WORKER_SECRET` | Frame.io worker: claims `frameio` |
+| `T6_DIAGNOSTIC_SECRET` | optional isolated diagnostic queue submit/claim credential; must differ from all other server secrets |
 | `T6_REGISTRY_SECRET` | registry caller that may register and read Projects |
 | `T6_REGISTRY_READ_SECRET` | registry caller that may only read Projects |
 | `T6_QUEUE_DB`, `T6_PUBLIC_BIND`, `T6_TAILNET_BIND` | database path, listener addresses |
