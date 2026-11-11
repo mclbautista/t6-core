@@ -57,7 +57,7 @@ from t6.registry import (
     Rotation,
     Shown,
 )
-from t6.server.queue import FRAMEIO_QUEUE, MAIN_QUEUE, JobQueue
+from t6.server.queue import DIAGNOSTIC_QUEUE, FRAMEIO_QUEUE, MAIN_QUEUE, JobQueue
 from t6.server.signatures import WebhookRejected, verify_frameio, verify_notion
 
 REVIEW_QUIET_SECONDS = 15 * 60.0
@@ -125,6 +125,10 @@ class ServerConfig:
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str]) -> ServerConfig:
+        diagnostic_secret = environ.get("T6_DIAGNOSTIC_SECRET")
+        other_secrets = ("T6_WORKER_SECRET", "T6_FRAMEIO_WORKER_SECRET", "T6_REGISTRY_SECRET", "T6_REGISTRY_READ_SECRET", "T6_TAP_SECRET", "T6_FRAMEIO_WEBHOOK_SECRET", "T6_NOTION_WEBHOOK_TOKEN")
+        if diagnostic_secret and any(environ.get(name) == diagnostic_secret for name in other_secrets):
+            raise ValueError("T6_DIAGNOSTIC_SECRET must be distinct from other secrets")
         main, frameio = frozenset({MAIN_QUEUE}), frozenset({FRAMEIO_QUEUE})
         grants: list[Grant] = []
         if environ.get("T6_WORKER_SECRET"):
@@ -141,6 +145,9 @@ class ServerConfig:
             )
         if environ.get("T6_FRAMEIO_WORKER_SECRET"):
             grants.append(Grant(environ["T6_FRAMEIO_WORKER_SECRET"], claim=frameio))
+        if environ.get("T6_DIAGNOSTIC_SECRET"):
+            diagnostic = frozenset({DIAGNOSTIC_QUEUE})
+            grants.append(Grant(environ["T6_DIAGNOSTIC_SECRET"], claim=diagnostic, submit=diagnostic))
         if environ.get("T6_REGISTRY_SECRET"):
             grants.append(
                 Grant(environ["T6_REGISTRY_SECRET"], registry_read=True, registry_write=True, actor="registry-writer")
@@ -463,7 +470,8 @@ class WebhookApp:
                 return Response(400, {"error": "queue and lease_seconds are required"})
             if queue not in grant.claim:
                 return Response(403, {"error": "queue not allowed"})
-            self._dispatch_sync()
+            if queue != DIAGNOSTIC_QUEUE:
+                self._dispatch_sync()
             claim = self._queue.claim(queue, lease)
             if claim is None:
                 return Response(200, {"job": None})
