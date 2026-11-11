@@ -121,6 +121,10 @@ class _Row:
 
 
 _Facts = tuple[Drive, Assignment, list[CustodyEvent]]
+# Facts readers append each unreadable capacity or date to the `problems` list
+# and leave that fact blank; they raise ValueError only when the row cannot be
+# imported at all.
+_FactsReader = Callable[[_Row, list[str]], _Facts]
 
 
 def import_per_project_workbook(
@@ -136,7 +140,7 @@ def import_per_project_workbook(
     review: list[ReviewItem] = []
     imported = _import_drive_rows(
         _read_per_project(Path(path)),
-        lambda row: _per_project_facts(row, lookup, logged_by),
+        lambda row, problems: _per_project_facts(row, lookup, logged_by, problems),
         store,
         review,
     )
@@ -156,7 +160,7 @@ def import_log_sheet_workbook(
     drive_rows, movements = _read_log_sheet(Path(path))
     review: list[ReviewItem] = []
     imported = _import_drive_rows(
-        drive_rows, lambda row: _inventory_facts(row, lookup, logged_by), store, review
+        drive_rows, lambda row, problems: _inventory_facts(row, lookup, logged_by, problems), store, review
     )
     inventory_serials = [_serial(row) for row in drive_rows]
     uncertain_serials = {
@@ -191,21 +195,27 @@ def _cells(columns: list[str], values: tuple[Any, ...]) -> dict[str, Any]:
     return cells
 
 
-def _capacity(row: _Row) -> float | None:
-    sizes = [parse_capacity_tb(text) for column in ("TOTAL DISK SPACE", "SPACE")
-             if (text := row.text(column)) is not None]
+def _capacity(row: _Row, problems: list[str]) -> float | None:
+    """The capacity, or None with the reason in `problems` when unreadable or conflicting."""
+    try:
+        sizes = [parse_capacity_tb(text) for column in ("TOTAL DISK SPACE", "SPACE")
+                 if (text := row.text(column)) is not None]
+    except ValueError as error:
+        problems.append(str(error))
+        return None
     if len(set(sizes)) > 1:
-        raise ValueError("conflicting TOTAL DISK SPACE and SPACE capacities")
+        problems.append("conflicting TOTAL DISK SPACE and SPACE capacities")
+        return None
     return sizes[0] if sizes else None
 
 
-def _receipt(row: _Row) -> tuple[bool, date | None]:
+def _receipt(row: _Row, problems: list[str]) -> tuple[bool, date | None]:
     value = row.cells.get("T6 IN")
     if value is None or not str(value).strip():
         return False, None
     if str(value).strip().upper() in {"YES", "Y", "IN", "T6 IN", "TRUE", "✓"}:
         return True, None
-    return True, _date(value)
+    return True, _cell_date(value, problems)
 
 
 def _read_per_project(path: Path) -> list[_Row]:
@@ -269,7 +279,7 @@ def _read_log_sheet(path: Path) -> tuple[list[_Row], list[_Row]]:
 
 
 def _import_drive_rows(
-    rows: list[_Row], facts: Callable[[_Row], _Facts], store: DriveStore, review: list[ReviewItem]
+    rows: list[_Row], facts: _FactsReader, store: DriveStore, review: list[ReviewItem]
 ) -> int:
     sharing: dict[str, list[str]] = defaultdict(list)
     for row in rows:
@@ -306,21 +316,29 @@ def _import_drive_rows(
             detail = f"{label} pairs with {pairs[id(row)]}"
             review.append(row.review("old and new labels", detail))
             doubts.append(detail)
+        problems: list[str] = []
         try:
-            drive, assignment, events = facts(row)
+            drive, assignment, events = facts(row, problems)
+            doubts += problems
             if noted or shared:
                 drive = replace(drive, serial=None, suspected_serial=serial)
             if doubts:
                 drive = replace(drive, needs_review=True, review_note="; ".join(doubts))
         except ValueError as error:
-            review.append(row.review("unreadable", f"{error}\n{row.evidence()}"))
+            review.append(_unreadable(row, [*problems, str(error)]))
             continue
+        if problems:
+            review.append(_unreadable(row, problems))
         _write(store, row, drive, assignment, events, review)
         imported += 1
         if assignment.project.unresolved and (row.sheet, row.project_row) not in unresolved:
             unresolved.add((row.sheet, row.project_row))
             review.append(ReviewItem(row.sheet, row.project_row, "unresolved project", row.project, row.workbook))
     return imported
+
+
+def _unreadable(row: _Row, problems: list[str]) -> ReviewItem:
+    return row.review("unreadable", f"{'; '.join(problems)}\n{row.evidence()}")
 
 
 def _serial(row: _Row) -> str | None:
@@ -351,20 +369,23 @@ def _old_new_pairs(rows: list[_Row]) -> dict[int, str]:
     return pairs
 
 
-def _per_project_facts(row: _Row, lookup: Lookup, logged_by: Ref) -> _Facts:
+def _per_project_facts(row: _Row, lookup: Lookup, logged_by: Ref, problems: list[str]) -> _Facts:
     label = row.text(_LABEL)
-    receipt, receipt_on = _receipt(row)
-    received = _date(row.cells.get("DATE RECEIVED")) or receipt_on
-    released = _date(row.cells.get("DATE RELEASED"))
+    receipt, receipt_on = _receipt(row, problems)
+    received = _cell_date(row.cells.get("DATE RECEIVED"), problems) or receipt_on
+    released = _cell_date(row.cells.get("DATE RELEASED"), problems)
+    # A recorded but unreadable date still records the event, undated.
+    receipt = receipt or row.text("DATE RECEIVED") is not None
+    was_released = row.text("DATE RELEASED") is not None
     remarks = row.text("REMARKS")
-    recipient = (row.text("PERSON IN CHARGE") or remarks) if released else None
+    recipient = (row.text("PERSON IN CHARGE") or remarks) if was_released else None
     if recipient == remarks:
         remarks = None
     project = _project(row.project, lookup)
     drive = Drive(
         serial=_serial(row),
         brand=row.text("BRAND NAME"),
-        capacity_tb=_capacity(row),
+        capacity_tb=_capacity(row, problems),
         label=label,
         description=row.text("HD DESCRIPTION"),
         remarks=row.text("REMARKS"),
@@ -380,7 +401,7 @@ def _per_project_facts(row: _Row, lookup: Lookup, logged_by: Ref) -> _Facts:
                 kind=CustodyKind.RECEIVED, on=received, party=None, project=project, logged_by=logged_by
             )
         )
-    if released:
+    if was_released:
         party = Party(PartyKind.CONTACT, Ref(text=recipient)) if recipient else None
         events.append(
             CustodyEvent(
@@ -390,13 +411,13 @@ def _per_project_facts(row: _Row, lookup: Lookup, logged_by: Ref) -> _Facts:
     return drive, assignment, events
 
 
-def _inventory_facts(row: _Row, lookup: Lookup, logged_by: Ref) -> _Facts:
+def _inventory_facts(row: _Row, lookup: Lookup, logged_by: Ref, problems: list[str]) -> _Facts:
     label = row.text(_LABEL)
     remarks = row.text("REMARKS")
     project = _project(row.project, lookup)
     drive = Drive(
         serial=_serial(row),
-        capacity_tb=_capacity(row),
+        capacity_tb=_capacity(row, problems),
         label=label,
         description=row.text("HD DESCRIPTION"),
         remarks=row.text("REMARKS"),
@@ -406,8 +427,9 @@ def _inventory_facts(row: _Row, lookup: Lookup, logged_by: Ref) -> _Facts:
         label=label, project=project, role=_role(label or ""), start=None, remarks=remarks
     )
     events = []
-    receipt, receipt_on = _receipt(row)
-    received = _date(row.cells.get("DATE RECEIVED")) or receipt_on
+    receipt, receipt_on = _receipt(row, problems)
+    received = _cell_date(row.cells.get("DATE RECEIVED"), problems) or receipt_on
+    receipt = receipt or row.text("DATE RECEIVED") is not None
     if receipt or received:
         events.append(CustodyEvent(kind=CustodyKind.RECEIVED, on=received, party=None,
                                   project=project, logged_by=logged_by))
@@ -486,11 +508,14 @@ def _import_movements(
         label = row.text(_LABEL)
         if label is None:
             review.append(row.review("no label"))
+        problems: list[str] = []
         try:
-            drive, assignment, event = _movement_facts(row, serial, label, lookup, logged_by)
+            drive, assignment, event = _movement_facts(row, serial, label, lookup, logged_by, problems)
         except ValueError as error:
-            review.append(row.review("unreadable", f"{error}\n{row.evidence()}"))
+            review.append(_unreadable(row, [*problems, str(error)]))
             continue
+        if problems:
+            review.append(_unreadable(row, problems))
         _write(store, row, drive, assignment, [event], review)
         imported += 1
         name = assignment.project.text
@@ -501,14 +526,14 @@ def _import_movements(
 
 
 def _movement_facts(
-    row: _Row, serial: str, label: str | None, lookup: Lookup, logged_by: Ref
+    row: _Row, serial: str, label: str | None, lookup: Lookup, logged_by: Ref, problems: list[str]
 ) -> tuple[Drive, Assignment, CustodyEvent]:
     direction = (row.text("IN/OUT") or "").upper()
     if direction == "T6 IN":
         direction = "IN"
     if direction not in {"IN", "OUT"}:
         raise ValueError(f"cannot read IN/OUT {row.text('IN/OUT')!r}")
-    on = _date(row.cells.get("DATE"))
+    on = _cell_date(row.cells.get("DATE"), problems)
     name = row.text("RECEIVED BY")
     project = _project(row.text("PROJECT NAME") or row.sheet, lookup)
     try:
@@ -538,9 +563,10 @@ def _movement_facts(
     reason = "\n".join(filter(None, (event.reason, remarks))) or None
     event = replace(event, reason=reason)
     physical_remarks = _SERIAL_IN_REMARKS.split(remarks or "", maxsplit=1)[0].strip() or None
+    doubts = (["no label"] if label is None else []) + problems
     return Drive(serial=serial, label=label, description=row.text("HD DESCRIPTION"),
-                 remarks=physical_remarks, capacity_tb=capacity, needs_review=label is None,
-                 review_note="no label" if label is None else None), assignment, event
+                 remarks=physical_remarks, capacity_tb=capacity, needs_review=bool(doubts),
+                 review_note="; ".join(doubts) or None), assignment, event
 
 
 # Reading cells
@@ -558,6 +584,15 @@ def _role(label: str) -> Role | None:
     """The role the label names, or None when it names none or more than one."""
     named = [role for role, words in _ROLE_WORDS.items() if re.search(words, label.upper())]
     return named[0] if len(named) == 1 else None
+
+
+def _cell_date(value: Any, problems: list[str]) -> date | None:
+    """A date cell, or None with the reason in `problems` when it cannot be read."""
+    try:
+        return _date(value)
+    except ValueError as error:
+        problems.append(str(error))
+        return None
 
 
 def _date(value: Any) -> date | None:

@@ -487,7 +487,7 @@ result = import_per_project_workbook(path, store, lookup=lookup, logged_by=Ref(t
   | `no label` | imported if another meaningful identifying detail exists |
   | `note in serial cell` | imported with suspected candidate and original cell preserved |
   | `shared serial` | distinct review-flagged Drives with suspected serials; never merged |
-  | `unreadable` | not imported; a capacity or date could not be read |
+  | `unreadable` | imported and flagged with the unreadable or conflicting capacity or date left blank; not imported only when no other identifying detail is left, or a movement's `IN/OUT` cannot be read |
   | `blank serial` | imported as a full Drive with permanent ID if meaningful |
   | `old and new labels` | imported with its label as written; the detail names its pair |
   | `unresolved project` | its rows are imported with the name as text; listed once, at the row where the Project's block starts |

@@ -71,8 +71,10 @@ class ImportIdentityTests(unittest.TestCase):
             })
             store = InMemoryDriveStore()
             result = import_log_sheet_workbook(path, store, lookup=make_lookup(), logged_by=LOGGED_BY)
-            self.assertEqual(result.imported, 0)
+            self.assertEqual(result.imported, 2)  # the two inventory rows, never the movement
             self.assertIsNone(store.find_by_serial("SYNTH-BAD"))
+            held = [d for d, _ in store.open_assignments(Ref(text="Inventory"))]
+            self.assertEqual([store.list_events(d.id) for d in held], [(), ()])
             self.assertTrue(any(i.sheet == "Movements" and i.reason == "ambiguous serial" for i in result.review))
 
     def test_inventory_candidates_preserve_full_normalized_serials(self) -> None:
@@ -92,7 +94,8 @@ class ImportIdentityTests(unittest.TestCase):
                         self.assertIsNone(held.remarks)
                         self.assertIn("check sticker", held.review_note or "")
                     else:
-                        self.assertEqual(result.imported, 0)
+                        held, = [d for d, _ in store.open_assignments(PAPER_MOON)]
+                        self.assertEqual((held.suspected_serial, held.capacity_tb), ("AB 123", None))
                     note, = [i for i in result.review if i.reason == "note in serial cell"]
                     self.assertEqual((note.workbook, note.sheet, note.row), (str(path.resolve()), "PAPER MOON", 2))
                     self.assertIn("ab   123 [check sticker]", note.detail)
@@ -230,7 +233,7 @@ class ImportIdentityTests(unittest.TestCase):
                     return importer(path, store, lookup=make_lookup(), logged_by=LOGGED_BY)
                 result = run()
                 drives = [d for d, _ in store.open_assignments(PAPER_MOON)]
-                self.assertEqual(len(drives), 5)
+                self.assertEqual(len(drives), 6)
                 self.assertIsNone(store.find_by_serial("SYNTH-1"))
                 candidates = [d for d in drives if d.suspected_serial == "SYNTH-1"]
                 self.assertEqual(len(candidates), 2)
@@ -251,6 +254,8 @@ class ImportIdentityTests(unittest.TestCase):
                 self.assertIn("check sticker", noted.review_note or "")
                 self.assertTrue(all(item.workbook == str(path.resolve()) for item in result.review))
                 self.assertTrue(any(item.row == 6 and item.reason == "unreadable" for item in result.review))
+                bad_size = next(d for d in drives if d.label == "bad size")
+                self.assertIsNone(bad_size.capacity_tb)
                 before = [(asdict(d), store.assignment_history(d.id), store.list_events(d.id)) for d in drives]
                 again = run()
                 after = [(asdict(d), store.assignment_history(d.id), store.list_events(d.id)) for d, _ in store.open_assignments(PAPER_MOON)]
@@ -289,3 +294,115 @@ class ImportIdentityTests(unittest.TestCase):
             self.assertEqual(run(), result)
             self.assertEqual(store.list_events(drive.id), events)
             self.assertEqual(len(store.shipment_events(shipment)), 2)
+
+
+class UnreadableFactTests(unittest.TestCase):
+    """#92: an unreadable capacity or date is left blank; the rest of the row still imports."""
+
+    def import_rows(self, importer: Any, rows: list[list[Any]], sheet: str = "PAPER MOON") -> tuple[Any, InMemoryDriveStore]:
+        with tempfile.TemporaryDirectory() as folder:
+            path = write_workbook(folder, {sheet: rows})
+            store = InMemoryDriveStore()
+            result = importer(path, store, lookup=make_lookup(), logged_by=LOGGED_BY)
+            again = importer(path, store, lookup=make_lookup(), logged_by=LOGGED_BY)
+            self.assertEqual(again, result)
+        return result, store
+
+    def only_drive(self, store: InMemoryDriveStore) -> Drive:
+        drive, = [d for d, _ in store.open_assignments(PAPER_MOON)]
+        return drive
+
+    def test_unreadable_or_conflicting_capacity_leaves_capacity_blank(self) -> None:
+        cases = (
+            (["SPACE"], ["4TB or 8TB"], "cannot read capacity"),
+            (["TOTAL DISK SPACE"], ["big"], "cannot read capacity"),
+            (["SPACE", "TOTAL DISK SPACE"], ["2TB", "4TB"], "conflicting"),
+        )
+        for importer in (import_per_project_workbook, import_log_sheet_workbook):
+            for columns, values, reason in cases:
+                with self.subTest(importer=importer.__name__, values=values):
+                    result, store = self.import_rows(importer, [
+                        ["HARD DRIVE LABEL", "SERIAL NUMBER", "REMARKS", *columns],
+                        ["invented label", "SYNTH-SIZE", "keep this", *values],
+                    ])
+                    self.assertEqual(result.imported, 1)
+                    drive = self.only_drive(store)
+                    self.assertEqual(drive.serial, "SYNTH-SIZE")
+                    self.assertIsNone(drive.capacity_tb)
+                    self.assertTrue(drive.needs_review)
+                    self.assertIn(reason, drive.review_note or "")
+                    item, = [i for i in result.review if i.reason == "unreadable"]
+                    self.assertIn(reason, item.detail)
+                    for fact in ("invented label", "SYNTH-SIZE", "keep this", *values):
+                        self.assertIn(fact, item.detail)
+
+    def test_unreadable_received_or_released_date_keeps_the_event_undated(self) -> None:
+        for importer in (import_per_project_workbook, import_log_sheet_workbook):
+            for received, released in (("04/05/23", "May 2, 2024"), ("May 2, 2024", "sometime"),
+                                       ("04/05/23", "sometime")):
+                if importer is import_log_sheet_workbook and released != "May 2, 2024":
+                    continue  # inventory rows have no DATE RELEASED column
+                columns = ["HARD DRIVE LABEL", "SERIAL NUMBER", "DATE RECEIVED"]
+                values = ["invented label", "SYNTH-DATE", received]
+                if importer is import_per_project_workbook:
+                    columns.append("DATE RELEASED")
+                    values.append(released)
+                with self.subTest(importer=importer.__name__, received=received, released=released):
+                    result, store = self.import_rows(importer, [columns, values])
+                    self.assertEqual(result.imported, 1)
+                    drive = self.only_drive(store)
+                    self.assertTrue(drive.needs_review)
+                    events = store.list_events(drive.id)
+                    expected = [(CustodyKind.RECEIVED, None if received == "04/05/23" else "2024-05-02")]
+                    if importer is import_per_project_workbook:
+                        expected.append((CustodyKind.RELEASED, None if released == "sometime" else "2024-05-02"))
+                    self.assertEqual([(e.kind, e.on.isoformat() if e.on else None) for e in events], expected)
+                    item, = [i for i in result.review if i.reason == "unreadable"]
+                    self.assertIn("cannot read the date", item.detail)
+
+    def test_unreadable_t6_in_date_still_records_an_undated_receipt(self) -> None:
+        for importer in (import_per_project_workbook, import_log_sheet_workbook):
+            with self.subTest(importer=importer.__name__):
+                result, store = self.import_rows(importer, [
+                    ["HARD DRIVE LABEL", "SERIAL NUMBER", "T6 IN"], ["invented label", "SYNTH-T6IN", "last week"]])
+                received, = store.list_events(self.only_drive(store).id)
+                self.assertIs(received.kind, CustodyKind.RECEIVED)
+                self.assertIsNone(received.on)
+                self.assertTrue(any(i.reason == "unreadable" for i in result.review))
+
+    def test_unreadable_movement_date_appends_an_undated_event(self) -> None:
+        for direction in ("IN", "OUT"):
+            with self.subTest(direction=direction):
+                result, store = self.import_rows(import_log_sheet_workbook, [
+                    ["DATE", "PROJECT NAME", "HARD DRIVE LABEL", "IN/OUT", "RECEIVED BY", "REMARKS"],
+                    ["not a date", "PAPER MOON", "invented label", direction, "Invented Person", "S/N: SYNTH-MOVE"],
+                ], sheet="January")
+                self.assertEqual(result.imported, 1)
+                drive = store.find_by_serial("SYNTH-MOVE")
+                assert drive is not None
+                self.assertTrue(drive.needs_review)
+                self.assertIn("cannot read the date", drive.review_note or "")
+                event, = store.list_events(drive.id)
+                self.assertIsNone(event.on)
+                self.assertIsNone(event.shipment_id)
+                item, = [i for i in result.review if i.reason == "unreadable"]
+                self.assertIn("not a date", item.detail)
+
+    def test_row_whose_only_fact_is_unreadable_creates_no_drive(self) -> None:
+        for importer in (import_per_project_workbook, import_log_sheet_workbook):
+            for column, value in (("SPACE", "big"), ("DATE RECEIVED", "04/05/23")):
+                with self.subTest(importer=importer.__name__, column=column):
+                    result, store = self.import_rows(importer, [["HARD DRIVE LABEL", "SERIAL NUMBER", column], [None, None, value]])
+                    self.assertEqual(result.imported, 0)
+                    self.assertEqual(store.open_assignments(PAPER_MOON), [])
+                    item, = [i for i in result.review if i.reason == "unreadable"]
+                    self.assertIn(value, item.detail)
+                    self.assertIn("identifying detail", item.detail)
+
+    def test_unreadable_in_out_still_skips_the_movement(self) -> None:
+        result, store = self.import_rows(import_log_sheet_workbook, [
+            ["DATE", "HARD DRIVE LABEL", "IN/OUT", "REMARKS"], ["May 2, 2024", "invented", "SIDEWAYS", "S/N: SYNTH-SIDE"]],
+            sheet="January")
+        self.assertEqual(result.imported, 0)
+        self.assertIsNone(store.find_by_serial("SYNTH-SIDE"))
+        self.assertTrue(any(i.reason == "unreadable" and "SIDEWAYS" in i.detail for i in result.review))
