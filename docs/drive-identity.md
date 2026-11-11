@@ -121,6 +121,30 @@ Review items contain absolute workbook path, sheet and row, and can include raw
 private facts. Keep actual workbooks/reports local; only synthetic cases belong
 in tests, documentation and public artifacts.
 
+## Operational acceptance and cutover (#55)
+
+The owner has waived the one-time drive-custodian session and accepts dirty
+production data. Usable records may be imported without mandatory workbook
+cleanup or an individually human-approved decision for every report item. Keep
+missing/suspected serials, unresolved Projects as text, and review flags/notes
+explicit. Existing identity, accepted-serial uniqueness and custody validation
+still apply; never guess identity or automatically merge records.
+
+Accepting dirty data does not permit silent data loss. Before cutover, preserve
+unsafe, unreadable or unattached source rows, their evidence and source
+traceability in a durable private exception queue for later review. Reports are
+rebuilt per invocation and the fake is not durable: neither alone satisfies this
+operational preservation gate. Real workbooks, reports and exception evidence,
+including private workbook names, serials and client/Project data, stay outside
+the repository, fixtures, tests and GitHub/public artifacts.
+
+The workbooks are frozen only at the verified real import/cutover into the web
+app's durable store, after verifying preservation of imported records, history
+and private exceptions (web-app spec). A dry run, synthetic tests, report
+acceptance or this documentation change neither performs nor authorizes that
+operation. #55 remains open for those operational gates, with #53 and #54 as its
+listed blockers; the custodian session and per-item approval are not gates.
+
 ## Compatibility decision and consumers
 
 Repository discovery at baseline `71e9724` found only the DriveStore protocol,
@@ -144,7 +168,8 @@ must explicitly build and retain a one-to-one old-key-to-permanent-ID mapping,
 move all Assignment/event/shipment references through it without reordering or
 rewriting events, and validate accepted-serial uniqueness before activation.
 That conditional adapter migration is not evidence that such a deployment exists,
-and is not executed here. Real custodian decisions and cutover remain #55.
+and is not executed here. Operational acceptance and cutover remain #55 under
+the policy above; unresolved review items need not all be individually approved.
 
 ## Synthetic acceptance evidence
 
