@@ -5,10 +5,16 @@ A fake Frame.io API, a fake token store and a fake clock. No real client data.
 
 from datetime import datetime, timezone
 from pathlib import Path
+import contextlib
+import io
+import json
 import subprocess
 import sys
 import tempfile
+import threading
+from typing import Any
 import unittest
+from unittest import mock
 
 from t6.domain.events import JsonValue
 from t6.frameio import (
@@ -31,6 +37,7 @@ from t6.frameio.worker import REFRESH_RETRY_SECONDS, REFRESH_SECONDS, SIGN_IN_NE
 from t6.server import JobQueue, Request, ServerConfig, WebhookApp
 from t6.server.testing import FakeClock
 from t6.worker import QueueClient, Worker
+from t6.worker.__main__ import ConfigError, frameio_worker, main
 from test_server_app import FRAMEIO_WORKER_SECRET, WORKER_SECRET, InProcess, ServerTestCase
 
 SINCE = datetime(2026, 11, 1, 16, 0, tzinfo=timezone.utc)
@@ -307,6 +314,81 @@ class RefreshTests(FrameioWorkerTestCase):
         self.clock.advance(REFRESH_SECONDS)
         self.frameio_worker.tick()
         self.assertEqual(len({key for _, key in self.alerts}), 2)
+
+
+FRAMEIO_ENVIRON = {
+    "T6_SERVER_URL": "http://server.invalid:8081",
+    "T6_WORKER_SECRET": FRAMEIO_WORKER_SECRET,
+    "T6_WORKER_QUEUE": "frameio",
+}
+GATEWAY_ENVIRON = {
+    "T6_GATEWAY_URL": "http://gateway.invalid",
+    "T6_GATEWAY_SECRET": "gateway-secret",
+    "T6_FRAMEIO_ALERT_CHAT": "42",
+}
+
+
+class StopOnIdle(threading.Event):
+    """A stop flag whose wait returns at once and ends the loop, so a test never sleeps."""
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.set()
+        return True
+
+
+class EntrypointTests(FrameioWorkerTestCase):
+    def run_main(self, environ: dict[str, str], **kwargs: Any) -> tuple[int, str]:
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            code = main(environ, transport=InProcess(self.app), stop=StopOnIdle(), **kwargs)
+        return code, errors.getvalue()
+
+    def test_the_frameio_queue_serves_requests_and_refreshes_the_token(self) -> None:
+        job_id = self.caller.submit("frameio", FrameioProjects.kind, "k")
+        code, _ = self.run_main(FRAMEIO_ENVIRON, frameio=self.frameio_worker)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.caller.result("frameio", job_id), ("ok", {"answered": FrameioProjects.kind}))
+        self.assertEqual(self.token_store.refreshes, 1)
+
+    def test_a_lost_sign_in_alerts_from_the_loop_and_fails_the_request(self) -> None:
+        self.token_store.refresh_error = SignInRequired("refresh token revoked")
+        job_id = self.caller.submit("frameio", FrameioProjects.kind, "k")
+        self.run_main(FRAMEIO_ENVIRON, frameio=self.frameio_worker)
+        self.assertEqual(self.caller.result("frameio", job_id), ("failed", SIGN_IN_NEEDED))
+        self.assertEqual(len(self.alerts), 1)
+
+    def test_without_a_token_store_the_frameio_worker_refuses_to_start(self) -> None:
+        code, message = self.run_main({**FRAMEIO_ENVIRON, **GATEWAY_ENVIRON})
+        self.assertEqual(code, 2)
+        self.assertIn("t6-core#15", message)
+
+    def test_the_alert_needs_the_gateway_and_a_chat(self) -> None:
+        for name in GATEWAY_ENVIRON:
+            environ = {key: value for key, value in GATEWAY_ENVIRON.items() if key != name}
+            with self.subTest(name=name), self.assertRaisesRegex(ConfigError, name):
+                frameio_worker(environ, self.token_store, self.frameio)
+        with self.assertRaisesRegex(ConfigError, "T6_FRAMEIO_ALERT_CHAT"):
+            frameio_worker({**GATEWAY_ENVIRON, "T6_FRAMEIO_ALERT_CHAT": "cyril"}, self.token_store, self.frameio)
+
+    def test_the_alert_goes_to_the_chat_through_the_gateway_notify_route(self) -> None:
+        sent: list[tuple[str, str, dict[str, Any]]] = []
+
+        class Gateway:
+            def __init__(self, base_url: str) -> None:
+                self.base_url = base_url
+
+            def send(self, method: str, path: str, headers: Any, body: bytes) -> tuple[int, dict[str, Any]]:
+                sent.append((method, self.base_url + path, json.loads(body)))
+                return 202, {"message_ref": 1}
+
+        self.token_store.refresh_error = SignInRequired("refresh token revoked")
+        with mock.patch("t6.worker.__main__.HttpTransport", Gateway):
+            frameio_worker(GATEWAY_ENVIRON, self.token_store, self.frameio).tick()
+        self.assertEqual(len(sent), 1)
+        method, url, body = sent[0]
+        self.assertEqual((method, url, body["to"]), ("POST", "http://gateway.invalid/notify", 42))
+        self.assertIn("https://sign-in.example/authorize?state=s1", body["text"])
+        self.assertTrue(body["idempotency_key"].startswith("frameio-sign-in:"))
 
 
 if __name__ == "__main__":

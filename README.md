@@ -91,8 +91,9 @@ Mac mini. Both use only the standard library.
   variables below are set. The isolated `diagnostic` queue has a built-in
   `diagnostic.echo` handler that returns its input payload. It is for test
   payloads only: do not put secrets or real jobs in it. The `frameio` queue
-  has no handler in this entrypoint yet: the [Frame.io worker](#frameio) is
-  wired in with its token store and API reads. A handler that raises
+  runs the [Frame.io worker](#frameio) and calls its `tick()` before every
+  poll. It exits with code 2 until the token store (t6-core#15) and the
+  Frame.io reads (t6-core#16) exist. A handler that raises
   `t6.worker.Refused` fails its job for good, with no retry.
 
 | Worker variable | Use |
@@ -103,6 +104,8 @@ Mac mini. Both use only the standard library.
 | `T6_WORKER_POLL_SECONDS` | optional: sleep after an empty poll, default `5` |
 | `T6_NOTION_TOKEN` | main worker: Notion integration token, for the Project registry sync |
 | `T6_NOTION_PROJECTS_DATA_SOURCE` | main worker: ID of the Projects data source |
+| `T6_GATEWAY_URL`, `T6_GATEWAY_SECRET` | Frame.io worker: required, the gateway whose `/notify` sends the sign-in alert |
+| `T6_FRAMEIO_ALERT_CHAT` | Frame.io worker: required, the Telegram chat ID that gets the sign-in alert |
 
 | Variable | Use |
 | --- | --- |
@@ -625,9 +628,11 @@ if isinstance(result, Ok):
   t6-core#16.
 - **Worker.** `FrameioWorker(tokens, run, notify)` gives the handlers for the
   `frameio` queue. `tokens` is the token store (t6-core#15) and `run` executes
-  one request against the Frame.io API (t6-core#16); neither is built yet, so
-  `python -m t6.worker` does not start a `frameio` worker yet. Call `tick()`
-  between jobs: it refreshes the token once a day.
+  one request against the Frame.io API (t6-core#16). Neither is built yet, so
+  `python -m t6.worker` with `T6_WORKER_QUEUE=frameio` exits with code 2 and
+  says so. The loop, the `tick()` call and the gateway alert are wired:
+  `frameio_backend` in `t6.worker.__main__` is the one place that will return
+  the real pair. `tick()` refreshes the token once a day.
 - **Sign-in.** When Frame.io refuses the token, the worker sends one Telegram
   alert a day with the sign-in link through `notify` (the gateway's `/notify`) and
   fails every request with `Frame.io sign-in needed` until someone signs in.
