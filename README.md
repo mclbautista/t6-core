@@ -3,7 +3,12 @@
 The shared T6 Python library. This repository was renamed from **t6-notion**
 before its first commit. The distribution and import namespace are `t6`.
 
-Requires Python 3.11 or newer. Install the base package with `pip install t6`.
+Requires Python 3.11 or newer. `t6` is not on PyPI: install it from this
+repository, pinned to a release tag, with
+`pip install 't6 @ git+https://github.com/mclbautista/t6-core.git@v0.3.0'`.
+Where this README says `pip install 't6[extra]'`, use the same form with the
+extra, for example
+`pip install 't6[notion] @ git+https://github.com/mclbautista/t6-core.git@v0.3.0'`.
 The base package has no third-party runtime dependencies and includes
 `t6.domain`, `t6.lookup`, `t6.drives`, `t6.registry`, and the `t6` command.
 
@@ -581,8 +586,9 @@ Install only the adapters an application needs, for example
 | `worker` | Job workers (stdlib only) |
 
 The `notion` extra installs `httpx`, the `llm` extra installs `pydantic`, the `resolve` extra installs `psycopg` and the `drives` extra installs `openpyxl`.
-The other extras are declared and currently empty; their dependencies will be
-added when those adapters are implemented. The `notion` extra does not install Frame.io, Adobe sign-in, or
+The `privacy`, `instagantt`, `server` and `worker` extras are implemented and
+need no third-party packages. The `frameio` extra is declared and empty until
+that adapter is built. The `notion` extra does not install Frame.io, Adobe sign-in, or
 LLM libraries.
 
 ## Instagantt
@@ -795,7 +801,7 @@ outside Cameras or a Notion error prints `{"error": ...}` on stderr and exits 2.
 `password`, `passcode`, `pin` followed directly by `:` or `=`) before text
 leaves T6. It is one way: the result holds only the masked `text`, the `count`
 of values withheld, and the `masker_version`, so nothing can be restored. URLs
-are kept byte for byte. It is ported from the watchdog masker in t6-jo-tg-ntn
+are kept byte for byte. It is ported from the watchdog masker in t6-jo-watchdog
 and needs no third-party packages or Notion access.
 
 ```python
