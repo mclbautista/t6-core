@@ -12,7 +12,6 @@ import sys
 import threading
 
 from t6.domain.events import JsonValue
-from t6.frameio.requests import FrameioRequest
 from t6.frameio.worker import FrameioWorker, Run, Tokens
 from t6.server.queue import DIAGNOSTIC_QUEUE, FRAMEIO_QUEUE
 from t6.worker.client import HttpTransport, QueueClient, Transport, WorkerJob
@@ -97,8 +96,10 @@ def frameio_backend(environ: Mapping[str, str]) -> tuple[Tokens, Run]:
     """The Frame.io worker's token store and API.
 
     The token store signs in to Adobe with the OAuth Web App credential in the
-    environment and keeps the token in `T6_FRAMEIO_TOKEN_FILE`. Frame.io reads
-    are not built yet (t6-core#16), so every request is answered `failed`.
+    environment and keeps the token in `T6_FRAMEIO_TOKEN_FILE`. With
+    `T6_NOTION_TOKEN` and `T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE` set, the
+    briefing feed works and live share links get External Links rows (needs
+    the `notion` extra); without them the other reads still work.
     """
     names = ("T6_FRAMEIO_CLIENT_ID", "T6_FRAMEIO_CLIENT_SECRET", "T6_FRAMEIO_REDIRECT_URI", "T6_FRAMEIO_TOKEN_FILE")
     missing = [name for name in names if not environ.get(name)]
@@ -115,10 +116,17 @@ def frameio_backend(environ: Mapping[str, str]) -> tuple[Tokens, Run]:
         Path(environ["T6_FRAMEIO_TOKEN_FILE"]),
     )
 
-    def run(request: FrameioRequest) -> JsonValue:
-        raise NotImplementedError("Frame.io reads are not built yet (t6-core#16)")
+    links = None
+    notion_token, data_source = environ.get("T6_NOTION_TOKEN"), environ.get("T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE")
+    if notion_token and data_source:
+        from t6.notion import NotionClient
+        from t6.notion.external_links import ExternalLinks
 
-    return tokens, run
+        links = ExternalLinks(NotionClient(notion_token), data_source)
+    from t6.frameio.api import FrameioApi
+    from t6.frameio.reads import FrameioReads
+
+    return tokens, FrameioReads(FrameioApi(tokens), links, environ.get("T6_FRAMEIO_ACCOUNT_ID") or None)
 
 
 def frameio_worker(environ: Mapping[str, str], tokens: Tokens, run: Run) -> FrameioWorker:

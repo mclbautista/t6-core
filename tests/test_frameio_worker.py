@@ -34,7 +34,9 @@ from t6.frameio import (
     Versions,
     ask,
 )
+from t6.frameio.model import decode
 from t6.frameio.requests import from_job, to_payload
+from t6.frameio.testing import FakeFrameio as FakeFrameioApi
 from t6.frameio.worker import REFRESH_RETRY_SECONDS, REFRESH_SECONDS, SIGN_IN_NEEDED
 from t6.server import JobQueue, Request, ServerConfig, WebhookApp
 from t6.server.testing import FakeClock
@@ -399,14 +401,32 @@ class EntrypointTests(FrameioWorkerTestCase):
             link = html.unescape(sent[0]["text"]).split("Sign in here: ")[1]
             state = urllib.parse.parse_qs(urllib.parse.urlsplit(link).query)["state"][0]
             self.app.public(Request("GET", f"/frameio/callback?code=code-1&state={state}", {}, b""))
-            job_id = self.caller.submit("frameio", FrameioProjects.kind, "k")
             self.assertEqual(self.run_main(environ, frameio=worker)[0], 0)
         self.assertEqual(json.loads(token_file.read_text())["access_token"], "access-1")
         self.assertEqual(len(sent), 1)
-        result = self.caller.result("frameio", job_id)
-        assert result is not None
-        self.assertEqual(result[0], "failed")
-        self.assertIn("t6-core#16", str(result[1]))
+
+    def test_the_worker_built_from_the_environment_answers_reads_through_the_queue(self) -> None:
+        adobe, fake = FakeAdobe(), FakeFrameioApi()
+        fake.add_project("fp1", "Example Show")
+        fake.add_share("fp1", "s1", "Cut 1")
+        token_file = Path(self.directory.name) / "frameio-token.json"
+        environ = {**FRAMEIO_ENVIRON, **GATEWAY_ENVIRON, **ADOBE_ENVIRON, "T6_FRAMEIO_TOKEN_FILE": str(token_file)}
+        with mock.patch("t6.frameio.tokens.http_post", adobe), mock.patch("t6.frameio.api.http_fetch", fake.fetch):
+            tokens, run = frameio_backend(environ)
+            tokens.exchange("code-1", urllib.parse.parse_qs(urllib.parse.urlsplit(tokens.sign_in_url()).query)["state"][0])
+            worker = Worker(
+                QueueClient(InProcess(self.app), FRAMEIO_WORKER_SECRET),
+                "frameio",
+                FrameioWorker(tokens, run, self.notify, self.clock).handlers(),
+            )
+            self.worker = worker
+            result = self.ask(ShareLinks(frameio_project_id="fp1"))
+            feed = self.ask(BriefingFeed(since=SINCE))
+        assert isinstance(result, Ok)
+        self.assertEqual([link.url for link in decode(ShareLinks, result.value)], ["https://f.io/s1"])
+        self.assertEqual(fake.tokens_seen[0], "Bearer access-1")
+        assert isinstance(feed, Failed)
+        self.assertIn("T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE", feed.reason)
 
     def test_the_alert_needs_the_gateway_and_a_chat(self) -> None:
         for name in GATEWAY_ENVIRON:
