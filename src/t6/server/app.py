@@ -3,8 +3,9 @@
 Two listeners, two entry points:
 
 - `WebhookApp.public(request)` is the internet-facing path. It serves only
-  `/webhook` and `/webhook/*` (Frame.io and Notion). Everything else is 404, so
-  the tap and queue routes are not reachable from the internet.
+  `/webhook` and `/webhook/*` (Frame.io and Notion) and `GET /frameio/callback`
+  (the Frame.io sign-in redirect). Everything else is 404, so the tap and queue
+  routes are not reachable from the internet.
 - `WebhookApp.tailnet(request)` is for tailnet peers only. It serves the tap
   endpoint (`POST /tap`, the gateway), the queue routes (`/queue/*`, workers
   and callers) and the Project registry routes (`/registry/*`).
@@ -24,6 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+import hashlib
 import hmac
 import json
 import time
@@ -37,6 +39,7 @@ from t6.domain.events import (
     JobKind,
     JsonValue,
 )
+from t6.frameio.requests import SIGN_IN_KIND
 from t6.operator import PREFIX as OPERATOR_PREFIX
 from t6.operator import Card, OperatorService
 from t6.registry import (
@@ -62,6 +65,7 @@ from t6.server.signatures import WebhookRejected, verify_frameio, verify_notion
 
 REVIEW_QUIET_SECONDS = 15 * 60.0
 DEFAULT_LEASE_SECONDS = 60.0
+MAX_SIGN_IN_PARAM_CHARS = 4096
 
 NOTION_PAGE_EVENTS = frozenset({"page.properties_updated", "page.created", "page.deleted", "page.undeleted"})
 """Notion events that queue a `notion.page_changed` job. The event only says a
@@ -126,7 +130,7 @@ class ServerConfig:
     @classmethod
     def from_env(cls, environ: Mapping[str, str]) -> ServerConfig:
         diagnostic_secret = environ.get("T6_DIAGNOSTIC_SECRET")
-        other_secrets = ("T6_WORKER_SECRET", "T6_FRAMEIO_WORKER_SECRET", "T6_REGISTRY_SECRET", "T6_REGISTRY_READ_SECRET", "T6_TAP_SECRET", "T6_FRAMEIO_WEBHOOK_SECRET", "T6_NOTION_WEBHOOK_TOKEN")
+        other_secrets = ("T6_WORKER_SECRET", "T6_FRAMEIO_WORKER_SECRET", "T6_FRAMEIO_CALLER_SECRET", "T6_REGISTRY_SECRET", "T6_REGISTRY_READ_SECRET", "T6_TAP_SECRET", "T6_FRAMEIO_WEBHOOK_SECRET", "T6_NOTION_WEBHOOK_TOKEN")
         if diagnostic_secret and any(environ.get(name) == diagnostic_secret for name in other_secrets):
             raise ValueError("T6_DIAGNOSTIC_SECRET must be distinct from other secrets")
         main, frameio = frozenset({MAIN_QUEUE}), frozenset({FRAMEIO_QUEUE})
@@ -145,6 +149,8 @@ class ServerConfig:
             )
         if environ.get("T6_FRAMEIO_WORKER_SECRET"):
             grants.append(Grant(environ["T6_FRAMEIO_WORKER_SECRET"], claim=frameio))
+        if environ.get("T6_FRAMEIO_CALLER_SECRET"):
+            grants.append(Grant(environ["T6_FRAMEIO_CALLER_SECRET"], submit=frameio))
         if environ.get("T6_DIAGNOSTIC_SECRET"):
             diagnostic = frozenset({DIAGNOSTIC_QUEUE})
             grants.append(Grant(environ["T6_DIAGNOSTIC_SECRET"], claim=diagnostic, submit=diagnostic))
@@ -196,6 +202,8 @@ class WebhookApp:
 
     def public(self, request: Request) -> Response:
         path = urlsplit(request.path).path
+        if path == "/frameio/callback":
+            return self._frameio_callback(request)
         if path != "/webhook" and not path.startswith("/webhook/"):
             return Response(404)
         if request.method != "POST":
@@ -208,6 +216,21 @@ class WebhookApp:
         except WebhookRejected as rejection:
             return Response(401, {"error": rejection.reason})
         return Response(401, {"error": "unknown sender"})
+
+    def _frameio_callback(self, request: Request) -> Response:
+        """Adobe sends the browser here after sign-in. The authorization code goes
+        to the Frame.io worker as a job; this server never exchanges it for a token."""
+        if request.method != "GET":
+            return Response(405)
+        if not any(FRAMEIO_QUEUE in grant.claim for grant in self._config.grants):
+            return Response(503, {"error": "no Frame.io worker configured"})
+        query = parse_qs(urlsplit(request.path).query)
+        code, state = (query.get("code") or [""])[0], (query.get("state") or [""])[0]
+        if not code or not state or max(len(code), len(state)) > MAX_SIGN_IN_PARAM_CHARS:
+            return Response(400, {"error": "sign-in was not completed"})
+        key = "sign-in:" + hashlib.sha256(code.encode()).hexdigest()[:32]
+        self._queue.submit(FRAMEIO_QUEUE, SIGN_IN_KIND, key, {"code": code, "state": state})
+        return Response(200, {"received": True, "message": "Sign-in received. You can close this page."})
 
     def _frameio(self, request: Request) -> Response:
         if not self._config.frameio_webhook_secret:

@@ -59,7 +59,8 @@ webhook server, the worker and poll-and-diff.
 Mac mini. Both use only the standard library.
 
 - **Two listeners.** The public one serves only `/webhook` and `/webhook/*`
-  (Frame.io and Notion). The tailnet one serves `POST /tap` (the gateway),
+  (Frame.io and Notion) and `GET /frameio/callback` (the
+  [Frame.io sign-in](#frameio) redirect). The tailnet one serves `POST /tap` (the gateway),
   `/queue/*` (workers and callers) and `/registry/*` (the
   [Project registry](#project-registry)). Nothing else is served on the
   public one.
@@ -90,7 +91,9 @@ Mac mini. Both use only the standard library.
   variables below are set. The isolated `diagnostic` queue has a built-in
   `diagnostic.echo` handler that returns its input payload. It is for test
   payloads only: do not put secrets or real jobs in it. The `frameio` queue
-  has no handler yet.
+  has no handler in this entrypoint yet: the [Frame.io worker](#frameio) is
+  wired in with its token store and API reads. A handler that raises
+  `t6.worker.Refused` fails its job for good, with no retry.
 
 | Worker variable | Use |
 | --- | --- |
@@ -107,7 +110,8 @@ Mac mini. Both use only the standard library.
 | `T6_NOTION_WEBHOOK_TOKEN` | Notion `verification_token` |
 | `T6_TAP_SECRET` | the gateway's `T6CORE_SECRET` |
 | `T6_WORKER_SECRET` | main worker: claims `main`, may submit to `main` and `frameio`, reads Projects and reports Notion sync results |
-| `T6_FRAMEIO_WORKER_SECRET` | Frame.io worker: claims `frameio` |
+| `T6_FRAMEIO_WORKER_SECRET` | Frame.io worker: claims `frameio`; also turns on `/frameio/callback` |
+| `T6_FRAMEIO_CALLER_SECRET` | a caller outside the main worker (t6-notion-reports): may submit to `frameio` and read its results, nothing else |
 | `T6_DIAGNOSTIC_SECRET` | optional isolated diagnostic queue submit/claim credential; must differ from all other server secrets |
 | `T6_REGISTRY_SECRET` | registry caller that may register and read Projects |
 | `T6_REGISTRY_READ_SECRET` | registry caller that may only read Projects |
@@ -590,9 +594,48 @@ Install only the adapters an application needs, for example
 
 The `notion` extra installs `httpx`, the `llm` extra installs `pydantic`, the `resolve` extra installs `psycopg` and the `drives` extra installs `openpyxl`.
 The `privacy`, `instagantt`, `server` and `worker` extras are implemented and
-need no third-party packages. The `frameio` extra is declared and empty until
-that adapter is built. The `notion` extra does not install Frame.io, Adobe sign-in, or
+need no third-party packages. The `frameio` extra holds the
+[Frame.io worker](#frameio) and needs none yet. The `notion` extra does not install Frame.io, Adobe sign-in, or
 LLM libraries.
+
+## Frame.io
+
+One process, the **Frame.io worker**, holds the Frame.io token. Adobe rotates
+the refresh token on each use, so a second holder would sign the first one
+out. Every other part of T6 asks the worker through the `frameio` queue and
+holds no Frame.io credentials.
+
+```python
+from t6.frameio import Failed, Ok, ShareLinks, ask
+from t6.worker import HttpTransport, QueueClient
+
+result = ask(QueueClient(HttpTransport(server_url), secret), ShareLinks(project_id="..."))
+if isinstance(result, Ok):
+    links = result.value
+```
+
+- **Requests.** `Projects`, `ShareLinks`, `Comments`, `Versions`, `Approvals`,
+  `BriefingFeed(since)` and `CreateProjectFolders(project_id, name)` (Project
+  Start's Frame.io folder step). Each is one job on the `frameio` queue.
+- **Results.** `ask` returns `Ok(value)` or `Failed(reason)` and never raises.
+  No answer within `timeout` seconds (default 30), a refused queue call and a
+  Frame.io error are all `Failed`. Each `ask` is a new job, so asking again
+  asks Frame.io again. `value` is JSON; typed read objects come with
+  t6-core#16.
+- **Worker.** `FrameioWorker(tokens, run, notify)` gives the handlers for the
+  `frameio` queue. `tokens` is the token store (t6-core#15) and `run` executes
+  one request against the Frame.io API (t6-core#16); neither is built yet, so
+  `python -m t6.worker` does not start a `frameio` worker yet. Call `tick()`
+  between jobs: it refreshes the token once a day.
+- **Sign-in.** When Frame.io refuses the token, the worker sends one Telegram
+  alert with the sign-in link through `notify` (the gateway's `/notify`) and
+  fails every request with `Frame.io sign-in needed` until someone signs in.
+  Adobe redirects the browser to `GET /frameio/callback?code=...&state=...`
+  on the server's public listener. The server queues the code as a
+  `frameio.sign_in` job and the worker exchanges it. The server never holds a
+  token. The route answers 503 unless `T6_FRAMEIO_WORKER_SECRET` is set.
+- **A slow request** holds only the `frameio` queue. The `main` queue keeps
+  running, and the caller gets `Failed` at its timeout.
 
 ## Instagantt
 

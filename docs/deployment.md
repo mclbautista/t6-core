@@ -10,11 +10,11 @@ as you go.
 
 | Process | Where | Listens | Holds |
 | --- | --- | --- | --- |
-| `python -m t6.server` | VPS | public `T6_PUBLIC_BIND` (`/webhook*` only), tailnet `T6_TAILNET_BIND` (`/tap`, `/queue/*`, `/registry/*`, `/operator/*`) | the only registry, queue and operator databases, on persistent storage (`/data`) |
+| `python -m t6.server` | VPS | public `T6_PUBLIC_BIND` (`/webhook*` and `/frameio/callback` only), tailnet `T6_TAILNET_BIND` (`/tap`, `/queue/*`, `/registry/*`, `/operator/*`) | the only registry, queue and operator databases, on persistent storage (`/data`) |
 | `python -m t6.worker` (queue `main`) | supervised separately, same image | nothing | the Notion token and the gateway secret; reaches the server over the tailnet |
 
 One server owns the files; there is no second writer. The public listener answers
-404 to everything but `/webhook` paths, so the registry, queue and operator routes
+404 to everything but `/webhook` paths and `/frameio/callback`, so the registry, queue and operator routes
 are never on the internet. Bind the tailnet listener to the Tailscale address, not
 `0.0.0.0`.
 

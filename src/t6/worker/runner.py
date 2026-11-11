@@ -13,6 +13,10 @@ Handler = Callable[[WorkerJob], JsonValue]
 RETRY_SECONDS = 30.0
 
 
+class Refused(Exception):
+    """Raised by a handler to fail the job for good, with no retry. Its text is the reason."""
+
+
 class Worker:
     """Claims jobs from `queue` and runs the handler registered for each kind.
 
@@ -43,6 +47,8 @@ class Worker:
             return True
         try:
             result = handler(job)
+        except Refused as refusal:
+            self._client.fail(job, str(refusal)[:300])
         except Exception as error:  # noqa: BLE001 - any handler failure is a failed attempt
             self._client.fail(job, f"{type(error).__name__}: {error}"[:300], retry_in=RETRY_SECONDS)
         else:

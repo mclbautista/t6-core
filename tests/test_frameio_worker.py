@@ -1,0 +1,291 @@
+"""The Frame.io worker and its callers, end to end through the in-process queue.
+
+A fake Frame.io API, a fake token store and a fake clock. No real client data.
+"""
+
+from datetime import datetime, timezone
+from pathlib import Path
+import tempfile
+import unittest
+
+from t6.domain.events import JsonValue
+from t6.frameio import (
+    Approvals,
+    BriefingFeed,
+    Comments,
+    CreateProjectFolders,
+    Failed,
+    FrameioRequest,
+    FrameioWorker,
+    Ok,
+    Projects,
+    ShareLinks,
+    SignInRequired,
+    Versions,
+    ask,
+)
+from t6.frameio.requests import from_job, to_payload
+from t6.frameio.worker import REFRESH_RETRY_SECONDS, REFRESH_SECONDS, SIGN_IN_NEEDED
+from t6.server import JobQueue, Request, ServerConfig, WebhookApp
+from t6.server.testing import FakeClock
+from t6.worker import QueueClient, Worker
+from test_server_app import FRAMEIO_WORKER_SECRET, WORKER_SECRET, InProcess, ServerTestCase
+
+SINCE = datetime(2026, 11, 1, 16, 0, tzinfo=timezone.utc)
+REQUESTS: tuple[FrameioRequest, ...] = (
+    Projects(),
+    ShareLinks(project_id="fp1"),
+    Comments(file_id="f1"),
+    Versions(file_id="f1"),
+    Approvals(file_id="f1"),
+    BriefingFeed(since=SINCE),
+    CreateProjectFolders(project_id="t6p_1", name="Show One"),
+)
+
+
+class FakeFrameio:
+    """Stands in for the Frame.io API: answers every request with its own name."""
+
+    def __init__(self) -> None:
+        self.seen: list[FrameioRequest] = []
+        self.error: Exception | None = None
+
+    def __call__(self, request: FrameioRequest) -> JsonValue:
+        self.seen.append(request)
+        if self.error is not None:
+            raise self.error
+        return {"answered": request.kind}
+
+
+class FakeTokens:
+    """Stands in for the token store and Adobe sign-in."""
+
+    def __init__(self) -> None:
+        self.token = "access-token-0"
+        self.refreshes = 0
+        self.refresh_error: Exception | None = None
+        self.exchanged: list[tuple[str, str]] = []
+
+    def sign_in_url(self) -> str:
+        return "https://sign-in.example/authorize?state=s1"
+
+    def exchange(self, code: str, state: str) -> None:
+        if state != "s1":
+            raise SignInRequired("state does not match")
+        self.exchanged.append((code, state))
+        self.token = f"access-token-from-{code}"
+
+    def refresh(self) -> None:
+        if self.refresh_error is not None:
+            raise self.refresh_error
+        self.refreshes += 1
+        self.token = f"access-token-{self.refreshes}"
+
+
+class FrameioWorkerTestCase(ServerTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.frameio = FakeFrameio()
+        self.token_store = FakeTokens()
+        self.alerts: list[tuple[str, str]] = []
+        self.notify_error: Exception | None = None
+        self.frameio_worker = FrameioWorker(self.token_store, self.frameio, self.notify, self.clock)
+        self.worker = Worker(
+            QueueClient(InProcess(self.app), FRAMEIO_WORKER_SECRET), "frameio", self.frameio_worker.handlers()
+        )
+        self.caller = QueueClient(InProcess(self.app), WORKER_SECRET)
+
+    def notify(self, text: str, key: str) -> None:
+        if self.notify_error is not None:
+            raise self.notify_error
+        self.alerts.append((text, key))
+
+    def serve(self, seconds: float) -> None:
+        """What the worker's loop does while a caller sleeps."""
+        self.frameio_worker.tick()
+        self.worker.run_once()
+        self.clock.advance(seconds)
+
+    def ask(self, request: FrameioRequest, timeout: float = 30.0) -> Ok | Failed:
+        return ask(self.caller, request, timeout=timeout, clock=self.clock, sleep=self.serve)
+
+    def sign_in(self, code: str = "code-1", state: str = "s1") -> None:
+        answer = self.app.public(Request("GET", f"/frameio/callback?code={code}&state={state}", {}, b""))
+        self.assertEqual(answer.status, 200)
+        self.worker.run_once()
+
+
+class RequestTests(FrameioWorkerTestCase):
+    def test_every_request_survives_the_trip_through_a_job_payload(self) -> None:
+        for request in REQUESTS:
+            with self.subTest(kind=request.kind):
+                self.assertEqual(from_job(request.kind, to_payload(request)), request)
+
+    def test_every_request_round_trips_through_the_frameio_queue_with_an_ok_result(self) -> None:
+        for request in REQUESTS:
+            with self.subTest(kind=request.kind):
+                self.assertEqual(self.ask(request), Ok({"answered": request.kind}))
+        self.assertEqual(self.frameio.seen, list(REQUESTS))
+
+    def test_blank_fields_and_times_without_a_zone_are_not_requests(self) -> None:
+        with self.assertRaises(ValueError):
+            ShareLinks(project_id=" ")
+        with self.assertRaises(ValueError):
+            BriefingFeed(since=datetime(2026, 11, 1))
+
+    def test_a_frameio_error_is_a_failed_result_and_is_not_retried(self) -> None:
+        self.frameio.error = RuntimeError("Frame.io answered 500")
+        self.assertEqual(self.ask(Projects()), Failed("RuntimeError: Frame.io answered 500"))
+        self.clock.advance(3600)
+        self.assertFalse(self.worker.run_once())
+        self.assertEqual(len(self.frameio.seen), 1)
+
+    def test_a_job_that_is_not_a_request_is_a_failed_result(self) -> None:
+        job_id = self.caller.submit("frameio", "frameio.share_links", "bad", {"project_id": 7})
+        self.worker.run_once()
+        result = self.caller.result("frameio", job_id)
+        assert result is not None
+        self.assertEqual(result[0], "failed")
+        self.assertIn("bad request", str(result[1]))
+        self.assertEqual(self.frameio.seen, [])
+
+
+class CallerTests(FrameioWorkerTestCase):
+    def test_a_timeout_is_a_failed_result_not_an_exception(self) -> None:
+        result = ask(self.caller, Projects(), timeout=10, clock=self.clock, sleep=self.clock.advance)
+        self.assertEqual(result, Failed("no answer from the Frame.io worker within 10 seconds"))
+
+    def test_a_refused_queue_call_is_a_failed_result_not_an_exception(self) -> None:
+        stranger = QueueClient(InProcess(self.app), "not-a-secret")
+        result = ask(stranger, Projects(), clock=self.clock, sleep=self.clock.advance)
+        self.assertIsInstance(result, Failed)
+
+    def test_asking_twice_asks_frameio_twice(self) -> None:
+        self.ask(Projects())
+        self.ask(Projects())
+        self.assertEqual(len(self.frameio.seen), 2)
+
+    def test_a_stuck_frameio_request_does_not_block_the_main_queue(self) -> None:
+        stuck = self.caller.submit("frameio", Projects.kind, "stuck")
+        claimed = QueueClient(InProcess(self.app), FRAMEIO_WORKER_SECRET).claim("frameio")
+        assert claimed is not None  # held by the Frame.io worker and never finished
+        self.caller.submit("main", "x", "main-job")
+        handled: list[str] = []
+        main_worker = Worker(self.caller, "main", {"x": lambda job: handled.append(job.dedupe_key)})
+        self.assertTrue(main_worker.run_once())
+        self.assertEqual(handled, ["main-job"])
+        self.assertIsNone(self.caller.result("frameio", stuck))
+
+    def test_a_caller_secret_may_ask_but_not_claim_or_touch_the_main_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            clock = FakeClock()
+            environ = {"T6_FRAMEIO_CALLER_SECRET": "caller", "T6_FRAMEIO_WORKER_SECRET": "worker"}
+            app = WebhookApp(JobQueue(Path(directory) / "q.sqlite3", clock), ServerConfig.from_env(environ), clock)
+            caller = QueueClient(InProcess(app), "caller")
+            job_id = caller.submit("frameio", Projects.kind, "k")
+            self.assertIsNone(caller.result("frameio", job_id))
+            for refused in (lambda: caller.claim("frameio"), lambda: caller.submit("main", "x", "k")):
+                with self.assertRaisesRegex(Exception, "403"):
+                    refused()
+
+
+class SignInTests(FrameioWorkerTestCase):
+    def test_the_callback_code_reaches_the_worker_and_is_exchanged_there(self) -> None:
+        self.sign_in("code-1")
+        self.assertEqual(self.token_store.exchanged, [("code-1", "s1")])
+        stored = (Path(self.directory.name) / "q.sqlite3").read_bytes()
+        self.assertNotIn(self.token_store.token.encode(), stored)  # the VPS queue never sees a token
+
+    def test_the_same_code_delivered_twice_is_exchanged_once(self) -> None:
+        self.sign_in("code-1")
+        self.sign_in("code-1")
+        self.assertEqual(self.token_store.exchanged, [("code-1", "s1")])
+
+    def test_a_callback_without_a_code_or_state_queues_nothing(self) -> None:
+        for path in ("/frameio/callback?error=access_denied&state=s1", "/frameio/callback?code=c", "/frameio/callback"):
+            with self.subTest(path=path):
+                self.assertEqual(self.app.public(Request("GET", path, {}, b"")).status, 400)
+        self.assertEqual(self.app.public(Request("POST", "/frameio/callback?code=c&state=s1", {}, b"")).status, 405)
+        self.assertFalse(self.worker.run_once())
+
+    def test_the_callback_is_off_without_a_frameio_worker_and_is_not_on_the_tailnet(self) -> None:
+        request = Request("GET", "/frameio/callback?code=c&state=s1", {}, b"")
+        self.assertEqual(self.app.tailnet(request).status, 404)
+        app = WebhookApp(self.queue, ServerConfig(), self.clock)
+        self.assertEqual(app.public(request).status, 503)
+
+    def test_a_refused_code_leaves_the_worker_signed_out(self) -> None:
+        self.token_store.refresh_error = SignInRequired("refresh token revoked")
+        self.frameio_worker.tick()
+        self.sign_in("code-1", state="forged")
+        self.assertEqual(self.ask(Projects(), timeout=1), Failed(SIGN_IN_NEEDED))
+
+
+class RefreshTests(FrameioWorkerTestCase):
+    def test_the_token_is_refreshed_once_a_day(self) -> None:
+        self.frameio_worker.tick()
+        self.frameio_worker.tick()
+        self.assertEqual(self.token_store.refreshes, 1)
+        self.clock.advance(REFRESH_SECONDS - 1)
+        self.frameio_worker.tick()
+        self.assertEqual(self.token_store.refreshes, 1)
+        self.clock.advance(1)
+        self.frameio_worker.tick()
+        self.assertEqual(self.token_store.refreshes, 2)
+
+    def test_a_refresh_failure_sends_one_alert_and_fails_requests_until_sign_in(self) -> None:
+        self.token_store.refresh_error = SignInRequired("refresh token revoked")
+        self.frameio_worker.tick()
+        for _ in range(3):
+            self.assertEqual(self.ask(Projects(), timeout=1), Failed(SIGN_IN_NEEDED))
+            self.clock.advance(REFRESH_SECONDS)
+            self.frameio_worker.tick()
+        self.assertEqual(len(self.alerts), 1)
+        self.assertIn(self.token_store.sign_in_url(), self.alerts[0][0])
+        self.assertEqual(self.frameio.seen, [])
+
+        self.token_store.refresh_error = None
+        self.sign_in("code-2")
+        self.assertEqual(self.ask(Projects()), Ok({"answered": Projects.kind}))
+        self.assertEqual(len(self.alerts), 1)
+
+    def test_a_token_refused_during_a_request_also_alerts_once(self) -> None:
+        self.frameio_worker.tick()
+        self.frameio.error = SignInRequired("401 from Frame.io")
+        self.assertEqual(self.ask(Projects(), timeout=1), Failed(SIGN_IN_NEEDED))
+        self.assertEqual(self.ask(Projects(), timeout=1), Failed(SIGN_IN_NEEDED))
+        self.assertEqual(len(self.alerts), 1)
+        self.assertEqual(len(self.frameio.seen), 1)
+
+    def test_an_unreachable_sign_in_service_is_retried_without_an_alert(self) -> None:
+        self.token_store.refresh_error = OSError("network down")
+        self.frameio_worker.tick()
+        self.token_store.refresh_error = None
+        self.clock.advance(REFRESH_RETRY_SECONDS - 1)
+        self.frameio_worker.tick()
+        self.assertEqual(self.token_store.refreshes, 0)
+        self.clock.advance(1)
+        self.frameio_worker.tick()
+        self.assertEqual(self.token_store.refreshes, 1)
+        self.assertEqual(self.alerts, [])
+        self.assertEqual(self.ask(Projects()), Ok({"answered": Projects.kind}))
+
+    def test_an_alert_the_gateway_did_not_take_goes_out_on_a_later_tick_once(self) -> None:
+        self.token_store.refresh_error = SignInRequired("refresh token revoked")
+        self.notify_error = OSError("gateway down")
+        self.frameio_worker.tick()
+        self.assertEqual(self.alerts, [])
+        self.notify_error = None
+        self.frameio_worker.tick()
+        self.frameio_worker.tick()
+        self.assertEqual(len(self.alerts), 1)
+
+    def test_the_alert_key_is_the_same_after_a_restart(self) -> None:
+        self.token_store.refresh_error = SignInRequired("refresh token revoked")
+        self.frameio_worker.tick()
+        FrameioWorker(self.token_store, self.frameio, self.notify, self.clock).tick()
+        self.assertEqual(len({key for _, key in self.alerts}), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

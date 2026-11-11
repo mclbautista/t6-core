@@ -98,3 +98,14 @@ fields, read from Notion) and `t6.registry` (identity).
   an unbound page, an edited projection, or an unavailable page.
 - **Register**: to create a Project in the registry. Registration is always
   explicit; nothing is registered or merged by matching a code or a name.
+
+## Frame.io
+
+- **Frame.io worker**: the one process that holds the Frame.io token. It
+  serves the `frameio` queue. Nothing else in T6 has Frame.io credentials.
+- **Request** (Frame.io): one typed question or step for the Frame.io worker,
+  sent as a job on the `frameio` queue. Its **result** is `Ok` or `Failed`.
+- **Caller**: any part of T6 that asks the Frame.io worker: the main worker,
+  t6-notion-reports, the sign-in callback.
+- **Sign-in**: a person signing in to Adobe so the Frame.io worker has a
+  token again. The **sign-in alert** is the Telegram message with the link.
