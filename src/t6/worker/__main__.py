@@ -70,6 +70,9 @@ def configured_handlers(
     `notion.page_changed` (needs the `notion` extra). With `T6_GATEWAY_URL` and
     `T6_GATEWAY_SECRET` set, it also gets `operator.deliver` (operator cards in
     Sixto), and a Projects page no Project owns is offered to the operator.
+    With `T6_NOTION_TOKEN`, `T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE` and the
+    gateway set, it also gets `frameio.review_done` (a DM to the show's
+    coordinator when a Frame.io review goes quiet).
     """
     if settings.queue != "main":
         return {}
@@ -89,6 +92,21 @@ def configured_handlers(
             NotionClient(token), RegistryClient(transport, settings.secret), projects, offer=offer
         )
         handlers.update(projection.handlers())
+    links_source = environ.get("T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE")
+    if token and links_source and gateway_url and gateway_secret:
+        from t6.frameio.requests import ask
+        from t6.notion import NotionClient
+        from t6.notion.external_links import ExternalLinks
+        from t6.worker.review import ReviewDone
+
+        notion, queue = NotionClient(token), QueueClient(transport, settings.secret)
+        review = ReviewDone(
+            notion,
+            ExternalLinks(notion, links_source),
+            GatewayClient(HttpTransport(gateway_url), gateway_secret),
+            lambda request: ask(queue, request),
+        )
+        handlers.update(review.handlers())
     return {"main": handlers} if handlers else {}
 
 

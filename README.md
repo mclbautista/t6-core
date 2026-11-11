@@ -103,6 +103,7 @@ Mac mini. Both use only the standard library.
 | `T6_WORKER_POLL_SECONDS` | optional: sleep after an empty poll, default `5` |
 | `T6_NOTION_TOKEN` | main worker: Notion integration token, for the Project registry sync |
 | `T6_NOTION_PROJECTS_DATA_SOURCE` | main worker: ID of the Projects data source |
+| `T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE` | main worker: ID of the External Links data source. With `T6_NOTION_TOKEN` and the gateway variables it turns on the [review done DM](#frameio) |
 | `T6_GATEWAY_URL`, `T6_GATEWAY_SECRET` | Frame.io worker: required, the gateway whose `/notify` sends the sign-in alert |
 | `T6_FRAMEIO_ALERT_CHAT` | Frame.io worker: required, the Telegram chat ID that gets the sign-in alert |
 | `T6_FRAMEIO_CLIENT_ID`, `T6_FRAMEIO_CLIENT_SECRET` | Frame.io worker: required, the Adobe OAuth Web App credential. Give them to no other process |
@@ -681,6 +682,17 @@ if isinstance(result, Ok):
   token sends the link on its first `tick()`. Adobe unreachable (a 5xx, a 429,
   no network) is not a lost sign-in: the worker tries again in 15 minutes and
   sends no alert.
+- **Review done.** When a Frame.io project has had no new comment for 15
+  minutes, the main worker runs `frameio.review_done`
+  (`t6.worker.review.ReviewDone`). It finds the show from the Frame.io
+  project's `frameio` / `project` External Links row, and sends one Telegram
+  DM through the gateway's `/notify` to each Contact in the show's
+  `T6 Post Coordinator` that has a `TelegramUserID`. The DM has the show name,
+  the comment count and the Frame.io project link. The link comes from the
+  Frame.io worker through the `frameio` queue; when it gives no answer, the
+  URL on the External Links row is used. A Frame.io project with no row, or a
+  show with no coordinator to message, fails the job with that reason and
+  sends nothing. There is no LLM summary and no Notion status change.
 - **A slow request** holds only the `frameio` queue. The `main` queue keeps
   running, and the caller gets `Failed` at its timeout.
 
