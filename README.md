@@ -417,7 +417,8 @@ I/O and needs no extra.
   See [the identity API and compatibility guide](docs/drive-identity.md).
 - `parse_capacity_tb` reads sheet text: `"4TB, P"` is 4.0 and `"500GB"` is 0.5.
   Text it cannot read raises `ValueError` naming the text.
-- `DriveStore` is the interface the custodian's web app implements:
+- `DriveStore` is the interface the custodian's web app implements (app spec:
+  [mclbautista/t6-drives#1](https://github.com/mclbautista/t6-drives/issues/1)):
   `add_drive` and `get_drive(drive_id)`. Adding a serial that is already recorded
   raises `DuplicateSerial`. `t6.drives.testing.InMemoryDriveStore` is the fake
   for tests.
