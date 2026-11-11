@@ -10,7 +10,7 @@ The token store and the Frame.io API are passed in:
 
 Call `tick()` between jobs. It refreshes the token once a day. When Frame.io
 refuses the token, one sign-in alert goes out through `notify` and every
-request is refused with a clear reason until a `frameio.sign_in` job is
+request is failed with a clear reason until a `frameio.sign_in` job is
 exchanged.
 """
 
@@ -21,8 +21,8 @@ import hashlib
 import time
 from typing import Protocol
 
-from t6.domain.events import JsonValue
-from t6.frameio.requests import REQUEST_KINDS, SIGN_IN_KIND, FrameioRequest, from_job
+from t6.domain.events import JobKind, JsonValue
+from t6.frameio.requests import REQUEST_KINDS, FrameioRequest, from_job
 from t6.worker.client import WorkerJob
 from t6.worker.runner import Handler, Refused
 
@@ -71,7 +71,7 @@ class FrameioWorker:
         self._refresh_at = 0.0  # the first tick refreshes
 
     def handlers(self) -> dict[str, Handler]:
-        return {**{kind: self._request for kind in REQUEST_KINDS}, SIGN_IN_KIND: self._sign_in}
+        return {**{kind: self._request for kind in REQUEST_KINDS}, JobKind.FRAMEIO_SIGN_IN.value: self._sign_in}
 
     def tick(self) -> None:
         """Refresh the token when it is due, and retry an alert that did not go out."""
@@ -97,8 +97,10 @@ class FrameioWorker:
         self._alert_pending = True
         try:
             url = self._tokens.sign_in_url()
-            # Keyed by the link, so a restart while signed out does not send it twice.
-            key = "frameio-sign-in:" + hashlib.sha256(url.encode()).hexdigest()[:16]
+            # Keyed by the link and the day: a restart while signed out does not send
+            # it twice, and a later sign-out with the same link still gets its alert.
+            day = int(self._clock() // 86400)
+            key = f"frameio-sign-in:{day}:" + hashlib.sha256(url.encode()).hexdigest()[:16]
             self._notify(f"{SIGN_IN_NEEDED}. Sign in here: {url}", key)
         except Exception:  # noqa: BLE001 - the next tick tries again
             return

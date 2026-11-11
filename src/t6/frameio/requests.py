@@ -3,7 +3,7 @@
 A caller holds no Frame.io credentials. It submits a request to the `frameio`
 queue and waits for the Frame.io worker's result:
 
-    result = ask(QueueClient(transport, secret), ShareLinks(project_id="..."))
+    result = ask(QueueClient(transport, secret), ShareLinks(frameio_project_id="..."))
     if isinstance(result, Ok): ...
 
 `ask` never raises: a refused request, an unreachable queue and a timeout all
@@ -21,10 +21,7 @@ import uuid
 
 from t6.domain.events import JsonValue
 from t6.server.queue import FRAMEIO_QUEUE
-from t6.worker.client import QueueClient, QueueRejected
-
-SIGN_IN_KIND = "frameio.sign_in"
-"""The job the sign-in callback queues: `{"code", "state"}` for the Frame.io worker to exchange."""
+from t6.worker.client import QueueClient
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 
@@ -46,7 +43,7 @@ class _Request:
 
 
 @dataclass(frozen=True, slots=True)
-class Projects(_Request):
+class FrameioProjects(_Request):
     """Every Frame.io project in the T6 account."""
 
     kind: ClassVar[str] = "frameio.projects"
@@ -57,7 +54,7 @@ class ShareLinks(_Request):
     """The share links of one Frame.io project."""
 
     kind: ClassVar[str] = "frameio.share_links"
-    project_id: str
+    frameio_project_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,7 +91,11 @@ class BriefingFeed(_Request):
 
 @dataclass(frozen=True, slots=True)
 class CreateProjectFolders(_Request):
-    """Project Start's Frame.io folder step for one T6 Project."""
+    """Project Start's Frame.io folder step for one T6 Project.
+
+    It can be delivered twice, and a caller that timed out may ask again, so
+    whatever runs it must create nothing the second time.
+    """
 
     kind: ClassVar[str] = "frameio.create_project_folders"
     project_id: str
@@ -104,12 +105,12 @@ class CreateProjectFolders(_Request):
 
 
 FrameioRequest: TypeAlias = (
-    Projects | ShareLinks | Comments | Versions | Approvals | BriefingFeed | CreateProjectFolders
+    FrameioProjects | ShareLinks | Comments | Versions | Approvals | BriefingFeed | CreateProjectFolders
 )
 
 _BY_KIND: dict[str, type[FrameioRequest]] = {
     cls.kind: cls
-    for cls in (Projects, ShareLinks, Comments, Versions, Approvals, BriefingFeed, CreateProjectFolders)
+    for cls in (FrameioProjects, ShareLinks, Comments, Versions, Approvals, BriefingFeed, CreateProjectFolders)
 }
 REQUEST_KINDS = frozenset(_BY_KIND)
 
@@ -181,5 +182,5 @@ def ask(
             if clock() >= deadline:
                 return Failed(f"no answer from the Frame.io worker within {timeout:g} seconds")
             sleep(poll_seconds)
-    except (QueueRejected, OSError, ValueError) as error:
-        return Failed(f"queue unavailable: {error}")
+    except Exception as error:  # noqa: BLE001 - a caller gets Failed, never an exception
+        return Failed(f"queue unavailable: {type(error).__name__}: {error}")

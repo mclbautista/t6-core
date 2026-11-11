@@ -5,6 +5,8 @@ A fake Frame.io API, a fake token store and a fake clock. No real client data.
 
 from datetime import datetime, timezone
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -18,7 +20,7 @@ from t6.frameio import (
     FrameioRequest,
     FrameioWorker,
     Ok,
-    Projects,
+    FrameioProjects,
     ShareLinks,
     SignInRequired,
     Versions,
@@ -33,8 +35,8 @@ from test_server_app import FRAMEIO_WORKER_SECRET, WORKER_SECRET, InProcess, Ser
 
 SINCE = datetime(2026, 11, 1, 16, 0, tzinfo=timezone.utc)
 REQUESTS: tuple[FrameioRequest, ...] = (
-    Projects(),
-    ShareLinks(project_id="fp1"),
+    FrameioProjects(),
+    ShareLinks(frameio_project_id="fp1"),
     Comments(file_id="f1"),
     Versions(file_id="f1"),
     Approvals(file_id="f1"),
@@ -116,6 +118,10 @@ class FrameioWorkerTestCase(ServerTestCase):
 
 
 class RequestTests(FrameioWorkerTestCase):
+    def test_a_caller_can_import_t6_frameio_before_anything_else(self) -> None:
+        done = subprocess.run([sys.executable, "-c", "import t6.frameio"], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
     def test_every_request_survives_the_trip_through_a_job_payload(self) -> None:
         for request in REQUESTS:
             with self.subTest(kind=request.kind):
@@ -129,19 +135,19 @@ class RequestTests(FrameioWorkerTestCase):
 
     def test_blank_fields_and_times_without_a_zone_are_not_requests(self) -> None:
         with self.assertRaises(ValueError):
-            ShareLinks(project_id=" ")
+            ShareLinks(frameio_project_id=" ")
         with self.assertRaises(ValueError):
             BriefingFeed(since=datetime(2026, 11, 1))
 
     def test_a_frameio_error_is_a_failed_result_and_is_not_retried(self) -> None:
         self.frameio.error = RuntimeError("Frame.io answered 500")
-        self.assertEqual(self.ask(Projects()), Failed("RuntimeError: Frame.io answered 500"))
+        self.assertEqual(self.ask(FrameioProjects()), Failed("RuntimeError: Frame.io answered 500"))
         self.clock.advance(3600)
         self.assertFalse(self.worker.run_once())
         self.assertEqual(len(self.frameio.seen), 1)
 
     def test_a_job_that_is_not_a_request_is_a_failed_result(self) -> None:
-        job_id = self.caller.submit("frameio", "frameio.share_links", "bad", {"project_id": 7})
+        job_id = self.caller.submit("frameio", "frameio.share_links", "bad", {"frameio_project_id": 7})
         self.worker.run_once()
         result = self.caller.result("frameio", job_id)
         assert result is not None
@@ -152,21 +158,29 @@ class RequestTests(FrameioWorkerTestCase):
 
 class CallerTests(FrameioWorkerTestCase):
     def test_a_timeout_is_a_failed_result_not_an_exception(self) -> None:
-        result = ask(self.caller, Projects(), timeout=10, clock=self.clock, sleep=self.clock.advance)
+        result = ask(self.caller, FrameioProjects(), timeout=10, clock=self.clock, sleep=self.clock.advance)
         self.assertEqual(result, Failed("no answer from the Frame.io worker within 10 seconds"))
 
     def test_a_refused_queue_call_is_a_failed_result_not_an_exception(self) -> None:
         stranger = QueueClient(InProcess(self.app), "not-a-secret")
-        result = ask(stranger, Projects(), clock=self.clock, sleep=self.clock.advance)
+        result = ask(stranger, FrameioProjects(), clock=self.clock, sleep=self.clock.advance)
+        self.assertIsInstance(result, Failed)
+
+    def test_a_malformed_queue_answer_is_a_failed_result_not_an_exception(self) -> None:
+        class Broken:
+            def send(self, method: str, path: str, headers: object, body: bytes) -> tuple[int, dict[str, object]]:
+                return 200, {}
+
+        result = ask(QueueClient(Broken(), "s"), FrameioProjects(), clock=self.clock, sleep=self.clock.advance)
         self.assertIsInstance(result, Failed)
 
     def test_asking_twice_asks_frameio_twice(self) -> None:
-        self.ask(Projects())
-        self.ask(Projects())
+        self.ask(FrameioProjects())
+        self.ask(FrameioProjects())
         self.assertEqual(len(self.frameio.seen), 2)
 
     def test_a_stuck_frameio_request_does_not_block_the_main_queue(self) -> None:
-        stuck = self.caller.submit("frameio", Projects.kind, "stuck")
+        stuck = self.caller.submit("frameio", FrameioProjects.kind, "stuck")
         claimed = QueueClient(InProcess(self.app), FRAMEIO_WORKER_SECRET).claim("frameio")
         assert claimed is not None  # held by the Frame.io worker and never finished
         self.caller.submit("main", "x", "main-job")
@@ -182,7 +196,7 @@ class CallerTests(FrameioWorkerTestCase):
             environ = {"T6_FRAMEIO_CALLER_SECRET": "caller", "T6_FRAMEIO_WORKER_SECRET": "worker"}
             app = WebhookApp(JobQueue(Path(directory) / "q.sqlite3", clock), ServerConfig.from_env(environ), clock)
             caller = QueueClient(InProcess(app), "caller")
-            job_id = caller.submit("frameio", Projects.kind, "k")
+            job_id = caller.submit("frameio", FrameioProjects.kind, "k")
             self.assertIsNone(caller.result("frameio", job_id))
             for refused in (lambda: caller.claim("frameio"), lambda: caller.submit("main", "x", "k")):
                 with self.assertRaisesRegex(Exception, "403"):
@@ -218,7 +232,7 @@ class SignInTests(FrameioWorkerTestCase):
         self.token_store.refresh_error = SignInRequired("refresh token revoked")
         self.frameio_worker.tick()
         self.sign_in("code-1", state="forged")
-        self.assertEqual(self.ask(Projects(), timeout=1), Failed(SIGN_IN_NEEDED))
+        self.assertEqual(self.ask(FrameioProjects(), timeout=1), Failed(SIGN_IN_NEEDED))
 
 
 class RefreshTests(FrameioWorkerTestCase):
@@ -237,7 +251,7 @@ class RefreshTests(FrameioWorkerTestCase):
         self.token_store.refresh_error = SignInRequired("refresh token revoked")
         self.frameio_worker.tick()
         for _ in range(3):
-            self.assertEqual(self.ask(Projects(), timeout=1), Failed(SIGN_IN_NEEDED))
+            self.assertEqual(self.ask(FrameioProjects(), timeout=1), Failed(SIGN_IN_NEEDED))
             self.clock.advance(REFRESH_SECONDS)
             self.frameio_worker.tick()
         self.assertEqual(len(self.alerts), 1)
@@ -246,14 +260,14 @@ class RefreshTests(FrameioWorkerTestCase):
 
         self.token_store.refresh_error = None
         self.sign_in("code-2")
-        self.assertEqual(self.ask(Projects()), Ok({"answered": Projects.kind}))
+        self.assertEqual(self.ask(FrameioProjects()), Ok({"answered": FrameioProjects.kind}))
         self.assertEqual(len(self.alerts), 1)
 
     def test_a_token_refused_during_a_request_also_alerts_once(self) -> None:
         self.frameio_worker.tick()
         self.frameio.error = SignInRequired("401 from Frame.io")
-        self.assertEqual(self.ask(Projects(), timeout=1), Failed(SIGN_IN_NEEDED))
-        self.assertEqual(self.ask(Projects(), timeout=1), Failed(SIGN_IN_NEEDED))
+        self.assertEqual(self.ask(FrameioProjects(), timeout=1), Failed(SIGN_IN_NEEDED))
+        self.assertEqual(self.ask(FrameioProjects(), timeout=1), Failed(SIGN_IN_NEEDED))
         self.assertEqual(len(self.alerts), 1)
         self.assertEqual(len(self.frameio.seen), 1)
 
@@ -268,7 +282,7 @@ class RefreshTests(FrameioWorkerTestCase):
         self.frameio_worker.tick()
         self.assertEqual(self.token_store.refreshes, 1)
         self.assertEqual(self.alerts, [])
-        self.assertEqual(self.ask(Projects()), Ok({"answered": Projects.kind}))
+        self.assertEqual(self.ask(FrameioProjects()), Ok({"answered": FrameioProjects.kind}))
 
     def test_an_alert_the_gateway_did_not_take_goes_out_on_a_later_tick_once(self) -> None:
         self.token_store.refresh_error = SignInRequired("refresh token revoked")
@@ -285,6 +299,14 @@ class RefreshTests(FrameioWorkerTestCase):
         self.frameio_worker.tick()
         FrameioWorker(self.token_store, self.frameio, self.notify, self.clock).tick()
         self.assertEqual(len({key for _, key in self.alerts}), 1)
+
+    def test_a_later_sign_out_with_the_same_link_gets_a_new_alert_key(self) -> None:
+        self.token_store.refresh_error = SignInRequired("refresh token revoked")
+        self.frameio_worker.tick()
+        self.sign_in("code-1")
+        self.clock.advance(REFRESH_SECONDS)
+        self.frameio_worker.tick()
+        self.assertEqual(len({key for _, key in self.alerts}), 2)
 
 
 if __name__ == "__main__":

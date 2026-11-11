@@ -606,17 +606,18 @@ out. Every other part of T6 asks the worker through the `frameio` queue and
 holds no Frame.io credentials.
 
 ```python
-from t6.frameio import Failed, Ok, ShareLinks, ask
+from t6.frameio import Ok, ShareLinks, ask
 from t6.worker import HttpTransport, QueueClient
 
-result = ask(QueueClient(HttpTransport(server_url), secret), ShareLinks(project_id="..."))
+result = ask(QueueClient(HttpTransport(server_url), secret), ShareLinks(frameio_project_id="..."))
 if isinstance(result, Ok):
     links = result.value
 ```
 
-- **Requests.** `Projects`, `ShareLinks`, `Comments`, `Versions`, `Approvals`,
+- **Requests.** `FrameioProjects`, `ShareLinks`, `Comments`, `Versions`, `Approvals`,
   `BriefingFeed(since)` and `CreateProjectFolders(project_id, name)` (Project
-  Start's Frame.io folder step). Each is one job on the `frameio` queue.
+  Start's Frame.io folder step, which must be safe to run twice). Each is
+  one job on the `frameio` queue.
 - **Results.** `ask` returns `Ok(value)` or `Failed(reason)` and never raises.
   No answer within `timeout` seconds (default 30), a refused queue call and a
   Frame.io error are all `Failed`. Each `ask` is a new job, so asking again
@@ -628,7 +629,7 @@ if isinstance(result, Ok):
   `python -m t6.worker` does not start a `frameio` worker yet. Call `tick()`
   between jobs: it refreshes the token once a day.
 - **Sign-in.** When Frame.io refuses the token, the worker sends one Telegram
-  alert with the sign-in link through `notify` (the gateway's `/notify`) and
+  alert a day with the sign-in link through `notify` (the gateway's `/notify`) and
   fails every request with `Frame.io sign-in needed` until someone signs in.
   Adobe redirects the browser to `GET /frameio/callback?code=...&state=...`
   on the server's public listener. The server queues the code as a

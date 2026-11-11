@@ -39,7 +39,6 @@ from t6.domain.events import (
     JobKind,
     JsonValue,
 )
-from t6.frameio.requests import SIGN_IN_KIND
 from t6.operator import PREFIX as OPERATOR_PREFIX
 from t6.operator import Card, OperatorService
 from t6.registry import (
@@ -229,7 +228,7 @@ class WebhookApp:
         if not code or not state or max(len(code), len(state)) > MAX_SIGN_IN_PARAM_CHARS:
             return Response(400, {"error": "sign-in was not completed"})
         key = "sign-in:" + hashlib.sha256(code.encode()).hexdigest()[:32]
-        self._queue.submit(FRAMEIO_QUEUE, SIGN_IN_KIND, key, {"code": code, "state": state})
+        self._queue.submit(FRAMEIO_QUEUE, JobKind.FRAMEIO_SIGN_IN.value, key, {"code": code, "state": state})
         return Response(200, {"received": True, "message": "Sign-in received. You can close this page."})
 
     def _frameio(self, request: Request) -> Response:

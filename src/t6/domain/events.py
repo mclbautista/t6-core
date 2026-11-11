@@ -128,6 +128,8 @@ class JobKind(str, Enum):
     """A Project changed in the registry. A worker shows its current state in Notion."""
     OPERATOR_DELIVER = "operator.deliver"
     """An operator card is new or changed. A worker sends it to Sixto, or edits the one already sent."""
+    FRAMEIO_SIGN_IN = "frameio.sign_in"
+    """A person signed in to Adobe. Carries the authorization code and state for the Frame.io worker to exchange."""
     TAP = "tap"
     """A person tapped a button on a card the gateway sent for t6-core."""
 
