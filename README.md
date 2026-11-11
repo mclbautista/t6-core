@@ -403,42 +403,46 @@ I/O and needs no extra.
 - A `Drive` holds serial, brand, model, capacity in TB, format, form factor
   (`FormFactor.PORTABLE` or `FormFactor.POWERED_DESKTOP`), owner (a Studio page
   ID, or `None` for T6), purchase date, warranty and remarks.
-- The serial is the identity. `normalize_serial` removes notes in brackets,
-  trims and upper-cases, so `" abc123 (old) "` is `"ABC123"`.
-- A drive whose serial is unknown is a provisional Drive: `Drive(serial=None)`.
-  `add_drive` returns the Drive as recorded, with `no_serial` True and the
-  `provisional_id` the store gave it. `drive.key` is the serial or, for a
-  provisional Drive, that ID, and every store method that takes a serial takes
-  it too. `DriveStore.set_serial(provisional_id, serial)` turns it into a
-  normal Drive and keeps its Assignments and events; a serial another Drive
-  has raises `DuplicateSerial`.
+- Every Drive has a permanent opaque `id` at construction; `key` is its alias.
+  Equality and all store references use that ID, never a serial. A meaningful
+  label, description, physical note or serial is required, not all individually.
+- `serial` is the optional accepted serial. `normalize_serial` removes notes in
+  brackets, trims and upper-cases, so `" abc123 (old) "` is `"ABC123"`.
+  `find_by_serial` explicitly looks up accepted serials only.
+- `set_serial(drive_id, serial)` adds/corrects the accepted serial; `None`
+  removes it. A collision raises `DuplicateSerial` without any changes.
+  `suspected_serial` is separately uncertain and can conflict; only explicit
+  `promote_suspected_serial(drive_id)` accepts it after checking uniqueness.
+  `set_review` manages a general flag/note. None of these restrict workflows.
+  See [the identity API and compatibility guide](docs/drive-identity.md).
 - `parse_capacity_tb` reads sheet text: `"4TB, P"` is 4.0 and `"500GB"` is 0.5.
   Text it cannot read raises `ValueError` naming the text.
 - `DriveStore` is the interface the custodian's web app implements:
-  `add_drive` and `get_drive(serial)`. Adding a serial that is already recorded
+  `add_drive` and `get_drive(drive_id)`. Adding a serial that is already recorded
   raises `DuplicateSerial`. `t6.drives.testing.InMemoryDriveStore` is the fake
   for tests.
 - Custody is an append-only log of `CustodyEvent`s: kind (`CustodyKind.RECEIVED`,
   `RELEASED`, `RETURNED`, `RETIRED`), date, the `Party` involved (a Contact or
   Studio), the Project, who logged it and an optional reason. `RETIRED` needs a
-  reason (dead, lost, sold). `DriveStore.append_event(serial, event)` and
-  `list_events(serial)` are the only ways in and out: events cannot be edited or
+  reason (dead, lost, sold). `DriveStore.append_event(drive_id, event)` and
+  `list_events(drive_id)` are the only ways in and out: events cannot be edited or
   deleted, so a correction is a new event and both stay in the list.
 - A shipment is several Drives released in one handover.
-  `DriveStore.release_shipment(serials, on=..., party=..., project=...,
+  `DriveStore.release_shipment(drive_ids, on=..., party=..., project=...,
   logged_by=...)` appends one released event per Drive and returns the shipment
-  ID they share; if any serial is unrecorded, nothing is released. Released
+  ID they share; if any ID is unrecorded, nothing is released. Released
   events appended one by one can also carry a `shipment_id`.
   `shipment_events(shipment_id)` lists a shipment's events with their Drives.
 - `shipment_manifest(store, shipment_id)` gives the manifest data from the
-  store alone: one `ManifestLine` per Drive with serial, label, capacity in TB,
+  store alone: one `ManifestLine` per release with permanent `drive_id`, accepted
+  `serial`, separately `suspected_serial`, description, review state, label, capacity in TB,
   recipient, date and who logged it. The label is the one from the Assignment
   the Drive was on at the release date, so a manifest made after a relabel
   still shows what went out. It is data, not a printable page.
-- `DriveStore.status(serial)` is derived from the last appended event
+- `DriveStore.status(drive_id)` is derived from the last appended event
   (`DriveStatus.IN_CUSTODY`, `RELEASED` or `RETIRED`) and never stored. A Drive
   with no events has no status (`None`). `derive_status(events)` does the same
-  over a list. An unrecorded serial raises `UnknownDrive`.
+  over a list. An unrecorded ID raises `UnknownDrive`.
 - Contacts, Studios and Projects are a `Ref`: a Notion page ID, or, when a name
   could not be resolved, the name as text with `unresolved` True so it can be
   reviewed.
@@ -446,16 +450,17 @@ I/O and needs no extra.
   `BACKUP`, `OFFLINE`, `SWING` or `ARCHIVE`), start, end and remarks. No end
   means the Assignment is open. `role` and `start`, and a custody event's
   date and `party`, are `None` when they were never recorded, as in imported
-  rows. `DriveStore.add_assignment(serial, assignment)`
+  rows. A label may also be `None`. `DriveStore.add_assignment(drive_id, assignment)`
   adds one and never edits or closes earlier ones. `open_assignments(project)`
-  lists the Drives still out for a Project; `assignment_history(serial)` lists a
-  Drive's Assignments across Projects, oldest start first. An unknown serial
+  lists the Drives still out for a Project; `assignment_history(drive_id)` lists a
+  Drive's Assignments across Projects, oldest start first. An unknown ID
   raises `UnknownDrive`. A label can repeat on different Drives and Projects.
 
 ### Importing the legacy workbooks
 
-`t6.drives.importer` needs the `drives` extra. It is a one-off: after the
-import the workbooks are frozen.
+`t6.drives.importer` needs the `drives` extra. It provides import and local
+review capability; a real-data import, workbook freeze and cutover require
+separate human approval. No such operation is performed by this change.
 
 ```python
 from t6.drives.importer import import_per_project_workbook
@@ -474,20 +479,29 @@ result = import_per_project_workbook(path, store, lookup=lookup, logged_by=Ref(t
   with that name; otherwise the name is kept as text. The role is read from
   the label only when it names exactly one role; otherwise it is `None`.
 - Nothing is guessed. `result.review` is the review report: one `ReviewItem`
-  (tab, row number, reason, detail) for everything a person has to look at.
+  (workbook absolute path, tab, row number, reason, detail) for everything a
+  person has to look at. Keep reports local: they may contain private data.
 
   | Reason | What happened to the row |
   | --- | --- |
-  | `no label` | not imported |
-  | `note in serial cell` | not imported; the detail is the cell |
-  | `shared serial` | not imported; the detail names the other rows |
+  | `no label` | imported if another meaningful identifying detail exists |
+  | `note in serial cell` | imported with suspected candidate and original cell preserved |
+  | `shared serial` | distinct review-flagged Drives with suspected serials; never merged |
   | `unreadable` | not imported; a capacity or date could not be read |
-  | `blank serial` | imported as a provisional Drive |
+  | `blank serial` | imported as a full Drive with permanent ID if meaningful |
   | `old and new labels` | imported with its label as written; the detail names its pair |
   | `unresolved project` | its rows are imported with the name as text; listed once, at the row where the Project's block starts |
-  | `movements with no serial` | log sheet only: one per monthly tab, counting the movements that were not imported |
+  | `movement with no serial` | one traceable review item per movement; not attached by label |
+  | `ambiguous serial` | movement has multiple candidates; full row preserved for review |
+  | `additional drive facts` | clean serial matched, but additional physical observations need review; original record is not overwritten |
 
-- It writes only through `DriveStore`, and a second run adds nothing.
+- It writes only through `DriveStore.import_row`, which commits each row and
+  its receipt atomically. Unchanged reruns at the same path preserve IDs and
+  add nothing. Different rows with identical movement facts remain distinct.
+  See the [receipt and adapter contract](docs/drive-identity.md#import-receipts).
+- `SPACE` aliases `TOTAL DISK SPACE` using the existing capacity parser;
+  invalid or conflicting values are reported. All duplicate `REMARKS` columns
+  are preserved. `T6 IN` records receipt, with no invented date when undated.
 - `import_log_sheet_workbook(path, store, lookup=..., logged_by=...)` reads the
   log sheet workbook and returns the same kind of result. Its tabs are told
   apart by their header row:
@@ -499,7 +513,7 @@ result = import_per_project_workbook(path, store, lookup=lookup, logged_by=Ref(t
     A row with a label, no serial and a quantity is a group heading: the
     Project of the rows under it.
   - A monthly log tab has `DATE` and `IN/OUT` columns and no serial column. A
-    movement is imported only when its remarks hold `S/N: <serial>`: IN is a
+    movement is imported only when its remarks hold one `S/N: <serial>`: IN and T6 IN are
     received event, OUT is a released event to the RECEIVED BY name. Releases
     on one date to one name share a shipment ID. The other movements are not
     imported, because a label alone does not identify a Drive.

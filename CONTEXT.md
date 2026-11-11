@@ -8,12 +8,19 @@ A **physical external drive**: a portable drive or a powered desktop drive,
 owned by T6 or by a Studio, that carries footage or deliverables for a show.
 Modelled in `t6.drives`.
 
-- A Drive is identified by its **serial**, normalized: notes in brackets are
-  removed, then it is trimmed and upper-cased, so `" abc123 (old) "` and
-  `"ABC123"` are the same Drive. One drive is recorded only once.
-- A drive whose serial is not known yet is a **provisional Drive**, flagged
-  "no serial". The store finds it by a provisional ID until its serial is
-  added; then it is a normal Drive with the same history.
+- A **Drive ID** is a permanent opaque identifier, `t6d_` plus a UUID4 hex
+  suffix, issued at creation. Equality and all store references use this ID.
+- An **accepted serial** is an optional, correctable fact, unique across
+  Drives. Normalization removes bracketed notes, trims and upper-cases.
+  Exact serial lookup matches accepted values only, never labels or descriptions.
+- A **suspected serial** is an explicitly uncertain candidate. It can conflict
+  with other accepted or suspected values. Accepting it requires explicit
+  promotion and the accepted-serial uniqueness check.
+- A Drive without an accepted serial is still a full Drive, not provisional.
+  It needs some meaningful identifying detail. Serial edits preserve its ID,
+  Assignments, custody history, shipment membership and derived status.
+- **Needs review** and a general **review note** represent other doubts; they
+  impose no additional workflow restrictions. There is no automatic merge.
 - A Drive is not a Notion entity; it has no Notion row. Its owner is T6 or a
   Studio (a Notion page ID).
 - "Drive" never means Google Drive. Always write **Google Drive** in full for
@@ -29,8 +36,9 @@ Modelled in `t6.drives`.
   never recorded. Retired needs a reason. Events are never edited or
   deleted; a correction is a new event.
 - **Shipment**: one handover of several Drives: released events that share a
-  shipment ID. A **manifest** is a view over those events: each Drive's serial,
-  label, capacity, the recipient, the date and who logged it. The core gives the
+  shipment ID. A **manifest** is a view over those events: each permanent Drive
+  ID, accepted and separately suspected serial, available label, description,
+  capacity and review state, the recipient, date and who logged it. The core gives the
   data; the web app prints it.
 - **Status**: where a Drive stands (in custody, released or retired), always
   derived from the last custody event and never stored. No events, no status.

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import replace
 from datetime import date
 
@@ -22,63 +22,116 @@ from t6.drives import (
 
 
 class InMemoryDriveStore:
-    """A DriveStore that keeps Drives in a dict keyed by normalized serial.
-
-    A provisional Drive is keyed by the provisional ID it is given here.
-
-    `same_project` says whether two Project page IDs name one Project. The
-    default is equality; pass `t6.registry.ProjectRefs.same` to find a Project's
-    Assignments under its T6 ID and under any page it was bound to.
-    """
+    """In-memory ID-addressed fake; optional same_project resolves Project aliases."""
 
     def __init__(self, same_project: Callable[[str | None, str | None], bool] | None = None) -> None:
         self._same_project = same_project or (lambda a, b: a == b)
         self._drives: dict[str, Drive] = {}
         self._events: dict[str, list[CustodyEvent]] = {}
         self._assignments: dict[str, list[Assignment]] = {}
+        self._imports: dict[str, str] = {}
         self._shipments = 0
-        self._provisional = 0
-        self._shipped: list[tuple[str, CustodyEvent]] = []  # shipment events, in append order
+        self._shipped: list[tuple[str, CustodyEvent]] = []
 
     def add_drive(self, drive: Drive) -> Drive:
-        if drive.serial is None:
-            self._provisional += 1
-            drive = replace(drive, provisional_id=f"NO-SERIAL-{self._provisional}")
-        if drive.key in self._drives:
-            raise DuplicateSerial(drive.key)
-        self._drives[drive.key] = drive
-        self._events[drive.key] = []
-        self._assignments[drive.key] = []
+        if drive.id in self._drives:
+            raise ValueError(f"Drive ID {drive.id!r} is already recorded")
+        self._check_serial(drive)
+        self._drives[drive.id] = drive
+        self._events[drive.id] = []
+        self._assignments[drive.id] = []
         return drive
 
-    def set_serial(self, provisional_id: str, serial: str) -> Drive:
-        old = normalize_serial(provisional_id)
-        if old not in self._drives:
-            raise UnknownDrive(old)
-        if not self._drives[old].no_serial:
-            raise ValueError(f"the Drive {old!r} already has a serial")
-        drive = replace(self._drives[old], serial=serial, provisional_id=None)
-        if drive.key in self._drives:
-            raise DuplicateSerial(drive.key)
-        del self._drives[old]
-        self._drives[drive.key] = drive
-        self._events[drive.key] = self._events.pop(old)
-        self._assignments[drive.key] = self._assignments.pop(old)
-        self._shipped = [(drive.key if key == old else key, event) for key, event in self._shipped]
+    def _check_serial(self, drive: Drive) -> None:
+        if drive.serial is not None:
+            held = self.find_by_serial(drive.serial)
+            if held is not None and held.id != drive.id:
+                raise DuplicateSerial(drive.serial)
+
+    def _drive(self, drive_id: str) -> Drive:
+        drive = self.get_drive(drive_id)
+        if drive is None:
+            raise UnknownDrive(drive_id)
         return drive
 
-    def get_drive(self, serial: str) -> Drive | None:
-        return self._drives.get(normalize_serial(serial))
+    def set_serial(self, drive_id: str, serial: str | None) -> Drive:
+        drive = replace(self._drive(drive_id), serial=serial)
+        self._check_serial(drive)
+        self._drives[drive_id] = drive
+        return drive
 
-    def append_event(self, serial: str, event: CustodyEvent) -> None:
-        self._log(serial).append(event)
+    def set_suspected_serial(self, drive_id: str, serial: str | None) -> Drive:
+        drive = replace(self._drive(drive_id), suspected_serial=serial)
+        self._drives[drive_id] = drive
+        return drive
+
+    def promote_suspected_serial(self, drive_id: str) -> Drive:
+        old = self._drive(drive_id)
+        if old.suspected_serial is None:
+            raise ValueError("Drive has no suspected serial to promote")
+        drive = replace(old, serial=old.suspected_serial, suspected_serial=None)
+        self._check_serial(drive)
+        self._drives[drive_id] = drive
+        return drive
+
+    def set_review(self, drive_id: str, *, needs_review: bool, note: str | None = None) -> Drive:
+        drive = replace(self._drive(drive_id), needs_review=needs_review, review_note=note)
+        self._drives[drive_id] = drive
+        return drive
+
+    def get_drive(self, drive_id: str) -> Drive | None:
+        return self._drives.get(drive_id)
+
+    def find_by_serial(self, serial: str) -> Drive | None:
+        normalized = normalize_serial(serial)
+        return next((d for d in self._drives.values() if d.serial == normalized), None)
+
+    def imported_drive(self, row_key: str) -> str | None:
+        return self._imports.get(row_key)
+
+    def has_suspected_serial(self, serial: str) -> bool:
+        normalized = normalize_serial(serial)
+        return any(d.suspected_serial == normalized for d in self._drives.values())
+
+    def import_row(
+        self, row_key: str, drive: Drive, assignment: Assignment, events: Sequence[CustodyEvent]
+    ) -> None:
+        if row_key in self._imports:
+            return
+        held = self.find_by_serial(drive.serial) if drive.serial else None
+        if held is None:
+            if drive.id in self._drives:
+                raise ValueError(f"Drive ID {drive.id!r} is already recorded")
+            self._check_serial(drive)
+            held = drive
+        else:
+            notes = list(dict.fromkeys(filter(None, (held.review_note, drive.review_note))))
+            held = replace(held, needs_review=held.needs_review or drive.needs_review,
+                           review_note="; ".join(notes) or None)
+        # Consume the complete source and stage every collection before publishing.
+        incoming_events = list(events)
+        assignments = list(self._assignments.get(held.id, ()))
+        if assignment not in assignments:
+            assignments.append(assignment)
+        history = [*self._events.get(held.id, ()), *incoming_events]
+        shipped = self._shipped + [
+            (held.id, event) for event in incoming_events if event.shipment_id is not None
+        ]
+        self._drives[held.id] = held
+        self._assignments[held.id] = assignments
+        self._events[held.id] = history
+        self._shipped = shipped
+        self._imports[row_key] = held.id
+
+    def append_event(self, drive_id: str, event: CustodyEvent) -> None:
+        self._log(drive_id).append(event)
         if event.shipment_id is not None:
-            self._shipped.append((normalize_serial(serial), event))
+            self._shipped.append((drive_id, event))
 
     def release_shipment(
-        self, serials: Iterable[str], *, on: date, party: Party, project: Ref, logged_by: Ref
+        self, drive_ids: Iterable[str], *, on: date, party: Party, project: Ref, logged_by: Ref
     ) -> str:
-        keys = list(dict.fromkeys(normalize_serial(serial) for serial in serials))
+        keys = list(dict.fromkeys(drive_id for drive_id in drive_ids))
         if not keys:
             raise ValueError("a shipment needs at least one Drive")
         for key in keys:
@@ -104,14 +157,14 @@ class InMemoryDriveStore:
             if event.shipment_id == shipment_id
         )
 
-    def list_events(self, serial: str) -> tuple[CustodyEvent, ...]:
-        return tuple(self._log(serial))
+    def list_events(self, drive_id: str) -> tuple[CustodyEvent, ...]:
+        return tuple(self._log(drive_id))
 
-    def status(self, serial: str) -> DriveStatus | None:
-        return derive_status(self._log(serial))
+    def status(self, drive_id: str) -> DriveStatus | None:
+        return derive_status(self._log(drive_id))
 
-    def add_assignment(self, serial: str, assignment: Assignment) -> None:
-        self._assigned(serial).append(assignment)
+    def add_assignment(self, drive_id: str, assignment: Assignment) -> None:
+        self._assigned(drive_id).append(assignment)
 
     def open_assignments(self, project: Ref) -> list[tuple[Drive, Assignment]]:
         found = [
@@ -121,7 +174,7 @@ class InMemoryDriveStore:
             if assignment.is_open and self._matches(assignment.project, project)
         ]
         return sorted(
-            found, key=lambda pair: (pair[1].start or date.min, pair[1].label, pair[0].key)
+            found, key=lambda pair: (pair[1].start or date.min, pair[1].label or "", pair[0].key)
         )
 
     def _matches(self, held: Ref, asked: Ref) -> bool:
@@ -129,18 +182,18 @@ class InMemoryDriveStore:
             return held == asked  # unresolved text is compared as text
         return self._same_project(held.page_id, asked.page_id)
 
-    def assignment_history(self, serial: str) -> list[Assignment]:
+    def assignment_history(self, drive_id: str) -> list[Assignment]:
         # sorted() is stable: assignments with the same start keep entry order
-        return sorted(self._assigned(serial), key=lambda a: a.start or date.min)
+        return sorted(self._assigned(drive_id), key=lambda a: a.start or date.min)
 
-    def _assigned(self, serial: str) -> list[Assignment]:
-        key = normalize_serial(serial)
+    def _assigned(self, drive_id: str) -> list[Assignment]:
+        key = drive_id
         if key not in self._assignments:
             raise UnknownDrive(key)
         return self._assignments[key]
 
-    def _log(self, serial: str) -> list[CustodyEvent]:
-        key = normalize_serial(serial)
+    def _log(self, drive_id: str) -> list[CustodyEvent]:
+        key = drive_id
         if key not in self._events:
             raise UnknownDrive(key)
         return self._events[key]

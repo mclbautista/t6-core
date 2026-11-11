@@ -380,11 +380,11 @@ class NotionRelationsTests(MigrationTestCase):
     def test_drive_assignments_are_found_by_t6_id_and_by_any_page(self) -> None:
         ids = self.migrate()
         store = InMemoryDriveStore(ProjectRefs(self.registry).same)
-        store.add_drive(Drive(serial="D1"))
-        store.add_drive(Drive(serial="D2"))
-        store.add_assignment("D1", Assignment(label="M01", project=Ref(page_id=PAGE), role=Role.MASTER, start=date(2026, 1, 1)))
-        store.add_assignment("D2", Assignment(label="M01", project=Ref(page_id=OTHER_PAGE), role=Role.MASTER, start=date(2026, 1, 1)))
-        store.add_assignment("D2", Assignment(label="U1", project=Ref(text="Unresolved show"), role=Role.BACKUP, start=date(2026, 1, 1)))
+        first = store.add_drive(Drive(serial="D1"))
+        second = store.add_drive(Drive(serial="D2"))
+        store.add_assignment(first.id, Assignment(label="M01", project=Ref(page_id=PAGE), role=Role.MASTER, start=date(2026, 1, 1)))
+        store.add_assignment(second.id, Assignment(label="M01", project=Ref(page_id=OTHER_PAGE), role=Role.MASTER, start=date(2026, 1, 1)))
+        store.add_assignment(second.id, Assignment(label="U1", project=Ref(text="Unresolved show"), role=Role.BACKUP, start=date(2026, 1, 1)))
         for ref in (Ref(page_id=ids[PAGE]), Ref(page_id=PAGE_DASHED)):
             self.assertEqual([d.serial for d, _ in store.open_assignments(ref)], ["D1"], ref)
         self.assertEqual([d.serial for d, _ in store.open_assignments(Ref(page_id=ids[OTHER_PAGE]))], ["D2"])
