@@ -6,11 +6,13 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import html
 import os
+from pathlib import Path
 import signal
 import sys
 import threading
 
 from t6.domain.events import JsonValue
+from t6.frameio.requests import FrameioRequest
 from t6.frameio.worker import FrameioWorker, Run, Tokens
 from t6.server.queue import DIAGNOSTIC_QUEUE, FRAMEIO_QUEUE
 from t6.worker.client import HttpTransport, QueueClient, Transport, WorkerJob
@@ -92,11 +94,31 @@ def configured_handlers(
 
 
 def frameio_backend(environ: Mapping[str, str]) -> tuple[Tokens, Run]:
-    """The Frame.io worker's token store and API. Neither exists yet, so the worker refuses to start."""
-    raise ConfigError(
-        "the Frame.io token store (t6-core#15) and Frame.io reads (t6-core#16) are not built yet, "
-        "so no frameio worker can start"
+    """The Frame.io worker's token store and API.
+
+    The token store signs in to Adobe with the OAuth Web App credential in the
+    environment and keeps the token in `T6_FRAMEIO_TOKEN_FILE`. Frame.io reads
+    are not built yet (t6-core#16), so every request is answered `failed`.
+    """
+    names = ("T6_FRAMEIO_CLIENT_ID", "T6_FRAMEIO_CLIENT_SECRET", "T6_FRAMEIO_REDIRECT_URI", "T6_FRAMEIO_TOKEN_FILE")
+    missing = [name for name in names if not environ.get(name)]
+    if missing:
+        raise ConfigError(f"missing environment variable: {', '.join(missing)}")
+    if not environ["T6_FRAMEIO_REDIRECT_URI"].startswith("https://"):
+        raise ConfigError("T6_FRAMEIO_REDIRECT_URI must be an https:// address (Adobe accepts no other)")
+    from t6.frameio.tokens import AdobeTokens
+
+    tokens = AdobeTokens(
+        environ["T6_FRAMEIO_CLIENT_ID"],
+        environ["T6_FRAMEIO_CLIENT_SECRET"],
+        environ["T6_FRAMEIO_REDIRECT_URI"],
+        Path(environ["T6_FRAMEIO_TOKEN_FILE"]),
     )
+
+    def run(request: FrameioRequest) -> JsonValue:
+        raise NotImplementedError("Frame.io reads are not built yet (t6-core#16)")
+
+    return tokens, run
 
 
 def frameio_worker(environ: Mapping[str, str], tokens: Tokens, run: Run) -> FrameioWorker:

@@ -92,8 +92,7 @@ Mac mini. Both use only the standard library.
   `diagnostic.echo` handler that returns its input payload. It is for test
   payloads only: do not put secrets or real jobs in it. The `frameio` queue
   runs the [Frame.io worker](#frameio) and calls its `tick()` before every
-  poll. It exits with code 2 until the token store (t6-core#15) and the
-  Frame.io reads (t6-core#16) exist. A handler that raises
+  poll. It needs the Adobe credential and token file variables below. A handler that raises
   `t6.worker.Refused` fails its job for good, with no retry.
 
 | Worker variable | Use |
@@ -106,6 +105,9 @@ Mac mini. Both use only the standard library.
 | `T6_NOTION_PROJECTS_DATA_SOURCE` | main worker: ID of the Projects data source |
 | `T6_GATEWAY_URL`, `T6_GATEWAY_SECRET` | Frame.io worker: required, the gateway whose `/notify` sends the sign-in alert |
 | `T6_FRAMEIO_ALERT_CHAT` | Frame.io worker: required, the Telegram chat ID that gets the sign-in alert |
+| `T6_FRAMEIO_CLIENT_ID`, `T6_FRAMEIO_CLIENT_SECRET` | Frame.io worker: required, the Adobe OAuth Web App credential. Give them to no other process |
+| `T6_FRAMEIO_REDIRECT_URI` | Frame.io worker: required, the `https://` address of the server's `/frameio/callback`, exactly as set on the Adobe credential |
+| `T6_FRAMEIO_TOKEN_FILE` | Frame.io worker: required, where the token is kept, on a volume only this worker mounts |
 
 | Variable | Use |
 | --- | --- |
@@ -628,11 +630,18 @@ if isinstance(result, Ok):
   t6-core#16.
 - **Worker.** `FrameioWorker(tokens, run, notify)` gives the handlers for the
   `frameio` queue. `tokens` is the token store (t6-core#15) and `run` executes
-  one request against the Frame.io API (t6-core#16). Neither is built yet, so
-  `python -m t6.worker` with `T6_WORKER_QUEUE=frameio` exits with code 2 and
-  says so. The loop, the `tick()` call and the gateway alert are wired:
-  `frameio_backend` in `t6.worker.__main__` is the one place that will return
-  the real pair. `tick()` refreshes the token once a day.
+  one request against the Frame.io API (t6-core#16). `frameio_backend` in
+  `t6.worker.__main__` builds the pair from the environment. The reads are not
+  built yet, so every request is answered `Failed`; sign-in and the daily
+  refresh work. `tick()` refreshes the token once a day.
+- **Token store.** `t6.frameio.tokens.AdobeTokens` signs in to Adobe (OAuth
+  Web App, `offline_access`) and keeps the token in one file,
+  `T6_FRAMEIO_TOKEN_FILE`, on the Frame.io worker's own volume. The file has
+  mode 0600. Only the Frame.io worker makes an `AdobeTokens`; no other
+  process reads the file or has the Adobe credential. Adobe replaces the
+  refresh token on each refresh, and the new one is stored before it is used.
+  An access token within five minutes of its end is refreshed before a
+  request uses it.
 - **Sign-in.** When Frame.io refuses the token, the worker sends one Telegram
   alert a day with the sign-in link through `notify` (the gateway's `/notify`) and
   fails every request with `Frame.io sign-in needed` until someone signs in.
@@ -640,6 +649,12 @@ if isinstance(result, Ok):
   on the server's public listener. The server queues the code as a
   `frameio.sign_in` job and the worker exchanges it. The server never holds a
   token. The route answers 503 unless `T6_FRAMEIO_WORKER_SECRET` is set.
+  The link carries a random `state` that the worker keeps with the token; a
+  callback with another state is refused before Adobe is called. The link
+  stays the same until a sign-in completes. A worker that starts with no
+  token sends the link on its first `tick()`. Adobe unreachable (a 5xx, a 429,
+  no network) is not a lost sign-in: the worker tries again in 15 minutes and
+  sends no alert.
 - **A slow request** holds only the `frameio` queue. The `main` queue keeps
   running, and the caller gets `Failed` at its timeout.
 

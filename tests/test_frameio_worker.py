@@ -6,6 +6,7 @@ A fake Frame.io API, a fake token store and a fake clock. No real client data.
 from datetime import datetime, timezone
 from pathlib import Path
 import contextlib
+import html
 import io
 import json
 import subprocess
@@ -15,6 +16,7 @@ import threading
 from typing import Any
 import unittest
 from unittest import mock
+import urllib.parse
 
 from t6.domain.events import JsonValue
 from t6.frameio import (
@@ -37,7 +39,8 @@ from t6.frameio.worker import REFRESH_RETRY_SECONDS, REFRESH_SECONDS, SIGN_IN_NE
 from t6.server import JobQueue, Request, ServerConfig, WebhookApp
 from t6.server.testing import FakeClock
 from t6.worker import QueueClient, Worker
-from t6.worker.__main__ import ConfigError, frameio_worker, main
+from t6.worker.__main__ import ConfigError, frameio_backend, frameio_worker, main
+from test_frameio_tokens import FakeAdobe
 from test_server_app import FRAMEIO_WORKER_SECRET, WORKER_SECRET, InProcess, ServerTestCase
 
 SINCE = datetime(2026, 11, 1, 16, 0, tzinfo=timezone.utc)
@@ -321,6 +324,12 @@ FRAMEIO_ENVIRON = {
     "T6_WORKER_SECRET": FRAMEIO_WORKER_SECRET,
     "T6_WORKER_QUEUE": "frameio",
 }
+ADOBE_ENVIRON = {
+    "T6_FRAMEIO_CLIENT_ID": "client-1",
+    "T6_FRAMEIO_CLIENT_SECRET": "client-secret-1",
+    "T6_FRAMEIO_REDIRECT_URI": "https://hooks.example/frameio/callback",
+    "T6_FRAMEIO_TOKEN_FILE": "/nonexistent/frameio-token.json",
+}
 GATEWAY_ENVIRON = {
     "T6_GATEWAY_URL": "http://gateway.invalid",
     "T6_GATEWAY_SECRET": "gateway-secret",
@@ -357,10 +366,47 @@ class EntrypointTests(FrameioWorkerTestCase):
         self.assertEqual(self.caller.result("frameio", job_id), ("failed", SIGN_IN_NEEDED))
         self.assertEqual(len(self.alerts), 1)
 
-    def test_without_a_token_store_the_frameio_worker_refuses_to_start(self) -> None:
-        code, message = self.run_main({**FRAMEIO_ENVIRON, **GATEWAY_ENVIRON})
-        self.assertEqual(code, 2)
-        self.assertIn("t6-core#15", message)
+    def test_without_the_adobe_credential_the_frameio_worker_refuses_to_start(self) -> None:
+        for name in ADOBE_ENVIRON:
+            environ = {key: value for key, value in ADOBE_ENVIRON.items() if key != name}
+            with self.subTest(name=name):
+                code, message = self.run_main({**FRAMEIO_ENVIRON, **GATEWAY_ENVIRON, **environ})
+                self.assertEqual(code, 2)
+                self.assertIn(name, message)
+        plain = {**ADOBE_ENVIRON, "T6_FRAMEIO_REDIRECT_URI": "http://hooks.example/frameio/callback"}
+        code, message = self.run_main({**FRAMEIO_ENVIRON, **GATEWAY_ENVIRON, **plain})
+        self.assertEqual((code, "https://" in message), (2, True))
+
+    def test_a_first_start_sends_the_sign_in_link_and_the_callback_stores_a_token(self) -> None:
+        sent: list[dict[str, Any]] = []
+
+        class Gateway:
+            def __init__(self, base_url: str) -> None:
+                pass
+
+            def send(self, method: str, path: str, headers: Any, body: bytes) -> tuple[int, dict[str, Any]]:
+                sent.append(json.loads(body))
+                return 202, {"message_ref": 1}
+
+        adobe = FakeAdobe()
+        token_file = Path(self.directory.name) / "frameio-token.json"
+        environ = {**FRAMEIO_ENVIRON, **GATEWAY_ENVIRON, **ADOBE_ENVIRON, "T6_FRAMEIO_TOKEN_FILE": str(token_file)}
+        with mock.patch("t6.worker.__main__.HttpTransport", Gateway), mock.patch("t6.frameio.tokens.http_post", adobe):
+            tokens, run = frameio_backend(environ)
+            worker = frameio_worker(environ, tokens, run)
+            self.assertEqual(self.run_main(environ, frameio=worker)[0], 0)
+            self.assertEqual(len(sent), 1)
+            link = html.unescape(sent[0]["text"]).split("Sign in here: ")[1]
+            state = urllib.parse.parse_qs(urllib.parse.urlsplit(link).query)["state"][0]
+            self.app.public(Request("GET", f"/frameio/callback?code=code-1&state={state}", {}, b""))
+            job_id = self.caller.submit("frameio", FrameioProjects.kind, "k")
+            self.assertEqual(self.run_main(environ, frameio=worker)[0], 0)
+        self.assertEqual(json.loads(token_file.read_text())["access_token"], "access-1")
+        self.assertEqual(len(sent), 1)
+        result = self.caller.result("frameio", job_id)
+        assert result is not None
+        self.assertEqual(result[0], "failed")
+        self.assertIn("t6-core#16", str(result[1]))
 
     def test_the_alert_needs_the_gateway_and_a_chat(self) -> None:
         for name in GATEWAY_ENVIRON:
