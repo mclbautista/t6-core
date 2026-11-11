@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import html
 import os
+from pathlib import Path
 import signal
 import sys
 import threading
@@ -69,6 +70,9 @@ def configured_handlers(
     `notion.page_changed` (needs the `notion` extra). With `T6_GATEWAY_URL` and
     `T6_GATEWAY_SECRET` set, it also gets `operator.deliver` (operator cards in
     Sixto), and a Projects page no Project owns is offered to the operator.
+    With `T6_NOTION_TOKEN`, `T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE` and the
+    gateway set, it also gets `frameio.review_done` (a DM to the show's
+    coordinator when a Frame.io review goes quiet).
     """
     if settings.queue != "main":
         return {}
@@ -88,15 +92,59 @@ def configured_handlers(
             NotionClient(token), RegistryClient(transport, settings.secret), projects, offer=offer
         )
         handlers.update(projection.handlers())
+    links_source = environ.get("T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE")
+    if token and links_source and gateway_url and gateway_secret:
+        from t6.frameio.requests import ask
+        from t6.notion import NotionClient
+        from t6.notion.external_links import ExternalLinks
+        from t6.worker.review import ReviewDone
+
+        notion, queue = NotionClient(token), QueueClient(transport, settings.secret)
+        review = ReviewDone(
+            notion,
+            ExternalLinks(notion, links_source),
+            GatewayClient(HttpTransport(gateway_url), gateway_secret),
+            lambda request: ask(queue, request),
+        )
+        handlers.update(review.handlers())
     return {"main": handlers} if handlers else {}
 
 
 def frameio_backend(environ: Mapping[str, str]) -> tuple[Tokens, Run]:
-    """The Frame.io worker's token store and API. Neither exists yet, so the worker refuses to start."""
-    raise ConfigError(
-        "the Frame.io token store (t6-core#15) and Frame.io reads (t6-core#16) are not built yet, "
-        "so no frameio worker can start"
+    """The Frame.io worker's token store and API.
+
+    The token store signs in to Adobe with the OAuth Web App credential in the
+    environment and keeps the token in `T6_FRAMEIO_TOKEN_FILE`. With
+    `T6_NOTION_TOKEN` and `T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE` set, the
+    briefing feed works and live share links get External Links rows (needs
+    the `notion` extra); without them the other reads still work.
+    """
+    names = ("T6_FRAMEIO_CLIENT_ID", "T6_FRAMEIO_CLIENT_SECRET", "T6_FRAMEIO_REDIRECT_URI", "T6_FRAMEIO_TOKEN_FILE")
+    missing = [name for name in names if not environ.get(name)]
+    if missing:
+        raise ConfigError(f"missing environment variable: {', '.join(missing)}")
+    if not environ["T6_FRAMEIO_REDIRECT_URI"].startswith("https://"):
+        raise ConfigError("T6_FRAMEIO_REDIRECT_URI must be an https:// address (Adobe accepts no other)")
+    from t6.frameio.tokens import AdobeTokens
+
+    tokens = AdobeTokens(
+        environ["T6_FRAMEIO_CLIENT_ID"],
+        environ["T6_FRAMEIO_CLIENT_SECRET"],
+        environ["T6_FRAMEIO_REDIRECT_URI"],
+        Path(environ["T6_FRAMEIO_TOKEN_FILE"]),
     )
+
+    links = None
+    notion_token, data_source = environ.get("T6_NOTION_TOKEN"), environ.get("T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE")
+    if notion_token and data_source:
+        from t6.notion import NotionClient
+        from t6.notion.external_links import ExternalLinks
+
+        links = ExternalLinks(NotionClient(notion_token), data_source)
+    from t6.frameio.api import FrameioApi
+    from t6.frameio.reads import FrameioReads
+
+    return tokens, FrameioReads(FrameioApi(tokens), links, environ.get("T6_FRAMEIO_ACCOUNT_ID") or None)
 
 
 def frameio_worker(environ: Mapping[str, str], tokens: Tokens, run: Run) -> FrameioWorker:

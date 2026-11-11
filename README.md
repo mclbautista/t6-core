@@ -92,8 +92,7 @@ Mac mini. Both use only the standard library.
   `diagnostic.echo` handler that returns its input payload. It is for test
   payloads only: do not put secrets or real jobs in it. The `frameio` queue
   runs the [Frame.io worker](#frameio) and calls its `tick()` before every
-  poll. It exits with code 2 until the token store (t6-core#15) and the
-  Frame.io reads (t6-core#16) exist. A handler that raises
+  poll. It needs the Adobe credential and token file variables below. A handler that raises
   `t6.worker.Refused` fails its job for good, with no retry.
 
 | Worker variable | Use |
@@ -104,8 +103,14 @@ Mac mini. Both use only the standard library.
 | `T6_WORKER_POLL_SECONDS` | optional: sleep after an empty poll, default `5` |
 | `T6_NOTION_TOKEN` | main worker: Notion integration token, for the Project registry sync |
 | `T6_NOTION_PROJECTS_DATA_SOURCE` | main worker: ID of the Projects data source |
+| `T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE` | main worker: ID of the External Links data source. With `T6_NOTION_TOKEN` and the gateway variables it turns on the [review done DM](#frameio) |
 | `T6_GATEWAY_URL`, `T6_GATEWAY_SECRET` | Frame.io worker: required, the gateway whose `/notify` sends the sign-in alert |
 | `T6_FRAMEIO_ALERT_CHAT` | Frame.io worker: required, the Telegram chat ID that gets the sign-in alert |
+| `T6_FRAMEIO_CLIENT_ID`, `T6_FRAMEIO_CLIENT_SECRET` | Frame.io worker: required, the Adobe OAuth Web App credential. Give them to no other process |
+| `T6_FRAMEIO_REDIRECT_URI` | Frame.io worker: required, the `https://` address of the server's `/frameio/callback`, exactly as set on the Adobe credential |
+| `T6_FRAMEIO_TOKEN_FILE` | Frame.io worker: required, where the token is kept, on a volume only this worker mounts |
+| `T6_FRAMEIO_ACCOUNT_ID` | Frame.io worker: optional, the Frame.io account ID; needed only when the sign-in sees more than one account |
+| `T6_NOTION_TOKEN`, `T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE` | Frame.io worker: optional, turn on the briefing feed and the External Links rows for live share links |
 
 | Variable | Use |
 | --- | --- |
@@ -598,7 +603,7 @@ Install only the adapters an application needs, for example
 The `notion` extra installs `httpx`, the `llm` extra installs `pydantic`, the `resolve` extra installs `psycopg` and the `drives` extra installs `openpyxl`.
 The `privacy`, `instagantt`, `server` and `worker` extras are implemented and
 need no third-party packages. The `frameio` extra holds the
-[Frame.io worker](#frameio) and needs none yet. The `notion` extra does not install Frame.io, Adobe sign-in, or
+[Frame.io worker](#frameio) and needs none; its briefing feed also needs the `notion` extra. The `notion` extra does not install Frame.io, Adobe sign-in, or
 LLM libraries.
 
 ## Frame.io
@@ -624,15 +629,46 @@ if isinstance(result, Ok):
 - **Results.** `ask` returns `Ok(value)` or `Failed(reason)` and never raises.
   No answer within `timeout` seconds (default 30), a refused queue call and a
   Frame.io error are all `Failed`. Each `ask` is a new job, so asking again
-  asks Frame.io again. `value` is JSON; typed read objects come with
-  t6-core#16.
+  asks Frame.io again. `value` is JSON. `decode(ShareLinks, result.value)`
+  turns it into typed objects: `FrameioProject`, `ShareLink`, `Comment`,
+  `Version`, `Approval` or `BriefingShow` (see `t6.frameio.model`).
 - **Worker.** `FrameioWorker(tokens, run, notify)` gives the handlers for the
   `frameio` queue. `tokens` is the token store (t6-core#15) and `run` executes
-  one request against the Frame.io API (t6-core#16). Neither is built yet, so
-  `python -m t6.worker` with `T6_WORKER_QUEUE=frameio` exits with code 2 and
-  says so. The loop, the `tick()` call and the gateway alert are wired:
-  `frameio_backend` in `t6.worker.__main__` is the one place that will return
-  the real pair. `tick()` refreshes the token once a day.
+  one request against the Frame.io API (t6-core#16). `frameio_backend` in
+  `t6.worker.__main__` builds the pair from the environment. `tick()`
+  refreshes the token once a day.
+- **Reads.** `t6.frameio.reads.FrameioReads` runs a request against Frame.io
+  V4 (`https://api.frame.io/v4`). It finds the T6 account from the token; set
+  `T6_FRAMEIO_ACCOUNT_ID` if the sign-in sees more than one account. A share
+  link is live when it is enabled and not expired. `Versions(file_id)` gives
+  the files of the version stack the file is in, or the file alone.
+  `Approvals(file_id)` gives the file's `Status` metadata field, because
+  Frame.io V4 has no separate approval object. A 401 gets one token refresh
+  and one more try. A 429 waits and tries again, five times at most.
+  `CreateProjectFolders` is not built (t6-core#23) and is answered `Failed`.
+- **Briefing feed.** `BriefingFeed(since)` answers, per Frame.io project, the
+  live share links whose latest activity is after `since`. Activity is the
+  later of the share's last view and its newest entry in Frame.io's activity
+  list. Each group carries the Notion Projects pages its Frame.io project is
+  linked to (`frameio` / `project` External Links row), or none. The feed also
+  gives every live share link a `frameio` / `share_link` External Links row
+  if it has none, and moves the row's Last Activity forward. It reports the
+  row's Active box and never writes it. Running it again creates no
+  duplicate. The feed needs `T6_NOTION_TOKEN` and
+  `T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE` on the Frame.io worker and the
+  `notion` extra; the other reads do not. A feed over many share links can
+  take minutes because of Frame.io's rate limit, so give `ask` a long
+  `timeout`.
+- **Tests.** `t6.frameio.testing.FakeFrameio` is an in-memory Frame.io V4 for
+  tests, like `t6.notion.testing.FakeNotion`.
+- **Token store.** `t6.frameio.tokens.AdobeTokens` signs in to Adobe (OAuth
+  Web App, `offline_access`) and keeps the token in one file,
+  `T6_FRAMEIO_TOKEN_FILE`, on the Frame.io worker's own volume. The file has
+  mode 0600. Only the Frame.io worker makes an `AdobeTokens`; no other
+  process reads the file or has the Adobe credential. Adobe replaces the
+  refresh token on each refresh, and the new one is stored before it is used.
+  An access token within five minutes of its end is refreshed before a
+  request uses it.
 - **Sign-in.** When Frame.io refuses the token, the worker sends one Telegram
   alert a day with the sign-in link through `notify` (the gateway's `/notify`) and
   fails every request with `Frame.io sign-in needed` until someone signs in.
@@ -640,6 +676,23 @@ if isinstance(result, Ok):
   on the server's public listener. The server queues the code as a
   `frameio.sign_in` job and the worker exchanges it. The server never holds a
   token. The route answers 503 unless `T6_FRAMEIO_WORKER_SECRET` is set.
+  The link carries a random `state` that the worker keeps with the token; a
+  callback with another state is refused before Adobe is called. The link
+  stays the same until a sign-in completes. A worker that starts with no
+  token sends the link on its first `tick()`. Adobe unreachable (a 5xx, a 429,
+  no network) is not a lost sign-in: the worker tries again in 15 minutes and
+  sends no alert.
+- **Review done.** When a Frame.io project has had no new comment for 15
+  minutes, the main worker runs `frameio.review_done`
+  (`t6.worker.review.ReviewDone`). It finds the show from the Frame.io
+  project's `frameio` / `project` External Links row, and sends one Telegram
+  DM through the gateway's `/notify` to each Contact in the show's
+  `T6 Post Coordinator` that has a `TelegramUserID`. The DM has the show name,
+  the comment count and the Frame.io project link. The link comes from the
+  Frame.io worker through the `frameio` queue; when it gives no answer, the
+  URL on the External Links row is used. A Frame.io project with no row, or a
+  show with no coordinator to message, fails the job with that reason and
+  sends nothing. There is no LLM summary and no Notion status change.
 - **A slow request** holds only the `frameio` queue. The `main` queue keeps
   running, and the caller gets `Failed` at its timeout.
 
