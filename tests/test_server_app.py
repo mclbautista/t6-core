@@ -173,6 +173,26 @@ class DedupeTests(ServerTestCase):
         self.clock.advance(60)
         self.assertEqual(self.pending(), 1)
 
+    def test_quiet_time_comes_from_the_environment(self) -> None:
+        environ = {"T6_FRAMEIO_WEBHOOK_SECRET": FRAMEIO_SECRET, "T6_REVIEW_QUIET_SECONDS": "120"}
+        queue = JobQueue(Path(self.directory.name) / "env.sqlite3", self.clock)
+        app = WebhookApp(queue, ServerConfig.from_env(environ), self.clock)
+        app.public(frameio_request(self.clock, comment("c1")))
+        self.clock.advance(119)
+        self.assertIsNone(queue.claim("main", 60))
+        self.clock.advance(1)
+        claim = queue.claim("main", 60)
+        assert claim is not None
+        self.assertEqual(claim.kind, "frameio.review_done")
+
+    def test_quiet_time_defaults_to_fifteen_minutes_and_rejects_bad_values(self) -> None:
+        self.assertEqual(ServerConfig.from_env({}).review_quiet_seconds, 15 * 60.0)
+        self.assertEqual(ServerConfig.from_env({"T6_REVIEW_QUIET_SECONDS": ""}).review_quiet_seconds, 15 * 60.0)
+        self.assertEqual(ServerConfig.from_env({"T6_REVIEW_QUIET_SECONDS": "90.5"}).review_quiet_seconds, 90.5)
+        for bad in ("abc", "0", "-5", "nan", "inf"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                ServerConfig.from_env({"T6_REVIEW_QUIET_SECONDS": bad})
+
     def test_other_event_types_are_acknowledged_and_ignored(self) -> None:
         body = {"type": "file.ready", "resource": {"id": "f1"}, "project": {"id": "fp1"}}
         self.assertEqual(self.app.public(frameio_request(self.clock, body)).status, 200)

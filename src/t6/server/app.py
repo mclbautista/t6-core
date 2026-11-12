@@ -166,7 +166,22 @@ class ServerConfig:
             grants=tuple(grants),
             operator_ids=tuple(int(part) for part in environ.get("T6_OPERATOR_IDS", "").replace(",", " ").split()),
             operator_ttl_seconds=float(environ.get("T6_OPERATOR_TTL_SECONDS") or 7 * 24 * 3600.0),
+            review_quiet_seconds=_positive_seconds(environ, "T6_REVIEW_QUIET_SECONDS", REVIEW_QUIET_SECONDS),
         )
+
+
+def _positive_seconds(environ: Mapping[str, str], name: str, default: float) -> float:
+    """A positive number of seconds from the environment, or `default` when it is unset or empty."""
+    raw = environ.get(name)
+    if not raw or not raw.strip():
+        return default
+    try:
+        seconds = float(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a number of seconds, got {raw!r}") from None
+    if not seconds > 0 or seconds == float("inf"):
+        raise ValueError(f"{name} must be a positive number of seconds, got {raw!r}")
+    return seconds
 
 
 def _same(a: str, b: str) -> bool:
