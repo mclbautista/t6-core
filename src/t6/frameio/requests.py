@@ -66,6 +66,20 @@ class Comments(_Request):
 
 
 @dataclass(frozen=True, slots=True)
+class ResolveComment(_Request):
+    """Read one comment that a webhook named, to learn its file and its author.
+
+    The Frame.io worker also starts the (file, author) review timer for it, so
+    a caller outside the server does not need this request.
+    """
+
+    kind: ClassVar[str] = "frameio.resolve_comment"
+    comment_id: str
+    account_id: str
+    frameio_project_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class Versions(_Request):
     """The versions of one Frame.io file."""
 
@@ -105,12 +119,28 @@ class CreateProjectFolders(_Request):
 
 
 FrameioRequest: TypeAlias = (
-    FrameioProjects | ShareLinks | Comments | Versions | Approvals | BriefingFeed | CreateProjectFolders
+    FrameioProjects
+    | ShareLinks
+    | Comments
+    | ResolveComment
+    | Versions
+    | Approvals
+    | BriefingFeed
+    | CreateProjectFolders
 )
 
 _BY_KIND: dict[str, type[FrameioRequest]] = {
     cls.kind: cls
-    for cls in (FrameioProjects, ShareLinks, Comments, Versions, Approvals, BriefingFeed, CreateProjectFolders)
+    for cls in (
+        FrameioProjects,
+        ShareLinks,
+        Comments,
+        ResolveComment,
+        Versions,
+        Approvals,
+        BriefingFeed,
+        CreateProjectFolders,
+    )
 }
 REQUEST_KINDS = frozenset(_BY_KIND)
 

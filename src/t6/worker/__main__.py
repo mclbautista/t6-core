@@ -12,11 +12,13 @@ import sys
 import threading
 
 from t6.domain.events import JsonValue
-from t6.frameio.worker import FrameioWorker, Run, Tokens
+from t6.frameio.worker import ArmReviewTimer, FrameioWorker, Run, Tokens
 from t6.server.queue import DIAGNOSTIC_QUEUE, FRAMEIO_QUEUE
 from t6.worker.client import HttpTransport, QueueClient, Transport, WorkerJob
 from t6.worker.gateway import GatewayClient
 from t6.worker.operator import CardDelivery, OperatorClient
+from t6.worker.review import ReviewMessage
+from t6.worker.review_timer import ReviewTimerClient
 from t6.worker.runner import Handler, Worker
 
 def diagnostic_echo(job: WorkerJob) -> dict[str, JsonValue]:
@@ -60,6 +62,18 @@ class WorkerSettings:
         return cls(environ["T6_SERVER_URL"], environ["T6_WORKER_SECRET"], environ["T6_WORKER_QUEUE"], poll)
 
 
+def _whole_number(environ: Mapping[str, str], name: str, *, required: bool) -> int | None:
+    raw = (environ.get(name) or "").strip()
+    if not raw:
+        if required:
+            raise ConfigError(f"missing environment variable: {name}")
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        raise ConfigError(f"{name} must be a Telegram ID (a whole number)") from None
+
+
 def configured_handlers(
     environ: Mapping[str, str], settings: WorkerSettings, transport: Transport
 ) -> dict[str, dict[str, Handler]]:
@@ -70,9 +84,9 @@ def configured_handlers(
     `notion.page_changed` (needs the `notion` extra). With `T6_GATEWAY_URL` and
     `T6_GATEWAY_SECRET` set, it also gets `operator.deliver` (operator cards in
     Sixto), and a Projects page no Project owns is offered to the operator.
-    With `T6_NOTION_TOKEN`, `T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE` and the
-    gateway set, it also gets `frameio.review_done` (a DM to the show's
-    coordinator when a Frame.io review goes quiet).
+    The gateway settings also give it `frameio.review_done` (a message to the
+    review chat when a person goes quiet on a Frame.io file), which needs
+    `T6_REVIEW_CHAT` (and may have `T6_REVIEW_TOPIC`).
     """
     if settings.queue != "main":
         return {}
@@ -92,20 +106,11 @@ def configured_handlers(
             NotionClient(token), RegistryClient(transport, settings.secret), projects, offer=offer
         )
         handlers.update(projection.handlers())
-    links_source = environ.get("T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE")
-    if token and links_source and gateway_url and gateway_secret:
-        from t6.frameio.requests import ask
-        from t6.notion import NotionClient
-        from t6.notion.external_links import ExternalLinks
-        from t6.worker.review import ReviewDone
-
-        notion, queue = NotionClient(token), QueueClient(transport, settings.secret)
-        review = ReviewDone(
-            notion,
-            ExternalLinks(notion, links_source),
-            GatewayClient(HttpTransport(gateway_url), gateway_secret),
-            lambda request: ask(queue, request),
-        )
+    if gateway_url and gateway_secret:
+        chat = _whole_number(environ, "T6_REVIEW_CHAT", required=True)
+        topic = _whole_number(environ, "T6_REVIEW_TOPIC", required=False)
+        assert chat is not None
+        review = ReviewMessage(GatewayClient(HttpTransport(gateway_url), gateway_secret), chat, topic)
         handlers.update(review.handlers())
     return {"main": handlers} if handlers else {}
 
@@ -147,8 +152,13 @@ def frameio_backend(environ: Mapping[str, str]) -> tuple[Tokens, Run]:
     return tokens, FrameioReads(FrameioApi(tokens), links, environ.get("T6_FRAMEIO_ACCOUNT_ID") or None)
 
 
-def frameio_worker(environ: Mapping[str, str], tokens: Tokens, run: Run) -> FrameioWorker:
-    """The Frame.io worker, with its sign-in alert going to one Telegram chat through the gateway."""
+def frameio_worker(
+    environ: Mapping[str, str], tokens: Tokens, run: Run, timers: ArmReviewTimer | None = None
+) -> FrameioWorker:
+    """The Frame.io worker, with its sign-in alert going to one Telegram chat through the gateway.
+
+    `timers` starts the review timers for the comments it reads (`main` builds it from the server settings).
+    """
     names = ("T6_GATEWAY_URL", "T6_GATEWAY_SECRET", "T6_FRAMEIO_ALERT_CHAT")
     missing = [name for name in names if not environ.get(name)]
     if missing:
@@ -162,7 +172,7 @@ def frameio_worker(environ: Mapping[str, str], tokens: Tokens, run: Run) -> Fram
     def notify(text: str, key: str) -> None:
         gateway.notify(chat, html.escape(text, quote=False), [], key)
 
-    return FrameioWorker(tokens, run, notify)
+    return FrameioWorker(tokens, run, notify, arm_review_timer=timers)
 
 
 def serve(
@@ -196,7 +206,9 @@ def main(
         table = handlers if handlers is not None else {**HANDLERS, **configured_handlers(environ, settings, transport)}
         queue_handlers = table.get(settings.queue)
         if settings.queue == FRAMEIO_QUEUE and handlers is None:
-            frameio = frameio or frameio_worker(environ, *frameio_backend(environ))
+            frameio = frameio or frameio_worker(
+                environ, *frameio_backend(environ), timers=ReviewTimerClient(transport, settings.secret).arm
+            )
             queue_handlers, tick = frameio.handlers(), frameio.tick
         if not queue_handlers:
             raise ConfigError(f"no handler is registered for queue {settings.queue!r}")

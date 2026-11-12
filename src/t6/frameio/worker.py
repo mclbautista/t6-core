@@ -22,7 +22,8 @@ import time
 from typing import Protocol
 
 from t6.domain.events import JobKind, JsonValue
-from t6.frameio.requests import REQUEST_KINDS, FrameioRequest, from_job
+from t6.frameio.model import ResolvedComment
+from t6.frameio.requests import REQUEST_KINDS, FrameioRequest, ResolveComment, from_job
 from t6.worker.client import WorkerJob
 from t6.worker.runner import Handler, Refused
 
@@ -54,24 +55,37 @@ class Tokens(Protocol):
 Run = Callable[[FrameioRequest], JsonValue]
 """Runs one request against Frame.io. Raises SignInRequired when the token is refused."""
 
+ArmReviewTimer = Callable[[ResolvedComment], None]
+"""Starts or restarts the review timer for the comment's (file, author) on the server."""
+
 Notify = Callable[[str, str], None]
 """Sends `text` to Telegram through the gateway's `/notify`, once per idempotency `key`."""
 
 
 class FrameioWorker:
     def __init__(
-        self, tokens: Tokens, run: Run, notify: Notify, clock: Callable[[], float] = time.time
+        self,
+        tokens: Tokens,
+        run: Run,
+        notify: Notify,
+        clock: Callable[[], float] = time.time,
+        arm_review_timer: ArmReviewTimer | None = None,
     ) -> None:
         self._tokens = tokens
         self._run = run
         self._notify = notify
         self._clock = clock
+        self._arm_review_timer = arm_review_timer
         self._signed_in = True
         self._alert_pending = False
         self._refresh_at = 0.0  # the first tick refreshes
 
     def handlers(self) -> dict[str, Handler]:
-        return {**{kind: self._request for kind in REQUEST_KINDS}, JobKind.FRAMEIO_SIGN_IN.value: self._sign_in}
+        return {
+            **{kind: self._request for kind in REQUEST_KINDS},
+            JobKind.FRAMEIO_RESOLVE_COMMENT.value: self._resolve_comment,
+            JobKind.FRAMEIO_SIGN_IN.value: self._sign_in,
+        }
 
     def tick(self) -> None:
         """Refresh the token when it is due, and retry an alert that did not go out."""
@@ -120,6 +134,38 @@ class FrameioWorker:
             raise Refused(SIGN_IN_NEEDED) from None
         except Exception as error:  # noqa: BLE001 - the caller gets a failed result, never a retry loop
             raise Refused(f"{type(error).__name__}: {error}") from error
+
+    def _resolve_comment(self, job: WorkerJob) -> JsonValue:
+        """Read the comment a webhook named and start its (file, author) review timer.
+
+        Unlike other requests, a failure here is raised for a retry: nobody is
+        waiting on an answer and the comment must not be lost. Arming is
+        idempotent per comment, so running this twice counts it once.
+        """
+        if self._arm_review_timer is None:
+            raise Refused("this Frame.io worker has no way to start review timers")
+        try:
+            request = from_job(job.kind, job.payload)
+        except (ValueError, TypeError) as error:
+            raise Refused(f"bad request: {error}") from error
+        assert isinstance(request, ResolveComment)
+        if not self._signed_in:
+            raise RuntimeError(SIGN_IN_NEEDED)
+        try:
+            found = self._run(request)
+        except SignInRequired:
+            self._signed_out()
+            raise RuntimeError(SIGN_IN_NEEDED) from None
+        except ValueError as error:  # the comment has no file or author: asking again will not help
+            raise Refused(f"unusable comment: {error}") from error
+        if not isinstance(found, dict):
+            raise Refused("Frame.io gave no comment")
+        try:
+            comment = ResolvedComment.from_json(found)
+        except (ValueError, TypeError) as error:
+            raise Refused(f"unusable comment: {error}") from error
+        self._arm_review_timer(comment)
+        return {"file_id": comment.file_id, "author_id": comment.author_id}
 
     def _sign_in(self, job: WorkerJob) -> JsonValue:
         code, state = job.payload.get("code"), job.payload.get("state")

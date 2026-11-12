@@ -61,7 +61,7 @@ Mac mini. Both use only the standard library.
 - **Two listeners.** The public one serves only `/webhook` and `/webhook/*`
   (Frame.io and Notion) and `GET /frameio/callback` (the
   [Frame.io sign-in](#frameio) redirect). The tailnet one serves `POST /tap` (the gateway),
-  `/queue/*` (workers and callers) and `/registry/*` (the
+  `/queue/*` (workers and callers), `POST /review/timers` (the Frame.io worker) and `/registry/*` (the
   [Project registry](#project-registry)). Nothing else is served on the
   public one.
 - **Signatures.** Frame.io: `v0:{timestamp}:{body}` HMAC-SHA256, five-minute
@@ -73,9 +73,10 @@ Mac mini. Both use only the standard library.
   (queue, dedupe key), lease-based claims, named queues (`main`, `frameio`), a
   typed result per job, and quiet-period timers stored in the database. A job
   that loses its lease five times is failed.
-- **Events.** A Frame.io `comment.created` starts or resets a 15-minute timer
-  for its Frame.io project; when it fires it becomes a `frameio.review_done`
-  job with the comment count. A Notion `page.properties_updated`,
+- **Events.** A Frame.io `comment.created` becomes a `frameio.resolve_comment`
+  job for the Frame.io worker, which starts a quiet timer per (file, author)
+  (see [Frame.io](#frameio)); when it fires it becomes a `frameio.review_done`
+  job with the comment count and the first and last comment times. A Notion `page.properties_updated`,
   `page.created`, `page.deleted` or `page.undeleted` becomes a
   `notion.page_changed` job (Notion names the changed properties, not the new
   value, so a worker reads the page). A tap becomes a `tap` job keyed by the
@@ -103,7 +104,8 @@ Mac mini. Both use only the standard library.
 | `T6_WORKER_POLL_SECONDS` | optional: sleep after an empty poll, default `5` |
 | `T6_NOTION_TOKEN` | main worker: Notion integration token, for the Project registry sync |
 | `T6_NOTION_PROJECTS_DATA_SOURCE` | main worker: ID of the Projects data source |
-| `T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE` | main worker: ID of the External Links data source. With `T6_NOTION_TOKEN` and the gateway variables it turns on the [review done DM](#frameio) |
+| `T6_REVIEW_CHAT` | main worker: required when the gateway variables are set, the Telegram chat ID that gets the [review message](#frameio) |
+| `T6_REVIEW_TOPIC` | main worker: optional, the forum topic ID in that chat. Leave it unset for the General topic: Telegram rejects topic 1 |
 | `T6_GATEWAY_URL`, `T6_GATEWAY_SECRET` | Frame.io worker: required, the gateway whose `/notify` sends the sign-in alert |
 | `T6_FRAMEIO_ALERT_CHAT` | Frame.io worker: required, the Telegram chat ID that gets the sign-in alert |
 | `T6_FRAMEIO_CLIENT_ID`, `T6_FRAMEIO_CLIENT_SECRET` | Frame.io worker: required, the Adobe OAuth Web App credential. Give them to no other process |
@@ -118,7 +120,7 @@ Mac mini. Both use only the standard library.
 | `T6_NOTION_WEBHOOK_TOKEN` | Notion `verification_token` |
 | `T6_TAP_SECRET` | the gateway's `T6CORE_SECRET` |
 | `T6_WORKER_SECRET` | main worker: claims `main`, may submit to `main` and `frameio`, reads Projects and reports Notion sync results |
-| `T6_FRAMEIO_WORKER_SECRET` | Frame.io worker: claims `frameio`; also turns on `/frameio/callback` |
+| `T6_FRAMEIO_WORKER_SECRET` | Frame.io worker: claims `frameio`, may start review timers (`POST /review/timers`); also turns on `/frameio/callback` |
 | `T6_FRAMEIO_CALLER_SECRET` | a caller outside the main worker (t6-notion-reports): may submit to `frameio` and read its results, nothing else |
 | `T6_DIAGNOSTIC_SECRET` | optional isolated diagnostic queue submit/claim credential; must differ from all other server secrets |
 | `T6_REGISTRY_SECRET` | registry caller that may register and read Projects |
@@ -127,7 +129,7 @@ Mac mini. Both use only the standard library.
 | `T6_REGISTRY_DB` | Project registry database path, default `t6-registry.sqlite` |
 | `T6_OPERATOR_IDS` | Telegram user IDs allowed to tap operator cards and send `/project`, comma separated; the first receives the cards core starts, and a `/project` card goes to whoever sent it. Unset turns operator actions off |
 | `T6_OPERATOR_DB`, `T6_OPERATOR_TTL_SECONDS` | operator action database, default `t6-operator.sqlite`; how long a card stays live, default 7 days |
-| `T6_REVIEW_QUIET_SECONDS` | server: how long a Frame.io project must have no new comment before the review-done job runs, default 900 (15 minutes); must be a positive number |
+| `T6_REVIEW_QUIET_SECONDS` | server: how long one person must make no new comment on one Frame.io file before the review message is sent, default 900 (15 minutes); must be a positive number |
 | `T6_GATEWAY_URL`, `T6_GATEWAY_SECRET` | main worker: the Sixto gateway and this module's secret there; turn on delivery of operator cards |
 
 Tests use `t6.server.testing.FakeClock`; no test opens a connection to a
@@ -692,17 +694,21 @@ if isinstance(result, Ok):
   token sends the link on its first `tick()`. Adobe unreachable (a 5xx, a 429,
   no network) is not a lost sign-in: the worker tries again in 15 minutes and
   sends no alert.
-- **Review done.** When a Frame.io project has had no new comment for 15
-  minutes, the main worker runs `frameio.review_done`
-  (`t6.worker.review.ReviewDone`). It finds the show from the Frame.io
-  project's `frameio` / `project` External Links row, and sends one Telegram
-  DM through the gateway's `/notify` to each Contact in the show's
-  `T6 Post Coordinator` that has a `TelegramUserID`. The DM has the show name,
-  the comment count and the Frame.io project link. The link comes from the
-  Frame.io worker through the `frameio` queue; when it gives no answer, the
-  URL on the External Links row is used. A Frame.io project with no row, or a
-  show with no coordinator to message, fails the job with that reason and
-  sends nothing. There is no LLM summary and no Notion status change.
+- **Review message.** Every Frame.io `comment.created` (replies included)
+  becomes a `frameio.resolve_comment` job on the `frameio` queue, because the
+  webhook names only the comment. The Frame.io worker reads the comment (file,
+  author, time) and asks the server's `POST /review/timers` to start or
+  restart the quiet timer for the pair (file, author). The route accepts only
+  the Frame.io worker's secret. Each new comment from the same person on the
+  same file restarts the full `T6_REVIEW_QUIET_SECONDS` (default 900); other
+  people and other files have their own timers. When a timer runs out, the
+  main worker runs `frameio.review_done` (`t6.worker.review.ReviewMessage`)
+  and sends one Telegram message through the gateway's `/notify` to
+  `T6_REVIEW_CHAT` (and `T6_REVIEW_TOPIC` if set) with who commented, when they
+  started and stopped (Manila time) and how many comments they made. It is
+  keyed by the job, so a job that runs twice sends once. A comment the Frame.io
+  worker cannot read yet (Frame.io down, signed out) is tried again every 30
+  seconds, up to five times. Comments by T6 staff count too. No Notion lookup.
 - **A slow request** holds only the `frameio` queue. The `main` queue keeps
   running, and the caller gets `Failed` at its timeout.
 

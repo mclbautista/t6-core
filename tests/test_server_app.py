@@ -13,7 +13,7 @@ from typing import Any
 import unittest
 from unittest import mock
 
-from t6.server import Grant, JobQueue, Request, ServerConfig, WebhookApp
+from t6.server import Grant, JobQueue, Request, Response, ServerConfig, WebhookApp
 from t6.server.http import make_server
 from t6.server.signatures import notion_signature
 from t6.server.testing import FakeClock
@@ -35,7 +35,12 @@ def frameio_request(clock: FakeClock, body: dict[str, Any], *, secret: str = FRA
 
 
 def comment(comment_id: str = "c1", project_id: str = "fp1") -> dict[str, Any]:
-    return {"type": "comment.created", "resource": {"id": comment_id}, "project": {"id": project_id}}
+    return {
+        "type": "comment.created",
+        "resource": {"id": comment_id},
+        "project": {"id": project_id},
+        "account": {"id": "acc-1"},
+    }
 
 
 def notion_request(clock: FakeClock, event: dict[str, Any], *, token: str = NOTION_TOKEN) -> Request:
@@ -85,7 +90,7 @@ class ServerTestCase(unittest.TestCase):
             tap_secret=TAP_SECRET,
             grants=(
                 Grant(WORKER_SECRET, claim=main, submit=main | frameio),
-                Grant(FRAMEIO_WORKER_SECRET, claim=frameio),
+                Grant(FRAMEIO_WORKER_SECRET, claim=frameio, review_timer=True),
             ),
         )
         self.tokens: list[str] = []
@@ -154,30 +159,101 @@ class DedupeTests(ServerTestCase):
         self.assertEqual(claim.payload["page_id"], "page-1")
         self.assertEqual(self.pending(), 0)
 
-    def test_same_frameio_comment_twice_counts_once(self) -> None:
-        self.app.public(frameio_request(self.clock, comment("c1")))
-        self.app.public(frameio_request(self.clock, comment("c1")))
-        self.app.public(frameio_request(self.clock, comment("c2")))
+    def test_a_frameio_comment_becomes_one_resolve_job_and_arms_no_timer(self) -> None:
+        first = self.app.public(frameio_request(self.clock, comment("c1")))
+        again = self.app.public(frameio_request(self.clock, comment("c1")))
+        self.assertEqual((first.body["created"], again.body["created"]), (True, False))
+        self.clock.advance(3600)
+        self.assertEqual(self.pending("main"), 0)
+        claim = self.queue.claim("frameio", 60)
+        assert claim is not None
+        self.assertEqual(claim.kind, "frameio.resolve_comment")
+        self.assertEqual(
+            dict(claim.payload), {"comment_id": "c1", "account_id": "acc-1", "frameio_project_id": "fp1"}
+        )
+        self.assertIsNone(self.queue.claim("frameio", 60))
+
+    def test_a_comment_event_without_an_account_is_refused(self) -> None:
+        body = {"type": "comment.created", "resource": {"id": "c1"}, "project": {"id": "fp1"}}
+        self.assertEqual(self.app.public(frameio_request(self.clock, body)).status, 400)
+
+    def arm(self, comment_id: str = "c1", file_id: str = "f1", user_id: str = "u1", at: str = "2026-11-12T10:00:00+00:00",
+            secret: str = FRAMEIO_WORKER_SECRET) -> Response:
+        body = {
+            "comment_id": comment_id,
+            "file_id": file_id,
+            "frameio_project_id": "fp1",
+            "user_id": user_id,
+            "user_name": "Reviewer One",
+            "created_at": at,
+        }
+        request = Request("POST", "/review/timers", {"Authorization": f"Bearer {secret}"}, json.dumps(body).encode())
+        return self.app.tailnet(request)
+
+    def test_the_review_timer_is_per_file_and_per_user_and_waits_for_quiet(self) -> None:
+        self.assertEqual(self.arm("c1").status, 200)
+        self.arm("c3", user_id="u2")  # another user: its own timer
+        self.arm("c4", file_id="f2")  # another file: its own timer
+        self.clock.advance(10 * 60)
+        self.arm("c2")  # same file, same user: restarts only its own timer
+        self.clock.advance(5 * 60 - 1)
+        self.assertEqual(self.fired(), [])
+        self.clock.advance(1)
+        self.assertEqual(self.fired(), [("f1", "u2"), ("f2", "u1")])  # quiet for 15 minutes
+        self.clock.advance(10 * 60)
+        self.assertEqual(self.fired(), [("f1", "u1")])
+
+    def fired(self) -> list[tuple[str, str]]:
+        """The (file, user) of every review job that is due now, each one finished."""
+        found = []
+        while (claim := self.queue.claim("main", 60)) is not None:
+            found.append((str(claim.payload["file_id"]), str(claim.payload["user_id"])))
+            self.queue.ack(claim.job_id, claim.token)
+        return sorted(found)
+
+    def test_the_review_job_carries_the_count_and_the_first_and_last_comment_times(self) -> None:
+        self.arm("c1", at="2026-11-12T10:00:00+00:00")
+        self.arm("c2", at="2026-11-12T10:05:00+00:00")
+        self.arm("c2", at="2026-11-12T10:05:00+00:00")  # redelivered: counted once
         self.clock.advance(15 * 60)
         claim = self.queue.claim("main", 60)
         assert claim is not None
         self.assertEqual(claim.kind, "frameio.review_done")
-        self.assertEqual(dict(claim.payload), {"frameio_project_id": "fp1", "count": 2})
+        self.assertEqual(
+            dict(claim.payload),
+            {
+                "file_id": "f1",
+                "frameio_project_id": "fp1",
+                "user_id": "u1",
+                "user_name": "Reviewer One",
+                "count": 2,
+                "first_at": datetime(2026, 11, 12, 10, 0, tzinfo=timezone.utc).timestamp(),
+                "last_at": datetime(2026, 11, 12, 10, 5, tzinfo=timezone.utc).timestamp(),
+            },
+        )
 
-    def test_review_timer_waits_for_quiet(self) -> None:
-        self.app.public(frameio_request(self.clock, comment("c1")))
-        self.clock.advance(14 * 60)
-        self.app.public(frameio_request(self.clock, comment("c2")))
-        self.clock.advance(14 * 60)
+    def test_the_review_timer_route_rejects_callers_without_the_grant(self) -> None:
+        self.assertEqual(self.arm(secret=WORKER_SECRET).status, 403)
+        self.assertEqual(self.arm(secret="wrong").status, 401)
+        self.clock.advance(3600)
         self.assertEqual(self.pending(), 0)
-        self.clock.advance(60)
-        self.assertEqual(self.pending(), 1)
+
+    def test_the_review_timer_route_refuses_a_bad_body(self) -> None:
+        self.assertEqual(self.arm(at="yesterday").status, 400)
+        request = Request("POST", "/review/timers", {"Authorization": f"Bearer {FRAMEIO_WORKER_SECRET}"}, b"{}")
+        self.assertEqual(self.app.tailnet(request).status, 400)
 
     def test_quiet_time_comes_from_the_environment(self) -> None:
-        environ = {"T6_FRAMEIO_WEBHOOK_SECRET": FRAMEIO_SECRET, "T6_REVIEW_QUIET_SECONDS": "120"}
+        environ = {
+            "T6_FRAMEIO_WEBHOOK_SECRET": FRAMEIO_SECRET,
+            "T6_FRAMEIO_WORKER_SECRET": FRAMEIO_WORKER_SECRET,
+            "T6_REVIEW_QUIET_SECONDS": "120",
+        }
         queue = JobQueue(Path(self.directory.name) / "env.sqlite3", self.clock)
         app = WebhookApp(queue, ServerConfig.from_env(environ), self.clock)
-        app.public(frameio_request(self.clock, comment("c1")))
+        body = {"comment_id": "c1", "file_id": "f1", "frameio_project_id": "fp1", "user_id": "u1", "created_at": "2026-11-12T10:00:00Z"}
+        headers = {"Authorization": f"Bearer {FRAMEIO_WORKER_SECRET}"}
+        self.assertEqual(app.tailnet(Request("POST", "/review/timers", headers, json.dumps(body).encode())).status, 200)
         self.clock.advance(119)
         self.assertIsNone(queue.claim("main", 60))
         self.clock.advance(1)

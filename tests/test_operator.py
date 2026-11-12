@@ -416,9 +416,12 @@ class DeliveryTests(OperatorTestCase):
         none = configured_handlers(env, settings, InProcess(self.app))
         self.assertEqual(none, {})
         wired = configured_handlers(
-            {**env, "T6_GATEWAY_URL": "http://gw", "T6_GATEWAY_SECRET": "g"}, settings, InProcess(self.app)
+            {**env, "T6_GATEWAY_URL": "http://gw", "T6_GATEWAY_SECRET": "g", "T6_REVIEW_CHAT": "-100"},
+            settings,
+            InProcess(self.app),
         )
         self.assertIn("operator.deliver", wired["main"])
+        self.assertIn("frameio.review_done", wired["main"])
 
     def test_project_start_taps_still_queue_a_tap_job_with_the_projects_t6_id(self) -> None:
         project = self.new("ABC", "in", page=PAGE_A)
