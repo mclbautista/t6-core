@@ -10,7 +10,8 @@
   `submit` reads it back with `result`.
 - Quiet-period timers live in the database, so they survive a restart. Each
   `arm_timer` call pushes the fire time out; when it passes, the timer becomes
-  one job carrying how many times it was armed.
+  one job carrying how many times it was armed. A caller can also give the time
+  of each call (`at`); the job then carries the first and the last of them.
 
 Time comes from a `clock` callable (seconds since the epoch), so tests use a
 fake clock. Every operation opens its own connection and runs in one
@@ -61,6 +62,8 @@ CREATE TABLE IF NOT EXISTS timers (
     payload TEXT NOT NULL,
     fire_at REAL NOT NULL,
     count INTEGER NOT NULL,
+    first_at REAL,
+    last_at REAL,
     PRIMARY KEY (queue, key)
 );
 CREATE TABLE IF NOT EXISTS seen (
@@ -123,6 +126,11 @@ class JobQueue:
             for statement in _SCHEMA.split(";"):
                 if statement.strip():
                     db.execute(statement)
+            # Timers stored before first_at/last_at existed: add the columns.
+            have = {row[1] for row in db.execute("PRAGMA table_info(timers)")}
+            for column in ("first_at", "last_at"):
+                if column not in have:
+                    db.execute(f"ALTER TABLE timers ADD COLUMN {column} REAL")
 
     @property
     def max_attempts(self) -> int:
@@ -293,11 +301,15 @@ class JobQueue:
         quiet_seconds: float,
         payload: Mapping[str, JsonValue] | None = None,
         event_key: str | None = None,
+        at: float | None = None,
     ) -> bool:
         """Start or reset the timer `key`; it fires `quiet_seconds` after the last call.
 
         When it fires it becomes one job whose payload is `payload` from the
         last call plus `count`, the number of calls since it started. Pass
+        `at`, the caller's own time for this call (not the server clock), and
+        the payload also gets `first_at` and `last_at`: the first call's `at`
+        and the latest call's `at`. Pass
         `event_key` to ignore a redelivered event: a key seen before changes
         nothing and the call returns False.
         """
@@ -312,11 +324,12 @@ class JobQueue:
                 if not added:
                     return False
             db.execute(
-                "INSERT INTO timers (queue, key, kind, payload, fire_at, count) "
-                "VALUES (?, ?, ?, ?, ?, 1) ON CONFLICT (queue, key) DO UPDATE SET "
+                "INSERT INTO timers (queue, key, kind, payload, fire_at, count, first_at, last_at) "
+                "VALUES (?, ?, ?, ?, ?, 1, ?, ?) ON CONFLICT (queue, key) DO UPDATE SET "
                 "kind = excluded.kind, payload = excluded.payload, "
-                "fire_at = excluded.fire_at, count = count + 1",
-                (queue, key, kind, json.dumps(dict(payload or {})), now + quiet_seconds),
+                "fire_at = excluded.fire_at, count = count + 1, "
+                "first_at = COALESCE(first_at, excluded.first_at), last_at = excluded.last_at",
+                (queue, key, kind, json.dumps(dict(payload or {})), now + quiet_seconds, at, at),
             )
             return True
 
@@ -355,11 +368,13 @@ def _insert_job(
 
 def _promote_timers(db: sqlite3.Connection, now: float, only_queue: str | None = None) -> int:
     due = db.execute(
-        "SELECT queue, key, kind, payload, fire_at, count FROM timers "
+        "SELECT queue, key, kind, payload, fire_at, count, first_at, last_at FROM timers "
         "WHERE fire_at <= ? AND (? IS NULL OR queue = ?)", (now, only_queue, only_queue)
     ).fetchall()
-    for queue, key, kind, payload, fire_at, count in due:
+    for queue, key, kind, payload, fire_at, count, first_at, last_at in due:
         body = {**json.loads(payload), "count": count}
+        if first_at is not None:
+            body["first_at"], body["last_at"] = first_at, last_at
         # The fire time is in the key: one timer key can fire again later, once per run.
         _insert_job(db, queue, kind, f"timer:{key}:{fire_at!r}", body, now, now)
         db.execute("DELETE FROM timers WHERE queue = ? AND key = ?", (queue, key))

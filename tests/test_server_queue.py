@@ -154,6 +154,46 @@ class TimerTests(unittest.TestCase):
         assert claim is not None
         self.assertEqual(claim.payload["count"], 1)
 
+    def test_timer_carries_the_first_and_last_call_times(self) -> None:
+        self.queue.arm_timer("main", "k", "x", 100, at=1000.0)
+        self.clock.advance(50)
+        self.queue.arm_timer("main", "k", "x", 100, at=1050.0)
+        self.clock.advance(30)
+        self.queue.arm_timer("main", "k", "x", 100, at=1080.0)
+        self.clock.advance(100)
+        claim = self.queue.claim("main", 60)
+        assert claim is not None
+        self.assertEqual(dict(claim.payload), {"count": 3, "first_at": 1000.0, "last_at": 1080.0})
+
+    def test_redelivered_event_keeps_the_call_times(self) -> None:
+        self.queue.arm_timer("main", "k", "x", 100, event_key="c1", at=1000.0)
+        self.queue.arm_timer("main", "k", "x", 100, event_key="c2", at=1010.0)
+        self.assertFalse(self.queue.arm_timer("main", "k", "x", 100, event_key="c2", at=9999.0))
+        self.clock.advance(100)
+        claim = self.queue.claim("main", 60)
+        assert claim is not None
+        self.assertEqual(dict(claim.payload), {"count": 2, "first_at": 1000.0, "last_at": 1010.0})
+
+    def test_timer_stored_before_the_call_times_existed_still_fires(self) -> None:
+        import sqlite3
+
+        db = sqlite3.connect(self.path)
+        db.execute("DROP TABLE timers")
+        db.execute(
+            "CREATE TABLE timers (queue TEXT NOT NULL, key TEXT NOT NULL, kind TEXT NOT NULL, "
+            "payload TEXT NOT NULL, fire_at REAL NOT NULL, count INTEGER NOT NULL, "
+            "PRIMARY KEY (queue, key))"
+        )
+        db.execute("INSERT INTO timers VALUES ('main', 'old', 'x', '{}', 5.0, 2)")
+        db.commit()
+        db.close()
+        upgraded = JobQueue(self.path, self.clock)
+        self.clock.advance(10)
+        claim = upgraded.claim("main", 60)
+        assert claim is not None
+        self.assertEqual(dict(claim.payload), {"count": 2})
+        upgraded.arm_timer("main", "new", "x", 10, at=3.0)  # the new columns work after the upgrade
+
 
 if __name__ == "__main__":
     unittest.main()
