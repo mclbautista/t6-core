@@ -12,6 +12,7 @@ import sys
 import threading
 
 from t6.domain.events import JsonValue
+from t6.frameio.requests import ask
 from t6.frameio.worker import ArmReviewTimer, FrameioWorker, Run, Tokens
 from t6.server.queue import DIAGNOSTIC_QUEUE, FRAMEIO_QUEUE
 from t6.worker.client import HttpTransport, QueueClient, Transport, WorkerJob
@@ -62,6 +63,10 @@ class WorkerSettings:
         return cls(environ["T6_SERVER_URL"], environ["T6_WORKER_SECRET"], environ["T6_WORKER_QUEUE"], poll)
 
 
+REVIEW_ASK_SECONDS = 15.0
+"""How long the review message waits for each Frame.io answer: three asks stay inside one 60-second lease."""
+
+
 def _whole_number(environ: Mapping[str, str], name: str, *, required: bool) -> int | None:
     raw = (environ.get(name) or "").strip()
     if not raw:
@@ -110,7 +115,13 @@ def configured_handlers(
         chat = _whole_number(environ, "T6_REVIEW_CHAT", required=True)
         topic = _whole_number(environ, "T6_REVIEW_TOPIC", required=False)
         assert chat is not None
-        review = ReviewMessage(GatewayClient(HttpTransport(gateway_url), gateway_secret), chat, topic)
+        queue = QueueClient(transport, settings.secret)
+        review = ReviewMessage(
+            GatewayClient(HttpTransport(gateway_url), gateway_secret),
+            chat,
+            topic,
+            lambda request: ask(queue, request, timeout=REVIEW_ASK_SECONDS),
+        )
         handlers.update(review.handlers())
     return {"main": handlers} if handlers else {}
 

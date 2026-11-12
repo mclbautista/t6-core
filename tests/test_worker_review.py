@@ -7,7 +7,7 @@ from collections.abc import Mapping
 import json
 from typing import Any
 
-from t6.frameio import FrameioWorker
+from t6.frameio import FrameioRequest, FrameioResult, FrameioWorker, ask
 from t6.frameio.api import FrameioApi
 from t6.frameio.reads import FrameioReads
 from t6.frameio.testing import FakeFrameio, StaticTokens
@@ -49,7 +49,9 @@ class ReviewMessageTests(ServerTestCase):
     def setUp(self) -> None:
         super().setUp()
         self.fake = FakeFrameio()
+        self.fake.add_project("fp1", "Example Show")
         self.fake.add_file("f1", "Cut 1")
+        self.fake.add_share("fp1", "s1", "Cut 1 share", file_ids=("f1",), created_at="2026-11-01T00:00:00Z")
         self.gateway = FakeNotify()
         reads = FrameioReads(FrameioApi(StaticTokens(), self.fake.fetch))
         timers = ReviewTimerClient(InProcess(self.app), FRAMEIO_WORKER_SECRET)
@@ -58,8 +60,14 @@ class ReviewMessageTests(ServerTestCase):
             QueueClient(InProcess(self.app), FRAMEIO_WORKER_SECRET), "frameio", frameio.handlers()
         )
         self.queue_client = QueueClient(InProcess(self.app), WORKER_SECRET)
-        self.review = ReviewMessage(GatewayClient(self.gateway, "secret"), CHAT)
+        self.review = ReviewMessage(GatewayClient(self.gateway, "secret"), CHAT, None, self.ask)
         self.worker = Worker(self.queue_client, "main", self.review.handlers())
+
+    def ask(self, request: FrameioRequest) -> FrameioResult:
+        def serve(seconds: float) -> None:
+            self.frameio_worker.run_once()
+
+        return ask(self.queue_client, request, timeout=3, clock=iter(range(100)).__next__, sleep=serve)
 
     def comment(self, comment_id: str, author: str, author_id: str, at: str, file_id: str = "f1") -> None:
         """Frame.io has the comment; its webhook arrives and the Frame.io worker handles it."""
@@ -144,7 +152,7 @@ class ReviewMessageTests(ServerTestCase):
         self.assertNotIn("topic", message)  # General: Telegram rejects message_thread_id 1
         self.assertEqual(message["format"], "html")
         gateway = FakeNotify()
-        in_topic = Worker(self.queue_client, "main", ReviewMessage(GatewayClient(gateway, "s"), CHAT, 7).handlers())
+        in_topic = Worker(self.queue_client, "main", ReviewMessage(GatewayClient(gateway, "s"), CHAT, 7, self.ask).handlers())
         self.comment("c2", "Ben Cruz", "u-b", "2026-11-12T11:00:00Z")
         self.clock.advance(15 * MINUTE)
         while in_topic.run_once():
@@ -189,6 +197,76 @@ class ReviewMessageTests(ServerTestCase):
         self.clock.advance(15 * MINUTE)
         self.run_worker()
         self.assertEqual(self.gateway.texts(), [])
+
+    def one_message(self) -> str:
+        self.clock.advance(15 * MINUTE)
+        self.run_worker()
+        (text,) = self.gateway.texts()
+        return text
+
+    def test_the_message_has_the_title_the_asset_link_and_the_total_from_everyone(self) -> None:
+        self.comment("c1", "Ana Reyes", "u-a", "2026-11-12T10:00:00Z")
+        self.fake.add_comment("f1", "c9", "text", "Ben Cruz", author_id="u-b")
+        text = self.one_message()
+        self.assertIn("finished commenting on <b>Cut 1</b>", text)
+        self.assertIn('<a href="https://next.frame.io/file/f1">open in Frame.io (sign in)</a>', text)
+        self.assertIn("1 comment from them, 2 on the file in total", text)
+
+    def test_the_title_and_the_link_are_escaped(self) -> None:
+        self.fake.files["f1"]["name"] = "Cut <1> & more"
+        self.fake.files["f1"]["view_url"] = 'https://x.example/?a=1&b="2"'
+        self.comment("c1", "Ana Reyes", "u-a", "2026-11-12T10:00:00Z")
+        text = self.one_message()
+        self.assertIn("<b>Cut &lt;1&gt; &amp; more</b>", text)
+        self.assertIn('<a href="https://x.example/?a=1&amp;b=&quot;2&quot;">', text)
+
+    def test_the_share_link_is_the_newest_live_share_that_holds_the_file(self) -> None:
+        add = self.fake.add_share
+        add("fp1", "s2", "newer", file_ids=("f1", "f2"), created_at="2026-11-05T00:00:00Z")
+        add("fp1", "s3", "off", enabled=False, file_ids=("f1",), created_at="2026-11-09T00:00:00Z")
+        add("fp1", "s4", "expired", expiration="2020-01-01T00:00:00Z", file_ids=("f1",), created_at="2026-11-09T00:00:00Z")
+        add("fp1", "s5", "other file", file_ids=("f2",), created_at="2026-11-10T00:00:00Z")
+        self.comment("c1", "Ana Reyes", "u-a", "2026-11-12T10:00:00Z")
+        text = self.one_message()
+        self.assertIn('Share link: <a href="https://f.io/s2">https://f.io/s2</a>', text)
+        self.assertEqual(text.count("https://f.io/"), 2)  # one link: its href and its label
+
+    def test_with_no_matching_share_the_message_says_so_and_keeps_the_asset_link(self) -> None:
+        self.fake.shares["fp1"].clear()
+        self.comment("c1", "Ana Reyes", "u-a", "2026-11-12T10:00:00Z")
+        text = self.one_message()
+        self.assertIn("Share link: no share link", text)
+        self.assertIn("https://next.frame.io/file/f1", text)
+
+    def test_when_frameio_cannot_answer_the_job_is_tried_again_and_the_last_try_sends_unknown(self) -> None:
+        self.comment("c1", "Ana Reyes", "u-a", "2026-11-12T10:00:00Z")
+        self.clock.advance(15 * MINUTE)
+        self.fake.refuse_next(500, times=30)
+        self.run_worker()
+        self.assertEqual(self.gateway.texts(), [])  # first try: retried, not sent
+        self.clock.advance(31)
+        self.run_worker()
+        self.assertEqual(self.gateway.texts(), [])
+        self.clock.advance(31)
+        self.run_worker()
+        (text,) = self.gateway.texts()
+        self.assertIn("finished commenting on <b>unknown</b>", text)
+        self.assertIn("Share link: unknown", text)
+        self.assertIn("Frame.io link: unknown", text)
+        self.assertIn("unknown on the file in total", text)
+        self.assertIn("<b>Ana Reyes</b>", text)
+
+    def test_the_second_try_sends_the_whole_message_when_frameio_is_back(self) -> None:
+        self.comment("c1", "Ana Reyes", "u-a", "2026-11-12T10:00:00Z")
+        self.clock.advance(15 * MINUTE)
+        self.fake.refuse_next(500, times=3)
+        self.run_worker()
+        self.assertEqual(self.gateway.texts(), [])
+        self.clock.advance(31)
+        self.run_worker()
+        (text,) = self.gateway.texts()
+        self.assertIn("<b>Cut 1</b>", text)
+        self.assertNotIn("unknown", text)
 
     def test_the_review_job_needs_its_times_and_count(self) -> None:
         self.queue.submit("main", "frameio.review_done", "bad", {"file_id": "f1"})
