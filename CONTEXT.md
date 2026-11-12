@@ -28,7 +28,7 @@ Modelled in `t6.drives`.
 - The **OCF Drive Planner** keeps its name. It plans storage for original
   camera files and is not about Drive records.
 - **DriveStore**: the interface where Drive records live. The custodian's web
-  app implements it; `t6.drives.testing.InMemoryDriveStore` is the fake for
+  app (spec: mclbautista/t6-drives#1) implements it; `t6.drives.testing.InMemoryDriveStore` is the fake for
   tests.
 - **Custody event**: one entry in a Drive's append-only custody log: received,
   released, returned or retired, with date, the Contact or Studio involved, the
