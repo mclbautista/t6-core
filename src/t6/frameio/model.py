@@ -86,6 +86,9 @@ class ShareLink(_Json):
     enabled: bool = False
     expires_at: datetime | None = None
     last_viewed_at: datetime | None = None
+    created_at: datetime | None = None
+    file_ids: tuple[str, ...] = ()
+    """The files the share was made from (Frame.io's `asset_ids`). A share of a folder lists the folder."""
 
     def live(self, now: datetime) -> bool:
         """A client can open it now: it is turned on and has not expired."""
@@ -101,12 +104,14 @@ class ShareLink(_Json):
             enabled=raw.get("enabled") is True,
             expires_at=_time(raw.get("expiration")),
             last_viewed_at=_time(raw.get("last_viewed_at")),
+            created_at=_time(raw.get("inserted_at") or raw.get("created_at")),
+            file_ids=tuple(str(item) for item in raw.get("asset_ids") or () if item),
         )
 
     @classmethod
     def from_json(cls, raw: Mapping[str, Any]) -> ShareLink:
-        times = {name: _time(raw.get(name)) for name in ("expires_at", "last_viewed_at")}
-        return cls(**{**raw, **times})
+        times = {name: _time(raw.get(name)) for name in ("expires_at", "last_viewed_at", "created_at")}
+        return cls(**{**raw, **times, "file_ids": tuple(raw.get("file_ids") or ())})
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -134,6 +139,23 @@ class Comment(_Json):
     def from_json(cls, raw: Mapping[str, Any]) -> Comment:
         times = {name: _time(raw.get(name)) for name in ("created_at", "completed_at")}
         return cls(**{**raw, **times})
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FrameioFile(_Json):
+    """One Frame.io file. `url` is the internal link a signed-in person opens."""
+
+    id: str
+    name: str
+    url: str | None = None
+
+    @classmethod
+    def from_api(cls, raw: Mapping[str, Any]) -> FrameioFile:
+        return cls(id=str(raw["id"]), name=str(raw.get("name") or ""), url=_text(raw.get("view_url")))
+
+    @classmethod
+    def from_json(cls, raw: Mapping[str, Any]) -> FrameioFile:
+        return cls(**raw)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

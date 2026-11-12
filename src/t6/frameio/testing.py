@@ -74,9 +74,13 @@ class FakeFrameio:
         enabled: bool = True,
         expiration: str | None = None,
         last_viewed_at: str | None = None,
+        created_at: str | None = None,
+        file_ids: tuple[str, ...] = (),
     ) -> None:
         self.shares[project_id].append(
             {
+                "inserted_at": created_at,
+                "asset_ids": list(file_ids),
                 "id": share_id,
                 "name": name,
                 "short_url": f"https://f.io/{share_id}",

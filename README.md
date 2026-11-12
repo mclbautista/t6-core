@@ -704,11 +704,18 @@ if isinstance(result, Ok):
   people and other files have their own timers. When a timer runs out, the
   main worker runs `frameio.review_done` (`t6.worker.review.ReviewMessage`)
   and sends one Telegram message through the gateway's `/notify` to
-  `T6_REVIEW_CHAT` (and `T6_REVIEW_TOPIC` if set) with who commented, when they
-  started and stopped (Manila time) and how many comments they made. It is
-  keyed by the job, so a job that runs twice sends once. A comment the Frame.io
-  worker cannot read yet (Frame.io down, signed out) is tried again every 30
-  seconds, up to five times. Comments by T6 staff count too. No Notion lookup.
+  `T6_REVIEW_CHAT` (and `T6_REVIEW_TOPIC` if set) with the file's title, who
+  commented, when they started and stopped (Manila time), how many comments they
+  made and how many the file has in total, and two links: the newest share
+  that is on, not expired and made from the file (its short URL, or "no share
+  link"), and the internal Frame.io link for signed-in people. No share
+  password. The title, links and share come from the Frame.io worker through
+  the `frameio` queue; when it cannot answer, the job is tried again every 30
+  seconds and the third try sends the message with "unknown" in place of what
+  is missing. The message is keyed by the job, so a job that runs twice sends
+  once. A comment the Frame.io worker cannot read yet (Frame.io down, signed
+  out) is tried again every 30 seconds, up to five times. Comments by T6
+  staff count too. No Notion lookup.
 - **A slow request** holds only the `frameio` queue. The `main` queue keeps
   running, and the caller gets `Failed` at its timeout.
 

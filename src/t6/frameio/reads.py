@@ -24,6 +24,7 @@ from t6.frameio.model import (
     BriefingLink,
     BriefingShow,
     Comment,
+    FrameioFile,
     FrameioProject,
     ResolvedComment,
     ShareLink,
@@ -34,6 +35,7 @@ from t6.frameio.requests import (
     Approvals,
     BriefingFeed,
     Comments,
+    FileInfo,
     FrameioProjects,
     FrameioRequest,
     ResolveComment,
@@ -102,6 +104,8 @@ class FrameioReads:
             return [link.to_json() for link in self.share_links(request.frameio_project_id)]
         if isinstance(request, Comments):
             return [comment.to_json() for comment in self.comments(request.file_id)]
+        if isinstance(request, FileInfo):
+            return self.file_info(request.file_id).to_json()
         if isinstance(request, ResolveComment):
             return self.resolve_comment(request).to_json()
         if isinstance(request, Versions):
@@ -132,6 +136,12 @@ class FrameioReads:
     def comments(self, file_id: str) -> tuple[Comment, ...]:
         rows = self._api.pages(f"{self._account()}/files/{_id(file_id)}/comments", {"include": "owner"})
         return tuple(Comment.from_api(raw, file_id) for raw in rows)
+
+    def file_info(self, file_id: str) -> FrameioFile:
+        data = self._api.get(f"{self._account()}/files/{_id(file_id)}").get("data")
+        if not isinstance(data, dict):
+            raise ValueError(f"Frame.io gave no file {file_id}")
+        return FrameioFile.from_api({"id": file_id, **data})
 
     def resolve_comment(self, request: ResolveComment) -> ResolvedComment:
         """One comment by ID, in the account the webhook named."""

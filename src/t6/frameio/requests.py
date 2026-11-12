@@ -66,6 +66,14 @@ class Comments(_Request):
 
 
 @dataclass(frozen=True, slots=True)
+class FileInfo(_Request):
+    """The title and internal link of one Frame.io file."""
+
+    kind: ClassVar[str] = "frameio.file"
+    file_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class ResolveComment(_Request):
     """Read one comment that a webhook named, to learn its file and its author.
 
@@ -122,6 +130,7 @@ FrameioRequest: TypeAlias = (
     FrameioProjects
     | ShareLinks
     | Comments
+    | FileInfo
     | ResolveComment
     | Versions
     | Approvals
@@ -135,6 +144,7 @@ _BY_KIND: dict[str, type[FrameioRequest]] = {
         FrameioProjects,
         ShareLinks,
         Comments,
+        FileInfo,
         ResolveComment,
         Versions,
         Approvals,
