@@ -127,6 +127,7 @@ Mac mini. Both use only the standard library.
 | `T6_REGISTRY_DB` | Project registry database path, default `t6-registry.sqlite` |
 | `T6_OPERATOR_IDS` | Telegram user IDs allowed to tap operator cards and send `/project`, comma separated; the first receives the cards core starts, and a `/project` card goes to whoever sent it. Unset turns operator actions off |
 | `T6_OPERATOR_DB`, `T6_OPERATOR_TTL_SECONDS` | operator action database, default `t6-operator.sqlite`; how long a card stays live, default 7 days |
+| `T6_REVIEW_QUIET_SECONDS` | server: how long a Frame.io project must have no new comment before the review-done job runs, default 900 (15 minutes); must be a positive number |
 | `T6_GATEWAY_URL`, `T6_GATEWAY_SECRET` | main worker: the Sixto gateway and this module's secret there; turn on delivery of operator cards |
 
 Tests use `t6.server.testing.FakeClock`; no test opens a connection to a
