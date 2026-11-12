@@ -106,14 +106,23 @@ class FakeFrameio:
         for file_id in file_ids:
             self.files[file_id]["parent_id"] = stack_id
 
-    def add_comment(self, file_id: str, comment_id: str, text: str, author: str = "Reviewer One") -> None:
+    def add_comment(
+        self,
+        file_id: str,
+        comment_id: str,
+        text: str,
+        author: str = "Reviewer One",
+        *,
+        author_id: str = "u1",
+        created_at: str = "2026-11-02T09:00:00Z",
+    ) -> None:
         self.comments.setdefault(file_id, []).append(
             {
                 "id": comment_id,
                 "file_id": file_id,
                 "text": text,
-                "owner": {"id": "u1", "name": author},
-                "created_at": "2026-11-02T09:00:00Z",
+                "owner": {"id": author_id, "name": author},
+                "created_at": created_at,
                 "completed_at": None,
             }
         )
@@ -164,6 +173,10 @@ class FakeFrameio:
             if match:
                 rows = answer(*match.groups())
                 return (404, {}, {}) if rows is None else self._page(parts.path, query, rows)
+        match = re.fullmatch(r"/comments/([^/]+)", rest)
+        if match:
+            found = [c for rows in self.comments.values() for c in rows if c["id"] == match.group(1)]
+            return (200, {}, {"data": found[0]}) if found else (404, {}, {})
         match = re.fullmatch(r"/files/([^/]+)(/metadata)?", rest)
         if match and match.group(1) in self.files:
             file_id = match.group(1)

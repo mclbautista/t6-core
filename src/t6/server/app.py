@@ -8,13 +8,14 @@ Two listeners, two entry points:
   routes are not reachable from the internet.
 - `WebhookApp.tailnet(request)` is for tailnet peers only. It serves the tap
   endpoint (`POST /tap`, the gateway), the queue routes (`/queue/*`, workers
-  and callers) and the Project registry routes (`/registry/*`).
+  and callers), the Project registry routes (`/registry/*`) and
+  `POST /review/timers` (the Frame.io worker).
 
 The server only answers requests. It never connects to a worker.
 
 Payload shapes below follow the provider documentation as summarised in
 t6-core#13 and are NOT yet checked against live deliveries:
-Frame.io `{"type": "comment.created", "resource": {"id": ...}, "project": {"id": ...}}`
+Frame.io `{"type": "comment.created", "resource": {"id": ...}, "project": {"id": ...}, "account": {"id": ...}}`
 and Notion `{"id", "timestamp", "type": "page.properties_updated",
 "entity": {"id", "type": "page"}, "data": {"updated_properties": [...]}}`.
 Notion's `page.created`, `page.deleted` and `page.undeleted` have the same
@@ -25,6 +26,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import hashlib
 import hmac
 import json
@@ -109,6 +111,8 @@ class Grant:
     """May report Notion sync results and page observations. Changes no Project."""
     operator: bool = False
     """May offer operator cards and deliver them (read a card, record that it was sent)."""
+    review_timer: bool = False
+    """May start review timers (`POST /review/timers`). Only the Frame.io worker needs it."""
     actor: str = ""
     """Who this holder is in the registry's audit history."""
 
@@ -147,7 +151,7 @@ class ServerConfig:
                 )
             )
         if environ.get("T6_FRAMEIO_WORKER_SECRET"):
-            grants.append(Grant(environ["T6_FRAMEIO_WORKER_SECRET"], claim=frameio))
+            grants.append(Grant(environ["T6_FRAMEIO_WORKER_SECRET"], claim=frameio, review_timer=True))
         if environ.get("T6_FRAMEIO_CALLER_SECRET"):
             grants.append(Grant(environ["T6_FRAMEIO_CALLER_SECRET"], submit=frameio))
         if environ.get("T6_DIAGNOSTIC_SECRET"):
@@ -258,23 +262,23 @@ class WebhookApp:
             return Response(200, {"ignored": str(body.get("type"))})
         comment_id = _get(body, "resource", "id")
         project_id = _get(body, "project", "id")
-        if not comment_id or not project_id:
+        account_id = _get(body, "account", "id")
+        if not comment_id or not project_id or not account_id:
             return Response(400, {"error": "comment event without ids"})
         event = FrameioCommentCreated(
             comment_id=comment_id,
             frameio_project_id=project_id,
             source=EventSource.WEBHOOK,
         )
-        # First comment starts the review timer, each comment resets it.
-        counted = self._queue.arm_timer(
-            MAIN_QUEUE,
-            f"frameio.review:{project_id}",
-            JobKind.FRAMEIO_REVIEW_DONE.value,
-            self._config.review_quiet_seconds,
-            {"frameio_project_id": project_id},
-            event_key=event.dedupe_key,
+        # The webhook names only the comment. The Frame.io worker reads it, then starts the
+        # (file, author) review timer. One job per comment, so a redelivery changes nothing.
+        made = self._queue.submit(
+            FRAMEIO_QUEUE,
+            JobKind.FRAMEIO_RESOLVE_COMMENT.value,
+            event.dedupe_key,
+            {"comment_id": comment_id, "account_id": account_id, "frameio_project_id": project_id},
         )
-        return Response(200, {"counted": counted})
+        return Response(200, {"created": made.created})
 
     def _notion(self, request: Request) -> Response:
         body = _json_object(request.body)
@@ -321,7 +325,47 @@ class WebhookApp:
             return answer
         if parts.path.startswith("/operator/"):
             return self._operator_route(parts.path[len("/operator/") :], request)
+        if parts.path == "/review/timers":
+            return self._review_timer(request)
         return Response(404)
+
+    def _review_timer(self, request: Request) -> Response:
+        """Start or restart the quiet timer for one (Frame.io file, commenting user)."""
+        grant = next((g for g in self._config.grants if _same(g.secret, _bearer(request))), None)
+        if grant is None:
+            return Response(401, {"error": "bad secret"})
+        if not grant.review_timer:
+            return Response(403, {"error": "review timers not allowed"})
+        if request.method != "POST":
+            return Response(405)
+        body = _json_object(request.body) or {}
+        texts = {name: body.get(name) for name in ("comment_id", "file_id", "frameio_project_id", "user_id", "created_at")}
+        name = body.get("user_name")
+        if not all(isinstance(value, str) and value.strip() for value in texts.values()) or not (
+            name is None or isinstance(name, str)
+        ):
+            return Response(400, {"error": "comment_id, file_id, frameio_project_id, user_id and created_at are required"})
+        try:
+            moment = datetime.fromisoformat(str(texts["created_at"]))
+        except ValueError:
+            return Response(400, {"error": "created_at must be an ISO 8601 time"})
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        counted = self._queue.arm_timer(
+            MAIN_QUEUE,
+            f"frameio.review:{texts['file_id']}:{texts['user_id']}",
+            JobKind.FRAMEIO_REVIEW_DONE.value,
+            self._config.review_quiet_seconds,
+            {
+                "file_id": texts["file_id"],
+                "frameio_project_id": texts["frameio_project_id"],
+                "user_id": texts["user_id"],
+                "user_name": name,
+            },
+            event_key=f"frameio:review:{texts['comment_id']}",
+            at=moment.timestamp(),
+        )
+        return Response(200, {"counted": counted})
 
     def _dispatch_sync(self) -> None:
         """Queue a `registry.sync` job for every sync intent that has none yet.

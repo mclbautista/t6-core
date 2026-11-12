@@ -19,13 +19,24 @@ import urllib.parse
 from t6.domain import ExternalRef
 from t6.domain.events import JsonValue
 from t6.frameio.api import FrameioApi, FrameioError
-from t6.frameio.model import Approval, BriefingLink, BriefingShow, Comment, FrameioProject, ShareLink, Version, _time
+from t6.frameio.model import (
+    Approval,
+    BriefingLink,
+    BriefingShow,
+    Comment,
+    FrameioProject,
+    ResolvedComment,
+    ShareLink,
+    Version,
+    _time,
+)
 from t6.frameio.requests import (
     Approvals,
     BriefingFeed,
     Comments,
     FrameioProjects,
     FrameioRequest,
+    ResolveComment,
     ShareLinks,
     Versions,
 )
@@ -91,6 +102,8 @@ class FrameioReads:
             return [link.to_json() for link in self.share_links(request.frameio_project_id)]
         if isinstance(request, Comments):
             return [comment.to_json() for comment in self.comments(request.file_id)]
+        if isinstance(request, ResolveComment):
+            return self.resolve_comment(request).to_json()
         if isinstance(request, Versions):
             return [version.to_json() for version in self.versions(request.file_id)]
         if isinstance(request, Approvals):
@@ -119,6 +132,14 @@ class FrameioReads:
     def comments(self, file_id: str) -> tuple[Comment, ...]:
         rows = self._api.pages(f"{self._account()}/files/{_id(file_id)}/comments", {"include": "owner"})
         return tuple(Comment.from_api(raw, file_id) for raw in rows)
+
+    def resolve_comment(self, request: ResolveComment) -> ResolvedComment:
+        """One comment by ID, in the account the webhook named."""
+        path = f"/v4/accounts/{_id(request.account_id)}/comments/{_id(request.comment_id)}"
+        data = self._api.get(path, {"include": "owner"}).get("data")
+        if not isinstance(data, dict):
+            raise ValueError(f"Frame.io gave no comment {request.comment_id}")
+        return ResolvedComment.from_api(data, request.frameio_project_id)
 
     def versions(self, file_id: str) -> tuple[Version, ...]:
         """Every file in the version stack `file_id` is in, or the file alone when it is in none."""

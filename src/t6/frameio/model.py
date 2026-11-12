@@ -137,6 +137,44 @@ class Comment(_Json):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class ResolvedComment(_Json):
+    """One comment read by its own ID: which file it is on and who wrote it."""
+
+    id: str
+    file_id: str
+    frameio_project_id: str
+    author_id: str
+    author_name: str | None
+    created_at: datetime
+
+    @classmethod
+    def from_api(cls, raw: Mapping[str, Any], frameio_project_id: str) -> ResolvedComment:
+        """Raises ValueError when the comment has no file, no author or no time."""
+        owner = raw.get("owner")
+        owner = owner if isinstance(owner, Mapping) else {}
+        file_id = _text(raw.get("file_id")) or _text(raw.get("resource_id"))
+        author_id = _text(owner.get("id"))
+        created_at = _time(raw.get("created_at"))
+        if file_id is None or author_id is None or created_at is None:
+            raise ValueError(f"comment {raw.get('id')} has no file, author or time")
+        return cls(
+            id=str(raw["id"]),
+            file_id=file_id,
+            frameio_project_id=frameio_project_id,
+            author_id=author_id,
+            author_name=_text(owner.get("name")),
+            created_at=created_at,
+        )
+
+    @classmethod
+    def from_json(cls, raw: Mapping[str, Any]) -> ResolvedComment:
+        created = _time(raw.get("created_at"))
+        if created is None:
+            raise ValueError("created_at is missing")
+        return cls(**{**raw, "created_at": created})
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class Version(_Json):
     """One file in a version stack. A file outside a stack is its own only version."""
 

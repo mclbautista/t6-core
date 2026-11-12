@@ -116,6 +116,7 @@ class JobKind(str, Enum):
     """The kinds of work a worker runs. Values are stored in the queue."""
 
     FRAMEIO_REVIEW_DONE = "frameio.review_done"
+    """A person has been quiet for the review time on a Frame.io file. A worker tells the review chat."""
     PROJECT_START_APPROVAL = "project_start.approval"
     PROJECT_START_FOLDERS = "project_start.folders"
     PROJECT_START_FRAMEIO_FOLDERS = "project_start.frameio_folders"
@@ -128,6 +129,8 @@ class JobKind(str, Enum):
     """A Project changed in the registry. A worker shows its current state in Notion."""
     OPERATOR_DELIVER = "operator.deliver"
     """An operator card is new or changed. A worker sends it to Sixto, or edits the one already sent."""
+    FRAMEIO_RESOLVE_COMMENT = "frameio.resolve_comment"
+    """A Frame.io comment was created. The Frame.io worker reads it to learn the file and the author."""
     FRAMEIO_SIGN_IN = "frameio.sign_in"
     """A person signed in to Adobe. Carries the authorization code and state for the Frame.io worker to exchange."""
     TAP = "tap"

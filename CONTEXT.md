@@ -108,5 +108,8 @@ fields, read from Notion) and `t6.registry` (identity).
   A **Frame.io project** is Frame.io's own object, never a T6 Project.
 - **Caller**: any part of T6 that asks the Frame.io worker and waits for the
   result: the main worker, t6-notion-reports.
+- **Review message**: the one Telegram message to the review chat that says a
+  person has finished commenting on a Frame.io file. A **review timer** is
+  kept per (file, commenting person) and restarts on each of their comments.
 - **Sign-in**: a person signing in to Adobe so the Frame.io worker has a
   token again. The **sign-in alert** is the Telegram message with the link.
