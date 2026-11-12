@@ -210,7 +210,7 @@ class ReviewChatConfigTests(ServerTestCase):
 
     def handlers(self, **extra: str) -> dict[str, dict[str, Any]]:
         environ = {**self.ENVIRON, **extra}
-        return configured_handlers(environ, WorkerSettings.from_env(environ), InProcess(self.app))  # type: ignore[return-value]
+        return configured_handlers(environ, WorkerSettings.from_env(environ), InProcess(self.app))
 
     def test_a_main_worker_with_a_gateway_needs_the_review_chat(self) -> None:
         with self.assertRaisesRegex(ConfigError, "T6_REVIEW_CHAT"):
