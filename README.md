@@ -125,7 +125,7 @@ Mac mini. Both use only the standard library.
 | `T6_REGISTRY_READ_SECRET` | registry caller that may only read Projects |
 | `T6_QUEUE_DB`, `T6_PUBLIC_BIND`, `T6_TAILNET_BIND` | database path, listener addresses |
 | `T6_REGISTRY_DB` | Project registry database path, default `t6-registry.sqlite` |
-| `T6_OPERATOR_IDS` | Telegram user IDs allowed to tap operator cards, comma separated; the first receives the cards. Unset turns operator actions off |
+| `T6_OPERATOR_IDS` | Telegram user IDs allowed to tap operator cards and send `/project`, comma separated; the first receives the cards core starts, and a `/project` card goes to whoever sent it. Unset turns operator actions off |
 | `T6_OPERATOR_DB`, `T6_OPERATOR_TTL_SECONDS` | operator action database, default `t6-operator.sqlite`; how long a card stays live, default 7 days |
 | `T6_GATEWAY_URL`, `T6_GATEWAY_SECRET` | main worker: the Sixto gateway and this module's secret there; turn on delivery of operator cards |
 
@@ -397,6 +397,14 @@ back. Two cards:
   (the old page stays as a legacy binding), **Skip** leaves it.
 - An unclassified Project: **In rotation**, **Out of rotation** or **Later**.
   A held code refuses *In rotation* and changes nothing.
+- `/project` in the operator's chat with Sixto lists Projects in rotation;
+  **Historical Projects** switches to the ones that are not. Each is named by its
+  T6 ID. Picking one offers **Put in rotation** or **Take out of rotation**,
+  **Change code** (then send `/project NEWCODE`) and **Clear code**.
+- A Project that cannot enter rotation because another holds its code changes
+  nothing and asks: **Clear this Project's code and enter**, **Change this
+  Project's code**, **Take the holder out of rotation**, or **Cancel**. A
+  reservation never moves without one of these.
 
 A tap changes the registry only from an operator on `T6_OPERATOR_IDS`, from the
 chat and message the card was sent to, once, before the card expires, and only
