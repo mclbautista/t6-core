@@ -64,9 +64,10 @@ _COLUMNS = (
 class Action:
     token: str
     kind: str
-    """`unbound_page` or `classify`."""
+    """`unbound_page`, `classify` or `manage` (a Project's code and rotation)."""
     stage: str
-    """`choose`, `pick` (a Project to bind to), or `done`."""
+    """`choose`, `pick` (a Project to bind to), `project`, `code` (waiting for a typed
+    code), `conflict`, or `done`."""
     state: str
     """`pending`: waiting for a tap. `claimed`: a tap is being carried out. `done`: used."""
     params: Mapping[str, JsonValue]
@@ -215,8 +216,8 @@ class ActionStore:
             action = self._read(db, token)
             if action is None:
                 return Claim("missing", None)
-            if action.state == "done":
-                return Claim("handled", action)
+            if action.state == "done" or (action.state == "pending" and action.claimed_by == tap_key):
+                return Claim("handled", action)  # the second case: this tap already moved the card on
             if action.stage != stage:
                 return Claim("stale", action)
             if action.state == "claimed":
@@ -234,13 +235,18 @@ class ActionStore:
         with self._transaction() as db:
             db.execute("UPDATE actions SET state = 'pending', claimed_by = NULL WHERE token = ? AND state = 'claimed'", (token,))
 
-    def advance(self, token: str, *, stage: str, params: Mapping[str, JsonValue]) -> Action:
-        """Move to the next stage: the card is shown again with new choices and can be tapped again."""
+    def advance(
+        self, token: str, *, stage: str, params: Mapping[str, JsonValue], project_id: str | None = None
+    ) -> Action:
+        """Move to the next stage: the card is shown again with new choices and can be tapped again.
+
+        The tap that moved it stays on record, so the same tap delivered again does nothing more.
+        """
         with self._transaction() as db:
             db.execute(
-                "UPDATE actions SET state = 'pending', claimed_by = NULL, stage = ?, params = ?, version = version + 1 "
-                "WHERE token = ?",
-                (stage, json.dumps(dict(params)), token),
+                "UPDATE actions SET state = 'pending', stage = ?, params = ?, version = version + 1, "
+                "project_id = COALESCE(?, project_id) WHERE token = ?",
+                (stage, json.dumps(dict(params)), project_id, token),
             )
             moved = self._read(db, token)
             assert moved is not None
@@ -259,6 +265,29 @@ class ActionStore:
             assert done is not None
             return done
 
+    def command_seen(self, key: str) -> bool:
+        """True when the command with this delivery key already opened or changed a card."""
+        with self._transaction() as db:
+            row = db.execute(
+                "SELECT 1 FROM actions WHERE offer_key = ? OR (claimed_by = ? AND state != 'claimed')",
+                (f"manage:{key}", key),
+            ).fetchone()
+        return row is not None
+
+    def waiting_for_code(self, operator: int, chat: int, key: str) -> Action | None:
+        """The newest card on which this operator asked to type a code, in this chat.
+
+        A card this same command claimed earlier (a retry after a failure part way) counts too.
+        """
+        with self._transaction() as db:
+            row = db.execute(
+                f"SELECT {_COLUMNS} FROM actions WHERE stage = 'code' AND operator = ? AND chat = ? "
+                "AND (state = 'pending' OR (state = 'claimed' AND claimed_by = ?)) "
+                "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                (operator, chat, key),
+            ).fetchone()
+        return None if row is None else _action(row)
+
     def undelivered(self) -> tuple[Action, ...]:
         """Cards never confirmed in Telegram. Their delivery job may be lost (a restore), so it is queued again."""
         with self._transaction() as db:
@@ -270,11 +299,12 @@ class ActionStore:
         return tuple(_action(row) for row in rows)
 
     def done_for_project(self, project_id: str) -> tuple[Action, ...]:
+        """Used cards about this Project, or that took it out of rotation for another one."""
         with self._transaction() as db:
             rows = db.execute(
-                f"SELECT {_COLUMNS} FROM actions WHERE project_id = ? AND state = 'done' AND result IS NOT NULL "
-                "ORDER BY created_at",
-                (project_id,),
+                f"SELECT {_COLUMNS} FROM actions WHERE (project_id = ? OR json_extract(result, '$.released') = ?) "
+                "AND state = 'done' AND result IS NOT NULL ORDER BY created_at",
+                (project_id, project_id),
             ).fetchall()
         return tuple(_action(row) for row in rows)
 

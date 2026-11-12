@@ -40,7 +40,7 @@ from t6.domain.events import (
     JsonValue,
 )
 from t6.operator import PREFIX as OPERATOR_PREFIX
-from t6.operator import Card, OperatorService
+from t6.operator import Card, OperatorService, TapResult
 from t6.registry import (
     AuditEntry,
     Changed,
@@ -351,6 +351,8 @@ class WebhookApp:
         key = request.header("idempotency-key") or (body or {}).get("idempotency_key")
         if body is None or not isinstance(key, str) or not key.strip():
             return Response(400, {"error": "tap needs a JSON body and an idempotency key"})
+        if body.get("kind") == "command":
+            return self._operator_command(body, key)
         sender = body.get("from")
         raw = body.get("data")
         data = raw if isinstance(raw, str) else ""
@@ -395,6 +397,26 @@ class WebhookApp:
             message_id=body.get("message_id"),
             tap_key=key,
         )
+        return self._operator_answer(result)
+
+    def _operator_command(self, body: dict[str, Any], key: str) -> Response:
+        """A command the gateway pushed. Only `/project` means something here; the rest is dropped."""
+        if body.get("command") != "project":
+            return Response(200, {"outcome": "ignored"})
+        if self._operator is None:
+            return Response(503, {"error": "operator actions not configured"})
+        sender = body.get("from")
+        who = sender.get("id") if isinstance(sender, dict) else None
+        args = body.get("args")
+        result = self._operator.command(
+            args if isinstance(args, str) else "",
+            operator=who if isinstance(who, int) and not isinstance(who, bool) else None,
+            chat=body.get("chat"),
+            key=key,
+        )
+        return self._operator_answer(result)
+
+    def _operator_answer(self, result: TapResult) -> Response:
         if not result.accepted:
             return Response(503, {"error": result.outcome})
         if result.changed and result.action is not None:
