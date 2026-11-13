@@ -156,7 +156,7 @@ class OpenRouterDecisions:
     def retention(self) -> Retention:
         return self._retention
 
-    def complete(self, request: Request, *, timeout: float) -> Completion:
+    def complete(self, request: Request, *, timeout: float, zdr: bool = False) -> Completion:
         if not isinstance(request, DecisionsRequest):
             raise TypeError("OpenRouterDecisions sends a DecisionsRequest; use OpenAIChat for chat messages")
         headers = {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}

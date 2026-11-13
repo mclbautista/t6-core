@@ -114,7 +114,7 @@ def run(
     waited = False
     while True:
         try:
-            completion: Completion = provider.complete(request, timeout=timeout)
+            completion: Completion = provider.complete(request, timeout=timeout, zdr=task.policy.min_retention == "zdr_enforced")
             break
         except MalformedReply as error:
             # The Decisions transport read the reply but it is off the alpha shape.

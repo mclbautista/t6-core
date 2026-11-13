@@ -21,6 +21,9 @@ NOTION_VERSION = "2026-03-11"
 
 BASE_URL = "https://api.notion.com/v1"
 
+BLOCKS_PER_APPEND = 100
+"""The most blocks Notion accepts in one append request."""
+
 JSON = dict[str, Any]
 
 
@@ -104,6 +107,45 @@ class AsyncNotionClient:
     async def update_page(self, page_id: str, body: JSON) -> JSON:
         """Update a page. A write: never retried on a 5xx or a timeout."""
         return await self._call("PATCH", f"/pages/{page_id}", body, read=False)
+
+    # Blocks
+
+    async def iter_block_children(self, block_id: str, *, page_size: int = 100) -> AsyncIterator[JSON]:
+        """Yield every child block of a page or block, following `next_cursor` page by page.
+
+        Only direct children are returned; a child with `has_children` set is listed by calling this again with its ID.
+        """
+        cursor: str | None = None
+        while True:
+            query = f"?page_size={page_size}" + (f"&start_cursor={cursor}" if cursor else "")
+            data = await self._call("GET", f"/blocks/{block_id}/children{query}", read=True)
+            for block in data.get("results", []):
+                yield block
+            cursor = data.get("next_cursor")
+            if not data.get("has_more") or not cursor:
+                return
+
+    async def list_block_children(self, block_id: str, *, page_size: int = 100) -> list[JSON]:
+        """Every child block of a page or block, across all result pages."""
+        return [block async for block in self.iter_block_children(block_id, page_size=page_size)]
+
+    async def append_block_children(self, block_id: str, children: list[JSON]) -> list[JSON]:
+        """Append blocks after the last child of a page or block and return the created blocks.
+
+        A write: never retried on a 5xx or a timeout. Notion takes at most 100 blocks per request, so a longer
+        list is sent as several requests in order. If a later request fails, the earlier ones have already
+        been saved and the error is raised; read the children back to see how far it got.
+        """
+        created: list[JSON] = []
+        for start in range(0, len(children), BLOCKS_PER_APPEND):
+            data = await self._call(
+                "PATCH",
+                f"/blocks/{block_id}/children",
+                {"children": children[start : start + BLOCKS_PER_APPEND]},
+                read=False,
+            )
+            created.extend(data.get("results", []))
+        return created
 
     # Data sources
 

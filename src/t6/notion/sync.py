@@ -67,6 +67,12 @@ class NotionClient:
     def update_page(self, page_id: str, body: JSON) -> JSON:
         return self._runner.run(self._async.update_page(page_id, body))
 
+    def list_block_children(self, block_id: str, *, page_size: int = 100) -> list[JSON]:
+        return self._runner.run(self._async.list_block_children(block_id, page_size=page_size))
+
+    def append_block_children(self, block_id: str, children: list[JSON]) -> list[JSON]:
+        return self._runner.run(self._async.append_block_children(block_id, children))
+
     def retrieve_data_source(self, data_source_id: str) -> JSON:
         return self._runner.run(self._async.retrieve_data_source(data_source_id))
 

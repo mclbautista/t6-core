@@ -64,6 +64,12 @@ One policy matches a mention to a Contact (`t6.lookup`):
 - **Suggestions**: `suggest_contacts` gives up to 3 candidates at WRatio 60 or
   more, only for a person to choose from. It never decides, links or writes.
 
+## Consumer contract
+
+The rules every app follows to use t6-core (scope, boundary, `t6.domain`,
+Notion IDs, CI enforcement, version pins) are recorded in
+`docs/adr/0002-consumer-contract.md`.
+
 ## Project
 
 A **client show** that T6 works on. Modelled in `t6.domain` (the descriptive
