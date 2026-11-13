@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass, field
 from datetime import date
+from enum import StrEnum
 
 from t6.domain.events import (
     Event,
@@ -30,6 +31,7 @@ __all__ = [
     "Camera",
     "Contact",
     "Deliverable",
+    "Department",
     "Episode",
     "Event",
     "EventSource",
@@ -38,6 +40,7 @@ __all__ = [
     "Job",
     "JobKind",
     "JobOrder",
+    "JobOrderStatus",
     "JsonValue",
     "Machine",
     "NotionEntity",
@@ -196,14 +199,77 @@ class Deliverable(NotionEntity):
     playdate: dt.date | dt.datetime | None = field(default=None, compare=False)
 
 
+class JobOrderStatus(StrEnum):
+    """The Job Order statuses T6 knows. Each value is the status's label in Notion.
+
+    `t6.notion.named` keys them by Notion option ID, so a status renamed in
+    Notion is still found. A status that is not listed here reads as its plain
+    name, a `str`.
+    """
+
+    NEEDS_INTAKE_REVIEW = "Needs Intake Review"
+    PENDING = "Pending"
+    IN_PROGRESS = "In progress"
+    NEEDS_COMPLETION_REVIEW = "Needs Completion Review"
+    DONE = "Done"
+    CANCELLED = "Cancelled"
+
+
+class Department(StrEnum):
+    """The departments T6 knows, by their Notion option label. `MISC` is not a department.
+
+    Notion's own options are the truth (a department added there reads as its plain
+    name, a `str`). Display order and aliases are not part of this class.
+    """
+
+    TOC = "TOC"
+    AE = "AE"
+    OE = "OE"
+    COOR = "COOR"
+    COLOR = "COLOR"
+    VFX = "VFX"
+    SOUND = "SOUND"
+    ADMIN = "ADMIN"
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class JobOrder(NotionEntity):
-    """A unit of work on a Project, raised for a department."""
+    """A unit of work on a Project, raised for a department.
 
-    project_id: str | None = field(default=None, compare=False)
+    Carries every Job Orders field the apps use, named in studio terms; the
+    mapping to Notion is in `t6.notion.job_orders`. `name` is the JO's name.
+    Relations are page IDs. `health` is computed by Notion and is read only.
+    `source_text` is the page body, kept as blocks in Notion. `status` and
+    `department` are a `JobOrderStatus` or `Department` when the value is a
+    known one, otherwise the plain option name.
+    """
+
+    number: str | None = field(default=None, compare=False)
     department: str | None = field(default=None, compare=False)
+    date: dt.date | dt.datetime | None = field(default=None, compare=False)
+    deadline: dt.date | dt.datetime | None = field(default=None, compare=False)
+    title: str | None = field(default=None, compare=False)
+    subtitle: str | None = field(default=None, compare=False)
+    task: str | None = field(default=None, compare=False)
+    purpose: str | None = field(default=None, compare=False)
+    source: str | None = field(default=None, compare=False)
+    platform: str | None = field(default=None, compare=False)
+    link_settings: str | None = field(default=None, compare=False)
+    watermark: str | None = field(default=None, compare=False)
+    mode_of_transfer: str | None = field(default=None, compare=False)
+    blocker: str | None = field(default=None, compare=False)
+    pending: str | None = field(default=None, compare=False)
+    notes: str | None = field(default=None, compare=False)
+    watchdog_notes: str | None = field(default=None, compare=False)
     telegram_key: str | None = field(default=None, compare=False)
     status: str | None = field(default=None, compare=False)
+    health: str | None = field(default=None, compare=False)
+    project_id: str | None = field(default=None, compare=False)
+    assigned_ids: tuple[str, ...] = field(default=(), compare=False)
+    cc_ids: tuple[str, ...] = field(default=(), compare=False)
+    coordinator_ids: tuple[str, ...] = field(default=(), compare=False)
+    deliverable_ids: tuple[str, ...] = field(default=(), compare=False)
+    source_text: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

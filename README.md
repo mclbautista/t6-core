@@ -915,6 +915,29 @@ values become a placeholder; URLs stay intact), so no caller can forget it.
 Names are written unchanged. `create_row` and `update_row` compare the
 readback with the withheld text.
 
+### Job Orders
+
+`t6.notion.job_orders.JobOrders(client, data_source_id)` reads and creates Job
+Orders as `t6.domain.JobOrder`, with every field the apps use: number,
+department, date, deadline, title, subtitle, task, purpose, source, platform,
+link settings, watermark, mode of transfer, blocker, pending, notes, watchdog
+notes, telegram key, status, health (read only), the `project_id`,
+`assigned_ids`, `cc_ids`, `coordinator_ids` and `deliverable_ids` relations,
+and `source_text`, the page body. Notion property names stay in
+`t6.notion.generated`. `get(page_id)`, `find_by_telegram_key(key)` and `list()`
+read; `create({...})` writes through the typed write and returns the saved
+`JobOrder`, `Rejected` or `Ambiguous` (a body that could not be saved leaves a
+page, so it is `Ambiguous` with that page ID). The only Job Orders property
+no field carries is `place`.
+
+`status` and `department` are named values (`JobOrderStatus`, `Department` in
+`t6.domain`). `t6 schema-snapshot` records each one's Notion option ID in the
+snapshot (`named_options`), found by matching the live option name once. After
+that an option renamed in Notion is still read and written by ID. A value with
+no ID recorded is sent by its label, and a status or department Notion has but
+t6-core does not know reads as its plain name. `t6 schema-check` reports a
+named value whose option is gone under `named_missing`, as drift.
+
 ### Projects, Contacts and Deliverables
 
 `t6.notion.reads` has `ProjectReader`, `ContactReader` (each with `get` and

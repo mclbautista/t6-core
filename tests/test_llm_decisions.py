@@ -407,6 +407,7 @@ class OpenRouterDecisionsTests(unittest.TestCase):
 
     def test_http_errors_raise_provider_error_without_the_body(self) -> None:
         error = urllib.error.HTTPError("https://openrouter.ai", 500, "boom", Headers(), None)
+        self.addCleanup(error.close)  # an unclosed HTTPError warns when collected, which fails other tests on 3.14
         with self.assertRaises(ProviderError) as caught:
             transport(Recorder(error=error)).complete(two_questions(), timeout=1)
         self.assertEqual(str(caught.exception), "HTTP 500")
@@ -415,6 +416,7 @@ class OpenRouterDecisionsTests(unittest.TestCase):
         headers = Headers()
         headers["Retry-After"] = "3"
         error = urllib.error.HTTPError("https://openrouter.ai", 429, "slow down", headers, None)
+        self.addCleanup(error.close)  # an unclosed HTTPError warns when collected, which fails other tests on 3.14
         with self.assertRaises(RateLimited) as caught:
             transport(Recorder(error=error)).complete(two_questions(), timeout=1)
         self.assertEqual(caught.exception.retry_after, 3)

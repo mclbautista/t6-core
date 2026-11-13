@@ -378,7 +378,9 @@ class RateLimitTest(unittest.TestCase):
         def send(url: str, headers: dict[str, str], body: bytes, timeout: float) -> bytes:
             response_headers = Headers()
             response_headers["Retry-After"] = "7"
-            raise urllib.error.HTTPError(url, 429, "Too Many Requests", response_headers, io.BytesIO(b"echo"))
+            error = urllib.error.HTTPError(url, 429, "Too Many Requests", response_headers, io.BytesIO(b"echo"))
+            self.addCleanup(error.close)  # an unclosed HTTPError warns when collected, which fails other tests on 3.14
+            raise error
 
         provider = OpenAIChat(base_url="https://example.invalid", api_key="k", model="m", send=send)
         with self.assertRaises(RateLimited) as caught:

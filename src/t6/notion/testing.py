@@ -94,6 +94,13 @@ class FakeNotion:
             if page["parent"]["data_source_id"] == data_source_id and name in page["properties"]:
                 page["properties"][new_name] = page["properties"].pop(name)
 
+    def add_option(self, data_source_id: str, name: str, option: str) -> str:
+        """Add an option to a select, multi-select or status property and return its ID."""
+        prop = self._data_sources[data_source_id]["properties"][name]
+        option_id = uuid.uuid4().hex[:8]
+        prop[prop["type"]]["options"].append({"id": option_id, "name": option})
+        return option_id
+
     def rename_option(self, data_source_id: str, name: str, option: str, new_option: str) -> None:
         """Rename a select, multi-select or status option, on every page too. Its ID stays."""
         prop = self._data_sources[data_source_id]["properties"][name]
@@ -280,6 +287,9 @@ class FakeNotion:
                 "page_id" if parent_id in self._pages else "block_id": parent_id}},
             "has_children": bool(nested),
         }
+        for part in (stored.get(stored.get("type", "")) or {}).get("rich_text") or []:
+            if "plain_text" not in part and "text" in part:
+                part["plain_text"] = part["text"]["content"]  # as Notion returns it
         if nested:
             del stored[stored["type"]]["children"]
         self._children.setdefault(parent_id, []).append(stored)
@@ -351,7 +361,7 @@ class FakeNotion:
             for page in self._pages.values()
             if page["parent"]["data_source_id"] == data_source_id
             and not page["in_trash"]
-            and _matches(page, body.get("filter"))
+            and _matches(page, _by_name(self._data_sources[data_source_id], body.get("filter")))
         ]
         size = max(1, min(100, int(body.get("page_size", 100))))
         start = int(body.get("start_cursor") or 0)
@@ -366,6 +376,17 @@ class FakeNotion:
                 "next_cursor": str(start + size) if more else None,
             },
         )
+
+
+def _by_name(source: JSON, query_filter: JSON | None) -> JSON | None:
+    """A copy of the filter with property IDs turned into names, as the fake stores pages by name."""
+    if not query_filter:
+        return query_filter
+    if "and" in query_filter:
+        return {**query_filter, "and": [_by_name(source, part) for part in query_filter["and"]]}
+    ids = {str(prop["id"]): name for name, prop in source["properties"].items() if "id" in prop}
+    prop_key = query_filter.get("property")
+    return {**query_filter, "property": ids.get(str(prop_key), prop_key)} if prop_key else query_filter
 
 
 def _matches(page: JSON, query_filter: JSON | None) -> bool:

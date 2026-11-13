@@ -171,6 +171,17 @@ class NotionModel:
         return cls(page_id=str(page["id"]), **values)
 
     @classmethod
+    def raw_property(cls, page: JSON, attribute: str) -> JSON | None:
+        """The property object of `attribute` on a page, found by ID (else by name), as Notion sent it."""
+        f = cls.notion_fields()[attribute]
+        props: JSON = page.get("properties") or {}
+        for prop in props.values():
+            if isinstance(prop, dict) and f.metadata.get(ID_KEY) and str(prop.get("id")) == f.metadata[ID_KEY]:
+                return prop
+        found = props.get(str(f.metadata[NAME_KEY]))
+        return found if isinstance(found, dict) else None
+
+    @classmethod
     def to_properties(cls, **values: Any) -> JSON:
         """The `properties` body for the given attributes, keyed by property ID.
 
