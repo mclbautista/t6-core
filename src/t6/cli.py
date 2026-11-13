@@ -13,6 +13,7 @@ from datetime import date
 from collections.abc import Callable, Sequence
 import json
 import os
+from importlib import resources
 from importlib.metadata import version
 from pathlib import Path
 import sys
@@ -32,9 +33,9 @@ def _open_notion(token: str) -> NotionClient:
     return NotionClient(token, retry=RetryPolicy())
 
 
-def _fail(message: str) -> int:
+def _fail(message: str, status: int = 2) -> int:
     print(json.dumps({"error": message}), file=sys.stderr)
-    return 2
+    return status
 
 
 def _read_data_sources(path: Path) -> dict[str, str]:
@@ -99,7 +100,7 @@ def _schema_check(
     args: argparse.Namespace, open_notion: Callable[[str], NotionClient]
 ) -> int:
     try:
-        from t6.notion.schema import check_schema, load_snapshot
+        from t6.notion.schema import check_schema, fix_snapshot, load_snapshot
     except ImportError:
         return _fail("schema-check needs the notion extra: pip install 't6[notion]'")
     token = os.environ.get(TOKEN_VARIABLE)
@@ -111,6 +112,17 @@ def _schema_check(
         registry = _open_registry(args.registry_db)
         with open_notion(token) as client:
             report = check_schema(client, snapshot, data_sources, registry)
+        if args.fix_snapshot:
+            target = args.snapshot or Path(str(resources.files("t6.notion").joinpath("schema_snapshot.json")))
+            try:
+                fixed = fix_snapshot(snapshot, report)
+            except ValueError as error:
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+                return _fail(f"snapshot not changed: {error}", 1)
+            target.write_text(json.dumps(fixed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            report["snapshot_fixed"] = str(target)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
     except (OSError, ValueError) as error:
         return _fail(str(error))
     print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -293,6 +305,15 @@ def main(
         type=Path,
         metavar="FILE",
         help="check against this snapshot instead of the bundled one",
+    )
+    check.add_argument(
+        "--fix-snapshot",
+        action="store_true",
+        help=(
+            "rewrite the snapshot (--snapshot, else the bundled one) with the new names after renames, "
+            "then run scripts/generate_models.py; exits 1 and changes nothing when a property was "
+            "added, removed or changed"
+        ),
     )
     refresh = commands.add_parser(
         "schema-snapshot",

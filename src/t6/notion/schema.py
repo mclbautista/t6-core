@@ -29,7 +29,6 @@ if TYPE_CHECKING:
 JSON = dict[str, Any]
 
 
-
 def load_snapshot(path: Path | None = None) -> JSON:
     """Read a schema snapshot: the bundled one, or the file at `path`."""
     if path is not None:
@@ -170,6 +169,74 @@ def check_schema(
         "skipped": [key for key in snapshot["databases"] if key not in data_sources],
         "project_codes": project_codes,
     }
+
+
+def fix_snapshot(snapshot: JSON, report: JSON) -> JSON:
+    """A copy of `snapshot` with property names updated for the renames in `report`.
+
+    `report` is a `check_schema` report. Only renames (same ID, new name) are
+    applied. A property added, removed or changed in type, or a database that
+    could not be read, raises ValueError and nothing is returned: that needs a
+    t6-core change, not a snapshot refresh.
+    """
+    refused = [
+        key
+        for key, database in report["databases"].items()
+        if database["status"] != "ok"
+    ]
+    if refused:
+        raise ValueError(
+            f"not only renames in: {', '.join(refused)}; a property was added, removed or changed"
+        )
+    fixed: JSON = copy.deepcopy(snapshot)
+    for key, database in report["databases"].items():
+        by_name = {str(prop["name"]): prop for prop in fixed["databases"][key]["properties"]}
+        for rename in database["renamed"]:
+            by_name[rename["from"]]["name"] = rename["to"]
+    return fixed
+
+
+def drift_markdown(report: JSON) -> str:
+    """The drift in a `check_schema` report as Markdown for an issue, or "" when there is none.
+
+    Lists database keys, property names and types, and nothing else: no option
+    names, Project Codes or IDs. The Projects audit is left out; it needs the
+    registry, which a scheduled run does not have.
+    """
+    lines: list[str] = []
+    for key, database in sorted(report["databases"].items()):
+        if database["status"] == "ok":
+            continue
+        lines.append(f"### {key}")
+        if database["status"] == "error":
+            lines.append(f"- could not be read (HTTP {database['error']['status']}, {database['error']['code']})")
+            continue
+        lines += [f"- added: `{p['name']}` ({p['type']})" for p in database["added"]]
+        lines += [f"- removed: `{p['name']}` ({p['type']})" for p in database["removed"]]
+        lines += [
+            f"- type changed: `{p['name']}` ({p['snapshot_type']} to {p['live_type']})"
+            for p in database["changed"]
+        ]
+        lines += [
+            f"- named value no longer an option: {m['attribute']} {m['value']}"
+            for m in database.get("named_missing", [])
+        ]
+    if not lines:
+        return ""
+    renamed = [
+        f"- `{rename['from']}` to `{rename['to']}` ({key})"
+        for key, database in sorted(report["databases"].items())
+        for rename in database.get("renamed", [])
+    ]
+    body = ["Live Notion no longer matches the schema snapshot.", "", *lines]
+    if renamed:
+        body += ["", "Renamed (no drift; `t6 schema-check --fix-snapshot` updates the names):", *renamed]
+    body += [
+        "",
+        "A deleted or new property needs a t6-core change, then `t6 schema-snapshot` and "
+        "`scripts/generate_models.py`.",
+    ]
+    return "\n".join(body) + "\n"
 
 
 def _error(source: str, error: NotionError) -> JSON:

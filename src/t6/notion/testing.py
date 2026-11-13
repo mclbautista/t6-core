@@ -14,7 +14,9 @@ so tests run the real client code with no network:
 
 A data source added with properties works like Notion's: a write that names a
 property the data source does not have fails with 400, and a select or
-multi-select value that is not yet an option is added as an option. Write
+multi-select value that is not yet an option is added as an option. A status
+value that is not an option fails with 400, because Notion never creates a
+status option on a write. Write
 bodies need no `type` keys; the fake adds them so pages read back like
 Notion's. `add_snapshot_data_source` builds such a data source from the
 committed schema snapshot.
@@ -329,6 +331,8 @@ class FakeNotion:
                         )
                         if known is None and "id" in option:
                             return _error(400, "validation_error", f"{name} has no option {option['id']}.")
+                        if known is None and kind == "status":
+                            return _error(400, "validation_error", f"{name} has no status option {option['name']!r}; Notion never creates one on a write.")
                         if known is None:
                             known = {"id": uuid.uuid4().hex[:8], "name": option["name"]}
                             options.append(known)
