@@ -73,6 +73,29 @@ ADMIN, then any other Department A to Z, then none) and the alias `TO` for
 `TOC`. MISC is not a Department. A token that matches no live option is an
 `UnknownDepartment`, never a guess.
 
+## Job Order rules
+
+`t6.domain.job_order_rules`.
+
+- **Header**: `<PROJECT> - <DEPT> - JO #<N>`. The number part accepts `JO #74`,
+  `JO No. 15`, `#0155`, `JOB ORDER 27`, `JO01` and `JOB ORDER - 033`; digits
+  are kept as posted. A `JO CODE:` label and a stray leading backslash are
+  dropped. The **canonical Name** rebuilds the header; the first line is the
+  fallback.
+- **Numbering key**: one JO counter per Project, shared by every Department.
+  The duplicate key is `<project page ID>|<number>`.
+- **JO ID** (in reports): `<code>#<number>`, one "#"; several Projects joined
+  with "/"; no Project is "no project"; no number is "#?".
+- **Telegram Key**: `<chat_id>:<message_id>`.
+- **Deliverable codes**: FTR (feature), TLR (trailer), TSR (teaser), SHR
+  (short), EpXX and EpXX-XX (episodes).
+- **Formatter defaults**: Watermark is "none"; Link Settings travels with Mode
+  of Transfer; MFG shuttle drives are `MFG Shuttle 01` to `04`, never 05.
+- **Status groups**: not started (Needs Intake Review, Pending), started (In
+  progress, Needs Completion Review, Done), cancelled. Active means not Done
+  and not Cancelled.
+- **Health flags** that show: Blocked, Delayed, Urgent.
+
 ## Project status rules
 
 `t6.domain.project_rules`, over `Project`. Status and Health match by their
