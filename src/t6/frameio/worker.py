@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import hashlib
+import threading
 import time
 from typing import Protocol
 
@@ -76,6 +77,7 @@ class FrameioWorker:
         self._notify = notify
         self._clock = clock
         self._arm_review_timer = arm_review_timer
+        self._lock = threading.Lock()  # the read API runs on other threads; Adobe rotates the refresh token on each use
         self._signed_in = True
         self._alert_pending = False
         self._refresh_at = 0.0  # the first tick refreshes
@@ -92,7 +94,8 @@ class FrameioWorker:
         now = self._clock()
         if self._signed_in and now >= self._refresh_at:
             try:
-                self._tokens.refresh()
+                with self._lock:
+                    self._tokens.refresh()
             except SignInRequired:
                 self._signed_out()
             except Exception:  # noqa: BLE001 - Adobe unreachable is not a lost sign-in
@@ -120,6 +123,28 @@ class FrameioWorker:
             return
         self._alert_pending = False
 
+    @property
+    def signed_in(self) -> bool:
+        return self._signed_in
+
+    def read(self, request: FrameioRequest) -> JsonValue:
+        """Run one read for the read API (`t6.frameio.readapi`) on the caller's thread.
+
+        Raises SignInRequired when there is no usable token; any other error is
+        Frame.io's or the request's and goes to the caller.
+        """
+        if not self._signed_in:
+            raise SignInRequired(SIGN_IN_NEEDED)
+        try:
+            return self._execute(request)
+        except SignInRequired:
+            self._signed_out()
+            raise
+
+    def _execute(self, request: FrameioRequest) -> JsonValue:
+        with self._lock:
+            return self._run(request)
+
     def _request(self, job: WorkerJob) -> JsonValue:
         if not self._signed_in:
             raise Refused(SIGN_IN_NEEDED)
@@ -128,7 +153,7 @@ class FrameioWorker:
         except (ValueError, TypeError) as error:
             raise Refused(f"bad request: {error}") from error
         try:
-            return self._run(request)
+            return self._execute(request)
         except SignInRequired:
             self._signed_out()
             raise Refused(SIGN_IN_NEEDED) from None
@@ -152,7 +177,7 @@ class FrameioWorker:
         if not self._signed_in:
             raise RuntimeError(SIGN_IN_NEEDED)
         try:
-            found = self._run(request)
+            found = self._execute(request)
         except SignInRequired:
             self._signed_out()
             raise RuntimeError(SIGN_IN_NEEDED) from None
