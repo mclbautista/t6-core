@@ -73,6 +73,20 @@ ADMIN, then any other Department A to Z, then none) and the alias `TO` for
 `TOC`. MISC is not a Department. A token that matches no live option is an
 `UnknownDepartment`, never a guess.
 
+## Coordinators, standing cc and operators
+
+`t6.domain.studio_people`.
+
+- **Coordinator** of a Project: a Contact in its `T6 Post Coordinator`
+  relation (`Project.post_coordinator_ids`). `coordinators` returns them with
+  their Telegram IDs.
+- **Standing cc**: one Contact, set by `T6_STANDING_CC` (a page ID), added to
+  every Job Order's cc. It is tagged in a message only for findings that need
+  their own action: multiple JO, unresolved person, ambiguous person,
+  unresolved Project, unknown Department.
+- **Operator IDs**: Telegram user IDs in `T6_OPERATOR_IDS`. `operator_ids` is
+  the one loader; apps never keep their own list.
+
 ## Consumer contract
 
 The rules every app follows to use t6-core (scope, boundary, `t6.domain`,
