@@ -578,7 +578,11 @@ resolved within one Project; Contacts within the Project team first, then all.
 `Lookup.propose_alias` returns an `AliasWrite` for Notion `Aliases`; it never
 writes. Honorifics and other normalizers are configuration (`Normalizers`).
 The default fuzzy scorer is stdlib-only; set `Policy(scorer=...)` to use
-another.
+another. The exception is `contact`, which follows the studio's matching policy
+(see `CONTEXT.md`) and so scores with rapidfuzz's WRatio: install
+`t6[lookup]`. Without it a Contact lookup that reaches the fuzzy step raises
+`ImportError`. `suggest_contacts(mention, team=)` returns up to 3 Candidates
+for a person to choose from; it never decides.
 
 ### Reusable Project Codes
 
@@ -614,11 +618,12 @@ Install only the adapters an application needs, for example
 | `frameio` | Frame.io integration |
 | `resolve` | DaVinci Resolve integration |
 | `instagantt` | Instagantt export reader |
+| `lookup` | rapidfuzz, for fuzzy Contact matching |
 | `drives` | One-off importer for the legacy drive workbooks |
 | `server` | Webhook server and queue (stdlib only) |
 | `worker` | Job workers (stdlib only) |
 
-The `notion` extra installs `httpx`, the `llm` extra installs `pydantic`, the `resolve` extra installs `psycopg` and the `drives` extra installs `openpyxl`.
+The `notion` extra installs `httpx`, the `llm` extra installs `pydantic`, the `lookup` extra installs `rapidfuzz`, the `resolve` extra installs `psycopg` and the `drives` extra installs `openpyxl`.
 The `privacy`, `instagantt`, `server` and `worker` extras are implemented and
 need no third-party packages. The `frameio` extra holds the
 [Frame.io worker](#frameio) and needs none; its briefing feed also needs the `notion` extra. The `notion` extra does not install Frame.io, Adobe sign-in, or
