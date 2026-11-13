@@ -73,6 +73,24 @@ ADMIN, then any other Department A to Z, then none) and the alias `TO` for
 `TOC`. MISC is not a Department. A token that matches no live option is an
 `UnknownDepartment`, never a guess.
 
+## Studio time and deadlines
+
+`t6.domain.studio_time` and `t6.domain.deadlines`.
+
+- **Manila**: Asia/Manila is the one studio zone (`MANILA`), a fixed UTC+8
+  because it has no daylight saving. Every date shown or compared uses it.
+- **Shift calendar**: three shift reports a day, at 05:00, 11:30 and 19:00
+  (`SHIFT_REPORT_SLOTS`). Each covers the time since the previous one went out.
+- **Deadline**: `deadline(phrase, posted_at, assignees)`. A stated time is used
+  as is; a date with no time means 23:59. "End of shift", "within shift" and
+  "asap" use the latest assignee end of shift at or after posting; a morning
+  end of shift with a stated date rolls to the next day. When no assignee has a
+  fixed shift the deadline is 23:59 with a `shift_fallback` finding. "Asap"
+  adds an `asap` finding. A missing year takes the closest year. Hedges and
+  fillers are stripped. A deadline before posting is kept and flagged
+  `deadline_past`. Anything else is `deadline_unparsed`, never a guess. The
+  base time is the intake posting time.
+
 ## Consumer contract
 
 The rules every app follows to use t6-core (scope, boundary, `t6.domain`,
