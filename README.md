@@ -988,6 +988,26 @@ placeholder variants such as `[PERSON 1 ]` or `person 1`, and restores only
 placeholders the session issued. Any other placeholder-shaped token raises
 `Unresolved` and nothing is restored.
 
+### Masking options and presets
+
+What a task hides is set per task with `MaskOptions`, passed as
+`pseudonymize(text, registry, allow, options)` (or `Session(registry, allow,
+options)`). It takes a `MaskOptions` or a preset name.
+
+| Option | Meaning | `names` | `strict` |
+| --- | --- | --- | --- |
+| `names` | whole registered names, aliases and handles | yes | yes |
+| `name_words` | single words of a person's name (3+ letters, not a month name) | no | yes |
+| `projects` | Project names and codes | yes | yes |
+| `ids` | any ID or link found in the text: Notion and t.me links, `tg://`, UUIDs, `@handles`, runs of 7+ digits | no | yes |
+| `id_restore` | an ID comes back as `"original"` text or as `"[id]"` | original | `[id]` |
+| `ordinary_words` | `"capitalised"`: an ordinary word that is a name word or Project code is hidden only as written capitalised or in capitals | `hidden` | `capitalised` |
+| `skip_trivial` | leave one-character aliases and codes, and Project names under 4 letters or ordinary words | no | yes |
+
+`names` is today's default. `strict` reproduces the notion-reports redactor.
+Registered IDs (`Registry.ids`) are hidden in both. `restore` fails closed on a
+placeholder it did not issue in both.
+
 ## LLM
 
 `t6.llm` runs typed LLM tasks. Install it with `pip install 't6[llm]'`
