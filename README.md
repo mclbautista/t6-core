@@ -1342,13 +1342,15 @@ This is a single-package uv workspace. Install uv, then run:
 ```sh
 uv sync --locked
 uv run --locked mypy
+uv run --locked lint-imports
+uv run --locked deptry src
 uv run --locked python -m unittest discover -s tests -v
 uv build
 ```
 
 The tests exercise the public CLI and build a wheel, then install the base
 package and the Notion extra into separate clean environments without an
-index. CI runs these checks on push and pull request for Python 3.11–3.14.
+index. `lint-imports` enforces the layer contracts in `pyproject.toml` (`t6.domain` imports no other t6 package; `t6.llm`, `t6.lookup` and `t6.privacy` stay clear of Notion, Frame.io and the worker), and `deptry` fails when imports and the declared extras disagree. CI runs these checks on push and pull request for Python 3.11–3.14.
 
 ## Resolve
 
