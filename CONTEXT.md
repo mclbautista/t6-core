@@ -64,6 +64,15 @@ One policy matches a mention to a Contact (`t6.lookup`):
 - **Suggestions**: `suggest_contacts` gives up to 3 candidates at WRatio 60 or
   more, only for a person to choose from. It never decides, links or writes.
 
+## Departments
+
+Job Orders belong to a **Department**. Notion's `Department` options are the
+truth: `t6.notion.departments.get_departments` reads them live, with option
+IDs. t6-core owns the display order (TOC, AE, OE, COOR, COLOR, VFX, SOUND,
+ADMIN, then any other Department A to Z, then none) and the alias `TO` for
+`TOC`. MISC is not a Department. A token that matches no live option is an
+`UnknownDepartment`, never a guess.
+
 ## Consumer contract
 
 The rules every app follows to use t6-core (scope, boundary, `t6.domain`,

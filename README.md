@@ -908,6 +908,19 @@ duplicate page. Options set as `OptionId` are checked by ID, other options by
 name, and dates by instant to the minute, because Notion drops seconds. Pass
 a timezone with a time of day.
 
+### Projects, Contacts and Deliverables
+
+`t6.notion.reads` has `ProjectReader`, `ContactReader` (each with `get` and
+`list`) and `DeliverableReader.for_project`, returning `t6.domain` entities
+addressed by property ID. `Project` carries status, stage, health, playdate,
+submission and archival deadlines, PM and tech notes, `has_post_supe`, and the
+role relations as page IDs (`editor_ids`, `assistant_editor_ids`,
+`online_editor_ids`, `colorist_ids`, `sound_tech_ids`, `post_coordinator_ids`,
+`director_ids`, `cinematographer_ids`). `Contact.end_of_shift` is a time of day
+parsed from "10:00 PM", "10 PM" or "22:00"; "Flexible / Variable", blank and
+any other text are `None`, meaning flexible. `Deliverable` carries
+`deliverable_class` and `playdate`.
+
 ### Schema check
 
 `t6 schema-check` diffs live Notion against the snapshot. It needs the Notion
@@ -924,6 +937,22 @@ The report is JSON. For each database it lists `added`, `removed` and
 `changed` (type) properties, and `renamed` properties (same ID, new name),
 which are information and not drift. Databases without an ID are listed under
 `skipped`.
+
+**Renames and the scheduled check.** `t6 schema-check --fix-snapshot` rewrites
+the snapshot (`--snapshot FILE`, else the bundled one) with the new names after
+renames, then run `scripts/generate_models.py`. If a property was added,
+removed or changed in type, it prints the report, exits 1 and changes nothing:
+that needs a t6-core change.
+
+The workflow `.github/workflows/schema-check.yml` runs the check every day and
+keeps one open issue labelled `schema-drift` titled "Notion schema drift" while
+Notion differs from the snapshot. Add two repository secrets for it (a
+maintainer step): `T6_NOTION_TOKEN`, a read-only Notion integration token with
+access to the databases, and `T6_DATA_SOURCES_JSON`, the data sources JSON
+described above. The issue lists database keys and property names and types:
+added, removed and type-changed properties, plus renames. It holds no secrets,
+option names or Project Codes. The Projects audit is not part of it, because
+the job has no registry file.
 
 **Projects are audited against the registry.** When `projects` is in the data
 sources, `project_codes` compares the Projects pages with the
