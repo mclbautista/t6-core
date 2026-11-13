@@ -12,7 +12,7 @@ from unittest import mock
 
 from t6.cli import main
 from t6.notion.model import NotionModel, OptionId, notion
-from t6.notion.schema import check_schema, refresh_snapshot
+from t6.notion.schema import check_schema, drift_markdown, fix_snapshot, refresh_snapshot
 from t6.notion.testing import FakeNotion, rich_text, select, title
 
 SOURCE = "ds-shows"
@@ -110,6 +110,88 @@ class SchemaCheckIdTests(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertEqual(shows["removed"], [{"name": "Notes", "type": "rich_text"}])
         self.assertEqual(shows["added"], [{"name": "Rack", "type": "rich_text"}])
+
+
+class FixSnapshotTests(unittest.TestCase):
+    def run_fix(self, fake: FakeNotion) -> tuple[int, str, Path]:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        base = Path(directory.name)
+        (base / "ds.json").write_text(json.dumps({"shows": SOURCE}), encoding="utf-8")
+        snapshot = base / "snapshot.json"
+        snapshot.write_text(json.dumps(SNAPSHOT), encoding="utf-8")
+        out = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"T6_NOTION_TOKEN": "secret"}, clear=True),
+            redirect_stdout(out),
+            redirect_stderr(io.StringIO()),
+        ):
+            status = main(
+                ["schema-check", "--data-sources", str(base / "ds.json"), "--snapshot", str(snapshot), "--fix-snapshot"],
+                open_notion=lambda _token: fake.client(),
+            )
+        return status, out.getvalue(), snapshot
+
+    def test_a_rename_updates_the_name_and_keeps_the_id(self) -> None:
+        fake = live_shows()
+        fake.rename_property(SOURCE, "Notes", "Production notes")
+        status, out, snapshot = self.run_fix(fake)
+        self.assertEqual(status, 0)
+        self.assertEqual(json.loads(out)["snapshot_fixed"], str(snapshot))
+        properties = json.loads(snapshot.read_text(encoding="utf-8"))["databases"]["shows"]["properties"]
+        self.assertEqual(properties[1], {"name": "Production notes", "type": "rich_text", "id": "nt"})
+        with fake.client() as client:
+            self.assertTrue(check_schema(client, json.loads(snapshot.read_text(encoding="utf-8")), {"shows": SOURCE})["ok"])
+
+    def test_a_deleted_or_new_property_changes_nothing_and_exits_one(self) -> None:
+        for change in ("remove", "add"):
+            with self.subTest(change=change):
+                fake = live_shows()
+                fake.rename_property(SOURCE, "Notes", "Production notes")
+                if change == "remove":
+                    fake.remove_property(SOURCE, "Stage")
+                else:
+                    fake.add_property(SOURCE, "Rack", "number")
+                status, _, snapshot = self.run_fix(fake)
+                self.assertEqual(status, 1)
+                self.assertEqual(json.loads(snapshot.read_text(encoding="utf-8")), SNAPSHOT)
+
+    def test_a_type_change_is_refused(self) -> None:
+        fake = live_shows()
+        fake.change_property_type(SOURCE, "Notes", "number")
+        with fake.client() as client:
+            report = check_schema(client, SNAPSHOT, {"shows": SOURCE})
+        with self.assertRaises(ValueError):
+            fix_snapshot(SNAPSHOT, report)
+
+
+class DriftMarkdownTests(unittest.TestCase):
+    def markdown(self, fake: FakeNotion) -> str:
+        with fake.client() as client:
+            return drift_markdown(check_schema(client, SNAPSHOT, {"shows": SOURCE}))
+
+    def test_no_drift_and_a_rename_alone_give_an_empty_body(self) -> None:
+        self.assertEqual(self.markdown(live_shows()), "")
+        fake = live_shows()
+        fake.rename_property(SOURCE, "Notes", "Production notes")
+        self.assertEqual(self.markdown(fake), "")
+
+    def test_drift_lists_names_and_types_and_no_ids_or_options(self) -> None:
+        fake = live_shows()
+        fake.add_property(SOURCE, "Rack", "number")
+        fake.remove_property(SOURCE, "Stage")
+        fake.rename_property(SOURCE, "Notes", "Production notes")
+        body = self.markdown(fake)
+        self.assertIn("added: `Rack` (number)", body)
+        self.assertIn("removed: `Stage` (select)", body)
+        self.assertIn("`Notes` to `Production notes`", body)
+        for private in (SOURCE, "Edit", "o1"):
+            self.assertNotIn(private, body)
+
+    def test_an_unreadable_database_is_drift(self) -> None:
+        with FakeNotion().client() as client:
+            body = drift_markdown(check_schema(client, SNAPSHOT, {"shows": SOURCE}))
+        self.assertIn("could not be read", body)
 
 
 class RefreshSnapshotTests(unittest.TestCase):

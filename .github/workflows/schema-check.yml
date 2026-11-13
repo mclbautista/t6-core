@@ -1,0 +1,49 @@
+name: Schema check
+
+# Daily, run `t6 schema-check` against live Notion and keep one open issue,
+# labelled schema-drift, while Notion differs from the snapshot.
+# Needs two repository secrets (Cyril adds them; see the README, "Scheduled schema check"):
+#   T6_NOTION_TOKEN        a read-only Notion integration token
+#   T6_DATA_SOURCES_JSON   JSON object of snapshot database key to live data source ID
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  schema-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync --locked
+      - name: Run schema-check
+        env:
+          T6_NOTION_TOKEN: ${{ secrets.T6_NOTION_TOKEN }}
+          T6_DATA_SOURCES_JSON: ${{ secrets.T6_DATA_SOURCES_JSON }}
+        run: |
+          printf '%s' "$T6_DATA_SOURCES_JSON" > "$RUNNER_TEMP/data-sources.json"
+          # Exit 1 is drift (or the Projects audit, which needs a registry this job lacks); 2 means it could not run.
+          status=0
+          uv run --locked t6 schema-check --data-sources "$RUNNER_TEMP/data-sources.json" > "$RUNNER_TEMP/report.json" || status=$?
+          if [ "$status" -gt 1 ]; then exit "$status"; fi
+          uv run --locked python scripts/schema_drift_issue.py "$RUNNER_TEMP/report.json" > "$RUNNER_TEMP/drift.md"
+      - name: Open or update the drift issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ ! -s "$RUNNER_TEMP/drift.md" ]; then echo "No drift."; exit 0; fi
+          gh label create schema-drift --color B60205 --description "Live Notion differs from the schema snapshot" 2>/dev/null || true
+          number=$(gh issue list --label schema-drift --state open --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue edit "$number" --body-file "$RUNNER_TEMP/drift.md"
+          else
+            gh issue create --label schema-drift --title "Notion schema drift" --body-file "$RUNNER_TEMP/drift.md"
+          fi
