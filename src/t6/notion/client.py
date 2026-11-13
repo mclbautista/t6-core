@@ -15,6 +15,7 @@ from typing import Any
 import httpx
 
 from t6.notion.errors import NotionError
+from t6.privacy.withhold import withhold
 
 NOTION_VERSION = "2026-03-11"
 """The Notion API version every client sends unless told otherwise."""
@@ -53,6 +54,24 @@ class RetryPolicy:
         if retry_after is not None:
             return retry_after
         return float(min(self.max_delay, self.base_delay * 2 ** (retry - 1)))
+
+
+def withheld(value: Any) -> Any:
+    """A copy of a request body with credentials withheld in every text part.
+
+    Rich-text parts (`{"text": {"content": ...}}`) in property values, page
+    bodies and blocks pass through `t6.privacy.withhold`. Names and URLs are
+    left as they are.
+    """
+    if isinstance(value, list):
+        return [withheld(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    out = {key: withheld(item) for key, item in value.items()}
+    text = value.get("text")
+    if value.get("type", "text") == "text" and isinstance(text, dict) and isinstance(text.get("content"), str):
+        out["text"] = {**out["text"], "content": withhold(text["content"]).text}
+    return out
 
 
 class AsyncNotionClient:
@@ -101,12 +120,12 @@ class AsyncNotionClient:
         return await self._call("GET", f"/pages/{page_id}", read=True)
 
     async def create_page(self, body: JSON) -> JSON:
-        """Create a page. A write: never retried on a 5xx or a timeout."""
-        return await self._call("POST", "/pages", body, read=False)
+        """Create a page. A write: never retried on a 5xx or a timeout. Credentials in text are withheld."""
+        return await self._call("POST", "/pages", withheld(body), read=False)
 
     async def update_page(self, page_id: str, body: JSON) -> JSON:
-        """Update a page. A write: never retried on a 5xx or a timeout."""
-        return await self._call("PATCH", f"/pages/{page_id}", body, read=False)
+        """Update a page. A write: never retried on a 5xx or a timeout. Credentials in text are withheld."""
+        return await self._call("PATCH", f"/pages/{page_id}", withheld(body), read=False)
 
     # Blocks
 
@@ -135,7 +154,9 @@ class AsyncNotionClient:
         A write: never retried on a 5xx or a timeout. Notion takes at most 100 blocks per request, so a longer
         list is sent as several requests in order. If a later request fails, the earlier ones have already
         been saved and the error is raised; read the children back to see how far it got.
+        Credentials in the text are withheld.
         """
+        children = withheld(children)
         created: list[JSON] = []
         for start in range(0, len(children), BLOCKS_PER_APPEND):
             data = await self._call(

@@ -908,6 +908,13 @@ duplicate page. Options set as `OptionId` are checked by ID, other options by
 name, and dates by instant to the minute, because Notion drops seconds. Pass
 a timezone with a time of day.
 
+Credentials are withheld in every text t6-core writes to Notion. The client
+passes each rich-text part of a page's properties, its body and appended
+blocks through `t6.privacy.withhold` (labelled `password`, `pin` and similar
+values become a placeholder; URLs stay intact), so no caller can forget it.
+Names are written unchanged. `create_row` and `update_row` compare the
+readback with the withheld text.
+
 ### Projects, Contacts and Deliverables
 
 `t6.notion.reads` has `ProjectReader`, `ContactReader` (each with `get` and
