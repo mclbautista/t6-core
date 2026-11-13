@@ -188,6 +188,15 @@ class DriftMarkdownTests(unittest.TestCase):
         for private in (SOURCE, "Edit", "o1"):
             self.assertNotIn(private, body)
 
+    def test_a_missing_named_value_alone_is_drift(self) -> None:
+        report = {
+            "databases": {
+                "shows": {"status": "drift", "added": [], "removed": [], "changed": [], "renamed": [],
+                          "named_missing": [{"attribute": "status", "value": "DONE"}]}
+            }
+        }
+        self.assertIn("status DONE", drift_markdown(report))
+
     def test_an_unreadable_database_is_drift(self) -> None:
         with FakeNotion().client() as client:
             body = drift_markdown(check_schema(client, SNAPSHOT, {"shows": SOURCE}))

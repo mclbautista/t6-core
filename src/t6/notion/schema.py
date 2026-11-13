@@ -217,6 +217,10 @@ def drift_markdown(report: JSON) -> str:
             f"- type changed: `{p['name']}` ({p['snapshot_type']} to {p['live_type']})"
             for p in database["changed"]
         ]
+        lines += [
+            f"- named value no longer an option: {m['attribute']} {m['value']}"
+            for m in database.get("named_missing", [])
+        ]
     if not lines:
         return ""
     renamed = [
