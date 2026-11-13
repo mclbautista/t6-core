@@ -19,6 +19,7 @@ import json
 import socket
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal, Protocol, TypedDict
@@ -104,7 +105,7 @@ class Provider(Protocol):
     @property
     def retention(self) -> Retention: ...
 
-    def complete(self, request: Request, *, timeout: float) -> Completion: ...
+    def complete(self, request: Request, *, timeout: float, zdr: bool = False) -> Completion: ...
 
 
 # (url, headers, body, timeout) -> response body. Raises urllib or socket errors.
@@ -144,6 +145,8 @@ class OpenAIChat:
     ``base_url`` is the API root, for example ``https://api.deepseek.com`` or
     ``https://openrouter.ai/api/v1``. The API key comes from the app's config.
     ``retention`` is what this endpoint promises; it defaults to ``unknown``.
+    For a ``zdr_enforced`` task on OpenRouter the request also carries
+    ``provider.zdr: true``, which asks OpenRouter for zero data retention.
     Build providers from config with :class:`t6.llm.LLMConfig`.
     """
 
@@ -165,6 +168,7 @@ class OpenAIChat:
         self._retention: Retention = retention
         self._json_mode = json_mode
         self._send = send
+        self._openrouter = urllib.parse.urlparse(base_url).hostname == "openrouter.ai"
 
     @property
     def model(self) -> str:
@@ -174,12 +178,14 @@ class OpenAIChat:
     def retention(self) -> Retention:
         return self._retention
 
-    def complete(self, request: Request, *, timeout: float) -> Completion:
+    def complete(self, request: Request, *, timeout: float, zdr: bool = False) -> Completion:
         if isinstance(request, DecisionsRequest):
             raise TypeError("OpenAIChat sends chat messages; use OpenRouterDecisions for a DecisionsRequest")
         payload: dict[str, Any] = {"model": self._model, "messages": list(request)}
         if self._json_mode:
             payload["response_format"] = {"type": "json_object"}
+        if zdr and self._openrouter:
+            payload["provider"] = {"zdr": True}
         headers = {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
         raw = _post(self._send, self._url, headers, json.dumps(payload).encode(), timeout)
         return _completion(raw, self._model)

@@ -49,6 +49,19 @@ class OpenAIChatTests(unittest.TestCase):
         self.assertEqual(payload["response_format"], {"type": "json_object"})
         self.assertEqual(timeout, 7)
 
+    def test_zdr_task_on_openrouter_asks_for_zero_data_retention(self) -> None:
+        send = Recorder(body())
+        chat = OpenAIChat(base_url="https://openrouter.ai/api/v1", api_key="k", model="m", send=send)
+        chat.complete([], timeout=1, zdr=True)
+        self.assertEqual(send.requests[0][2]["provider"], {"zdr": True})
+
+    def test_no_zdr_flag_without_a_zdr_task_or_on_another_provider(self) -> None:
+        send = Recorder(body())
+        OpenAIChat(base_url="https://openrouter.ai/api/v1", api_key="k", model="m", send=send).complete([], timeout=1)
+        provider(send).complete([], timeout=1, zdr=True)
+        self.assertNotIn("provider", send.requests[0][2])
+        self.assertNotIn("provider", send.requests[1][2])
+
     def test_json_mode_can_be_turned_off(self) -> None:
         send = Recorder(body())
         provider(send, json_mode=False).complete([], timeout=1)

@@ -103,6 +103,13 @@ class DataPolicyTest(unittest.TestCase):
         assert isinstance(result, Ok)
         self.assertEqual(result.value.headline, "Marco Rossi moved it")
 
+    def test_run_tells_the_provider_to_ask_for_zdr_only_on_zdr_tasks(self) -> None:
+        fake = FakeProvider().reply('{"headline": "[person 1] moved it"}').reply('{"label": "it"}')
+        payload, session = notes()
+        run(REPORT, payload, provider=fake, session=session)
+        run(CLASSIFY, ticket(), provider=fake)
+        self.assertEqual([call.zdr for call in fake.calls], [True, False])
+
     def test_zdr_provider_also_meets_a_task_that_accepts_unknown(self) -> None:
         fake = FakeProvider(retention="zdr_enforced").reply('{"label": "it"}')
         self.assertIsInstance(run(CLASSIFY, ticket(), provider=fake), Ok)

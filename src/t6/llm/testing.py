@@ -45,6 +45,8 @@ from t6.llm.transport import (
 class Call:
     request: Request
     timeout: float
+    zdr: bool = False
+    """True when the task's policy is ``zdr_enforced``."""
 
     @property
     def messages(self) -> tuple[Message, ...]:
@@ -114,10 +116,10 @@ class FakeProvider:
         """Scripted steps not used yet."""
         return len(self._script)
 
-    def complete(self, request: Request, *, timeout: float) -> Completion:
+    def complete(self, request: Request, *, timeout: float, zdr: bool = False) -> Completion:
         if not isinstance(request, DecisionsRequest):
             request = tuple(request)
-        self.calls.append(Call(request, timeout))
+        self.calls.append(Call(request, timeout, zdr))
         if not self._script:
             raise AssertionError("FakeProvider has no scripted reply left")
         step = self._script.popleft()
