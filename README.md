@@ -135,6 +135,12 @@ Mac mini. Both use only the standard library.
 Tests use `t6.server.testing.FakeClock`; no test opens a connection to a
 provider.
 
+## Consumer contract
+
+Every app uses t6-core for Notion, LLMs, privacy, Frame.io, Resolve and the
+fleet. The rules are in
+[`docs/adr/0002-consumer-contract.md`](docs/adr/0002-consumer-contract.md).
+
 ## Project registry
 
 `t6.registry` gives every Project a permanent T6 Project ID that does not
