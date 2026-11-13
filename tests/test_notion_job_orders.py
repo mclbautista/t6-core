@@ -177,8 +177,11 @@ class NamedValueTests(unittest.TestCase):
         with fake.client() as client:
             report = check_schema(client, snapshot, {"job_orders": JO})
         self.assertEqual(report["databases"]["job_orders"]["named_missing"], [])  # renamed: found by ID
+        no_ids = load_snapshot()
+        for block in no_ids["databases"]["job_orders"]["named_options"].values():
+            block["values"] = {}
         with fake.client() as client:
-            report = check_schema(client, load_snapshot(), {"job_orders": JO})  # no IDs recorded: by label
+            report = check_schema(client, no_ids, {"job_orders": JO})  # no IDs recorded: by label
         self.assertEqual(
             report["databases"]["job_orders"]["named_missing"], [{"attribute": "status", "value": "DONE"}]
         )

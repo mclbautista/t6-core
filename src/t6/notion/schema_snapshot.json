@@ -1,6 +1,6 @@
 {
   "snapshot_version": 1,
-  "captured": "2026-11-09",
+  "captured": "2026-11-13",
   "notion_version": "2026-03-11",
   "databases": {
     "projects": {
@@ -8,243 +8,680 @@
       "properties": [
         {
           "name": "Archival Deadline",
-          "type": "date"
+          "type": "date",
+          "id": "T%5BAe"
         },
         {
           "name": "Assistant Editor",
-          "type": "relation"
+          "type": "relation",
+          "id": "fw%3CT"
         },
         {
           "name": "Cameras",
-          "type": "relation"
+          "type": "relation",
+          "id": "oI%5CE"
         },
         {
           "name": "Captions Translator",
-          "type": "relation"
+          "type": "relation",
+          "id": "s_%3BO"
         },
         {
           "name": "Capture Resolutions",
-          "type": "multi_select"
+          "type": "multi_select",
+          "id": "ErLd",
+          "options": [
+            "4f8b1fba-c83d-4234-b4a4-b91b2e6a9855",
+            "884ddcff-5af3-415b-8dd3-a619bb8fcfa0",
+            "76500cea-e33c-4e58-897e-4b24079d2ff8",
+            "e5ae5b93-fdf4-4663-bacd-15c1bc353898",
+            "fefcb7e9-e5c0-45e8-ae7f-bb9bb989ab3f",
+            "85349870-79c1-4173-9485-9cdde9166f5e",
+            "190f4391-d6a0-4f77-a853-ce4aa7d349e5",
+            "232d2c70-c934-4785-be2e-66085e0ba4c2",
+            "20fd0c41-1f2e-4309-93bf-748a84fb2251",
+            "6e5c8e6c-3abc-4122-b6e0-460a1c974318"
+          ]
         },
         {
           "name": "Cinematographer",
-          "type": "relation"
+          "type": "relation",
+          "id": "%5DB%5Dy"
         },
         {
           "name": "Colorist",
-          "type": "relation"
+          "type": "relation",
+          "id": "Ol%7BI"
         },
         {
           "name": "Coordinator",
-          "type": "formula"
+          "type": "formula",
+          "id": "fSi%5B"
         },
         {
           "name": "Created time",
-          "type": "created_time"
+          "type": "created_time",
+          "id": "%3EYfT"
         },
         {
           "name": "DaVinci Resolve Version",
-          "type": "select"
+          "type": "select",
+          "id": "%7B%7BTv",
+          "options": [
+            "e43f355e-f15c-4cc5-ac50-a21d77e61878",
+            "0b8aec9a-2957-46af-9dc2-d37ca131fb04",
+            "f91206b3-1255-4751-931f-5fa7e5ce9db6",
+            "d66a9169-0ff4-48c8-a93f-df7067904333"
+          ]
         },
         {
           "name": "Date",
-          "type": "date"
+          "type": "date",
+          "id": "gztA"
         },
         {
           "name": "Deadline Display",
-          "type": "formula"
+          "type": "formula",
+          "id": "KsX%60"
         },
         {
           "name": "Delegate Producer",
-          "type": "relation"
+          "type": "relation",
+          "id": "eANv"
         },
         {
           "name": "Deletion Date",
-          "type": "date"
+          "type": "date",
+          "id": "nT%7Dh"
         },
         {
           "name": "Delivery Format",
-          "type": "multi_select"
+          "type": "multi_select",
+          "id": "U%5Ct%3A",
+          "options": [
+            "]uW}",
+            "ww}~",
+            "x;KZ",
+            "ffde09ed-3662-49af-9881-85846c4ff111",
+            "5da01666-285a-492e-94e8-53af266cabd6",
+            "e1b9d771-c06c-4209-953a-0a67f884b6a8",
+            "0df55660-2d3d-45bb-8cac-2a9bed9fc23d"
+          ]
         },
         {
           "name": "Director",
-          "type": "relation"
+          "type": "relation",
+          "id": "%60i%7DD"
         },
         {
           "name": "Editors",
-          "type": "relation"
+          "type": "relation",
+          "id": "%60u%5BK"
         },
         {
           "name": "Eps",
-          "type": "number"
+          "type": "number",
+          "id": "%3AdT%5D"
         },
         {
           "name": "Facilities Inclusions",
-          "type": "multi_select"
+          "type": "multi_select",
+          "id": "EEek",
+          "options": [
+            "e3da6f65-6f7c-47b9-93e1-e3ee84c5877d",
+            "77da84e7-0b8e-436c-886a-c68368bd9774",
+            "8724569c-d279-4d46-8a36-2fd967edb449",
+            "0a577844-6be6-472d-b9c2-7e91d25cebe2"
+          ]
         },
         {
           "name": "Facilities Inclusions (1)",
-          "type": "multi_select"
+          "type": "multi_select",
+          "id": "I%7C%7Du",
+          "options": [
+            "e3da6f65-6f7c-47b9-93e1-e3ee84c5877d",
+            "77da84e7-0b8e-436c-886a-c68368bd9774",
+            "8724569c-d279-4d46-8a36-2fd967edb449",
+            "0a577844-6be6-472d-b9c2-7e91d25cebe2"
+          ]
         },
         {
           "name": "Has Post Supe?",
-          "type": "select"
+          "type": "select",
+          "id": "Qoay",
+          "options": [
+            "ufwz",
+            "TzSj"
+          ]
         },
         {
           "name": "Health",
-          "type": "select"
+          "type": "select",
+          "id": "KRb%3F",
+          "options": [
+            "F|AJ",
+            "wl?l",
+            "`}n["
+          ]
         },
         {
           "name": "Inclusions",
-          "type": "multi_select"
+          "type": "multi_select",
+          "id": "%3D%3Dyq",
+          "options": [
+            "2e96dd7f-97f6-4369-a5f1-3020f5c857eb",
+            "8461f91d-b1dc-41ca-b220-d26088fb3c5a",
+            "206970fc-05b2-4672-833d-da94af3b3641",
+            "58094e5e-675a-4704-a754-9139d7ee675b",
+            "8264e1d5-5151-4c92-8fc4-b32574b34475",
+            "d2811ca4-fbdf-471b-96b4-ff38be5c2f81",
+            "afa1a3ec-4d06-400a-8219-8765907c0bbb",
+            "ec231cc0-4b6f-40a1-8f81-9f1a5f1ea585",
+            "81d57d7f-5c51-49df-ae3a-d2a13fc99b51",
+            "bb500858-8f46-47d8-b099-324cb0e0e1a6",
+            "c25b0051-48e0-4dae-91b5-333f0f857c83",
+            "dbe7670e-daa2-49c3-922a-3b05599b25fc",
+            "ef0b103d-ea52-4b48-ac6c-bb1d9946f32f",
+            "ddcbea16-d4f6-40f6-9d20-b4bae6ddfe3c",
+            "5ae8db16-bf36-4c87-b7f4-b9c485172d98",
+            "855fdbf8-e1d9-4407-b5b0-e3f030bef33a",
+            "02ba2440-26af-430e-a23d-ef8dd23e366c",
+            "c4b972ed-ba19-42c5-9394-d30fe3c27b3c",
+            "35b9da9d-0c42-4d0e-a9c9-f9e06644b9f4",
+            "5d6d91ca-35aa-4d07-adee-82b94f18d49b",
+            "3781df33-51ec-45b0-9e09-dcebf832a0ec",
+            "2b904016-e7f3-4ba6-8cf1-75cce1e86929",
+            "9cc27663-e963-4057-9b12-e9d6cca970df",
+            "2b561b80-3d4b-4a78-90cb-d9ce7180d54a",
+            "0b00e924-007a-418e-b624-f0e705676ab0",
+            "857603c5-fce2-45ef-be3c-94aa9f02c2f7",
+            "0f6f6635-d576-4e15-b83e-58d2ca27dc19",
+            "922fa5f9-67e9-4a8d-abf8-11c4b4d1784d"
+          ]
         },
         {
           "name": "Label AE (1)",
-          "type": "formula"
+          "type": "formula",
+          "id": "nWNj"
         },
         {
           "name": "Label Editor",
-          "type": "formula"
+          "type": "formula",
+          "id": "SJ%7Bo"
         },
         {
           "name": "Label OE",
-          "type": "formula"
+          "type": "formula",
+          "id": "%5DSB%40"
         },
         {
           "name": "Label PM Notes",
-          "type": "formula"
+          "type": "formula",
+          "id": "IJgM"
         },
         {
           "name": "Label Sound",
-          "type": "formula"
+          "type": "formula",
+          "id": "jf_Y"
         },
         {
           "name": "Label Supe",
-          "type": "formula"
+          "type": "formula",
+          "id": "wFOS"
         },
         {
           "name": "Live Sound Recordist",
-          "type": "relation"
+          "type": "relation",
+          "id": "U%7B%5DH"
         },
         {
           "name": "Main T6 Services ",
-          "type": "multi_select"
+          "type": "multi_select",
+          "id": "LFMd",
+          "options": [
+            "Y_VQ",
+            "avq\\",
+            "@Daj",
+            "v;@I",
+            "?fH`",
+            "42b3fc21-c79d-4068-b6ef-3659052a6a41",
+            "fdea037d-bc40-4b63-9f2f-2458ef7490ee",
+            "07b6b413-ba5e-4c65-b04b-35be78b41d8c",
+            "0717d1f7-6483-4867-a38d-8a4870c6ba28",
+            "62604ebc-4d62-4e67-9d89-73eb51945ea1",
+            "8c0c3d91-867e-46ef-8e60-b170ff2d84c7",
+            "227a7871-5da4-441b-b797-5884c9e7b8ab",
+            "d545f2f9-b111-4ee5-89cb-21e8f79e944e",
+            "6ddd781c-2928-4c56-bc18-b8c48a6d5164",
+            "e1a7e919-57a4-4c27-9e67-12249f3c2cf0"
+          ]
         },
         {
           "name": "Musical Scorer",
-          "type": "relation"
+          "type": "relation",
+          "id": "qV%7Ct"
         },
         {
           "name": "NLE",
-          "type": "multi_select"
+          "type": "multi_select",
+          "id": "%3FC%3AV",
+          "options": [
+            "00c942cd-3c23-4268-92ed-965186403385",
+            "ab766b14-6425-416b-8487-af63523a3dcb",
+            "cc125023-30ac-48f3-9a2f-01077a2e8207",
+            "0e9a3cd8-f29d-4dcd-89a4-0d774795e6f2",
+            "9df8e124-21d4-474a-bbd5-04bd3bb579df",
+            "da239891-a756-418e-bdc1-a37f4ac81c1f",
+            "a9bdcb68-bd7a-4865-b524-3856fabf45da",
+            "7338d2ad-a243-4f01-9315-34106cc7d48a"
+          ]
         },
         {
           "name": "Name",
-          "type": "title"
+          "type": "title",
+          "id": "title"
         },
         {
           "name": "Online Editor",
-          "type": "relation"
+          "type": "relation",
+          "id": "osYe"
         },
         {
           "name": "PM Notes",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "%3FdP%3D"
         },
         {
           "name": "Playdate",
-          "type": "date"
+          "type": "date",
+          "id": "BpTz"
         },
         {
           "name": "Prod Coor/Supe",
-          "type": "relation"
+          "type": "relation",
+          "id": "fcnr"
         },
         {
           "name": "Project Code",
-          "type": "select"
+          "type": "select",
+          "id": "%3CmAp",
+          "options": [
+            "ed156ea9-c09f-4cd3-848b-79816195ee01",
+            "4c4ddbcd-1f7c-42b4-876f-22e419239771",
+            "170670ff-7e19-49db-93a9-4c6a27db2dde",
+            "bfe64910-2a81-45c3-8e87-369dd6b0b6d4",
+            "f6e43953-9668-45bb-8771-15d0010d796f",
+            "09c38ed6-a9e9-486f-8db4-86bf3f7f9460",
+            "67b7e19b-63ad-4a48-819e-403a74e83377",
+            "af206eaf-df41-4fb5-8654-e373e58e689e",
+            "dc8c702c-aaae-4950-8d36-3a4c54d2f0fc",
+            "b79f1793-f312-4f6f-87a5-f66148c86188",
+            "0c25354a-081f-451f-8c16-dca3465ca110",
+            "4d25e231-c8c1-4a2b-8fa7-e7590e1d4a7e",
+            "67f544a9-3d64-444d-b911-f5937ea2d857",
+            "005d95e0-99c0-42da-a001-93b8145aa276",
+            "72ddb26f-9740-468b-8b01-6c7fc804a9a4",
+            "15e650fa-38d1-4f8e-a568-0fa352484355",
+            "a8ab4e87-eafe-4496-9a6b-7426d3bdc7b4",
+            "8df33777-79f1-4415-a16c-8ed7a7b42ddb",
+            "f69ab502-0285-415f-974a-57e37de1ebe1",
+            "ec930878-80cd-4fd2-ba85-8d495cbd920c",
+            "81525e9f-6604-4872-96fb-68d06aeba835",
+            "9a75d487-e984-4753-8ec5-87f65aff59f0",
+            "6ab22f14-f437-4617-a843-2723ca3b4923",
+            "1d16c411-f7f1-4216-bd3b-c0d8e605a74b",
+            "5f0cb6e1-7f5b-4d04-a337-3d1ebe57c510",
+            "0365f472-7e5d-4359-9e55-c4169c6ffe5e",
+            "663e189c-36d8-4f9c-997f-43f5c7a0350e",
+            "6c7908bf-10e1-4be5-9bf4-933ff912dd23",
+            "87def57e-c3d1-4f14-8fbd-4c7afbf46abb",
+            "8458b0a7-8c3f-4823-8d9f-2133fcdf88a2",
+            "5e62a4f2-7b15-48ce-bc44-3f1a220491d6",
+            "39488c3b-a94b-4084-a136-64841a2a4741",
+            "36b69995-1f41-42aa-abff-b29086f108ef",
+            "e6fa0891-33f1-4c87-95d7-fd8c9e3e4a06",
+            "5f08fc7d-34ed-430a-a45c-81b8a64455a2",
+            "0635e372-bdfd-452b-a76b-672dffc95751",
+            "0ab3bc01-3467-428d-baad-0522c37f28e2",
+            "93345472-bd63-4f26-a869-b4b441428d15",
+            "f1b2f271-7b1a-4fe7-8b05-9c1c4237ddc6",
+            "4fe96fee-4b97-4da7-b4a2-b4ea8b118c52",
+            "327e93e2-ab3c-4785-a695-426ba43b0c90",
+            "af41acaa-5f9f-4666-8373-0b7899db914f",
+            "4c2af989-b036-4326-8fb9-a5d76e21d5df",
+            "da17d62e-ed7d-492c-966e-a2664c08e246",
+            "fc98c0c5-3503-4505-81b1-836c9c0e076e",
+            "8851870b-babf-4973-9bca-af28e5c5e31c",
+            "adfe95fd-f162-41ee-893f-ee2efeda54c0",
+            "4d186ac7-ff7a-45e4-a103-adaba12bd70f",
+            "6c219a1a-f022-4677-9037-ece8ab363e3d",
+            "b500aba7-382f-4861-a487-09f55528f1d8",
+            "f2de66a7-bb6b-4003-aa97-c806ca58a601",
+            "e65b8a54-15a1-4c7f-b7b5-0059dd94f946",
+            "74f8c1e4-41ae-4bbd-bd44-1f68a386d57c",
+            "6ed01fb1-ee2a-4e46-bf4e-71616557f627",
+            "ae11a69e-b68c-4679-9302-fa72e39cba4e",
+            "87314ea3-89a3-46b7-9c94-0a78f86dd483",
+            "2dd3f837-8369-4e2c-b8c6-38afff048198",
+            "ab95ca3f-d7aa-407e-be3d-7ce89bb46d3f",
+            "0d0deccf-afba-42c5-a3e3-706db23807d9",
+            "5d873d8a-6325-4e07-b477-203f629d9518",
+            "8a5a0894-d599-4e6b-adad-259596ec4c06",
+            "f6a0b5d5-cd24-4fa1-86b4-5982e8458ad9",
+            "d4efe5e8-beff-4810-80db-1a004954cc26",
+            "1cdf941a-cb1a-454d-bdbb-c00ca65a8508",
+            "95d2d018-4976-4bbb-b693-1771a8273dbd",
+            "2340a9a4-8563-4108-8eb9-4272d9a54577",
+            "98c2eeeb-30ff-4819-801b-bf547ed795c8",
+            "6b331eed-a262-4ea1-97ea-dc044f24483b",
+            "f0b3e669-383e-47bf-8f9d-53afb5106093",
+            "0eac1076-8339-4201-ac5c-ec458f1dd69d",
+            "6f65a984-bba1-4f18-8e34-f17020c94116",
+            "e7352331-d644-43af-bc42-61043ffb2e9a",
+            "6d836bc0-c2a0-4738-9bea-a0e8c9d1db67",
+            "e2ab0d80-cdc9-44cf-8390-5cd60d9ac719",
+            "e297e64d-60cd-497e-9c65-73a839bfa53a",
+            "b2a35943-b5ad-47f7-a20a-a4dfeec18a8d",
+            "e1210a33-d21a-42d8-870f-b76db13f48d0",
+            "a1089796-4167-4340-a04d-54722298438b",
+            "e8717409-4f02-471c-9b57-3d0edeaca745",
+            "50ce6a33-d6b9-41c3-a87a-5a0789ca7545",
+            "fee782e3-a95b-47bd-8648-04baac51c236",
+            "33c142d2-b2c8-4b92-8367-38f9ce6eccf0",
+            "6effd666-fe99-417d-85ed-3c35a50a1942",
+            "865dfff1-890f-44b6-aa84-e32a033cbd19",
+            "bd935978-61f3-43ed-8eb7-79f3ea3efca4",
+            "bbf49ae9-dd22-486d-88dd-0fc59fbced9c",
+            "be94bb2d-af43-4f30-aadd-8b29d2ef7072",
+            "de5c8896-e4b8-450c-9506-fd0f0225d3a4",
+            "0089284d-e6ff-4116-8dff-d362b9c732e7",
+            "00adb230-7ffc-4c4a-b0df-49ae20d1910f",
+            "fad9d5e1-65ee-4a25-957b-99391560bf36",
+            "a486f095-3f84-4703-8bdd-c20f2c999228",
+            "b0d315d0-43c9-447b-8699-9ad7c67dbfd5",
+            "d85f07ed-2fb4-452c-8c32-a97c6dbc3f6a",
+            "7a7b5b3a-1c50-4d31-8f94-9feaf8a286e7",
+            "eb3e6a57-22c4-47a7-82cc-a65473688425",
+            "1b6304ec-fd10-49f7-8645-cb9743f7c47d",
+            "98431565-e4d9-4a3b-b13b-02284f4a7d28",
+            "c6e9039a-0a7e-470c-aa1a-6dee5bc479f8",
+            "fff46ddb-e7de-4c38-8c59-ffe883fe091c",
+            "dd616969-aeba-481f-9182-f2d130b65b78",
+            "12abbabc-36b7-4034-820c-506a110f4278",
+            "698674c6-fd31-4c8b-9950-8368a56b7400",
+            "562bfd9f-7120-4d4e-967f-1b641b28dd7d",
+            "08a775c4-5df8-4a2d-b23c-05b37ca5ac98",
+            "a8275f40-1dd9-4265-a85d-9e3fce02f247",
+            "0c5be7f2-7578-40e1-8ffd-d4101b67b272",
+            "fe74997a-5fa6-40bd-8574-c35b10c16811",
+            "05b50fc4-72e3-428f-b0ab-3c0f92836094",
+            "240dc60e-552f-4b90-bb40-e9af352e9673",
+            "630ac337-9376-4127-be1f-47786e44a63b",
+            "8bf90849-d948-4af1-b905-d08ddb1c9944",
+            "4b2916c1-d56a-4186-ad13-f4d6742b4953",
+            "a597842a-6001-4b30-9b08-2f7ffc0d9677",
+            "4ed63c21-278d-49f3-bb50-b809b7e91896",
+            "b0c407b1-677e-4dbb-a768-23ae4784e81e",
+            "0bdfcf13-94be-40ef-8565-4d4647a8dfda",
+            "b29e7fa1-ff6d-403f-8c02-f00d4774a70d",
+            "e468e406-28fb-49a1-900e-28beb24ac518",
+            "ecd5f7e8-b2ca-4411-8cd2-7ed1b14a5326",
+            "3d12f1b7-07a8-471d-a662-234358237069",
+            "80072827-4d30-48a5-b789-d924bcf546fe",
+            "6bfced2b-f7eb-4ece-a98c-c310d89935a8",
+            "2d65cb72-a2fb-4280-afa5-9c406341f728",
+            "9eb7736f-a1d2-42af-a817-020eec0f9a4c",
+            "360f61a5-d951-454e-b252-a497651a2ca4",
+            "0a03f043-4ef6-486c-a72d-5c1935c919ea",
+            "632f5c94-49ee-4044-94db-5e91ef527921",
+            "083abfd1-befa-400a-b689-50480b2ca505",
+            "2bbed6c9-9106-4ee0-b15f-7864021747da",
+            "8994c57b-64d7-4c56-b6bd-52b0bc1ef797",
+            "18a6386f-3ddf-4f4c-8792-3d5e900697b9",
+            "121a4153-80b4-4afa-b277-8823db66be96",
+            "9ebbccfe-e018-4ef9-a0dd-60d59c64e72a",
+            "a7d799d3-c2c1-4061-8d6d-286dedef73d5",
+            "1265743a-b0f3-48eb-bcbf-bd8b101e6dd6",
+            "73764489-52bc-4680-8c1c-1c5f720c6b11",
+            "e0169b45-2840-4cb4-9511-86f5604f23ff",
+            "cd9ba4ff-feb0-4e76-864b-8ebf68a4609d",
+            "e67a3325-5dae-4eb5-a016-eb48d734f920",
+            "8b05a0b9-240e-4a05-8dbb-767362eb88d8",
+            "2c55c6c3-946c-48ad-836f-98e1c590d007",
+            "9c5cbb68-c0cc-48f6-8824-952b795fe537",
+            "e2e886d7-1409-4106-8428-c9a2c4d0f569",
+            "e2a1bf7c-c095-44ce-ad21-bf9345189ab9",
+            "bfd2905a-fcb2-4eeb-9e6f-d4c26c52fee4",
+            "1e350a22-db03-4cd2-8774-c274f9fcac93",
+            "cb291796-a3df-4bee-95d4-f873a75caea1",
+            "843691a1-ccdf-424f-bc92-5b2fc73096ef",
+            "b8388c41-38ab-49c6-84e5-f4d628db70ab",
+            "c334dfc5-111f-4cd1-9acc-5e40f0ba6766",
+            "cb201faf-3824-4ec0-99f1-8edb7a9fb047",
+            "38bb766d-d400-49e4-80cd-5995b7564627",
+            "bd6e5246-2fd3-43cd-a716-355490342d4d",
+            "a7774ede-1462-4348-922c-b271776309fb",
+            "2e42974f-b3b9-4b17-99f8-b9edeeeed573",
+            "ee3ab772-3d78-47bd-be99-21b021074058",
+            "88b1e10a-9ca5-46e5-853c-2ff332d6a58c",
+            "e9c53908-7e91-432f-b5cd-84d3d93cedeb",
+            "fb640dbc-e972-40a4-b3ea-7fe6ca790abd",
+            "fa913070-763b-42ff-9c17-8a737034b072",
+            "ddb0a9d2-60ad-49b0-aa5b-a115b15e8b96",
+            "b1acfb6f-83b0-48fc-8fbb-c84984ee0844",
+            "a2be8631-e8b4-4ca6-ad60-61bd852c17f0",
+            "9dfa15a1-ecbe-480d-810b-7811f9da789d",
+            "9663886d-8b83-491d-9bce-5be98ecc5852",
+            "fde5f64c-6bcf-48ab-9165-391417a5d198",
+            "a08f842f-757b-498f-a353-14078ebb650d",
+            "5c5a4d7b-e430-4e7a-9805-b29da4497362",
+            "cad34c37-13b3-4c8a-8b8e-514faff415b9",
+            "c51898cb-af98-485e-8dbe-dcc635b2bc59",
+            "42f1c6d9-23c2-4e09-a041-5d9100211b0f",
+            "57008f89-98ea-45a2-9f62-3cd4c483e96d",
+            "cb304cc5-58be-4902-800d-9e8dd5618550",
+            "16022e43-7381-4268-a20a-fc69f8b4379a",
+            "67ba7c13-628a-48a5-b20d-78418816908c",
+            "5e6a2082-f909-447b-a2fb-0f91504eba72",
+            "cc2b3caa-122d-4bc0-842b-c56e38efc278"
+          ]
         },
         {
           "name": "Project Health",
-          "type": "select"
+          "type": "select",
+          "id": "%5CTBO",
+          "options": [
+            "f71acbb8-c760-451d-acef-2d67dcebce19",
+            "cfecbd62-37d8-4232-a631-ba014e16c808",
+            "e21d56c2-800b-40ec-80d8-c47eee183e4e",
+            "4a6fb7d3-8f90-40fa-b0d8-30080a761848"
+          ]
         },
         {
           "name": "Project Type",
-          "type": "select"
+          "type": "select",
+          "id": "seqq",
+          "options": [
+            "31cfee2d-2fff-4130-b110-2023fc8bfce8",
+            "1294ddbe-50ab-4452-9d70-2b46f27942ce",
+            "cfdfc74b-51bc-4185-9ef7-c0368d993cf5",
+            "2d448d1b-b9c3-4b88-a489-2a61ab0c7548",
+            "b4d305d9-e496-4c11-96e1-3943b0a18f02",
+            "9bd289c4-3c46-44ee-8f81-ecfe19271e90",
+            "673884a3-cdc8-4d47-be7e-a128f8ff58f7",
+            "2c36598e-4b45-4ef0-9f6c-34344d850697",
+            "2528b06e-01bb-4522-b3f7-b1dbf4ad22a4",
+            "044ac7d0-212c-4078-8ebe-af1f1d2c058f",
+            "d68586d9-c821-4e9c-b012-1a7893fb418e",
+            "b13f11d7-43da-401f-9d6e-de32d4882f32",
+            "76e5f1d1-b5c4-4e05-bf5b-b813b6d39731",
+            "5f9370a5-e4f6-43ed-9644-86fa0a423f76",
+            "c8f4e7bf-9920-4379-8380-f73576fecaf5",
+            "7c1cb1bd-b069-4c0c-9d95-b0c12b78df9a",
+            "95e6625c-d17c-4598-84e8-19a5f9693903",
+            "5bcd9477-9f68-4260-84be-f8075d77e71c",
+            "fec94972-2e22-4073-9f78-1e05f061d510",
+            "3763b030-9fe9-4e6d-b4d2-05b0f59d5df6",
+            "0bc05a43-e74e-4e2d-a2a0-8bb914a3a597"
+          ]
         },
         {
           "name": "Promo Inclusions",
-          "type": "multi_select"
+          "type": "multi_select",
+          "id": "SfSI",
+          "options": [
+            "886e9da9-affe-42fd-aa81-82699e1c690e",
+            "66a70cad-c0a7-46b3-b9e9-822943d985e7",
+            "31cc5a3a-f445-4da8-a9df-79a415d5eadd",
+            "3be40bd0-75e9-413f-89e1-359187fc64ec",
+            "9285ca0e-d8fc-4fe6-a0c1-0993c329eb4c",
+            "a46c006d-9d21-4a16-9beb-06b24de3d68c",
+            "c69a6ef2-7ef3-42fb-b3d9-f2cc15571184"
+          ]
         },
         {
           "name": "Related to Meeting Notes (Project)",
-          "type": "relation"
+          "type": "relation",
+          "id": "IN%3Ag"
         },
         {
           "name": "Separator 1",
-          "type": "formula"
+          "type": "formula",
+          "id": "%3D%5CNp"
         },
         {
           "name": "Separator 2",
-          "type": "formula"
+          "type": "formula",
+          "id": "E%3B%7Bm"
         },
         {
           "name": "Sound Mixer",
-          "type": "relation"
+          "type": "relation",
+          "id": "alOI"
         },
         {
           "name": "Sound Tech",
-          "type": "relation"
+          "type": "relation",
+          "id": "BdAq"
         },
         {
           "name": "Stage",
-          "type": "select"
+          "type": "select",
+          "id": "%3B%60%60B",
+          "options": [
+            "8a5bc6f0-f979-40d1-82e9-024c2165836f",
+            "0a41fbcc-b4b8-47eb-a5da-11c8aa7d4355",
+            "n@dd",
+            "QK}H",
+            "PJZ<",
+            "G`Pl",
+            "\\MKw",
+            "Hn{P",
+            "6c657ba4-b894-4ad3-9f26-ae4049963279",
+            "eaS\\",
+            "2d4eaadc-4602-4165-992c-a8d61341fd7f",
+            "3244d87f-9f88-4521-8400-7727a3f0c53f",
+            "7270d5ff-8ffa-403c-add3-fa021b46df19",
+            "d496a005-8626-43c8-8e6e-e142cb698b71",
+            "3308cb49-2835-4340-b972-612a0b107616",
+            "b5ac6759-1f93-4fb9-9328-f694081a530b",
+            "b299feb5-d58c-4c7c-8eef-bbed46c3646a"
+          ]
         },
         {
           "name": "Status",
-          "type": "select"
+          "type": "select",
+          "id": "%3DR%7DW",
+          "options": [
+            "aaa56a90-52ad-4d74-bd69-fa55b53fe1eb",
+            "50c950ad-60da-49d9-833c-630cf26f648e",
+            "50476dac-ab0b-4543-8fae-859cd49f40dd",
+            "d4eddd31-a547-4259-9c95-307394093966",
+            "3011aafa-82ff-441b-ba11-09e641ba4088",
+            "4b9ac9de-d2eb-4d2c-8740-ef207cbdf605",
+            "35f33d58-e647-4695-8fc4-00603be5fa40",
+            "ab4ddac5-85f2-4935-9687-cd48e37977da",
+            "55dd2d2b-ba28-42c9-97de-0262bc3830d5",
+            "9600366d-d26e-47c6-887d-0b7b543c2dd1",
+            "141e0341-e64b-439f-8f6a-96ed7d817e2f",
+            "b664a088-30c3-409e-9c44-91669f5d1de1"
+          ]
         },
         {
           "name": "Status for Editors",
-          "type": "select"
+          "type": "select",
+          "id": "tU%5E_",
+          "options": [
+            "[Rq<",
+            "FhiQ",
+            "|K]a",
+            "`vcn",
+            "|FHO",
+            "t?up",
+            "5e7206bf-ffe3-40d2-b9df-939b401084cc"
+          ]
         },
         {
           "name": "Studio",
-          "type": "relation"
+          "type": "relation",
+          "id": "JfO%3A"
         },
         {
           "name": "Submission Deadline",
-          "type": "date"
+          "type": "date",
+          "id": "F%3AWf"
         },
         {
           "name": "T6 Post Coordinator",
-          "type": "relation"
+          "type": "relation",
+          "id": "_Kro"
         },
         {
           "name": "TRT",
-          "type": "select"
+          "type": "select",
+          "id": "%3F%3BNg",
+          "options": [
+            "f40f7d32-c2a3-4e07-b863-da33a83d7946",
+            "29ff214a-8b9e-4019-a06c-026b506ae28d",
+            "df64792a-4792-4141-ab26-ebd75d7bcfd8",
+            "43e3227a-a5c1-408c-9757-7f68bae59662",
+            "c34fe943-cb34-4025-ad1d-72e7ddc9fece",
+            "07094156-e3d4-4f99-b14c-328501ac1c48",
+            "3cbf408b-9f5d-4b96-968d-b04ed76d481a",
+            "56956c87-8b56-4cba-9c76-55d021e7ff48",
+            "3955cbc4-0066-40db-8eac-549051e11bfe",
+            "66439741-e37c-492c-b213-407b869996ac"
+          ]
         },
         {
           "name": "Tech Notes",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "qrKZ"
         },
         {
           "name": "VFX Editor",
-          "type": "relation"
+          "type": "relation",
+          "id": "yllN"
         },
         {
           "name": "VFX Supe",
-          "type": "relation"
+          "type": "relation",
+          "id": "%3F%3BG%3E"
         },
         {
           "name": "🌟🚀",
-          "type": "checkbox"
+          "type": "checkbox",
+          "id": "V%5DWb"
         },
         {
           "name": "📔 Wiki",
-          "type": "relation"
+          "type": "relation",
+          "id": "hdu%5C"
         },
         {
           "name": "📦 Deliverables",
-          "type": "relation"
+          "type": "relation",
+          "id": "%7CV_h"
         }
       ]
     },
@@ -253,111 +690,204 @@
       "properties": [
         {
           "name": "Aliases",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "%5DFlK"
         },
         {
           "name": "Assistant Editor",
-          "type": "relation"
+          "type": "relation",
+          "id": "Ojq~"
         },
         {
           "name": "Contact Number",
-          "type": "phone_number"
+          "type": "phone_number",
+          "id": "LJr%3D"
         },
         {
           "name": "Coor JOs",
-          "type": "relation"
+          "type": "relation",
+          "id": "lCUc"
         },
         {
           "name": "DOP Projects",
-          "type": "relation"
+          "type": "relation",
+          "id": "yHG%40"
         },
         {
           "name": "DP Projects",
-          "type": "relation"
+          "type": "relation",
+          "id": "OxbW"
         },
         {
           "name": "Director Projects",
-          "type": "relation"
+          "type": "relation",
+          "id": "Az%3Cn"
         },
         {
           "name": "Editor Projects",
-          "type": "relation"
+          "type": "relation",
+          "id": "%3B%5D%5C%5C"
         },
         {
           "name": "Email",
-          "type": "email"
+          "type": "email",
+          "id": "%7B%3B%3A%3A"
         },
         {
           "name": "End of Shift",
-          "type": "select"
+          "type": "select",
+          "id": "P%5Bk%3E",
+          "options": [
+            "~K<m",
+            "gydW",
+            "SPH\\",
+            "W<Gy",
+            "pnVT",
+            "a_?Z",
+            "yGo_",
+            "VC:>",
+            ";fHd",
+            "ATP?",
+            "KU_|",
+            "@Mg\\",
+            "B@ri",
+            "Q?p@",
+            "TBz`",
+            "r=\\W",
+            "krtn",
+            "Kbm>",
+            "?oAT",
+            "iFZu",
+            "[KEY",
+            "UnL\\",
+            ";eIV",
+            "d;qK",
+            "w=Rz"
+          ]
         },
         {
           "name": "Name",
-          "type": "title"
+          "type": "title",
+          "id": "title"
         },
         {
           "name": "Note to Driver",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "tM%5Cs"
         },
         {
           "name": "OS Format",
-          "type": "select"
+          "type": "select",
+          "id": "%3B%5C%5EK",
+          "options": [
+            "43fb6253-82b1-4317-aafc-11e94bbcdbfe",
+            "51c0fdff-8ae6-4ff8-a389-8338b33c2480",
+            "005f02d4-6073-4de5-99a7-aa49f6f6e7a3",
+            "7945bbf6-93ff-4308-8b82-a0ce2249ec30"
+          ]
         },
         {
           "name": "Position",
-          "type": "multi_select"
+          "type": "multi_select",
+          "id": "zhcP",
+          "options": [
+            "ee611363-0626-440d-8c69-42204bc5ab8a",
+            "e010ea2f-eaee-4dae-b67c-cd34a62a793a",
+            "e4c94c6d-82cf-4669-9d96-d3e50c53e887",
+            "1a96823b-80e5-4de0-9cc3-d525dd97be1d",
+            "48908523-145d-4745-a6f7-97a83e0d2698",
+            "8f0d497b-b987-404d-86fe-1d75a36ec6c2",
+            "fa4c0d1c-a5e5-4994-b495-8f185ae781ef",
+            "e5674e73-5b33-4471-9a00-b7d9ef813d63",
+            "0b79efa0-a883-483a-bc6e-61036b13a339",
+            "9143891b-ca9f-4beb-9bd7-fb4e9e5bada2",
+            "f9877903-ecba-419f-bcd1-97366a6c6740",
+            "ae4fb9a0-eb4a-4f43-aa74-51c03890023b",
+            "b6382438-3432-4180-9061-c015f90a08a1",
+            "bc09206d-7fe1-4337-a0a5-d8d8d204127e",
+            "4a46b24d-e7c8-4ae7-896e-8636134e6430",
+            "a0a76706-e907-4f96-96ce-8e1dd56008d0",
+            "392d0f40-56f5-4dd7-98be-727e3754b53d",
+            "43d91a70-8d28-4571-82d3-a922294843e0",
+            "8c03de64-6657-458f-baeb-5c6a981c8f64",
+            "9a93db54-d80a-445d-a2b8-3b17bed8b654",
+            "0ef7fda8-9642-4215-9679-2627f6708df1",
+            "f3e5df5d-e758-4e3e-af74-3bc291035b64",
+            "c121ae94-4608-483a-ab67-0a96f4e7fd1e"
+          ]
         },
         {
           "name": "Post Supe Projects",
-          "type": "relation"
+          "type": "relation",
+          "id": "XEV~"
         },
         {
           "name": "Projects as Live Sound",
-          "type": "relation"
+          "type": "relation",
+          "id": "ch%5Ck"
         },
         {
           "name": "Projects as VFX Editor",
-          "type": "relation"
+          "type": "relation",
+          "id": "QXaD"
         },
         {
           "name": "Related to Job Orders (Assigned)",
-          "type": "relation"
+          "type": "relation",
+          "id": "%3Ax%5Dg"
         },
         {
           "name": "Related to Tasks (Freelancer)",
-          "type": "relation"
+          "type": "relation",
+          "id": "ibTG"
         },
         {
           "name": "Software",
-          "type": "multi_select"
+          "type": "multi_select",
+          "id": "F_%3Fl",
+          "options": [
+            "f9a400da-0619-438c-82fb-1993c967344a",
+            "223763e4-288c-4287-8ab6-5db90edb4ceb",
+            "82d26a3c-a0a2-4497-b95b-747f19d12108",
+            "595ce1dc-c07b-47cb-bcbb-8275ae43bcb6",
+            "8ac94cd6-324d-44e7-a133-31dbc8603795",
+            "922b3ab6-6b5a-44cb-8bed-4da3bcc70771"
+          ]
         },
         {
           "name": "Swing Drives in Possession",
-          "type": "relation"
+          "type": "relation",
+          "id": "nhqJ"
         },
         {
           "name": "TelegramHandle",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "GvDU"
         },
         {
           "name": "TelegramUserID",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "%5Cz%7Cf"
         },
         {
           "name": "📔 Wiki",
-          "type": "relation"
+          "type": "relation",
+          "id": "naL%5B"
         },
         {
           "name": "📦 Coordinator Deliverables",
-          "type": "relation"
+          "type": "relation",
+          "id": "gGT%3F"
         },
         {
           "name": "📦 Editor Deliverables",
-          "type": "relation"
+          "type": "relation",
+          "id": "%7DFjE"
         },
         {
           "name": "🗺️ Projects",
-          "type": "relation"
+          "type": "relation",
+          "id": "SLP%60"
         }
       ]
     },
@@ -366,39 +896,50 @@
       "properties": [
         {
           "name": "Aliases",
-          "type": "multi_select"
+          "type": "multi_select",
+          "id": "u_%3BR",
+          "options": []
         },
         {
           "name": "Average Redelivery Velocity",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "Rpim"
         },
         {
           "name": "Name",
-          "type": "title"
+          "type": "title",
+          "id": "title"
         },
         {
           "name": "OCP Intake ID",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "Sx%3DS"
         },
         {
           "name": "OCP Intake Source",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "%5CGvP"
         },
         {
           "name": "Project Delay from Past 24 Months expressed as %",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "c%7DAO"
         },
         {
           "name": "Rolling Average On Time Rate of 24 months",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "JeCR"
         },
         {
           "name": "Rolling Average Redelivery Rate of 24 months",
-          "type": "multi_select"
+          "type": "multi_select",
+          "id": "FipL",
+          "options": []
         },
         {
           "name": "🗺️ Projects",
-          "type": "relation"
+          "type": "relation",
+          "id": "%60njG"
         }
       ]
     },
@@ -407,121 +948,182 @@
       "properties": [
         {
           "name": "Assigned",
-          "type": "relation"
+          "type": "relation",
+          "id": "DIi%3C"
         },
         {
           "name": "Blocker ",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "VMu%3C"
         },
         {
           "name": "Date",
-          "type": "date"
+          "type": "date",
+          "id": "Kx%5EM"
         },
         {
           "name": "Deadline",
-          "type": "date"
+          "type": "date",
+          "id": "p~L%3F"
         },
         {
           "name": "Deliverable",
-          "type": "relation"
+          "type": "relation",
+          "id": "pEwS"
         },
         {
           "name": "Department",
-          "type": "select"
+          "type": "select",
+          "id": "xHPF",
+          "options": [
+            "cU=L",
+            "FeJa",
+            "QOq[",
+            ":{|i",
+            "xTHk",
+            "EjZ[",
+            "SoPs",
+            "Jokz"
+          ]
         },
         {
           "name": "Health",
-          "type": "formula"
+          "type": "formula",
+          "id": "%3DY%5Bq"
         },
         {
           "name": "JO Notes",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "zfMz"
         },
         {
           "name": "JO Number",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "%60%5EG_"
         },
         {
           "name": "Link Settings",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "_TkP"
         },
         {
           "name": "Mode of Transfer",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "Iy%3EZ"
         },
         {
           "name": "Name",
-          "type": "title"
+          "type": "title",
+          "id": "title"
         },
         {
           "name": "Pending",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "TvFU"
         },
         {
           "name": "Place",
-          "type": "place"
+          "type": "place",
+          "id": "%3FfQ%5B"
         },
         {
           "name": "Platform",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "uPhA"
         },
         {
           "name": "Projects",
-          "type": "relation"
+          "type": "relation",
+          "id": "EKDD"
         },
         {
           "name": "Purpose",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "Wc%3Ak"
         },
         {
           "name": "Source / Source Drive",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "%7DZ%5C%5E"
         },
         {
           "name": "Status",
-          "type": "status"
+          "type": "status",
+          "id": "v%3Fln",
+          "options": [
+            "WTKa",
+            "7b481e97-5113-4876-9da3-49959cf6dae8",
+            "786d848b-3646-482e-abbb-7b358e73024f",
+            "gsUi",
+            "94b6d658-2efb-4ef7-8518-f3532203e5c1",
+            "QazO"
+          ]
         },
         {
           "name": "Subtitle",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "%7Bb%60%40"
         },
         {
           "name": "Task",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "%60qkx"
         },
         {
           "name": "Telegram Key",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "DXpp"
         },
         {
           "name": "Title",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "%5E%60%7BD"
         },
         {
           "name": "Watchdog Notes",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "pUEd"
         },
         {
           "name": "Watermark",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "X%5DN%3A"
         },
         {
           "name": "cc",
-          "type": "relation"
+          "type": "relation",
+          "id": "%5BY%7D%7D"
         },
         {
           "name": "🗂️ Coordinator",
-          "type": "relation"
+          "type": "relation",
+          "id": "V%3B%3B%7B"
         }
       ],
       "named_options": {
         "status": {
-          "property": "Status",
-          "values": {}
+          "property": "v%3Fln",
+          "values": {
+            "NEEDS_INTAKE_REVIEW": "WTKa",
+            "PENDING": "7b481e97-5113-4876-9da3-49959cf6dae8",
+            "IN_PROGRESS": "786d848b-3646-482e-abbb-7b358e73024f",
+            "NEEDS_COMPLETION_REVIEW": "gsUi",
+            "DONE": "94b6d658-2efb-4ef7-8518-f3532203e5c1",
+            "CANCELLED": "QazO"
+          }
         },
         "department": {
-          "property": "Department",
-          "values": {}
+          "property": "xHPF",
+          "values": {
+            "TOC": "cU=L",
+            "AE": "FeJa",
+            "OE": "QOq[",
+            "COOR": ":{|i",
+            "COLOR": "xTHk",
+            "VFX": "EjZ[",
+            "SOUND": "SoPs",
+            "ADMIN": "Jokz"
+          }
         }
       }
     },
@@ -530,67 +1132,104 @@
       "properties": [
         {
           "name": "Class",
-          "type": "select"
+          "type": "select",
+          "id": "~Bbg",
+          "options": [
+            "_BMH",
+            "<@RM"
+          ]
         },
         {
           "name": "Created time",
-          "type": "created_time"
+          "type": "created_time",
+          "id": "Lvu%3E"
         },
         {
           "name": "Deadline",
-          "type": "date"
+          "type": "date",
+          "id": "zdNp"
         },
         {
           "name": "Deliverable Class",
-          "type": "select"
+          "type": "select",
+          "id": "Zyut",
+          "options": [
+            "efbf0aaf-d185-4c29-90cb-11aa00188f5e",
+            "5bccd6f9-5e02-48fe-a9e3-bcc17b9cfb40"
+          ]
         },
         {
           "name": "Job Orders",
-          "type": "relation"
+          "type": "relation",
+          "id": "EHOB"
         },
         {
           "name": "Last edited time",
-          "type": "last_edited_time"
+          "type": "last_edited_time",
+          "id": "%3DHCS"
         },
         {
           "name": "Name",
-          "type": "title"
+          "type": "title",
+          "id": "title"
         },
         {
           "name": "Notes",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "%3DNVF"
         },
         {
           "name": "OCP Intake ID",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "%7CV%5Eb"
         },
         {
           "name": "OCP Intake Source",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "%3Bb~w"
         },
         {
           "name": "Playdate",
-          "type": "date"
+          "type": "date",
+          "id": "%3FQ~%3D"
         },
         {
           "name": "Status",
-          "type": "select"
+          "type": "select",
+          "id": "N%3B%5Bs",
+          "options": [
+            "5daf91c1-6ed6-4364-b002-1d80c364eb8f",
+            "58bde9d2-3562-4997-a86f-eacc311636e3",
+            "6382d3b4-4210-4700-b907-7748437a2670",
+            "97e7f0dd-3548-4671-a901-6bddd0b89872",
+            "63f74f3f-f6c1-4eb7-9a64-7272ea8888f3",
+            "0f4750b6-ce0c-44a5-a513-3ca5ab337b55",
+            "974edd37-cdf6-431d-a394-aa43154de600",
+            "e56fe53b-3f73-4a60-ab4d-93e12eb817f3",
+            "66f009cc-b88a-4ba4-90a4-e93ab1506bef",
+            "fdd078a8-4f6b-4e95-9702-5f4f85324d51",
+            "14b3d3a0-9434-4507-bc5a-49c5fc46e1ea"
+          ]
         },
         {
           "name": "Tasks",
-          "type": "relation"
+          "type": "relation",
+          "id": "awZv"
         },
         {
           "name": "🗂️ Coordinator",
-          "type": "relation"
+          "type": "relation",
+          "id": "C%7D%40%40"
         },
         {
           "name": "🗂️ Editor",
-          "type": "relation"
+          "type": "relation",
+          "id": "%7DIx%5E"
         },
         {
           "name": "🗺️ Projects",
-          "type": "relation"
+          "type": "relation",
+          "id": "CmVY"
         }
       ]
     },
@@ -599,91 +1238,128 @@
       "properties": [
         {
           "name": "Adobe email",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "uL%5C%3A"
         },
         {
           "name": "Avid Activation ID",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "f%60s_"
         },
         {
           "name": "Avid System ID",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "L%5E%3CF"
         },
         {
           "name": "Device UIID",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "WeSw"
         },
         {
           "name": "Done",
-          "type": "checkbox"
+          "type": "checkbox",
+          "id": "%60%5DH%3A"
         },
         {
           "name": "Hardware UUID",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "ozz%5B"
         },
         {
           "name": "Has Paragon",
-          "type": "checkbox"
+          "type": "checkbox",
+          "id": "cccC"
         },
         {
           "name": "Hostname",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "%3CFGK"
         },
         {
           "name": "LAN IP Address",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "%5BO%3A%5C"
         },
         {
           "name": "Last Check-in",
-          "type": "date"
+          "type": "date",
+          "id": "%3DK%7CU"
         },
         {
           "name": "Munki Client Version",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "MMPF"
         },
         {
           "name": "Munki Manifest",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "ixPv"
         },
         {
           "name": "Name",
-          "type": "title"
+          "type": "title",
+          "id": "title"
         },
         {
           "name": "Notes",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "o%40%3Ax"
         },
         {
           "name": "OS Version",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "yuYX"
         },
         {
           "name": "Paragon License",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "U%5C%5DS"
         },
         {
           "name": "Paragon NTFS License",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "Xgw%7C"
         },
         {
           "name": "Related to Tasks (Property)",
-          "type": "relation"
+          "type": "relation",
+          "id": "VIVf"
         },
         {
           "name": "Ring",
-          "type": "select"
+          "type": "select",
+          "id": "dYyG",
+          "options": [
+            "d9cdfccd-3bc4-427f-ab5b-54d4118864c6",
+            "6b0e8186-0d69-4d78-800f-93815fa286db",
+            "c7753882-fe55-417e-a44d-c7e9a95c61da"
+          ]
         },
         {
           "name": "Serial Number",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "kvED"
         },
         {
           "name": "Type",
-          "type": "multi_select"
+          "type": "multi_select",
+          "id": "mFi%7B",
+          "options": [
+            "5991f071-891e-4bca-8f3c-5089026cd5dd",
+            "10ff129a-fde7-4a19-bb42-d062aa1e1f1e",
+            "d8c0c85d-3c7b-42d4-b283-69bbc98d3722",
+            "62aed7a8-a5bf-480b-8200-aa71167aeb1f",
+            "f066bdee-3868-4cee-abfd-831061562b83",
+            "d1eb160f-c6de-4c6d-afe7-876e8cb8e02e",
+            "d6b10cea-32b0-4a2d-b187-1dfc46446c2b",
+            "3c744b4c-dd17-4c3a-9193-67e56e0f336b"
+          ]
         },
         {
           "name": "Username",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "~%3DYa"
         }
       ]
     },
@@ -692,19 +1368,24 @@
       "properties": [
         {
           "name": "Name",
-          "type": "title"
+          "type": "title",
+          "id": "title"
         },
         {
           "name": "Related to Projects (Cameras)",
-          "type": "relation"
+          "type": "relation",
+          "id": "o%60xG"
         },
         {
           "name": "Tags",
-          "type": "multi_select"
+          "type": "multi_select",
+          "id": "lurO",
+          "options": []
         },
         {
           "name": "📔 Wiki",
-          "type": "relation"
+          "type": "relation",
+          "id": "Run%5C"
         }
       ]
     },
@@ -713,39 +1394,60 @@
       "properties": [
         {
           "name": "Collaborator",
-          "type": "relation"
+          "type": "relation",
+          "id": "%5CJnv"
         },
         {
           "name": "For Bawi",
-          "type": "checkbox"
+          "type": "checkbox",
+          "id": "msGc"
         },
         {
           "name": "Format ",
-          "type": "select"
+          "type": "select",
+          "id": "ecNh",
+          "options": [
+            "6978df80-3149-46b9-b8bc-97c7fb21db33",
+            "404cb814-484e-4ea2-b2fb-b17bd8eb8881",
+            "5c934389-a84e-448f-b0f8-9f5062781797"
+          ]
         },
         {
           "name": "HD Type",
-          "type": "multi_select"
+          "type": "multi_select",
+          "id": "yQis",
+          "options": [
+            "06582eb8-a8a2-4b26-96b9-180c1b116dce",
+            "b7e4cd6a-d35d-455a-9deb-26d3a33dc799",
+            "bc1ec573-73fe-4247-9389-d6be04ada4f3",
+            "e5dd2e55-3ccd-4b83-899b-f6b223e3c02a",
+            "c2364fb1-1ccd-4afb-a12d-691e2dd61a1b"
+          ]
         },
         {
           "name": "In Use",
-          "type": "checkbox"
+          "type": "checkbox",
+          "id": "e%3Fhq"
         },
         {
           "name": "Last Moved",
-          "type": "date"
+          "type": "date",
+          "id": "DasJ"
         },
         {
           "name": "Name",
-          "type": "title"
+          "type": "title",
+          "id": "title"
         },
         {
           "name": "Person-In-Charge",
-          "type": "people"
+          "type": "people",
+          "id": "c%5CsT"
         },
         {
           "name": "Short Notes",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "kb%3Bn"
         }
       ]
     },
@@ -754,71 +1456,115 @@
       "properties": [
         {
           "name": "Bay",
-          "type": "relation"
+          "type": "relation",
+          "id": "xslq"
         },
         {
           "name": "Created time.   ",
-          "type": "created_time"
+          "type": "created_time",
+          "id": "Y%60u%5D"
         },
         {
           "name": "Creator",
-          "type": "relation"
+          "type": "relation",
+          "id": "%3Fxy%5E"
         },
         {
           "name": "Deadline",
-          "type": "date"
+          "type": "date",
+          "id": "U%7DE%60"
         },
         {
           "name": "Deliverable",
-          "type": "relation"
+          "type": "relation",
+          "id": "%5DrgB"
         },
         {
           "name": "JOB ID",
-          "type": "unique_id"
+          "type": "unique_id",
+          "id": "%3ErPu"
         },
         {
           "name": "Last Updated",
-          "type": "last_edited_time"
+          "type": "last_edited_time",
+          "id": "HG%3Ci"
         },
         {
           "name": "MODE",
-          "type": "select"
+          "type": "select",
+          "id": "RWEr",
+          "options": [
+            "84c9d08a-3ca7-4475-8dd4-4b54e84ca50e",
+            "33e817de-10cf-4b56-a34b-65e87c42123e",
+            "e0a290ac-b08b-473d-ad42-f6f1fd59ccb6",
+            "744b2c09-d58e-40fb-ac11-b3a6645e4c83",
+            "96ceae0e-4675-4208-99b9-b9b79da41d88",
+            "68fe2dba-7c3b-4447-8d21-018521080fe7",
+            "3c0031bc-721f-4f5b-b865-21ea62e58cc6",
+            "cea997e5-adae-4f05-8d2a-c315f10ffdc6",
+            "27ce2cd1-312c-4c75-ab55-55ca618c5d7d",
+            "04922663-2efd-4a44-808a-d00858ac9fbe",
+            "f3b95687-684d-496d-a1a4-3f10833378b0",
+            "c9c46e5e-08e0-458b-ace5-d257551fdc6e",
+            "e3c0c632-54f4-4aaa-abdf-05e65705084e",
+            "80904801-a894-4518-a648-c04e065bca3d"
+          ]
         },
         {
           "name": "Name",
-          "type": "title"
+          "type": "title",
+          "id": "title"
         },
         {
           "name": "PM Notes",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "tMYF"
         },
         {
           "name": "Project Code",
-          "type": "rollup"
+          "type": "rollup",
+          "id": "EWsa"
         },
         {
           "name": "Project Status",
-          "type": "rollup"
+          "type": "rollup",
+          "id": "%7DHO%3D"
         },
         {
           "name": "Project Type",
-          "type": "rollup"
+          "type": "rollup",
+          "id": "DwDy"
         },
         {
           "name": "Schedule",
-          "type": "date"
+          "type": "date",
+          "id": "YQF%3C"
         },
         {
           "name": "Status",
-          "type": "status"
+          "type": "status",
+          "id": "XU%3ES",
+          "options": [
+            "84ab12f8-557a-4a36-aff9-9fe0364a11e8",
+            "dd8a8978-38ff-488f-ab13-3b2757114de9",
+            "b11532f4-a82f-4c90-af17-041a631faee5"
+          ]
         },
         {
           "name": "Transfer Mode",
-          "type": "multi_select"
+          "type": "multi_select",
+          "id": "NaHw",
+          "options": [
+            "0e1dc77e-f99c-4edb-bea1-c2a8f7854702",
+            "57a9b767-a2ad-4b94-acc8-a79024eaf2fb",
+            "785c64c2-c675-45c4-9b02-3d8a7e6651a7",
+            "0ac65c98-c0de-4fa8-bee7-a34e416fcf2e"
+          ]
         },
         {
           "name": "🗺️ Project",
-          "type": "relation"
+          "type": "relation",
+          "id": "Y%3BOA"
         }
       ]
     },
@@ -827,63 +1573,123 @@
       "properties": [
         {
           "name": "Created",
-          "type": "created_time"
+          "type": "created_time",
+          "id": "G%5ChI"
         },
         {
           "name": "Date",
-          "type": "date"
+          "type": "date",
+          "id": "ecaJ"
         },
         {
           "name": "Definition",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "z%5BSe"
         },
         {
           "name": "Last Edited",
-          "type": "last_edited_time"
+          "type": "last_edited_time",
+          "id": "t%60%3CW"
         },
         {
           "name": "Name",
-          "type": "title"
+          "type": "title",
+          "id": "title"
         },
         {
           "name": "Notes",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "x%3Ddg"
         },
         {
           "name": "Purpose",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "%3D_FQ"
         },
         {
           "name": "Role",
-          "type": "multi_select"
+          "type": "multi_select",
+          "id": "_%5CrX",
+          "options": [
+            "0c8e6164-c8f8-4947-aba6-62bd945fc108",
+            "53b5a508-e608-47ef-ba9a-44187fa8b13f",
+            "57065d0a-f63c-497c-9192-065306879110",
+            "dae19fbf-2082-43ce-9db4-011e71f329ee",
+            "7bfa74e2-5d98-4aec-ae5f-87b49fc4e51f",
+            "48e2a0f9-d3b9-44ff-848f-b3e68bd92cd1",
+            "275987a0-3042-4b07-bab7-9255499a4340",
+            "775ae1f3-ae31-4413-9b60-7414e25e78ca",
+            "1a8f6e02-bac7-4f86-9a67-22e61f37c837"
+          ]
         },
         {
           "name": "Status",
-          "type": "multi_select"
+          "type": "multi_select",
+          "id": "qfn_",
+          "options": [
+            "3e74e578-03b3-4cad-a591-5e1dc5110b68",
+            "4babd4bd-2864-417c-9684-830b7de0db38",
+            "46919f58-6e9c-417b-a34f-d8e7c14253cf",
+            "d723f465-d807-4b75-b0fe-8f3f4195738d",
+            "29ed5079-15d5-4178-b4a2-e2a006d5cfef",
+            "19d7ebe3-2cb4-4d49-b18d-ff713a757cd6",
+            "92329431-46e2-4b22-bae3-c10bad8ac120",
+            "603fd138-ca10-4ce6-86aa-8842eacc224a"
+          ]
         },
         {
           "name": "To Do",
-          "type": "checkbox"
+          "type": "checkbox",
+          "id": "YzNc"
         },
         {
           "name": "Topic",
-          "type": "multi_select"
+          "type": "multi_select",
+          "id": "%3Db%5Dp",
+          "options": [
+            "68508654-fdcd-4e82-8012-2c833cde33dc",
+            "de118083-2e74-427c-94be-0c2e3711e474",
+            "10fa0572-cdc6-43f8-85d5-7884ba1b88e3",
+            "37f54a7b-0b69-4c0a-abce-e2c31b1b8cea",
+            "f906aa93-385d-4114-89a2-98ceee349e93",
+            "bba4cd07-0909-4da0-95a8-903bc497df95",
+            "18c44704-c69b-4fb6-a51a-a2c117f00041",
+            "3a2e8412-4e38-40f3-8479-6a4ac25af116",
+            "60a09978-7a9d-4395-a3a7-3f8c509859d7",
+            "b950635f-8bdd-404f-95ab-39250669357b",
+            "5fccafcc-d8a2-494c-a287-c3c5ef186e2b",
+            "c5ca5b82-1612-4280-a6db-ae8533e532a4",
+            "6bd01578-b77b-4d7d-8293-a3c99e8a2da7",
+            "4e762ed1-d5f8-441a-9a52-56e705379119",
+            "a04dc03c-2e9f-4617-83d8-fa5724d0b271",
+            "8f61ed67-f85b-4480-bef6-0c51036456a7",
+            "7e70e4f0-cb9f-4c64-b1b4-802909d51a68",
+            "4db0de68-a23d-4a8f-931f-591c69f28e74",
+            "b887dc96-c94e-45ca-b535-d33f77451c00",
+            "81fa9d79-4868-475b-9154-b8f97a132f44",
+            "76afc4a3-f3a3-426b-b9a7-fba27e3af92b",
+            "3878f968-fb10-4eb7-a270-7a4e830577f9"
+          ]
         },
         {
           "name": "Updated by",
-          "type": "last_edited_by"
+          "type": "last_edited_by",
+          "id": "UYG%5C"
         },
         {
           "name": "🎥 Cameras",
-          "type": "relation"
+          "type": "relation",
+          "id": "wr%5Cm"
         },
         {
           "name": "🗂️ Contacts",
-          "type": "relation"
+          "type": "relation",
+          "id": "K%5Byb"
         },
         {
           "name": "🗺️ Projects",
-          "type": "relation"
+          "type": "relation",
+          "id": "tSf%5B"
         }
       ]
     },
@@ -892,35 +1698,43 @@
       "properties": [
         {
           "name": "Last Updated",
-          "type": "last_edited_time"
+          "type": "last_edited_time",
+          "id": "qoRz"
         },
         {
           "name": "Last Updated By",
-          "type": "last_edited_by"
+          "type": "last_edited_by",
+          "id": "%5Es%3Be"
         },
         {
           "name": "Meeting Date",
-          "type": "date"
+          "type": "date",
+          "id": "QF%5Bx"
         },
         {
           "name": "Name",
-          "type": "title"
+          "type": "title",
+          "id": "title"
         },
         {
           "name": "Project",
-          "type": "relation"
+          "type": "relation",
+          "id": "%7BTVV"
         },
         {
           "name": "Ready to send",
-          "type": "checkbox"
+          "type": "checkbox",
+          "id": "ZP%3AN"
         },
         {
           "name": "Sent at",
-          "type": "date"
+          "type": "date",
+          "id": "%5CtVO"
         },
         {
           "name": "Team Attendees",
-          "type": "people"
+          "type": "people",
+          "id": "%3DKl%5C"
         }
       ]
     }

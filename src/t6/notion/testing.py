@@ -39,6 +39,7 @@ from typing import Any
 import httpx
 
 from t6.notion.client import NOTION_VERSION, AsyncNotionClient, RetryPolicy
+from t6.notion import named
 from t6.notion.external_links import ExternalLinksProperties as xl
 from t6.notion.models import ProjectsProperties as p
 from t6.notion.schema import load_snapshot
@@ -79,7 +80,11 @@ class FakeNotion:
         return copy.deepcopy(source)
 
     def add_snapshot_data_source(self, data_source_id: str, database: str) -> JSON:
-        """Add a data source whose schema is a snapshot database, with no options yet."""
+        """Add a data source whose schema is a snapshot database.
+
+        Its only options are the snapshot's named values, under their recorded
+        option IDs and labelled with their domain values.
+        """
         return self.add_data_source(data_source_id, snapshot_properties(database))
 
     def add_property(self, data_source_id: str, name: str, notion_type: str) -> None:
@@ -97,8 +102,12 @@ class FakeNotion:
     def add_option(self, data_source_id: str, name: str, option: str) -> str:
         """Add an option to a select, multi-select or status property and return its ID."""
         prop = self._data_sources[data_source_id]["properties"][name]
+        options = prop[prop["type"]]["options"]
+        existing = next((o for o in options if o["name"] == option), None)
+        if existing is not None:
+            return str(existing["id"])
         option_id = uuid.uuid4().hex[:8]
-        prop[prop["type"]]["options"].append({"id": option_id, "name": option})
+        options.append({"id": option_id, "name": option})
         return option_id
 
     def rename_option(self, data_source_id: str, name: str, option: str, new_option: str) -> None:
@@ -119,7 +128,9 @@ class FakeNotion:
         del self._data_sources[data_source_id]["properties"][name]
 
     def change_property_type(self, data_source_id: str, name: str, notion_type: str) -> None:
-        self.add_property(data_source_id, name, notion_type)
+        """Change a property's type, as Notion does: its ID stays."""
+        properties = self._data_sources[data_source_id]["properties"]
+        properties[name] = _property(name, notion_type, properties[name]["id"])
 
     def select_options(self, data_source_id: str, name: str) -> list[str]:
         """The option names of a select or multi-select property."""
@@ -460,11 +471,27 @@ def _property(name: str, notion_type: str, property_id: str | None = None) -> JS
 
 
 def snapshot_properties(database: str) -> JSON:
-    """Live-shaped data source properties for one database of the schema snapshot."""
-    return {
+    """Live-shaped data source properties for one database of the schema snapshot.
+
+    The snapshot holds no option names, so the only options are its named
+    values, each under its recorded option ID and labelled with its domain value.
+    """
+    snapshot = load_snapshot()["databases"][database]
+    properties = {
         prop["name"]: _property(prop["name"], prop["type"], prop.get("id"))
-        for prop in load_snapshot()["databases"][database]["properties"]
+        for prop in snapshot["properties"]
     }
+    for attribute, enum in named.NAMED_FIELDS.get(database, {}).items():
+        block = (snapshot.get("named_options") or {}).get(attribute) or {}
+        prop = named.find_live(properties, str(block.get("property", "")))
+        if prop is None:
+            continue
+        options = properties[prop["name"]][prop["type"]]["options"]
+        for member in enum:
+            option_id = (block.get("values") or {}).get(member.name)
+            if option_id:
+                options.append({"id": option_id, "name": member.value})
+    return properties
 
 
 # Property builders for seeding the fake

@@ -29,6 +29,12 @@ BAYS = "ds-bays"
 PROJECTS = "ds-projects"
 
 
+def key(database: str, name: str) -> str:
+    """The body key a model writes for a snapshot property: its ID once the snapshot has one."""
+    prop = next(p for p in load_snapshot()["databases"][database]["properties"] if p["name"] == name)
+    return str(prop.get("id") or name)
+
+
 def fake_with(**databases: str) -> FakeNotion:
     fake = FakeNotion()
     for key, data_source_id in databases.items():
@@ -70,7 +76,7 @@ class ModelReadWriteTests(unittest.TestCase):
     def test_a_property_with_a_trailing_space_reads_and_writes(self) -> None:
         fake = fake_with(job_orders=JOB_ORDERS)
         body = JobOrdersRow.to_properties(name="JO 1", blocker="Waiting for drive")
-        self.assertIn("Blocker ", body)
+        self.assertIn(key("job_orders", "Blocker "), body)
         self.assertNotIn("Blocker", body)
         with fake.client() as client:
             created = client.create_page(
@@ -84,7 +90,7 @@ class ModelReadWriteTests(unittest.TestCase):
     def test_a_property_with_an_emoji_reads_and_writes(self) -> None:
         fake = fake_with(job_orders=JOB_ORDERS)
         body = JobOrdersRow.to_properties(name="JO 2", coordinator=("contact-1",))
-        self.assertIn("\U0001f5c2️ Coordinator", body)
+        self.assertIn(key("job_orders", "\U0001f5c2️ Coordinator"), body)
         with fake.client() as client:
             created = client.create_page(
                 {"parent": {"data_source_id": JOB_ORDERS}, "properties": body}
@@ -165,7 +171,7 @@ class ModelReadWriteTests(unittest.TestCase):
             last_check_in=checked_in,
             os_version="macOS 26.5",
         )
-        self.assertIn("rich_text", body["OS Version"])
+        self.assertIn("rich_text", body[key("bays", "OS Version")])
         with fake.client() as client:
             created = client.create_page({"parent": {"data_source_id": BAYS}, "properties": body})
             row = BaysRow.from_page(client.retrieve_page(created["id"]))
