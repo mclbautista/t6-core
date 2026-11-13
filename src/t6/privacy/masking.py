@@ -15,6 +15,11 @@ names that appear raw in an output model.
 
 Privacy never reads Notion. The app decides which fields are free text and
 which names to ``allow``.
+
+What is hidden, and how IDs come back, is set per task by :class:`MaskOptions`.
+The ``names`` preset (the default) hides the registered names, projects and
+IDs. The ``strict`` preset also hides single name words, any ID or link found
+in the text, and hides ordinary words only when capitalised.
 """
 
 from __future__ import annotations
@@ -25,11 +30,66 @@ from collections.abc import Callable, Iterable, Sequence
 from enum import Enum
 from typing import Any, Literal, TypeVar, cast
 
+from t6.privacy.words import MONTH_WORDS, PROJECT_PLAIN_WORDS, is_ordinary
+
 Kind = Literal["person", "project", "id"]
 T = TypeVar("T")
 
 # Any token shaped like a placeholder, issued or not: "[person 1]", "PERSON 1", "[ person1 ]".
 _PLACEHOLDER = re.compile(r"(?<!\w)(?:\[\s*)?(person|project|id)\s*(\d+)\b(?:\s*\])?", re.I)
+
+
+# An ID or link found in the text, whether or not it was registered.
+_DETECTED_IDS = (
+    r"https?://\S*(?:notion\.(?:so|site|com)|t\.me)\S*"
+    r"|\b(?:notion\.(?:so|site|com)|t\.me)/\S*"
+    r"|\btg://\S*"
+    r"|\b[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}\b"
+    r"|(?<![\w@])@[A-Za-z0-9_]{3,}"
+    r"|(?<!\d)(?<!\d[.,])\d{7,}(?!\d)(?![.,]\d)"
+)
+
+
+@dataclasses.dataclass(frozen=True)
+class MaskOptions:
+    """What one task hides, and how IDs come back. Set per task; ``NAMES`` and ``STRICT`` are the presets."""
+
+    names: bool = True
+    """Whole registered names: people, their aliases and handles."""
+    name_words: bool = False
+    """Single words of a person's name, when 3 letters or more and not a month name."""
+    projects: bool = True
+    """Project names and codes."""
+    ids: bool = False
+    """IDs and links found in the text: Notion and t.me links, tg:// links, UUIDs, @handles, runs of 7 or
+    more digits. Registered IDs (``Registry.ids``) are always hidden."""
+    id_restore: Literal["original", "[id]"] = "original"
+    """What a restored ID becomes: the original text, or the fixed text ``[id]``."""
+    ordinary_words: Literal["hidden", "capitalised"] = "hidden"
+    """``capitalised``: a name word or Project code that is an ordinary word is hidden only as written,
+    capitalised or in capitals, so "will" and "two" stay readable while "Will" and "TWO" are hidden."""
+    skip_trivial: bool = False
+    """Leave alone aliases and Project codes of one character, and Project names of under four letters
+    or that are an ordinary word ("Home", "Live"), since they are far more often plain words."""
+
+
+NAMES = MaskOptions()
+"""Hide registered names, projects and IDs. The default."""
+
+STRICT = MaskOptions(
+    name_words=True, ids=True, id_restore="[id]", ordinary_words="capitalised", skip_trivial=True
+)
+"""The notion-reports redactor: also single name words and any ID or link in the text."""
+
+PRESETS: dict[str, MaskOptions] = {"names": NAMES, "strict": STRICT}
+
+
+def _options(options: MaskOptions | str) -> MaskOptions:
+    if isinstance(options, MaskOptions):
+        return options
+    if options not in PRESETS:
+        raise ValueError(f"unknown masking preset {options!r}; use one of {', '.join(PRESETS)}")
+    return PRESETS[options]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -100,22 +160,92 @@ def _key(text: str) -> str:
     return " ".join(text.lstrip("@").split()).casefold()
 
 
-class _Matcher:
-    """One longest-first, whole-word pattern over a set of registry names."""
+@dataclasses.dataclass(frozen=True)
+class _Term:
+    kind: Kind
+    name: str
+    loose: bool = True
+    """Any case when true, else only as written, capitalised or in capitals."""
+    is_handle: bool = False
 
-    def __init__(self, terms: Iterable[tuple[Kind, str, bool]]) -> None:
-        self.kinds: dict[str, Kind] = {}
-        sources: dict[str, str] = {}
-        for kind, name, is_handle in terms:
-            key = _key(name)
-            if not key or key in self.kinds:
-                continue
-            self.kinds[key] = kind
-            body = r"\s+".join(re.escape(word) for word in key.split())
-            sources[key] = ("@?" if is_handle else "") + body
-        ordered = sorted(sources.items(), key=lambda item: len(item[0]), reverse=True)
-        alternation = "|".join(source for _, source in ordered)
-        self.pattern = re.compile(rf"(?<!\w)(?:{alternation})(?!\w)", re.I) if ordered else None
+
+def _terms(registry: Registry, options: MaskOptions) -> list[_Term]:
+    """The names to hide under ``options``. The first kind to claim a name keeps it: person, project, ID."""
+    cautious = options.ordinary_words == "capitalised"
+    found: dict[str, _Term] = {}
+
+    def add(term: _Term) -> None:
+        key = _key(term.name)
+        if not key:
+            return
+        known = found.get(key)
+        if known is None:
+            found[key] = term
+        elif known.kind == term.kind and not (known.loose and term.loose):
+            # One name from a full name and from a partial word: the stricter reading of "full" wins.
+            found[key] = dataclasses.replace(known, loose=known.loose or term.loose)
+
+    words: list[_Term] = []
+    for person in registry.people:
+        if options.names:
+            for name in (person.name, *person.aliases):
+                if len(name.strip()) >= (2 if options.skip_trivial and name != person.name else 1):
+                    add(_Term("person", name))
+            for handle in person.handles:
+                add(_Term("person", handle.lstrip("@"), is_handle=True))
+        if options.name_words:
+            for word in person.name.split():
+                if len(word) >= 3 and word.casefold() not in MONTH_WORDS and _key(word) != _key(person.name):
+                    words.append(_Term("person", word, loose=not (cautious and is_ordinary(word))))
+    # A partial word never weakens a full name, whatever order the people came in.
+    full = {_key(t.name) for t in found.values()}
+    for term in words:
+        if _key(term.name) not in full:
+            add(term)
+    if options.projects:
+        for project in registry.projects:
+            name = project.name.strip()
+            trivial = len(name) < 4 or name.casefold() in PROJECT_PLAIN_WORDS or is_ordinary(name)
+            if name and not (options.skip_trivial and trivial):
+                add(_Term("project", project.name))
+            code = (project.code or "").strip()
+            if code and not (options.skip_trivial and len(code) < 2):
+                add(_Term("project", code, loose=not (cautious and is_ordinary(code))))
+    for known in registry.ids:
+        add(_Term("id", known))
+    return list(found.values())
+
+
+def _source(term: _Term, options: MaskOptions) -> str:
+    """The pattern for one name: whole word, with the case rule and, for a number, no decimal reading."""
+    if term.loose:
+        body = r"\s+".join(re.escape(word) for word in _key(term.name).split())
+        body = f"(?i:{body})"
+    else:
+        forms = dict.fromkeys(re.escape(f) for f in (term.name, term.name.capitalize(), term.name.upper()))
+        body = "(?:" + "|".join(forms) + ")"
+    guard_start = guard_end = ""
+    if options.ids and term.kind == "id" and term.name.lstrip("-").isdigit():
+        guard_start, guard_end = r"(?<!\d[.,])", r"(?![.,]\d)"
+    return rf"(?<!\w){guard_start}{'@?' if term.is_handle else ''}{body}(?!\w){guard_end}"
+
+
+class _Matcher:
+    """One leftmost, longest-first pattern over the names to hide, and over detected IDs when asked."""
+
+    def __init__(self, terms: Iterable[_Term], options: MaskOptions, *, detect_ids: bool = False) -> None:
+        self.kinds: dict[str, Kind] = {_key(t.name): t.kind for t in terms}
+        ordered = sorted(terms, key=lambda t: len(_key(t.name)), reverse=True)
+        sources = [_source(t, options) for t in ordered]
+        if detect_ids:
+            sources.insert(0, f"(?P<detected>(?i:{_DETECTED_IDS}))")
+        self.pattern = re.compile("|".join(sources)) if sources else None
+
+    def kind_of(self, match: re.Match[str]) -> Kind:
+        """What a match is. One the ID patterns made is an ID, whatever a registered name says."""
+        if "detected" in match.re.groupindex and match.group("detected") is not None:
+            return "id"
+        return self.kinds.get(_key(match.group(0)), "id")
 
     def finditer(self, text: str) -> Iterable[re.Match[str]]:
         return self.pattern.finditer(text) if self.pattern else ()
@@ -127,11 +257,17 @@ class _Matcher:
 class Session:
     """The local placeholder map for one masked payload. Never send it to a provider."""
 
-    def __init__(self, registry: Registry, allow: Iterable[str] = ()) -> None:
+    def __init__(
+        self, registry: Registry, allow: Iterable[str] = (), options: MaskOptions | str = NAMES
+    ) -> None:
+        self._options = _options(options)
         allowed = {_key(name) for name in allow}
         self._allowed = allowed
         # Allowed names stay in the pattern so that a shorter name inside one is not masked.
-        self._matcher = _Matcher(registry.terms())
+        terms = _terms(registry, self._options)
+        self._matcher = _Matcher(terms, self._options, detect_ids=self._options.ids)
+        # Leaks look for names and registered IDs only, not for anything shaped like an ID.
+        self._finder = _Matcher(terms, self._options)
         self._originals: dict[str, str] = {}
         self._by_value: dict[tuple[Kind, str], str] = {}
         self._counts: dict[Kind, int] = {"person": 0, "project": 0, "id": 0}
@@ -142,7 +278,7 @@ class Session:
             key = _key(found)
             if key in self._allowed:
                 return found
-            kind = self._matcher.kinds[key]
+            kind = self._matcher.kind_of(match)
             value = (kind, key)
             if value not in self._by_value:
                 self._counts[kind] += 1
@@ -173,6 +309,8 @@ class Session:
             def back(match: re.Match[str]) -> str:
                 token = f"[{match.group(1).lower()} {match.group(2)}]"
                 if token in self._originals:
+                    if match.group(1).lower() == "id" and self._options.id_restore == "[id]":
+                        return "[id]"
                     return self._originals[token]
                 unresolved.append((path, match.group(0)))
                 return match.group(0)
@@ -191,7 +329,7 @@ class Session:
         def check(text: str, path: str) -> str:
             found.extend(
                 Leak(path, match.group(0))
-                for match in self._matcher.finditer(text)
+                for match in self._finder.finditer(text)
                 if _key(match.group(0)) not in self._allowed
             )
             return text
@@ -200,12 +338,16 @@ class Session:
         return found
 
 
-def pseudonymize(text: str, registry: Registry, allow: Iterable[str] = ()) -> tuple[Masked, Session]:
+def pseudonymize(
+    text: str, registry: Registry, allow: Iterable[str] = (), options: MaskOptions | str = NAMES
+) -> tuple[Masked, Session]:
     """Replace registry names in ``text`` with placeholders; names in ``allow`` stay as written.
 
+    ``options`` says what to hide and how IDs come back: a :class:`MaskOptions`, or the preset name
+    ``"names"`` (the default) or ``"strict"``.
     Two casings of one name share one placeholder. Restore gives back the first casing seen.
     """
-    session = Session(registry, allow)
+    session = Session(registry, allow, options)
     return Masked(session._mask(text)), session
 
 
