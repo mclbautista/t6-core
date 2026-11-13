@@ -11,6 +11,7 @@ Tool events and the jobs they trigger are in `t6.domain.events`, re-exported her
 
 from __future__ import annotations
 
+import datetime as dt
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -132,6 +133,22 @@ class Project(NotionEntity):
     eps: int | None = field(default=None, compare=False)
     status: str | None = field(default=None, compare=False)
     studio_id: str | None = field(default=None, compare=False)
+    stage: str | None = field(default=None, compare=False)
+    health: str | None = field(default=None, compare=False)
+    playdate: dt.date | dt.datetime | None = field(default=None, compare=False)
+    submission_deadline: dt.date | dt.datetime | None = field(default=None, compare=False)
+    archival_deadline: dt.date | dt.datetime | None = field(default=None, compare=False)
+    pm_notes: str | None = field(default=None, compare=False)
+    tech_notes: str | None = field(default=None, compare=False)
+    has_post_supe: str | None = field(default=None, compare=False)
+    editor_ids: tuple[str, ...] = field(default=(), compare=False)
+    assistant_editor_ids: tuple[str, ...] = field(default=(), compare=False)
+    online_editor_ids: tuple[str, ...] = field(default=(), compare=False)
+    colorist_ids: tuple[str, ...] = field(default=(), compare=False)
+    sound_tech_ids: tuple[str, ...] = field(default=(), compare=False)
+    post_coordinator_ids: tuple[str, ...] = field(default=(), compare=False)
+    director_ids: tuple[str, ...] = field(default=(), compare=False)
+    cinematographer_ids: tuple[str, ...] = field(default=(), compare=False)
 
     def __post_init__(self) -> None:
         NotionEntity.__post_init__(self)
@@ -175,6 +192,8 @@ class Deliverable(NotionEntity):
     project_id: str | None = field(default=None, compare=False)
     due: date | None = field(default=None, compare=False)
     status: str | None = field(default=None, compare=False)
+    deliverable_class: str | None = field(default=None, compare=False)
+    playdate: dt.date | dt.datetime | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -203,6 +222,8 @@ class Contact(NotionEntity):
     telegram_handle: str | None = field(default=None, compare=False)
     telegram_user_id: int | None = field(default=None, compare=False)
     aliases: tuple[str, ...] = field(default=(), compare=False)
+    end_of_shift: dt.time | None = field(default=None, compare=False)
+    """When the person's shift ends, a time of day. `None` means flexible: no fixed end."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
