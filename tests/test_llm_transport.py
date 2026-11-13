@@ -83,6 +83,7 @@ class OpenAIChatTests(unittest.TestCase):
 
     def test_http_errors_raise_provider_error_without_the_body(self) -> None:
         error = urllib.error.HTTPError("https://llm.example", 500, "boom", Headers(), None)
+        self.addCleanup(error.close)  # an unclosed HTTPError warns when collected, which fails other tests on 3.14
         with self.assertRaises(ProviderError) as caught:
             provider(Recorder(error=error)).complete([], timeout=1)
         self.assertEqual(str(caught.exception), "HTTP 500")
