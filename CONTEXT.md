@@ -49,6 +49,12 @@ Modelled in `t6.drives`.
   are out for show X" is a query over open Assignments. A reused Drive gets a new
   Assignment; old ones stay as its history.
 
+## Consumer contract
+
+The rules every app follows to use t6-core (scope, boundary, `t6.domain`,
+Notion IDs, CI enforcement, version pins) are recorded in
+`docs/adr/0002-consumer-contract.md`.
+
 ## Project
 
 A **client show** that T6 works on. Modelled in `t6.domain` (the descriptive
