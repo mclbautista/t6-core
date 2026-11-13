@@ -390,6 +390,7 @@ def _per_project_facts(row: _Row, lookup: Lookup, logged_by: Ref, problems: list
         description=row.text("HD DESCRIPTION"),
         remarks=row.text("REMARKS"),
         format=row.text("FORMAT"),
+        ownership_known=False,
     )
     assignment = Assignment(
         label=label, project=project, role=_role(label or ""), start=received, remarks=remarks
@@ -422,6 +423,7 @@ def _inventory_facts(row: _Row, lookup: Lookup, logged_by: Ref, problems: list[s
         description=row.text("HD DESCRIPTION"),
         remarks=row.text("REMARKS"),
         format=row.text("FORMAT"),
+        ownership_known=False,
     )
     assignment = Assignment(
         label=label, project=project, role=_role(label or ""), start=None, remarks=remarks
@@ -566,7 +568,7 @@ def _movement_facts(
     doubts = (["no label"] if label is None else []) + problems
     return Drive(serial=serial, label=label, description=row.text("HD DESCRIPTION"),
                  remarks=physical_remarks, capacity_tb=capacity, needs_review=bool(doubts),
-                 review_note="; ".join(doubts) or None), assignment, event
+                 ownership_known=False, review_note="; ".join(doubts) or None), assignment, event
 
 
 # Reading cells
