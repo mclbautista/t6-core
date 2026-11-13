@@ -41,6 +41,7 @@ from t6.domain.events import (
     JobKind,
     JsonValue,
 )
+from t6.domain.studio_people import operator_ids
 from t6.operator import PREFIX as OPERATOR_PREFIX
 from t6.operator import Card, OperatorService, TapResult
 from t6.registry import (
@@ -168,7 +169,7 @@ class ServerConfig:
             notion_webhook_token=environ.get("T6_NOTION_WEBHOOK_TOKEN", ""),
             tap_secret=environ.get("T6_TAP_SECRET", ""),
             grants=tuple(grants),
-            operator_ids=tuple(int(part) for part in environ.get("T6_OPERATOR_IDS", "").replace(",", " ").split()),
+            operator_ids=operator_ids(environ),
             operator_ttl_seconds=float(environ.get("T6_OPERATOR_TTL_SECONDS") or 7 * 24 * 3600.0),
             review_quiet_seconds=_positive_seconds(environ, "T6_REVIEW_QUIET_SECONDS", REVIEW_QUIET_SECONDS),
         )
