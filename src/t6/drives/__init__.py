@@ -1,7 +1,7 @@
 """Physical external drives. Pure data and an interface: nothing here does I/O.
 
 A Drive is a physical external drive (portable or powered desktop), owned by
-T6 or by a Studio. It is never Google Drive. Identity is a permanent opaque ID;
+T6, owned by a Studio, or of unknown ownership. It is never Google Drive. Identity is a permanent opaque ID;
 accepted and suspected serials are correctable facts. It is not a
 Notion entity: it has no Notion row. Relations, such as the owning Studio, are
 Notion page IDs.
@@ -27,6 +27,7 @@ __all__ = [
     "DriveStatus",
     "DriveStore",
     "DuplicateSerial",
+    "Ownership",
     "FormFactor",
     "ManifestLine",
     "Party",
@@ -84,12 +85,23 @@ def _blank_to_none(value: str | None) -> str | None:
     return value.strip()
 
 
+class Ownership(enum.Enum):
+    """Who owns a Drive. `UNKNOWN` means nobody has said, which is not the same as T6."""
+
+    T6 = "t6"
+    STUDIO = "studio"
+    UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Drive:
     """One physical Drive. Equality and references use only its permanent ID.
 
     IDs are generated at construction (UUID4, prefixed t6d_). Supplying an ID
     rehydrates an existing record; adapters must never change or reuse it.
+    Ownership is T6 (no `owner_studio_id`), a Studio (`owner_studio_id`), or
+    unknown (`ownership_known=False`, and no `owner_studio_id`). It defaults to
+    T6, as before.
     A serial is an optional accepted fact, not identity. Suspected serials are
     explicitly uncertain and must never participate in exact serial matching.
     """
@@ -107,6 +119,7 @@ class Drive:
     format: str | None = field(default=None, compare=False)
     form_factor: FormFactor | None = field(default=None, compare=False)
     owner_studio_id: str | None = field(default=None, compare=False)
+    ownership_known: bool = field(default=True, compare=False)
     purchase_date: date | None = field(default=None, compare=False)
     warranty: str | None = field(default=None, compare=False)
     remarks: str | None = field(default=None, compare=False)
@@ -125,13 +138,22 @@ class Drive:
             raise ValueError(f"capacity must be more than 0 TB, got {self.capacity_tb}")
         for name in ("label", "description", "brand", "model", "format", "owner_studio_id", "warranty", "remarks", "review_note"):
             object.__setattr__(self, name, _blank_to_none(getattr(self, name)))
+        if not self.ownership_known and self.owner_studio_id is not None:
+            raise ValueError("a Drive of unknown ownership cannot have an owning Studio")
         if not any((self.serial, self.suspected_serial, self.label, self.description,
                     self.brand, self.model, self.remarks)):
             raise ValueError("a Drive needs meaningful identifying detail, not just an ID")
 
     @property
     def owned_by_t6(self) -> bool:
-        return self.owner_studio_id is None
+        """True only when ownership is known to be T6. Unknown ownership is not T6."""
+        return self.ownership is Ownership.T6
+
+    @property
+    def ownership(self) -> Ownership:
+        if not self.ownership_known:
+            return Ownership.UNKNOWN
+        return Ownership.T6 if self.owner_studio_id is None else Ownership.STUDIO
 
     @property
     def no_serial(self) -> bool:

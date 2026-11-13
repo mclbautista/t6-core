@@ -17,6 +17,7 @@ from t6.drives import (
     DuplicateSerial,
     FormFactor,
     ManifestLine,
+    Ownership,
     Party,
     PartyKind,
     Ref,
@@ -76,6 +77,18 @@ class DriveFactsTests(unittest.TestCase):
         drive = Drive(serial="ZX900AA2")
         self.assertTrue(drive.owned_by_t6)
         self.assertIsNone(drive.owner_studio_id)
+
+    def test_ownership_is_t6_a_studio_or_unknown(self) -> None:
+        self.assertIs(Drive(serial="ZX900AA4").ownership, Ownership.T6)
+        self.assertIs(Drive(serial="ZX900AA4", owner_studio_id="studio-page-1").ownership, Ownership.STUDIO)
+        unknown = Drive(serial="ZX900AA4", ownership_known=False)
+        self.assertIs(unknown.ownership, Ownership.UNKNOWN)
+        self.assertFalse(unknown.owned_by_t6)
+        self.assertIsNone(unknown.owner_studio_id)
+
+    def test_unknown_ownership_cannot_name_a_studio(self) -> None:
+        with self.assertRaises(ValueError):
+            Drive(serial="ZX900AA4", owner_studio_id="studio-page-1", ownership_known=False)
 
     def test_blank_optional_text_is_stored_as_none(self) -> None:
         drive = Drive(serial="ZX900AA3", brand="  ", remarks="", owner_studio_id=" ")

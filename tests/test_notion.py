@@ -255,5 +255,91 @@ class SyncMatchesAsyncTests(unittest.TestCase):
         asyncio.run(build())
 
 
+class BlockChildrenTests(unittest.TestCase):
+    @staticmethod
+    def paragraph(text: str) -> dict[str, object]:
+        return {"type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
+
+    def test_appended_blocks_are_listed_in_order_by_the_sync_client(self) -> None:
+        fake, page_id = fake_with_project()
+        with fake.client() as client:
+            created = client.append_block_children(page_id, [self.paragraph("one"), self.paragraph("two")])
+            client.append_block_children(page_id, [self.paragraph("three")])
+            listed = client.list_block_children(page_id)
+        self.assertEqual([b["id"] for b in listed[:2]], [b["id"] for b in created])
+        self.assertEqual(
+            [b["paragraph"]["rich_text"][0]["text"]["content"] for b in listed], ["one", "two", "three"]
+        )
+        self.assertEqual(listed[0]["parent"], {"type": "page_id", "page_id": page_id})
+
+    def test_the_async_client_lists_the_same_blocks(self) -> None:
+        fake, page_id = fake_with_project()
+
+        async def run() -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+            async with fake.async_client() as client:
+                await client.append_block_children(page_id, [self.paragraph("a")])
+                return await client.list_block_children(page_id), [b async for b in client.iter_block_children(page_id)]
+
+        listed, iterated = asyncio.run(run())
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed, iterated)
+
+    def test_listing_follows_the_cursor_across_pages(self) -> None:
+        fake, page_id = fake_with_project()
+        with fake.client() as client:
+            client.append_block_children(page_id, [self.paragraph(str(n)) for n in range(5)])
+            listed = client.list_block_children(page_id, page_size=2)
+        self.assertEqual(len(listed), 5)
+        gets = [r for r in fake.requests if r.method == "GET" and r.url.path.endswith("/children")]
+        self.assertEqual(len(gets), 3)
+
+    def test_more_than_a_hundred_blocks_are_sent_in_chunks(self) -> None:
+        fake, page_id = fake_with_project()
+        with fake.client() as client:
+            created = client.append_block_children(page_id, [self.paragraph(str(n)) for n in range(250)])
+            self.assertEqual(len(created), 250)
+            self.assertEqual(len(client.list_block_children(page_id)), 250)
+        patches = [r for r in fake.requests if r.method == "PATCH"]
+        self.assertEqual(len(patches), 3)
+
+    def test_a_block_can_hold_nested_children(self) -> None:
+        fake, page_id = fake_with_project()
+        toggle = {
+            "type": "toggle",
+            "toggle": {"rich_text": [], "children": [self.paragraph("inside")]},
+        }
+        with fake.client() as client:
+            (created,) = client.append_block_children(page_id, [toggle])
+            self.assertTrue(created["has_children"])
+            inside = client.list_block_children(created["id"])
+        self.assertEqual(len(inside), 1)
+        self.assertNotIn("children", fake.block_children(page_id)[0]["toggle"])
+
+    def test_an_unknown_parent_raises_notion_error(self) -> None:
+        fake, _ = fake_with_project()
+        with fake.client() as client:
+            with self.assertRaises(NotionError) as caught:
+                client.list_block_children("missing")
+            with self.assertRaises(NotionError):
+                client.append_block_children("missing", [self.paragraph("x")])
+        self.assertEqual(caught.exception.status, 404)
+
+    def test_an_append_is_a_write_and_is_not_retried_on_a_5xx(self) -> None:
+        fake, page_id = fake_with_project()
+        fake.fail_next(500, code="internal_server_error")
+        sleeps = Sleeps()
+        with fake.client(retry=RetryPolicy(sleep=sleeps)) as client:
+            with self.assertRaises(NotionError):
+                client.append_block_children(page_id, [self.paragraph("x")])
+            self.assertEqual(client.list_block_children(page_id), [])
+        self.assertEqual(sleeps.delays, [])
+
+    def test_a_list_is_a_read_and_retries(self) -> None:
+        fake, page_id = fake_with_project()
+        fake.fail_next(503, code="service_unavailable")
+        with fake.client(retry=RetryPolicy(sleep=Sleeps())) as client:
+            self.assertEqual(client.list_block_children(page_id), [])
+
+
 if __name__ == "__main__":
     unittest.main()

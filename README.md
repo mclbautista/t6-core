@@ -135,6 +135,12 @@ Mac mini. Both use only the standard library.
 Tests use `t6.server.testing.FakeClock`; no test opens a connection to a
 provider.
 
+## Consumer contract
+
+Every app uses t6-core for Notion, LLMs, privacy, Frame.io, Resolve and the
+fleet. The rules are in
+[`docs/adr/0002-consumer-contract.md`](docs/adr/0002-consumer-contract.md).
+
 ## Project registry
 
 `t6.registry` gives every Project a permanent T6 Project ID that does not
@@ -763,6 +769,17 @@ with NotionClient(token, retry=RetryPolicy()) as notion:
     rows = notion.query_data_source(projects_data_source_id)
 ```
 
+### Page content (blocks)
+
+`client.list_block_children(block_id)` returns every direct child block of a
+page or block, following the cursor. `client.append_block_children(block_id,
+blocks)` adds blocks after the last child and returns the created blocks; more
+than 100 blocks are sent as several requests. Both exist on the sync and async
+clients (the async client also has `iter_block_children`). The sync and async
+clients take the same arguments. An append is a write under the retry policy
+below: if a later request of a long append fails, the earlier requests are
+already saved.
+
 ### External Links
 
 `t6.notion.external_links.ExternalLinks(client, data_source_id)` reads and
@@ -787,8 +804,9 @@ This policy is written in ASD-STE100 Simplified Technical English.
 1. Retry is off by default. To turn it on, give a `RetryPolicy` to the client.
 2. When retry is off, the client does not retry. Each error causes a
    `NotionError` immediately.
-3. A read is a page retrieve, a data source retrieve, or a data source query.
-   A write is a page create or a page update.
+3. A read is a page retrieve, a data source retrieve, a data source query, or
+   a block children list. A write is a page create, a page update, or a
+   block children append.
 4. When Notion sends status 429, the client retries the call. This rule
    applies to reads and to writes.
 5. When Notion sends a status of 500 or more, the client retries a read. It
@@ -1028,6 +1046,9 @@ value, not free text.
 Each provider declares its retention: `zdr_enforced` (zero data retention is
 enforced on every request) or `unknown`. Each task declares a `DataPolicy`:
 the minimum retention it accepts and the masking its input must carry.
+For a `zdr_enforced` task, `OpenAIChat` on OpenRouter also sends
+`provider.zdr: true` with every request; other tasks and other providers are
+unchanged. A custom provider's `complete` takes `zdr: bool = False`.
 
 | Masking | Every text value in the input must be | Session |
 | --- | --- | --- |
@@ -1167,6 +1188,28 @@ drives-import-dry-run` is described under
 [Importing the legacy workbooks](#importing-the-legacy-workbooks). `t6 health`,
 `t6 backup --into DIR` and `t6 restore --from DIR` use the server's database
 variables and are described in `docs/deployment.md`.
+
+### Check an app follows the consumer contract
+
+`t6 check-consumer PATH` scans the Python files under `PATH` and fails when
+app code names a Notion, OpenRouter, DeepSeek or Frame.io API host in a string
+(a direct HTTP call), or imports `t6.notion.generated`
+([ADR 0002](docs/adr/0002-consumer-contract.md)). Docstrings and virtualenv or
+cache directories are not scanned. It prints JSON and exits 1 when there are
+findings (2 when the path does not exist):
+
+```console
+$ t6 check-consumer .
+{"findings": [{"file": "app/notes.py", "line": 12, "rule": "direct-http", "detail": "names the Notion API host api.notion.com"}]}
+```
+
+To add it to an app's CI, install t6 at the pinned release tag and run it on the
+app's source:
+
+```yaml
+- run: pip install 't6 @ git+https://github.com/mclbautista/t6-core.git@v0.3.3'
+- run: t6 check-consumer .
+```
 
 ## Container image
 
