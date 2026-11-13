@@ -96,6 +96,27 @@ ADMIN, then any other Department A to Z, then none) and the alias `TO` for
   and not Cancelled.
 - **Health flags** that show: Blocked, Delayed, Urgent.
 
+## Project status rules
+
+`t6.domain.project_rules`, over `Project`. Status and Health match by their
+words, ignoring emoji, case and spaces.
+
+- **Status gate**: In-Progress, In-Progress TVC and Airing are *in progress*;
+  Standby and Archiving are *on hold*; Leads, Lead, Negotiations and Proposal
+  Made are *incoming* (to refine later with the CRM). Any other Status is
+  dropped. Archived and Lost are never snapshotted.
+- **Date flags**: In-Progress and TVC flag a blank or overdue Playdate and
+  Submission Deadline; Airing flags blank ones only; Standby none; Archiving a
+  blank or overdue Archival Deadline; Incoming an overdue Playdate or one less
+  than 30 days away. Overdue is strictly before today in Manila.
+- **Missing roles**: for in-progress Projects, each of the eight roles
+  (editor, assistant editor, online editor, colorist, sound tech, post
+  coordinator, director, cinematographer) with nobody assigned.
+- **Health**: a blank Health is flagged. Order: Critical, At Risk, On Track,
+  Incoming, other, blank.
+- **Code display**: the code in capitals, or "CODE (Name)" when several
+  Projects share it; the name when there is no code.
+
 ## Consumer contract
 
 The rules every app follows to use t6-core (scope, boundary, `t6.domain`,
