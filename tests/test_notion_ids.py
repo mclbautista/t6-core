@@ -78,6 +78,25 @@ class RenameTests(unittest.TestCase):
             row = ShowsRow.from_page(client.update_page(page["id"], {"properties": ShowsRow.to_properties(stage="Grade")}))
         self.assertEqual(row.stage, "Grade")
 
+    def test_an_unknown_select_name_creates_an_option_but_an_unknown_status_name_is_refused(self) -> None:
+        fake = FakeNotion()
+        fake.add_data_source(
+            SOURCE,
+            {
+                "Stage": {"id": "stg", "name": "Stage", "type": "select", "select": {"options": []}},
+                "State": {"id": "st", "name": "State", "type": "status", "status": {"options": [{"id": "s1", "name": "Todo"}]}},
+            },
+        )
+        page = fake.add_page(SOURCE, {})
+        with fake.client() as client:
+            client.update_page(page["id"], {"properties": {"Stage": {"select": {"name": "Grade"}}}})
+            self.assertEqual(fake.select_options(SOURCE, "Stage"), ["Grade"])
+            client.update_page(page["id"], {"properties": {"State": {"status": {"name": "Todo"}}}})
+            with self.assertRaises(Exception) as caught:
+                client.update_page(page["id"], {"properties": {"State": {"status": {"name": "Todp"}}}})
+        self.assertIn("400", str(caught.exception) + str(getattr(caught.exception, "status", "")))
+        self.assertEqual(fake.select_options(SOURCE, "State"), ["Todo"])
+
     def test_a_property_with_no_id_is_read_and_written_by_name(self) -> None:
         @dataclass(frozen=True, slots=True, kw_only=True)
         class Legacy(NotionModel):
