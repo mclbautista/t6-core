@@ -1008,6 +1008,9 @@ value, not free text.
 Each provider declares its retention: `zdr_enforced` (zero data retention is
 enforced on every request) or `unknown`. Each task declares a `DataPolicy`:
 the minimum retention it accepts and the masking its input must carry.
+For a `zdr_enforced` task, `OpenAIChat` on OpenRouter also sends
+`provider.zdr: true` with every request; other tasks and other providers are
+unchanged. A custom provider's `complete` takes `zdr: bool = False`.
 
 | Masking | Every text value in the input must be | Session |
 | --- | --- | --- |
