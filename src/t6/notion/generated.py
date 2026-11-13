@@ -1,7 +1,7 @@
 """Notion models generated from `schema_snapshot.json`. Do not edit.
 
 Run `uv run python scripts/generate_models.py` to rebuild this module after the
-snapshot changes. Each field maps a Python name to one exact Notion property name.
+snapshot changes. Each field maps a Python name to one Notion property ID and name.
 """
 
 from __future__ import annotations

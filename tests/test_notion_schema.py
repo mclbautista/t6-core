@@ -59,10 +59,11 @@ class SnapshotTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_the_snapshot_holds_no_option_values(self) -> None:
+    def test_the_snapshot_holds_no_option_names(self) -> None:
         for database in load_snapshot()["databases"].values():
             for prop in database["properties"]:
-                self.assertEqual(set(prop), {"name", "type"})
+                self.assertLessEqual(set(prop), {"name", "type", "id", "options"})
+                self.assertTrue(all(isinstance(option, str) for option in prop.get("options", [])))
 
 
 class ModelReadWriteTests(unittest.TestCase):

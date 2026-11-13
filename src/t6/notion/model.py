@@ -1,11 +1,13 @@
 """Base class for the generated Notion models.
 
 A model is a frozen dataclass with one field per Notion property. Each field
-carries the exact Notion property name (trailing spaces and emoji included)
-and the Notion property type in its metadata. `from_page` reads a page by
-those names, so a live property that the model does not know is ignored and a
-missing one reads as empty. `to_properties` builds the `properties` body of a
-create or update call from Python names.
+carries the Notion property ID, the exact Notion property name (trailing
+spaces and emoji included, for display and errors) and the Notion property
+type in its metadata. `from_page` and `to_properties` address a property by
+its ID, so renaming it in Notion needs no code change. A field with no ID in
+the snapshot falls back to its name. A live property that the model does not
+know is ignored and a missing one reads as empty. `to_properties` builds the
+`properties` body of a create or update call from Python names.
 
 The subclasses are generated from `schema_snapshot.json` by
 `scripts/generate_models.py` and live in `t6.notion.generated`.
@@ -23,6 +25,7 @@ from t6.notion import codec
 JSON = dict[str, Any]
 
 NAME_KEY = "notion_name"
+ID_KEY = "notion_id"
 TYPE_KEY = "notion_type"
 
 _TEXT_TYPES = {"title", "rich_text"}
@@ -59,9 +62,22 @@ READ_ONLY_TYPES = frozenset(
 """Notion computes these. A model reads them and never writes them."""
 
 
-def notion(name: str, notion_type: str, *, default: Any = None) -> Any:
-    """Declare a model field that maps to the Notion property `name`."""
-    return field(default=default, metadata={NAME_KEY: name, TYPE_KEY: notion_type})
+class OptionId(str):
+    """A select, status or multi-select option, addressed by its Notion option ID.
+
+    Pass it to `encode` or `to_properties` instead of a name. Unlike a name, it
+    keeps working after the option is renamed in Notion.
+    """
+
+    __slots__ = ()
+
+
+def notion(name: str, notion_type: str, *, id: str | None = None, default: Any = None) -> Any:
+    """Declare a model field that maps to the Notion property `name`, with Notion ID `id`."""
+    metadata = {NAME_KEY: name, TYPE_KEY: notion_type}
+    if id:
+        metadata[ID_KEY] = id
+    return field(default=default, metadata=metadata)
 
 
 def decode(notion_type: str, prop: JSON | None) -> Any:
@@ -73,24 +89,27 @@ def _text(value: str | None) -> list[JSON]:
     return [{"type": "text", "text": {"content": value}}] if value else []
 
 
-def _named(value: str | None) -> JSON | None:
-    return {"name": value} if value else None
+def _option(value: str | None) -> JSON | None:
+    if not value:
+        return None
+    return {"id": str(value)} if isinstance(value, OptionId) else {"name": value}
 
 
 def encode(notion_type: str, value: Any) -> JSON:
     """Build one property value for a create or update body.
 
-    Select and multi-select values are sent by name. Notion adds an option it
-    does not know to the property, so writing a new value needs no schema step.
+    An `OptionId` is sent by option ID. A plain string is sent by name, and
+    Notion adds an option it does not know to the property, so writing a new
+    value needs no schema step.
     """
     if notion_type in READ_ONLY_TYPES:
         raise ValueError(f"{notion_type} properties are read-only")
     if notion_type in _TEXT_TYPES:
         return {notion_type: _text(value)}
     if notion_type in ("select", "status"):
-        return {notion_type: _named(value)}
+        return {notion_type: _option(value)}
     if notion_type == "multi_select":
-        return {notion_type: [{"name": name} for name in value or ()]}
+        return {notion_type: [_option(name) for name in value or ()]}
     if notion_type in ("relation", "people"):
         return {notion_type: [{"id": item} for item in value or ()]}
     if notion_type == "checkbox":
@@ -108,7 +127,7 @@ def _date(value: date | datetime | None) -> JSON | None:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class NotionModel:
-    """One page of one Notion database, read by exact property name."""
+    """One page of one Notion database, read and written by property ID."""
 
     page_id: str
     DATABASE: ClassVar[str]
@@ -125,18 +144,35 @@ class NotionModel:
         return str(cls.notion_fields()[attribute].metadata[NAME_KEY])
 
     @classmethod
+    def notion_id(cls, attribute: str) -> str | None:
+        """The Notion property ID behind a Python attribute, if the snapshot has one."""
+        return cls.notion_fields()[attribute].metadata.get(ID_KEY)
+
+    @classmethod
+    def _key(cls, f: dataclasses.Field[Any]) -> str:
+        """What to send as the property key: its ID, or its name when it has no ID."""
+        return str(f.metadata.get(ID_KEY) or f.metadata[NAME_KEY])
+
+    @classmethod
     def from_page(cls, page: JSON) -> Self:
-        """Build a model from a page. Unknown live properties are ignored."""
+        """Build a model from a page. Unknown live properties are ignored.
+
+        A property is found by ID. One with no ID in the snapshot, or a page
+        whose properties carry no `id`, is found by name.
+        """
         props: JSON = page.get("properties") or {}
-        values = {
-            attribute: decode(str(f.metadata[TYPE_KEY]), props.get(str(f.metadata[NAME_KEY])))
-            for attribute, f in cls.notion_fields().items()
-        }
+        by_id = {str(prop["id"]): prop for prop in props.values() if isinstance(prop, dict) and "id" in prop}
+        values = {}
+        for attribute, f in cls.notion_fields().items():
+            prop = by_id.get(str(f.metadata.get(ID_KEY)))
+            if prop is None:
+                prop = props.get(str(f.metadata[NAME_KEY]))
+            values[attribute] = decode(str(f.metadata[TYPE_KEY]), prop)
         return cls(page_id=str(page["id"]), **values)
 
     @classmethod
     def to_properties(cls, **values: Any) -> JSON:
-        """The `properties` body for the given attributes, under exact Notion names.
+        """The `properties` body for the given attributes, keyed by property ID.
 
         A value of None clears the property. An attribute that is unknown or
         read-only raises TypeError.
@@ -150,5 +186,5 @@ class NotionModel:
             notion_type = str(f.metadata[TYPE_KEY])
             if notion_type in READ_ONLY_TYPES:
                 raise TypeError(f"{cls.__name__}.{attribute} is a read-only {notion_type}")
-            body[str(f.metadata[NAME_KEY])] = encode(notion_type, value)
+            body[cls._key(f)] = encode(notion_type, value)
         return body
