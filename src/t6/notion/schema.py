@@ -19,6 +19,7 @@ from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from t6.notion import named
 from t6.notion.errors import NotionError
 from t6.registry import ProjectRegistry, RegistryUnavailable
 from t6.registry.check import ProjectFindings, audit_projects
@@ -103,6 +104,7 @@ def refresh_snapshot(client: NotionClient, snapshot: JSON, data_sources: dict[st
                 kept.append(_snapshot_property(found))
         kept += [_snapshot_property(prop) for prop in live_props if prop["name"] not in seen]
         refreshed["databases"][key]["properties"] = kept
+        named.fill(refreshed["databases"][key], key, live)
     return refreshed
 
 
@@ -156,7 +158,8 @@ def check_schema(
             }
             continue
         diff = diff_properties(database["properties"], live.get("properties") or {})
-        drifted = any(diff[kind] for kind in ("added", "removed", "changed"))
+        diff["named_missing"] = named.missing_values(database, key, live.get("properties") or {})
+        drifted = any(diff[kind] for kind in ("added", "removed", "changed", "named_missing"))
         databases[key] = {"status": "drift" if drifted else "ok", **diff}
 
     project_codes: JSON | None = None

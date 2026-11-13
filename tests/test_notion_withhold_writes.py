@@ -72,7 +72,7 @@ class WithholdOnWriteTests(unittest.TestCase):
             client.append_block_children(page, [paragraph("pin=7"), nested])
         text = str(fake.block_children(page))
         self.assertNotIn("pin=7", text)
-        self.assertEqual(text.count(WITHHELD), 1)
+        self.assertEqual(text.count(WITHHELD), 2)  # the one paragraph, as `content` and as `plain_text`
         self.assertNotIn("secret1", str(fake._children))
         self.assertIn("Details", text)
 

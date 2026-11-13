@@ -513,7 +513,17 @@
           "name": "🗂️ Coordinator",
           "type": "relation"
         }
-      ]
+      ],
+      "named_options": {
+        "status": {
+          "property": "Status",
+          "values": {}
+        },
+        "department": {
+          "property": "Department",
+          "values": {}
+        }
+      }
     },
     "deliverables": {
       "title": "Deliverables",
