@@ -887,6 +887,27 @@ page = notion.create_page({"parent": {"data_source_id": bays_id}, "properties": 
 bay = BaysRow.from_page(page)
 ```
 
+### Typed writes
+
+`t6.notion.writes.create_row(client, Model, data_source_id, values)` and
+`update_row(client, Model, page_id, values)` write by property ID, read the
+page back and compare it with what was written. `values` uses Python
+attribute names, as in `Model.to_properties`. Pass `to_domain=` to get a
+domain object instead of the row. The result is the saved row, or:
+
+- `Rejected(status, code, message)`: Notion refused the write (any 4xx,
+  429 included). Nothing was written.
+- `Ambiguous(reason, detail, page_id, mismatched)`: the write may have
+  happened. `reason` is `timeout`, `network_error`, `server_error`,
+  `readback_failed` or `mismatch` (the saved value differs; `mismatched`
+  names the attributes). `page_id` is `None` when a create got no answer.
+
+Nothing is retried and no state is kept: an app decides what to do next with
+its own idempotency key, because repeating an ambiguous create can make a
+duplicate page. Options set as `OptionId` are checked by ID, other options by
+name, and dates by instant to the minute, because Notion drops seconds. Pass
+a timezone with a time of day.
+
 ### Projects, Contacts and Deliverables
 
 `t6.notion.reads` has `ProjectReader`, `ContactReader` (each with `get` and
