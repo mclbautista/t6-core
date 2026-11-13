@@ -41,6 +41,7 @@ JSON = dict[str, Any]
 
 _PAGE = re.compile(r"^/v1/pages/(?P<id>[^/]+)$")
 _DATA_SOURCE = re.compile(r"^/v1/data_sources/(?P<id>[^/]+)$")
+_CHILDREN = re.compile(r"^/v1/blocks/(?P<id>[^/]+)/children$")
 _QUERY = re.compile(r"^/v1/data_sources/(?P<id>[^/]+)/query$")
 
 
@@ -58,6 +59,7 @@ class FakeNotion:
     def __init__(self) -> None:
         self._pages: dict[str, JSON] = {}
         self._data_sources: dict[str, JSON] = {}
+        self._children: dict[str, list[JSON]] = {}
         self._failures: list[_Failure] = []
         self.requests: list[httpx.Request] = []
         self.transport = httpx.MockTransport(self._handle)
@@ -174,6 +176,10 @@ class FakeNotion:
             return self._update_page(match["id"], body)
         if request.method == "POST" and path == "/v1/pages":
             return self._create_page(body)
+        if request.method == "GET" and (match := _CHILDREN.match(path)):
+            return self._list_children(match["id"], request.url.params)
+        if request.method == "PATCH" and (match := _CHILDREN.match(path)):
+            return self._append_children(match["id"], body)
         if request.method == "GET" and (match := _DATA_SOURCE.match(path)):
             return self._get(self._data_sources, match["id"])
         if request.method == "POST" and (match := _QUERY.match(path)):
@@ -209,6 +215,58 @@ class FakeNotion:
             if flag in body:
                 page[flag] = bool(body[flag])
         return httpx.Response(200, json=page)
+
+    def block_children(self, block_id: str) -> list[JSON]:
+        """The child blocks of a page or block, in order, as stored."""
+        return self._children.get(block_id, [])
+
+    def _is_block_parent(self, block_id: str) -> bool:
+        return block_id in self._pages or any(
+            block["id"] == block_id for blocks in self._children.values() for block in blocks
+        )
+
+    def _append_children(self, parent_id: str, body: JSON) -> httpx.Response:
+        if not self._is_block_parent(parent_id):
+            return _error(404, "object_not_found", f"Could not find block {parent_id}.")
+        children = body.get("children")
+        if not isinstance(children, list) or not 1 <= len(children) <= 100:
+            return _error(400, "validation_error", "children must hold 1 to 100 blocks.")
+        created = [self._store_block(parent_id, child) for child in children]
+        return httpx.Response(200, json={"object": "list", "results": created, "has_more": False, "next_cursor": None})
+
+    def _store_block(self, parent_id: str, block: JSON) -> JSON:
+        nested = (block.get(block.get("type", "")) or {}).get("children", [])
+        stored = {
+            **{key: copy.deepcopy(value) for key, value in block.items()},
+            "object": "block",
+            "id": str(uuid.uuid4()),
+            "parent": {"type": "page_id" if parent_id in self._pages else "block_id", **{
+                "page_id" if parent_id in self._pages else "block_id": parent_id}},
+            "has_children": bool(nested),
+        }
+        if nested:
+            del stored[stored["type"]]["children"]
+        self._children.setdefault(parent_id, []).append(stored)
+        for child in nested:
+            self._store_block(stored["id"], child)
+        return copy.deepcopy(stored)
+
+    def _list_children(self, parent_id: str, params: httpx.QueryParams) -> httpx.Response:
+        if not self._is_block_parent(parent_id):
+            return _error(404, "object_not_found", f"Could not find block {parent_id}.")
+        blocks = self._children.get(parent_id, [])
+        size = max(1, min(100, int(params.get("page_size", 100))))
+        start = int(params.get("start_cursor") or 0)
+        more = start + size < len(blocks)
+        return httpx.Response(
+            200,
+            json={
+                "object": "list",
+                "results": copy.deepcopy(blocks[start : start + size]),
+                "has_more": more,
+                "next_cursor": str(start + size) if more else None,
+            },
+        )
 
     def _prepare(self, data_source_id: str, properties: JSON) -> JSON | httpx.Response:
         """Validate and complete a write body; add select options it introduces."""
