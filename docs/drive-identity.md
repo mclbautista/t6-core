@@ -19,6 +19,11 @@ remarks supplies identifying detail. A generated ID, review flag/note, capacity
 or owner alone does not. Blank text facts become `None`. An Assignment label may
 be absent when the physical Drive has other identifying detail.
 
+Ownership is T6, a Studio, or unknown (`Drive.ownership`). A Drive with no
+`owner_studio_id` is T6's unless `ownership_known=False`. Unknown is not T6:
+`owned_by_t6` is false for it, and it cannot name an owning Studio. The
+workbook importers set unknown, because a sheet row gives no ownership evidence.
+
 Serial normalization is unchanged: remove parenthesized/square-bracketed notes,
 trim, collapse runs of internal whitespace to one space and uppercase. It does
 not delete the remaining internal spaces or other punctuation.

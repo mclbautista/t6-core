@@ -17,7 +17,7 @@ from openpyxl import Workbook
 
 from t6.cli import main
 from t6.domain import Project
-from t6.drives import CustodyKind, DriveStatus, Party, PartyKind, Ref, Role
+from t6.drives import CustodyKind, DriveStatus, Ownership, Party, PartyKind, Ref, Role
 from t6.drives.importer import (
     ReviewItem,
     import_log_sheet_workbook,
@@ -152,6 +152,12 @@ class PerProjectImportTests(unittest.TestCase):
         half = self.store.find_by_serial("ZX100AA2")
         assert half is not None
         self.assertEqual(half.capacity_tb, 0.5)
+
+    def test_an_imported_drive_keeps_unknown_ownership(self) -> None:
+        drive = self.store.find_by_serial("ZX100AA1")
+        assert drive is not None
+        self.assertIs(drive.ownership, Ownership.UNKNOWN)
+        self.assertFalse(drive.owned_by_t6)
 
     def test_a_clean_row_gets_an_assignment_for_its_project(self) -> None:
         (assignment,) = self.store.assignment_history(drive_id(self.store, "ZX100AA1"))
