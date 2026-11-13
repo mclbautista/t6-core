@@ -4,6 +4,7 @@ Callers use `ask` with a typed request. The Frame.io worker (`FrameioWorker`)
 is the only process with Frame.io credentials.
 """
 
+from t6.frameio.client import FrameioReader, SignInNeeded
 from t6.frameio.model import (
     Approval,
     BriefingLink,
@@ -50,12 +51,14 @@ __all__ = [
     "FrameioResult",
     "FrameioProject",
     "FrameioProjects",
+    "FrameioReader",
     "FrameioWorker",
     "Ok",
     "ResolveComment",
     "ResolvedComment",
     "ShareLink",
     "ShareLinks",
+    "SignInNeeded",
     "SignInRequired",
     "Tokens",
     "Version",

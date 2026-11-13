@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from http.server import ThreadingHTTPServer
 import html
 import os
 from pathlib import Path
@@ -12,8 +13,10 @@ import sys
 import threading
 
 from t6.domain.events import JsonValue
+from t6.frameio.readapi import ReadApi
 from t6.frameio.requests import ask
 from t6.frameio.worker import ArmReviewTimer, FrameioWorker, Run, Tokens
+from t6.server.http import make_server
 from t6.server.queue import DIAGNOSTIC_QUEUE, FRAMEIO_QUEUE
 from t6.worker.client import HttpTransport, QueueClient, Transport, WorkerJob
 from t6.worker.gateway import GatewayClient
@@ -186,6 +189,22 @@ def frameio_worker(
     return FrameioWorker(tokens, run, notify, arm_review_timer=timers)
 
 
+def read_api_server(environ: Mapping[str, str], frameio: FrameioWorker) -> ThreadingHTTPServer | None:
+    """The Frame.io read API's server, or None when `T6_FRAMEIO_READ_BIND` is unset.
+
+    It needs `T6_FRAMEIO_READ_SECRET` too. Bind it to the LAN or tailnet address, never a public one.
+    """
+    bind, secret = (environ.get("T6_FRAMEIO_READ_BIND") or "").strip(), environ.get("T6_FRAMEIO_READ_SECRET") or ""
+    if not bind:
+        return None
+    host, _, port = bind.rpartition(":")
+    if not host or not port.isdigit():
+        raise ConfigError("T6_FRAMEIO_READ_BIND must look like host:port, for example 100.64.0.2:8082")
+    if not secret:
+        raise ConfigError("missing environment variable: T6_FRAMEIO_READ_SECRET")
+    return make_server((host, int(port)), ReadApi(frameio, secret).handle)
+
+
 def serve(
     worker: Worker, stop: threading.Event, poll_seconds: float, tick: Callable[[], None] | None = None
 ) -> None:
@@ -211,6 +230,7 @@ def main(
     """`frameio` replaces the Frame.io worker the environment would build (tests pass one on fakes)."""
     environ = os.environ if environ is None else environ
     tick: Callable[[], None] | None = None
+    read_api: ThreadingHTTPServer | None = None
     try:
         settings = WorkerSettings.from_env(environ)
         transport = transport or HttpTransport(settings.server_url)
@@ -221,6 +241,7 @@ def main(
                 environ, *frameio_backend(environ), timers=ReviewTimerClient(transport, settings.secret).arm
             )
             queue_handlers, tick = frameio.handlers(), frameio.tick
+            read_api = read_api_server(environ, frameio)
         if not queue_handlers:
             raise ConfigError(f"no handler is registered for queue {settings.queue!r}")
     except ConfigError as error:
@@ -231,7 +252,14 @@ def main(
         for signum in (signal.SIGTERM, signal.SIGINT):
             signal.signal(signum, lambda _signum, _frame: stop.set())
     client = QueueClient(transport, settings.secret)
-    serve(Worker(client, settings.queue, queue_handlers), stop, settings.poll_seconds, tick)
+    if read_api is not None:
+        threading.Thread(target=read_api.serve_forever, daemon=True).start()
+    try:
+        serve(Worker(client, settings.queue, queue_handlers), stop, settings.poll_seconds, tick)
+    finally:
+        if read_api is not None:
+            read_api.shutdown()
+            read_api.server_close()
     return 0
 
 

@@ -113,6 +113,7 @@ Mac mini. Both use only the standard library.
 | `T6_FRAMEIO_TOKEN_FILE` | Frame.io worker: required, where the token is kept, on a volume only this worker mounts |
 | `T6_FRAMEIO_ACCOUNT_ID` | Frame.io worker: optional, the Frame.io account ID; needed only when the sign-in sees more than one account |
 | `T6_NOTION_TOKEN`, `T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE` | Frame.io worker: optional, turn on the briefing feed and the External Links rows for live share links |
+| `T6_FRAMEIO_READ_BIND`, `T6_FRAMEIO_READ_SECRET` | Frame.io worker: optional, turn on the [read API](#frameio): `host:port` on the LAN or tailnet address (never a public one) and the bearer secret callers send. Both are needed together |
 
 | Variable | Use |
 | --- | --- |
@@ -682,6 +683,20 @@ if isinstance(result, Ok):
   `notion` extra; the other reads do not. A feed over many share links can
   take minutes because of Frame.io's rate limit, so give `ask` a long
   `timeout`.
+- **Read API.** With `T6_FRAMEIO_READ_BIND` and `T6_FRAMEIO_READ_SECRET` set,
+  the Frame.io worker also serves read-only HTTP (`t6.frameio.readapi`), so an
+  app such as notion-reports gets Frame.io data with a read secret and no
+  Frame.io token. Routes, all `GET` with `Authorization: Bearer <secret>`:
+  `/frameio/status`, `/frameio/projects`, `/frameio/projects/<id>/share-links`,
+  `/frameio/files/<id>/comments`, `/frameio/files/<id>/approvals` and
+  `/frameio/briefing?since=<ISO 8601 time with zone>`. Nothing else is
+  routed: no write, no token. A signed-out worker answers 503. The client
+  `FrameioReader(HttpTransport(url, timeout=120), secret)` returns typed objects
+  (`projects()`, `share_links(id)`, `comments(file_id)`, `approvals(file_id)`,
+  `briefing(since)`) or `Failed(reason)`, and `SignInNeeded` (a `Failed`) when
+  a person must sign in; `signed_in()` reads the status. It never raises. Reads
+  take turns with queue jobs on the worker, so a long briefing feed delays
+  them; give the transport a long `timeout` for it.
 - **Tests.** `t6.frameio.testing.FakeFrameio` is an in-memory Frame.io V4 for
   tests, like `t6.notion.testing.FakeNotion`.
 - **Token store.** `t6.frameio.tokens.AdobeTokens` signs in to Adobe (OAuth
