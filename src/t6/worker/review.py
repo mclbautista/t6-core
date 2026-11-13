@@ -17,9 +17,10 @@ message is sent anyway with "unknown" where the answer is missing.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import html
 
+from t6.domain.dateformats import long_date
 from t6.domain.events import JobKind, JsonValue
 from t6.frameio.model import FrameioFile, ShareLink, decode
 from t6.frameio.requests import Comments, FileInfo, FrameioRequest, FrameioResult, Ok, ShareLinks
@@ -33,15 +34,6 @@ SEND_ANYWAY_AT_ATTEMPT = 3
 """The attempt (counting from 1) that sends even when Frame.io could not be read."""
 
 UNKNOWN = "unknown"
-
-MANILA = timezone(timedelta(hours=8), "Asia/Manila")
-"""Asia/Manila has no daylight saving time, so a fixed offset is exact."""
-
-
-def manila(epoch_seconds: float) -> str:
-    """`12 Nov 2026, 19:05` in Manila time."""
-    return datetime.fromtimestamp(epoch_seconds, MANILA).strftime("%d %b %Y, %H:%M")
-
 
 def link(url: str, label: str) -> str:
     """A Telegram HTML hyperlink. Both parts are escaped, the URL for use inside `href`."""
@@ -88,8 +80,8 @@ class ReviewMessage:
             f"<b>{who}</b> finished commenting on <b>{html.escape(title, quote=False)}</b>\n"
             f"Share link: {self._share_text(shares, file_id)}\n"
             f"Frame.io link: {asset}\n"
-            f"Started: {manila(first)} (Manila)\n"
-            f"Stopped: {manila(last)} (Manila)\n"
+            f"Started: {long_date(first)}\n"
+            f"Stopped: {long_date(last)}\n"
             f"{comments} from them, {UNKNOWN if total is None else total} on the file in total"
         )
         ref = self._gateway.notify(self._chat, text, [], f"frameio-review:{job.dedupe_key}", topic=self._topic)
