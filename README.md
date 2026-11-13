@@ -812,23 +812,31 @@ This policy is written in ASD-STE100 Simplified Technical English.
 
 ### Schema snapshot and models
 
-`src/t6/notion/schema_snapshot.json` lists every T6 database and the exact
-name and type of each property (captured 2026-11-09). It holds no select
-option values, because they contain show and client names. The `t6.notion.generated`
+`src/t6/notion/schema_snapshot.json` lists every T6 database and the Notion
+ID, exact name and type of each property (captured 2026-11-09). Select,
+multi-select and status properties also list their option IDs. It holds no
+option names, because they contain show and client names. A property or option
+keeps its ID when it is renamed in Notion, so t6-core addresses by ID and the
+name is for display and errors. After a rename, run
+`t6 schema-snapshot --data-sources FILE --out FILE` (same file format as
+`schema-check`) and regenerate; no code changes. A property whose entry has no
+ID yet is addressed by name. The `t6.notion.generated`
 module has one model per database, such as `BaysRow` and `JobOrdersRow`. Run
 `uv run python scripts/generate_models.py` after the snapshot changes. A test
 fails when the module is out of date.
 
-- A model field maps a Python name to the exact Notion property name, so a
-  trailing space (`Blocker `) or an emoji (`🗂️ Coordinator`) reads and writes
-  correctly.
+- A model field maps a Python name to the Notion property ID and exact name
+  (a trailing space `Blocker ` or an emoji `🗂️ Coordinator` are kept). Reads
+  find the property by ID and writes key it by ID.
 - `Model.from_page(page)` ignores live properties that the snapshot does not
   list. A missing or wrong-typed property reads as `None` or an empty tuple.
 - `Model.to_properties(**values)` builds the `properties` body for
   `create_page` or `update_page`. A value of `None` clears the property.
   Formula, rollup, timestamp and similar properties are read-only.
-- Select and multi-select values are sent by name, and Notion adds an option
-  that does not exist. The in-memory fake does the same.
+- Select, multi-select and status values are sent by name, and Notion adds an
+  option that does not exist. Wrap an option ID in `OptionId("...")`
+  (`t6.notion.model`) to set it by ID, which survives a rename. The in-memory
+  fake does the same.
 - Bays carries the Munki fleet fields: `serial_number`, `munki_manifest`,
   `munki_client_version` and `os_version` (text), `ring` (select) and
   `last_check_in` (date).
@@ -854,7 +862,8 @@ $ t6 schema-check --data-sources data-sources.json
 ```
 
 The report is JSON. For each database it lists `added`, `removed` and
-`changed` (type) properties. Databases without an ID are listed under
+`changed` (type) properties, and `renamed` properties (same ID, new name),
+which are information and not drift. Databases without an ID are listed under
 `skipped`.
 
 **Projects are audited against the registry.** When `projects` is in the data

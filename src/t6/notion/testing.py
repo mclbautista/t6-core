@@ -18,6 +18,11 @@ multi-select value that is not yet an option is added as an option. Write
 bodies need no `type` keys; the fake adds them so pages read back like
 Notion's. `add_snapshot_data_source` builds such a data source from the
 committed schema snapshot.
+
+Properties and options have stable IDs, as in Notion. A write may key a
+property by name or by ID and set an option by `{"id": ...}` or by name, and
+pages read back with each property's `id`. `rename_property` and
+`rename_option` change names and keep IDs, as a rename in Notion does.
 """
 
 from __future__ import annotations
@@ -77,6 +82,28 @@ class FakeNotion:
         """Add a property to a data source, as if someone edited it in Notion."""
         self._data_sources[data_source_id]["properties"][name] = _property(name, notion_type)
 
+    def rename_property(self, data_source_id: str, name: str, new_name: str) -> None:
+        """Rename a property in the schema and on every page. Its ID stays."""
+        schema = self._data_sources[data_source_id]["properties"]
+        schema[new_name] = {**schema.pop(name), "name": new_name}
+        for page in self._pages.values():
+            if page["parent"]["data_source_id"] == data_source_id and name in page["properties"]:
+                page["properties"][new_name] = page["properties"].pop(name)
+
+    def rename_option(self, data_source_id: str, name: str, option: str, new_option: str) -> None:
+        """Rename a select, multi-select or status option, on every page too. Its ID stays."""
+        prop = self._data_sources[data_source_id]["properties"][name]
+        options = prop[prop["type"]]["options"]
+        by_name = {existing["name"]: existing for existing in options}
+        by_name[option]["name"] = new_option
+        for page in self._pages.values():
+            if page["parent"]["data_source_id"] != data_source_id:
+                continue
+            chosen = (page["properties"].get(name) or {}).get(prop["type"])
+            for value in chosen if isinstance(chosen, list) else [chosen]:
+                if value and value.get("name") == option:
+                    value["name"] = new_option
+
     def remove_property(self, data_source_id: str, name: str) -> None:
         del self._data_sources[data_source_id]["properties"][name]
 
@@ -99,10 +126,17 @@ class FakeNotion:
             "url": f"https://www.notion.so/{page_id.replace('-', '')}",
             "archived": False,
             "in_trash": False,
-            "properties": copy.deepcopy(properties),
+            "properties": self._with_ids(data_source_id, copy.deepcopy(properties)),
         }
         self._pages[page_id] = page
         return copy.deepcopy(page)
+
+    def _with_ids(self, data_source_id: str, properties: JSON) -> JSON:
+        schema: JSON = self._data_sources[data_source_id]["properties"]
+        for name, prop in properties.items():
+            if name in schema and "id" not in prop:
+                prop["id"] = schema[name]["id"]
+        return properties
 
     def page(self, page_id: str) -> JSON:
         return copy.deepcopy(self._pages[page_id])
@@ -213,23 +247,37 @@ class FakeNotion:
     def _prepare(self, data_source_id: str, properties: JSON) -> JSON | httpx.Response:
         """Validate and complete a write body; add select options it introduces."""
         schema: JSON = self._data_sources[data_source_id]["properties"]
+        by_id = {str(prop["id"]): name for name, prop in schema.items()}
         prepared: JSON = {}
-        for name, value in properties.items():
+        for key, value in properties.items():
+            name = key if key in schema else by_id.get(key, key)
             if schema and name not in schema:
                 return _error(
-                    400, "validation_error", f"{name} is not a property that exists."
+                    400, "validation_error", f"{key} is not a property that exists."
                 )
             value = _as_read({name: copy.deepcopy(value)})[name]
             kind = value.get("type")
             if kind is None:
                 return _error(400, "validation_error", f"{name} has no value.")
-            if schema and kind in ("select", "multi_select"):
+            if schema and kind in ("select", "multi_select", "status"):
                 options = schema[name][kind]["options"]
                 chosen = value.get(kind)
+                resolved = []
                 for option in chosen if isinstance(chosen, list) else [chosen]:
-                    known = {existing["name"] for existing in options}
-                    if option and option["name"] not in known:
-                        options.append({"id": uuid.uuid4().hex[:8], "name": option["name"]})
+                    if option:
+                        known = next(
+                            (o for o in options if o["id"] == option.get("id") or o["name"] == option.get("name")),
+                            None,
+                        )
+                        if known is None and "id" in option:
+                            return _error(400, "validation_error", f"{name} has no option {option['id']}.")
+                        if known is None:
+                            known = {"id": uuid.uuid4().hex[:8], "name": option["name"]}
+                            options.append(known)
+                        resolved.append({"id": known["id"], "name": known["name"]})
+                value[kind] = resolved if isinstance(chosen, list) else (resolved[0] if resolved else None)
+            if schema:
+                value["id"] = schema[name]["id"]
             prepared[name] = value
         return prepared
 
@@ -319,8 +367,8 @@ def _error(status: int, code: str, message: str, headers: dict[str, str] | None 
 # Schema helpers
 
 
-def _property(name: str, notion_type: str) -> JSON:
-    prop: JSON = {"id": uuid.uuid4().hex[:4], "name": name, "type": notion_type}
+def _property(name: str, notion_type: str, property_id: str | None = None) -> JSON:
+    prop: JSON = {"id": property_id or uuid.uuid4().hex[:4], "name": name, "type": notion_type}
     if notion_type in ("select", "multi_select", "status"):
         prop[notion_type] = {"options": []}
     else:
@@ -331,7 +379,7 @@ def _property(name: str, notion_type: str) -> JSON:
 def snapshot_properties(database: str) -> JSON:
     """Live-shaped data source properties for one database of the schema snapshot."""
     return {
-        prop["name"]: _property(prop["name"], prop["type"])
+        prop["name"]: _property(prop["name"], prop["type"], prop.get("id"))
         for prop in load_snapshot()["databases"][database]["properties"]
     }
 

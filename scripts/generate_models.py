@@ -5,7 +5,8 @@
     uv run python scripts/generate_models.py --check  # exit 1 if it is stale
 
 Each snapshot database becomes one `NotionModel` subclass. A field maps one
-Python name to one exact Notion property name, trailing spaces and emoji
+Python name to one Notion property ID (when the snapshot has it) and the exact
+Notion property name, trailing spaces and emoji
 included. Names are chosen by `attribute_name` and never depend on the order
 of other databases, so adding a property only adds a field.
 """
@@ -93,7 +94,7 @@ def render(snapshot: dict[str, Any]) -> str:
         '"""Notion models generated from `schema_snapshot.json`. Do not edit.',
         "",
         "Run `uv run python scripts/generate_models.py` to rebuild this module after the",
-        "snapshot changes. Each field maps a Python name to one exact Notion property name.",
+        "snapshot changes. Each field maps a Python name to one Notion property ID and name.",
         '"""',
         "",
         "from __future__ import annotations",
@@ -126,6 +127,7 @@ def render(snapshot: dict[str, Any]) -> str:
             lines.append(
                 f"    {attribute}: {annotation} = notion("
                 f"{literal(prop['name'])}, {literal(prop['type'])}"
+                + (f", id={literal(prop['id'])}" if prop.get("id") else "")
                 + (f", default={default}" if default != "None" else "")
                 + ")"
             )

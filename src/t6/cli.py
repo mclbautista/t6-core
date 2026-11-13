@@ -9,6 +9,7 @@ command cannot run.
 from __future__ import annotations
 
 import argparse
+from datetime import date
 from collections.abc import Callable, Sequence
 import json
 import os
@@ -114,6 +115,29 @@ def _schema_check(
         return _fail(str(error))
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report["ok"] else 1
+
+
+def _schema_snapshot(
+    args: argparse.Namespace, open_notion: Callable[[str], NotionClient]
+) -> int:
+    try:
+        from t6.notion import NotionError
+        from t6.notion.schema import load_snapshot, refresh_snapshot
+    except ImportError:
+        return _fail("schema-snapshot needs the notion extra: pip install 't6[notion]'")
+    token = os.environ.get(TOKEN_VARIABLE)
+    if not token:
+        return _fail(f"set {TOKEN_VARIABLE} to a Notion integration token")
+    try:
+        snapshot = load_snapshot(args.snapshot)
+        data_sources = _read_data_sources(args.data_sources)
+        with open_notion(token) as client:
+            refreshed = refresh_snapshot(client, snapshot, data_sources)
+        refreshed["captured"] = date.today().isoformat()
+        args.out.write_text(json.dumps(refreshed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except (OSError, ValueError, NotionError) as error:
+        return _fail(str(error))
+    return 0
 
 
 def _migrate_projects(
@@ -260,6 +284,17 @@ def main(
         metavar="FILE",
         help="check against this snapshot instead of the bundled one",
     )
+    refresh = commands.add_parser(
+        "schema-snapshot",
+        help="Rewrite the schema snapshot with property and option IDs read from live Notion",
+        description=(
+            f"Reads the Notion token from ${TOKEN_VARIABLE}. Writes the snapshot to --out; "
+            "then run scripts/generate_models.py. Option names are never written."
+        ),
+    )
+    refresh.add_argument("--data-sources", type=Path, required=True, metavar="FILE", help="JSON object of snapshot database key to live data source ID")
+    refresh.add_argument("--snapshot", type=Path, metavar="FILE", help="start from this snapshot instead of the bundled one")
+    refresh.add_argument("--out", type=Path, required=True, metavar="FILE", help="where to write the new snapshot")
     cameras = commands.add_parser(
         "cameras",
         help="Read and update Cameras as JSON in domain field names",
@@ -349,6 +384,8 @@ def main(
         return _classify_projects(args)
     if args.command == "schema-check":
         return _schema_check(args, open_notion)
+    if args.command == "schema-snapshot":
+        return _schema_snapshot(args, open_notion)
     if args.command == "cameras":
         return _cameras(args, open_notion)
     print(json.dumps({"version": version("t6")}))

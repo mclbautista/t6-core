@@ -1,8 +1,11 @@
 """The committed schema snapshot, and the drift check against live Notion.
 
-`schema_snapshot.json` lists every T6 database and the exact name and type of
-each property. Option values are left out on purpose: they hold show and
-client names, and this repository is public. The generated models in
+`schema_snapshot.json` lists every T6 database and the Notion ID, exact name
+and type of each property. Select, multi-select and status properties also list
+their option IDs. Option names are left out on purpose: they hold show and
+client names, and this repository is public. The ID is the key: a property
+renamed in Notion keeps its ID, so a rename needs no code change.
+`refresh_snapshot` rebuilds the snapshot from live Notion. The generated models in
 `t6.notion.generated` come from the snapshot, and `check_schema` diffs live
 Notion against it. It also audits the Projects pages against the Project
 registry (`t6.registry.check`).
@@ -10,6 +13,7 @@ registry (`t6.registry.check`).
 
 from __future__ import annotations
 
+import copy
 import json
 from importlib import resources
 from pathlib import Path
@@ -43,28 +47,73 @@ def _as_snapshot(data: Any) -> JSON:
 def diff_properties(snapshot: list[JSON], live: JSON) -> JSON:
     """Compare snapshot properties with a live data source's `properties`.
 
-    Names are compared exactly, trailing spaces and emoji included. A property
-    is `changed` when its type differs.
+    A snapshot property with an ID is matched to the live property with that
+    ID, so a rename is reported under `renamed` (information, not drift). One
+    with no ID is matched by exact name, trailing spaces and emoji included.
+    `added` and `removed` are drift, and so is a `changed` type.
     """
-    live_types = {str(prop.get("name", key)): str(prop["type"]) for key, prop in live.items()}
-    snapshot_types = {str(prop["name"]): str(prop["type"]) for prop in snapshot}
-    return {
-        "added": [
-            {"name": name, "type": live_types[name]}
-            for name in live_types
-            if name not in snapshot_types
-        ],
-        "removed": [
-            {"name": name, "type": snapshot_types[name]}
-            for name in snapshot_types
-            if name not in live_types
-        ],
-        "changed": [
-            {"name": name, "snapshot_type": snapshot_types[name], "live_type": live_types[name]}
-            for name in snapshot_types
-            if name in live_types and live_types[name] != snapshot_types[name]
-        ],
-    }
+    live_props = [{**prop, "name": str(prop.get("name", key))} for key, prop in live.items()]
+    live_by_id = {str(prop["id"]): prop for prop in live_props if "id" in prop}
+    live_by_name = {prop["name"]: prop for prop in live_props}
+    matched: set[str] = set()
+    removed, changed, renamed = [], [], []
+    for prop in snapshot:
+        name, kind = str(prop["name"]), str(prop["type"])
+        found = live_by_id.get(str(prop["id"])) if prop.get("id") else live_by_name.get(name)
+        if found is None:
+            removed.append({"name": name, "type": kind})
+            continue
+        matched.add(found["name"])
+        if found["name"] != name:
+            renamed.append({"from": name, "to": found["name"]})
+        if str(found["type"]) != kind:
+            changed.append({"name": name, "snapshot_type": kind, "live_type": str(found["type"])})
+    added = [
+        {"name": prop["name"], "type": str(prop["type"])}
+        for prop in live_props
+        if prop["name"] not in matched
+    ]
+    return {"added": added, "removed": removed, "changed": changed, "renamed": renamed}
+
+
+def refresh_snapshot(client: NotionClient, snapshot: JSON, data_sources: dict[str, str]) -> JSON:
+    """A copy of `snapshot` with property and option IDs (and names) read from live Notion.
+
+    For each database in `data_sources`, a property keeps its place when its ID
+    (or, before it has one, its name) is still live; a live property the
+    snapshot lacks is appended; a property no longer live is dropped. Databases
+    not in `data_sources` are copied as they are. Option IDs are kept, names
+    are not.
+    """
+    unknown = sorted(set(data_sources) - set(snapshot["databases"]))
+    if unknown:
+        raise ValueError(f"data sources for databases not in the snapshot: {', '.join(unknown)}")
+    refreshed: JSON = copy.deepcopy(snapshot)
+    for key, source_id in data_sources.items():
+        live = client.retrieve_data_source(source_id).get("properties") or {}
+        live_props = [{**prop, "name": str(prop.get("name", name))} for name, prop in live.items()]
+        by_id = {str(prop["id"]): prop for prop in live_props if "id" in prop}
+        by_name = {prop["name"]: prop for prop in live_props}
+        kept: list[JSON] = []
+        seen: set[str] = set()
+        for prop in refreshed["databases"][key]["properties"]:
+            found = by_id.get(str(prop["id"])) if prop.get("id") else by_name.get(str(prop["name"]))
+            if found is not None and found["name"] not in seen:
+                seen.add(found["name"])
+                kept.append(_snapshot_property(found))
+        kept += [_snapshot_property(prop) for prop in live_props if prop["name"] not in seen]
+        refreshed["databases"][key]["properties"] = kept
+    return refreshed
+
+
+def _snapshot_property(live: JSON) -> JSON:
+    entry: JSON = {"name": live["name"], "type": str(live["type"])}
+    if "id" in live:
+        entry["id"] = str(live["id"])
+    options = (live.get(live["type"]) or {}).get("options")
+    if isinstance(options, list) and live["type"] in ("select", "multi_select", "status"):
+        entry["options"] = [str(option["id"]) for option in options if "id" in option]
+    return entry
 
 
 def check_schema(
@@ -107,7 +156,7 @@ def check_schema(
             }
             continue
         diff = diff_properties(database["properties"], live.get("properties") or {})
-        drifted = any(diff.values())
+        drifted = any(diff[kind] for kind in ("added", "removed", "changed"))
         databases[key] = {"status": "drift" if drifted else "ok", **diff}
 
     project_codes: JSON | None = None
