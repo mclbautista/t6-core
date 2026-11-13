@@ -887,6 +887,19 @@ page = notion.create_page({"parent": {"data_source_id": bays_id}, "properties": 
 bay = BaysRow.from_page(page)
 ```
 
+### Projects, Contacts and Deliverables
+
+`t6.notion.reads` has `ProjectReader`, `ContactReader` (each with `get` and
+`list`) and `DeliverableReader.for_project`, returning `t6.domain` entities
+addressed by property ID. `Project` carries status, stage, health, playdate,
+submission and archival deadlines, PM and tech notes, `has_post_supe`, and the
+role relations as page IDs (`editor_ids`, `assistant_editor_ids`,
+`online_editor_ids`, `colorist_ids`, `sound_tech_ids`, `post_coordinator_ids`,
+`director_ids`, `cinematographer_ids`). `Contact.end_of_shift` is a time of day
+parsed from "10:00 PM", "10 PM" or "22:00"; "Flexible / Variable", blank and
+any other text are `None`, meaning flexible. `Deliverable` carries
+`deliverable_class` and `playdate`.
+
 ### Schema check
 
 `t6 schema-check` diffs live Notion against the snapshot. It needs the Notion
