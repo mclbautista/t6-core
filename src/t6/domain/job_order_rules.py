@@ -162,7 +162,7 @@ WATERMARK_DEFAULT = "none"
 """What the formatter writes for Watermark when none is given."""
 
 MFG_SHUTTLES = tuple(f"MFG Shuttle {number:02d}" for number in range(1, 5))
-"""My Father's Girlfriend shuttle drives: 01 to 04, rotating. There is no 05."""
+"""MFG shuttle drives: 01 to 04, rotating. There is no 05."""
 
 
 def is_mfg_shuttle(name: str) -> bool:
