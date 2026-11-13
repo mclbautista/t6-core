@@ -160,10 +160,12 @@ class ContactTests(unittest.TestCase):
         r = self.lookup.contact("Pedro Reyes", team=("c1",))
         self.assertEqual(r.entity, self.pedro)
 
-    def test_a_surname_alone_needs_review_not_a_pick(self) -> None:
-        r = self.lookup.contact("Santos")
+    def test_a_surname_shared_by_two_contacts_needs_review_not_a_pick(self) -> None:
+        other = contact("c3", "Ana Santos")
+        r = Lookup(Index(contacts=(self.maria, other, self.pedro))).contact("Santos")
         self.assertIsNone(r.entity)
-        self.assertEqual(r.needs_review, bool(r.candidates))
+        self.assertEqual((r.method, r.needs_review), ("review", True))
+        self.assertCountEqual(ids(r), ["c1", "c3"])
 
 
 class MachineTests(unittest.TestCase):

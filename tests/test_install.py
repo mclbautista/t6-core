@@ -45,11 +45,12 @@ class InstallationTests(unittest.TestCase):
                             "pydantic<3,>=2.7; extra == 'llm'",
                             "psycopg[binary]<4,>=3.2; extra == 'resolve'",
                             "openpyxl<4,>=3.1; extra == 'drives'",
+                            "rapidfuzz<4,>=3.9; extra == 'lookup'",
                         },
                     )
                     self.assertEqual(
                         set(installed["extras"]),
-                        {"notion", "privacy", "llm", "frameio", "resolve", "instagantt", "drives", "server", "worker"},
+                        {"notion", "privacy", "llm", "frameio", "resolve", "instagantt", "lookup", "drives", "server", "worker"},
                     )
                     # A fresh environment may include setuptools on Python 3.11.
                     allowed = {"t6", "pip", "setuptools"}

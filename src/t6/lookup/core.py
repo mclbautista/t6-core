@@ -10,6 +10,7 @@ from typing import Any, Generic, Literal, Protocol, TypeVar
 from t6.domain import Contact, Deliverable, JobOrder, Machine, NotionEntity, Project, Studio
 from t6.lookup.normalize import Normalizers
 from t6.lookup.result import Candidate, Method, Resolution
+from t6.lookup.scoring import wratio
 
 E = TypeVar("E", bound=NotionEntity)
 
@@ -75,7 +76,7 @@ DEFAULT_POLICIES: dict[str, Policy] = {
     "project_name": Policy(llm=False),
     "machine": EXACT_ONLY,
     "deliverable": Policy(),
-    "contact": Policy(),
+    "contact": Policy(fuzzy_accept=0.90, margin=0.08, review_floor=0.60, max_candidates=3, scorer=wratio),
     "studio": Policy(),
 }
 
@@ -109,6 +110,12 @@ class _Kind(Generic[E]):
     ids: Callable[[E], Iterable[str | None]]
     forms: Callable[[E], Iterable[str | None]]
     mention: Callable[[str], Iterable[str]]
+    stages: tuple[tuple[Callable[[E], Iterable[str | None]], Callable[[str], Iterable[str]]], ...] = ()
+    """Normalized matching in this order (forms of an entity, forms of the mention), first stage with a match
+    decides. Empty means one stage of `forms` and `mention`."""
+    fuzzy_forms: Callable[[E], Iterable[str | None]] | None = None
+    fuzzy_mention: Callable[[str], Iterable[str]] | None = None
+    """What fuzzy matching compares, when it is narrower than `forms` and `mention`."""
 
 
 def _clean(values: Iterable[str | None]) -> tuple[str, ...]:
@@ -145,10 +152,18 @@ class Lookup:
             forms=lambda e: [e.serial_number and n.host(e.serial_number), e.hostname and n.host(e.hostname)],
             mention=lambda m: [n.host(m)],
         )
+        contact_names: Callable[[Contact], list[str | None]] = lambda e: [n.name(e.name), *(n.name(a) for a in e.aliases)]
         self._contact: _Kind[Contact] = _Kind(
             ids=lambda e: [None if e.telegram_user_id is None else str(e.telegram_user_id)],
-            forms=lambda e: [n.name(e.name), *(n.name(a) for a in e.aliases), e.telegram_handle and n.handle(e.telegram_handle)],
+            forms=lambda e: [*contact_names(e), e.telegram_handle and n.handle(e.telegram_handle)],
             mention=lambda m: [n.name(m), n.handle(m)],
+            # the studio policy: Telegram ID, then handle, then alias or name, then fuzzy on names
+            stages=(
+                (lambda e: [e.telegram_handle and n.handle(e.telegram_handle)], lambda m: [n.handle(m)]),
+                (contact_names, lambda m: [n.name(m)]),
+            ),
+            fuzzy_forms=contact_names,
+            fuzzy_mention=lambda m: [n.name(m)],
         )
         self._deliverable: _Kind[Deliverable] = _Kind(ids=lambda e: [], forms=lambda e: [n.name(e.name)], mention=lambda m: [n.name(m)])
         self._studio: _Kind[Studio] = _Kind(
@@ -252,6 +267,17 @@ class Lookup:
                 return found
         return self._run("contact", self._contact, mention, self._index.contacts)
 
+    def suggest_contacts(self, mention: str, *, team: Iterable[str] = ()) -> tuple[Candidate[Contact], ...]:
+        """Up to 3 Contacts a person could choose from for a mention, best first (WRatio 60 or more).
+
+        These are only suggestions: no call here decides, links or writes anything. Use `contact` to resolve.
+        Among equal scores the Project's team (Contact page IDs) comes first.
+        """
+        policy = self._policies["contact"]
+        team_ids = set(team)
+        wanted = set(_clean((self._contact.fuzzy_mention or self._contact.mention)(mention.strip())))
+        return self._rank(self._contact, wanted, self._index.contacts, policy, team_ids)
+
     def machine(self, hostname_or_serial: str) -> Resolution[Machine]:
         """A Machine by hostname or serial number."""
         return self._run("machine", self._machine, hostname_or_serial, self._index.machines)
@@ -288,18 +314,20 @@ class Lookup:
         exact = [e for e in pool if raw in _clean(kind.ids(e))]
         if exact:
             return _pick(exact, "exact_id")
-        wanted = set(_clean(kind.mention(raw)))
-        normalized = [e for e in pool if wanted & set(_clean(kind.forms(e)))]
-        if normalized:
-            return _pick(normalized, "normalized")
+        for forms, mentions in kind.stages or ((kind.forms, kind.mention),):
+            stage_wanted = set(_clean(mentions(raw)))
+            normalized = [e for e in pool if stage_wanted & set(_clean(forms(e)))]
+            if normalized:
+                return _pick(normalized, "normalized")
         if not policy.fuzzy:
             return _NONE
+        wanted = set(_clean((kind.fuzzy_mention or kind.mention)(raw)))
         ranked = self._rank(kind, wanted, pool, policy)
         if not ranked:
             return _NONE
         top = ranked[0]
         runner_up = ranked[1].score if len(ranked) > 1 else 0.0
-        if top.score >= policy.fuzzy_accept and top.score - runner_up >= policy.margin:
+        if top.score >= policy.fuzzy_accept and round(top.score - runner_up, 6) >= policy.margin:
             return Resolution(top.entity, "fuzzy", top.score, ranked, False)
         if policy.llm and self._judge is not None:
             decided = self._ask_judge(raw, ranked, policy)
@@ -308,14 +336,16 @@ class Lookup:
         return Resolution(None, "review", top.score, ranked, True)
 
     @staticmethod
-    def _rank(kind: _Kind[E], wanted: set[str], pool: Sequence[E], policy: Policy) -> tuple[Candidate[E], ...]:
+    def _rank(
+        kind: _Kind[E], wanted: set[str], pool: Sequence[E], policy: Policy, first: frozenset[str] | set[str] = frozenset()
+    ) -> tuple[Candidate[E], ...]:
         scored = []
         for entity in pool:
-            forms = _clean(kind.forms(entity))
+            forms = _clean((kind.fuzzy_forms or kind.forms)(entity))
             score = max((policy.scorer(w, f) for w in wanted for f in forms), default=0.0)
             if score >= policy.review_floor:
                 scored.append(Candidate(entity, score))
-        scored.sort(key=lambda c: -c.score)
+        scored.sort(key=lambda c: (-c.score, c.entity.page_id not in first))
         return tuple(scored[: policy.max_candidates])
 
     def _ask_judge(self, mention: str, ranked: tuple[Candidate[E], ...], policy: Policy) -> Resolution[E] | None:

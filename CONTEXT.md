@@ -49,6 +49,21 @@ Modelled in `t6.drives`.
   are out for show X" is a query over open Assignments. A reused Drive gets a new
   Assignment; old ones stay as its history.
 
+## Contact matching
+
+One policy matches a mention to a Contact (`t6.lookup`):
+
+- **Honorifics**: 16 words (ate, kuya, sir, maam, mam, madam, mr, mrs, ms,
+  miss, atty, engr, direk, dir, tito, tita) are removed from the start of a
+  name only, always keeping at least one word.
+- **Order**: Telegram user ID, then Telegram handle, then alias or name, then
+  fuzzy. The Project team is searched first, then all Contacts. Two matches at
+  one step are a tie and go to a person.
+- **Fuzzy**: rapidfuzz WRatio on names and aliases. It decides at 90 or more
+  with a lead of 8 over the runner-up, otherwise the result needs review.
+- **Suggestions**: `suggest_contacts` gives up to 3 candidates at WRatio 60 or
+  more, only for a person to choose from. It never decides, links or writes.
+
 ## Project
 
 A **client show** that T6 works on. Modelled in `t6.domain` (the descriptive
