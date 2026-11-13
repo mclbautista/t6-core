@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from t6.domain.job_order_rules import DEPARTMENT_ALIASES
 from t6.notion.generated import JobOrdersRow
 from t6.notion.sync import NotionClient
 
@@ -20,7 +21,7 @@ JSON = dict[str, Any]
 DISPLAY_ORDER = ("TOC", "AE", "OE", "COOR", "COLOR", "VFX", "SOUND", "ADMIN")
 """Departments in report order. Any other Department follows, then none."""
 
-ALIASES = {"TO": "TOC"}
+ALIASES = DEPARTMENT_ALIASES
 """Short forms people type, mapped to the Department option name."""
 
 NOT_DEPARTMENTS = frozenset({"MISC"})
