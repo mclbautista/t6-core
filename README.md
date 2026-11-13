@@ -1148,6 +1148,28 @@ drives-import-dry-run` is described under
 `t6 backup --into DIR` and `t6 restore --from DIR` use the server's database
 variables and are described in `docs/deployment.md`.
 
+### Check an app follows the consumer contract
+
+`t6 check-consumer PATH` scans the Python files under `PATH` and fails when
+app code names a Notion, OpenRouter, DeepSeek or Frame.io API host in a string
+(a direct HTTP call), or imports `t6.notion.generated`
+([ADR 0002](docs/adr/0002-consumer-contract.md)). Docstrings and virtualenv or
+cache directories are not scanned. It prints JSON and exits 1 when there are
+findings (2 when the path does not exist):
+
+```console
+$ t6 check-consumer .
+{"findings": [{"file": "app/notes.py", "line": 12, "rule": "direct-http", "detail": "names the Notion API host api.notion.com"}]}
+```
+
+To add it to an app's CI, install t6 at the pinned release tag and run it on the
+app's source:
+
+```yaml
+- run: pip install 't6 @ git+https://github.com/mclbautista/t6-core.git@v0.3.3'
+- run: t6 check-consumer .
+```
+
 ## Container image
 
 One image, `ghcr.io/mclbautista/t6`, runs every role. It installs the `server`,

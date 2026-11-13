@@ -2,8 +2,8 @@
 
 Every command prints one JSON document on stdout. Exit status: 0 for success,
 1 when `schema-check` finds a problem or a registry command reports one (a page
-that could not be registered, a classification that was refused), 2 when the
-command cannot run.
+that could not be registered, a classification that was refused), or when
+`check-consumer` finds a violation; 2 when the command cannot run.
 """
 
 from __future__ import annotations
@@ -204,6 +204,16 @@ def _database_paths() -> dict[str, Path]:
     }
 
 
+def _check_consumer(args: argparse.Namespace) -> int:
+    from t6.consumer import check
+
+    if not args.path.exists():
+        return _fail(f"{args.path} does not exist")
+    findings = check(args.path)
+    print(json.dumps({"findings": [finding.as_json() for finding in findings]}, indent=2))
+    return 1 if findings else 0
+
+
 def _ops(args: argparse.Namespace) -> int:
     from t6 import ops
 
@@ -338,7 +348,18 @@ def main(
     dry_run.add_argument("workbook", type=Path, help="the per-project drive workbook (.xlsx)")
     dry_run.add_argument("--log-sheet", type=Path, metavar="FILE", help="also import the drive log sheet workbook (.xlsx) into the same store")
     dry_run.add_argument("--projects", type=Path, metavar="FILE", help="JSON list of {\"page_id\", \"name\"} to resolve Project names against; without it every Project is unresolved")
+    consumer = commands.add_parser(
+        "check-consumer",
+        help="Fail when app code calls Notion, OpenRouter, DeepSeek or Frame.io directly, or imports t6.notion.generated",
+        description=(
+            "Scans the Python files under PATH. Prints {\"findings\": [{file, line, rule, detail}]} and exits 1 "
+            "if there are any. Run it in an app's CI (see the README)."
+        ),
+    )
+    consumer.add_argument("path", type=Path, help="the app's directory (or one .py file)")
     args = parser.parse_args(argv)
+    if args.command == "check-consumer":
+        return _check_consumer(args)
     if args.command == "drives-import-dry-run":
         return _drives_import_dry_run(args)
     if args.command in {"health", "backup", "restore"}:
