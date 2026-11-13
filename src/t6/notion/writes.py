@@ -28,6 +28,7 @@ from typing import Any, Literal, TypeVar, overload
 from t6.notion.errors import NotionError
 from t6.notion.model import ID_KEY, NAME_KEY, TYPE_KEY, NotionModel, OptionId
 from t6.notion.sync import NotionClient
+from t6.privacy.withhold import withhold
 
 JSON = dict[str, Any]
 M = TypeVar("M", bound=NotionModel)
@@ -176,7 +177,9 @@ def _asked(kind: str, value: Any) -> Any:
         return _instant(value)
     if kind == "checkbox":
         return bool(value)
-    if kind in ("title", "rich_text", "url", "email", "phone_number"):
+    if kind in ("title", "rich_text"):
+        return withhold(value).text or None if value else None
+    if kind in ("url", "email", "phone_number"):
         return value or None
     return value
 
