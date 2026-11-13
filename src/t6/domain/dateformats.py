@@ -7,7 +7,9 @@ epoch seconds; the value is converted to Manila before it is formatted.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime
+
+from t6.domain.studio_time import MANILA
 
 __all__ = [
     "MANILA",
@@ -21,8 +23,6 @@ __all__ = [
     "report_header",
 ]
 
-MANILA = timezone(timedelta(hours=8), "Asia/Manila")
-"""Asia/Manila has no daylight saving time, so a fixed offset is exact."""
 
 
 def _manila(moment: datetime) -> datetime:

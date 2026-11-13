@@ -73,19 +73,23 @@ ADMIN, then any other Department A to Z, then none) and the alias `TO` for
 `TOC`. MISC is not a Department. A token that matches no live option is an
 `UnknownDepartment`, never a guess.
 
-## Coordinators, standing cc and operators
+## Studio time and deadlines
 
-`t6.domain.studio_people`.
+`t6.domain.studio_time` and `t6.domain.deadlines`.
 
-- **Coordinator** of a Project: a Contact in its `T6 Post Coordinator`
-  relation (`Project.post_coordinator_ids`). `coordinators` returns them with
-  their Telegram IDs.
-- **Standing cc**: one Contact, set by `T6_STANDING_CC` (a page ID), added to
-  every Job Order's cc. It is tagged in a message only for findings that need
-  their own action: multiple JO, unresolved person, ambiguous person,
-  unresolved Project, unknown Department.
-- **Operator IDs**: Telegram user IDs in `T6_OPERATOR_IDS`. `operator_ids` is
-  the one loader; apps never keep their own list.
+- **Manila**: Asia/Manila is the one studio zone (`MANILA`), a fixed UTC+8
+  because it has no daylight saving. Every date shown or compared uses it.
+- **Shift calendar**: three shift reports a day, at 05:00, 11:30 and 19:00
+  (`SHIFT_REPORT_SLOTS`). Each covers the time since the previous one went out.
+- **Deadline**: `deadline(phrase, posted_at, assignees)`. A stated time is used
+  as is; a date with no time means 23:59. "End of shift", "within shift" and
+  "asap" use the latest assignee end of shift at or after posting; a morning
+  end of shift with a stated date rolls to the next day. When no assignee has a
+  fixed shift the deadline is 23:59 with a `shift_fallback` finding. "Asap"
+  adds an `asap` finding. A missing year takes the closest year. Hedges and
+  fillers are stripped. A deadline before posting is kept and flagged
+  `deadline_past`. Anything else is `deadline_unparsed`, never a guess. The
+  base time is the intake posting time.
 
 ## Job Order rules
 
