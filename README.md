@@ -769,6 +769,17 @@ with NotionClient(token, retry=RetryPolicy()) as notion:
     rows = notion.query_data_source(projects_data_source_id)
 ```
 
+### Page content (blocks)
+
+`client.list_block_children(block_id)` returns every direct child block of a
+page or block, following the cursor. `client.append_block_children(block_id,
+blocks)` adds blocks after the last child and returns the created blocks; more
+than 100 blocks are sent as several requests. Both exist on the sync and async
+clients (the async client also has `iter_block_children`). The sync and async
+clients take the same arguments. An append is a write under the retry policy
+below: if a later request of a long append fails, the earlier requests are
+already saved.
+
 ### External Links
 
 `t6.notion.external_links.ExternalLinks(client, data_source_id)` reads and
@@ -793,8 +804,9 @@ This policy is written in ASD-STE100 Simplified Technical English.
 1. Retry is off by default. To turn it on, give a `RetryPolicy` to the client.
 2. When retry is off, the client does not retry. Each error causes a
    `NotionError` immediately.
-3. A read is a page retrieve, a data source retrieve, or a data source query.
-   A write is a page create or a page update.
+3. A read is a page retrieve, a data source retrieve, a data source query, or
+   a block children list. A write is a page create, a page update, or a
+   block children append.
 4. When Notion sends status 429, the client retries the call. This rule
    applies to reads and to writes.
 5. When Notion sends a status of 500 or more, the client retries a read. It
