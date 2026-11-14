@@ -256,7 +256,7 @@ class WebhookApp:
             return Response(405)
         headers = request.headers_lower()
         body = _json_object(request.body)
-        if route.verifier == "notion" and not route.secret and not headers.get("x-notion-signature") and body and isinstance(body.get("verification_token"), str) and body["verification_token"]:
+        if route.verifier == "notion" and not route.secret and body and isinstance(body.get("verification_token"), str) and body["verification_token"]:
             self._on_notion_verification(str(body["verification_token"]))
             return Response(200)
         if route.verifier == "frameio_v0" and route.queue == "frameio" and route.job_kind == JobKind.FRAMEIO_RESOLVE_COMMENT.value:
@@ -341,7 +341,7 @@ class WebhookApp:
     def _notion(self, request: Request, secret: str | None = None, *, handshake: bool = True) -> Response:
         secret = self._config.notion_webhook_token if secret is None else secret
         body = _json_object(request.body)
-        if handshake and not request.header("x-notion-signature") and body and "verification_token" in body:
+        if handshake and (not request.header("x-notion-signature") or not secret) and body and "verification_token" in body:
             # Setup handshake: Notion sends its token once and the operator stores it as a secret.
             self._on_notion_verification(str(body["verification_token"]))
             return Response(200)

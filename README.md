@@ -5,10 +5,10 @@ before its first commit. The distribution and import namespace are `t6`.
 
 Requires Python 3.11 or newer. `t6` is not on PyPI: install it from this
 repository, pinned to a release tag, with
-`pip install 't6 @ git+https://github.com/mclbautista/t6-core.git@v0.3.4'`.
+`pip install 't6 @ git+https://github.com/mclbautista/t6-core.git@v0.4.0'`.
 Where this README says `pip install 't6[extra]'`, use the same form with the
 extra, for example
-`pip install 't6[notion] @ git+https://github.com/mclbautista/t6-core.git@v0.3.4'`.
+`pip install 't6[notion] @ git+https://github.com/mclbautista/t6-core.git@v0.4.0'`.
 The base package has no third-party runtime dependencies and includes
 `t6.domain`, `t6.lookup`, `t6.drives`, `t6.registry`, and the `t6` command.
 
@@ -1345,7 +1345,7 @@ malformed body fails with `schema_violation`.
 
 ```console
 $ t6 version
-{"version": "0.3.4"}
+{"version": "0.4.0"}
 ```
 
 `python -m t6 version` provides the same output. `t6 admin schema-check` is
@@ -1508,7 +1508,7 @@ To add it to an app's CI, install t6 at the pinned release tag and run it on the
 app's source:
 
 ```yaml
-- run: pip install 't6 @ git+https://github.com/mclbautista/t6-core.git@v0.3.4'
+- run: pip install 't6 @ git+https://github.com/mclbautista/t6-core.git@v0.4.0'
 - run: t6 admin consumer-check .
 ```
 
@@ -1532,7 +1532,7 @@ Pull requests build the image and run the smoke test; nothing is pushed.
 the matching tag:
 
 ```sh
-git tag v0.3.4 && git push origin v0.3.4
+git tag v0.4.0 && git push origin v0.4.0
 ```
 
 The `Image` workflow fails unless the tag equals the pyproject version. It

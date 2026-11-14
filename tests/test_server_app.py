@@ -147,6 +147,16 @@ class SignatureTests(ServerTestCase):
         self.assertEqual(self.tokens, ["secret_abc"])
         self.assertEqual(self.pending(), 0)
 
+    def test_signed_notion_setup_token_requires_verification_after_secret_is_set(self) -> None:
+        request = Request("POST", "/webhook", {"X-Notion-Signature": "sha256=00"}, b'{"verification_token":"secret_abc"}')
+        app = WebhookApp(self.queue, ServerConfig(), self.clock, self.tokens.append)
+        self.assertEqual(app.public(request).status, 200)
+        self.assertEqual(self.tokens, ["secret_abc"])
+        self.tokens.clear()
+        self.assertEqual(self.app.public(request).status, 401)
+        self.assertEqual(self.tokens, [])
+        self.assertEqual(self.pending(), 0)
+
 
 class DedupeTests(ServerTestCase):
     def test_same_notion_event_twice_is_one_job(self) -> None:
