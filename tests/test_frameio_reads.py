@@ -1,6 +1,7 @@
 """Frame.io reads and the briefing feed on a fake Frame.io API and the fake Notion. No real client data."""
 
 from datetime import datetime, timezone
+from typing import Any
 import unittest
 
 from t6.frameio import (
@@ -156,6 +157,34 @@ class ApiTests(ReadsTestCase):
         with self.assertRaisesRegex(FrameioError, "429"):
             self.reads.projects()
         self.assertEqual(len(self.waits), RATE_LIMIT_TRIES)
+
+    def api_answering(self, status: int, body: dict[str, Any], headers: dict[str, str] | None = None) -> FrameioApi:
+        return FrameioApi(self.tokens, lambda url, sent: (status, headers or {}, body), self.waits.append)
+
+    def test_a_403_keeps_the_error_code_message_and_request_id(self) -> None:
+        body = {"errors": [{"code": "forbidden", "title": "Forbidden", "detail": "Missing scope"}]}
+        api = self.api_answering(403, body, {"X-Request-Id": "req-1"})
+        with self.assertRaises(FrameioError) as raised:
+            api.get("/v4/accounts?x=1")
+        text = str(raised.exception)
+        self.assertEqual(raised.exception.status, 403)
+        for expected in ("403", "/v4/accounts", "code=forbidden", "title=Forbidden", "detail=Missing scope", "req-1"):
+            self.assertIn(expected, text)
+        self.assertNotIn("x=1", text)
+
+    def test_a_token_in_an_error_body_is_not_kept(self) -> None:
+        token = ".".join(("eyJ" + "hbGciOi", "eyJ" + "zdWIiOiIx", "c2ln" + "bmF0dXJl"))
+        body = {"errors": [{"detail": f"bad Bearer {token} and key {'a' * 40}"}]}
+        with self.assertRaises(FrameioError) as raised:
+            self.api_answering(403, body).get("/v4/accounts")
+        self.assertNotIn(token, str(raised.exception))
+        self.assertNotIn("a" * 40, str(raised.exception))
+        self.assertNotIn("Bearer", str(raised.exception).replace("[redacted]", ""))
+
+    def test_a_long_error_body_is_cut(self) -> None:
+        with self.assertRaises(FrameioError) as raised:
+            self.api_answering(404, {"message": "word " * 500}).get("/v4/accounts")
+        self.assertLess(len(str(raised.exception)), 400)
 
     def test_a_frameio_error_names_the_status_and_no_token(self) -> None:
         self.frameio.refuse_next(500)
