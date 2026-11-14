@@ -67,6 +67,8 @@ from t6.server.queue import DIAGNOSTIC_QUEUE, FRAMEIO_QUEUE, MAIN_QUEUE, JobQueu
 from t6.server.signatures import WebhookRejected, verify_frameio, verify_notion
 
 REVIEW_QUIET_SECONDS = 15 * 60.0
+REVIEW_LOOP_ALLOWANCE_SECONDS = 8 * 60.0
+"""Added to the clip time left after a comment: the time to watch the clip through once more."""
 DEFAULT_LEASE_SECONDS = 60.0
 MAX_SIGN_IN_PARAM_CHARS = 4096
 
@@ -129,6 +131,7 @@ class ServerConfig:
     tap_secret: str = ""
     grants: tuple[Grant, ...] = ()
     review_quiet_seconds: float = REVIEW_QUIET_SECONDS
+    review_loop_allowance_seconds: float = REVIEW_LOOP_ALLOWANCE_SECONDS
     operator_ids: tuple[int, ...] = ()
     """Telegram user IDs allowed to tap operator cards. The first one receives the cards."""
     operator_ttl_seconds: float = 7 * 24 * 3600.0
@@ -174,6 +177,9 @@ class ServerConfig:
             operator_ids=operator_ids(environ),
             operator_ttl_seconds=float(environ.get("T6_OPERATOR_TTL_SECONDS") or 7 * 24 * 3600.0),
             review_quiet_seconds=_positive_seconds(environ, "T6_REVIEW_QUIET_SECONDS", REVIEW_QUIET_SECONDS),
+            review_loop_allowance_seconds=_positive_seconds(
+                environ, "T6_REVIEW_LOOP_ALLOWANCE_SECONDS", REVIEW_LOOP_ALLOWANCE_SECONDS
+            ),
         )
 
 
@@ -405,6 +411,11 @@ class WebhookApp:
             name is None or isinstance(name, str)
         ):
             return Response(400, {"error": "comment_id, file_id, frameio_project_id, user_id and created_at are required"})
+        remaining = body.get("remaining_seconds")
+        if remaining is not None and not (
+            isinstance(remaining, (int, float)) and not isinstance(remaining, bool) and 0 <= remaining < float("inf")
+        ):
+            return Response(400, {"error": "remaining_seconds must be a number of seconds, 0 or more"})
         try:
             moment = datetime.fromisoformat(str(texts["created_at"]))
         except ValueError:
@@ -415,7 +426,9 @@ class WebhookApp:
             MAIN_QUEUE,
             f"frameio.review:{texts['file_id']}:{texts['user_id']}",
             JobKind.FRAMEIO_REVIEW_DONE.value,
-            self._config.review_quiet_seconds,
+            self._config.review_quiet_seconds
+            if remaining is None
+            else float(remaining) + self._config.review_loop_allowance_seconds,
             {
                 "file_id": texts["file_id"],
                 "frameio_project_id": texts["frameio_project_id"],

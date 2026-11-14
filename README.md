@@ -132,7 +132,10 @@ Mac mini. Both use only the standard library.
 | `T6_OPERATOR_IDS` | Telegram user IDs allowed to tap operator cards and send `/project`, comma separated; the first receives the cards core starts, and a `/project` card goes to whoever sent it. Unset turns operator actions off |
 | `T6_STANDING_CC` | A Contact page ID, added to the cc of every Job Order (`t6.domain.studio_people.standing_cc`). Unset means none |
 | `T6_OPERATOR_DB`, `T6_OPERATOR_TTL_SECONDS` | operator action database, default `t6-operator.sqlite`; how long a card stays live, default 7 days |
-| `T6_REVIEW_QUIET_SECONDS` | server: how long one person must make no new comment on one Frame.io file before the review message is sent, default 900 (15 minutes); must be a positive number |
+| `T6_REVIEW_QUIET_SECONDS` | server: how long one person must make no new comment on one Frame.io file before the review message is sent, default 900 (15 minutes); must be a positive number. Used when the clip length or the comment's position is not known (see `T6_REVIEW_LOOP_ALLOWANCE_SECONDS`) |
+| `T6_REVIEW_LOOP_ALLOWANCE_SECONDS` | server: time added to the part of the clip left after a person's last comment, so they can watch it through once more; default 480 (8 minutes); must be a positive number. The wait is `(clip length - the comment's position) + this`, with no cap |
+| `T6_FRAMEIO_SHARE_SCAN_LIMIT` | Frame.io worker: how many of a project's newest live share links have their assets read to find the one that holds a file, default 30; a whole number of 1 or more. When the file is in none of them and live shares were left unread, the review message says "Share link: unknown" instead of "no share link" |
+| `T6_FRAMEIO_SHARE_CACHE_SECONDS` | Frame.io worker: how long a project's share list and each share's asset list are kept in memory, default 3600 (60 minutes); 0 turns it off. A share created or changed within that time may be missed until its entry expires. A failed read is never kept |
 | `T6_GATEWAY_URL`, `T6_GATEWAY_SECRET` | main worker: the Sixto gateway and this module's secret there; turn on delivery of operator cards |
 
 On first open of a t6 database, `T6_OPERATOR_IDS` seeds the `operator` permission for matching Persons; unmatched IDs are reported on stderr. The seed is recorded even when the variable is empty, and later changes to it do not change Person permissions. Set it before the first open of an existing database containing Persons. Legacy operator cards still use the variable independently until their authorization is migrated.
@@ -756,8 +759,13 @@ if isinstance(result, Ok):
   author, time) and asks the server's `POST /review/timers` to start or
   restart the quiet timer for the pair (file, author). The route accepts only
   the Frame.io worker's secret. Each new comment from the same person on the
-  same file restarts the full `T6_REVIEW_QUIET_SECONDS` (default 900); other
-  people and other files have their own timers. When a timer runs out, the
+  same file restarts its timer; other people and other files have their own
+  timers. The wait is the part of the clip left after the comment (the file's
+  `Duration` and `Frame Rate` metadata and the comment's frame, as
+  `remaining_seconds`) plus `T6_REVIEW_LOOP_ALLOWANCE_SECONDS` (default 480).
+  When the clip length or the comment's position is not known (an image, a
+  PDF), the wait is `T6_REVIEW_QUIET_SECONDS` (default 900). A later comment
+  never brings the message forward: the timer keeps the longest wait. When a timer runs out, the
   main worker runs `frameio.review_done` (`t6.worker.review.ReviewMessage`)
   and sends one Telegram message through the gateway's `/notify` to
   `T6_REVIEW_CHAT` (and `T6_REVIEW_TOPIC` if set) with the file's title, who

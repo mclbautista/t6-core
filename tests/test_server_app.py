@@ -178,8 +178,8 @@ class DedupeTests(ServerTestCase):
         self.assertEqual(self.app.public(frameio_request(self.clock, body)).status, 400)
 
     def arm(self, comment_id: str = "c1", file_id: str = "f1", user_id: str = "u1", at: str = "2026-11-12T10:00:00+00:00",
-            secret: str = FRAMEIO_WORKER_SECRET) -> Response:
-        body = {
+            secret: str = FRAMEIO_WORKER_SECRET, remaining_seconds: object = None) -> Response:
+        body: dict[str, object] = {
             "comment_id": comment_id,
             "file_id": file_id,
             "frameio_project_id": "fp1",
@@ -187,7 +187,9 @@ class DedupeTests(ServerTestCase):
             "user_name": "Reviewer One",
             "created_at": at,
         }
-        request = Request("POST", "/review/timers", {"Authorization": f"Bearer {secret}"}, json.dumps(body).encode())
+        if remaining_seconds is not None:
+            body["remaining_seconds"] = remaining_seconds
+        request = Request("POST", "/review/timers", {"Authorization": f"Bearer {secret}"}, json.dumps(body, allow_nan=True).encode())
         return self.app.tailnet(request)
 
     def test_the_review_timer_is_per_file_and_per_user_and_waits_for_quiet(self) -> None:
@@ -260,6 +262,36 @@ class DedupeTests(ServerTestCase):
         claim = queue.claim("main", 60)
         assert claim is not None
         self.assertEqual(claim.kind, "frameio.review_done")
+
+    def test_remaining_seconds_plus_the_loop_allowance_is_the_quiet_time(self) -> None:
+        self.assertEqual(self.arm(remaining_seconds=78.5).status, 200)
+        self.clock.advance(78.5 + 480 - 1)
+        self.assertIsNone(self.queue.claim("main", 60))
+        self.clock.advance(1)
+        self.assertIsNotNone(self.queue.claim("main", 60))
+
+    def test_a_later_comment_earlier_in_the_clip_does_not_shorten_the_wait(self) -> None:
+        self.assertEqual(self.arm(comment_id="c1", remaining_seconds=900).status, 200)  # due at 1380
+        self.clock.advance(60)
+        self.assertEqual(self.arm(comment_id="c2", remaining_seconds=10).status, 200)  # would be due at 550
+        self.clock.advance(1319)  # 1379 after the first
+        self.assertIsNone(self.queue.claim("main", 60))
+        self.clock.advance(1)
+        self.assertIsNotNone(self.queue.claim("main", 60))
+
+    def test_the_loop_allowance_comes_from_the_environment(self) -> None:
+        self.assertEqual(ServerConfig.from_env({}).review_loop_allowance_seconds, 480.0)
+        self.assertEqual(
+            ServerConfig.from_env({"T6_REVIEW_LOOP_ALLOWANCE_SECONDS": "60"}).review_loop_allowance_seconds, 60.0
+        )
+        for bad in ("abc", "0", "-5", "nan", "inf"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                ServerConfig.from_env({"T6_REVIEW_LOOP_ALLOWANCE_SECONDS": bad})
+
+    def test_the_review_timer_route_refuses_a_bad_remaining_time(self) -> None:
+        for bad in ("soon", -1, True, float("inf")):
+            with self.subTest(bad=bad):
+                self.assertEqual(self.arm(remaining_seconds=bad).status, 400)
 
     def test_quiet_time_defaults_to_fifteen_minutes_and_rejects_bad_values(self) -> None:
         self.assertEqual(ServerConfig.from_env({}).review_quiet_seconds, 15 * 60.0)
