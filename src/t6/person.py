@@ -57,7 +57,7 @@ class People:
             def allows(candidate: Any) -> bool:
                 if isinstance(candidate, str):
                     if candidate.startswith('person:'):
-                        return person[0] == candidate[7:]
+                        return bool(person[0] == candidate[7:])
                     if candidate.startswith('permission:'):
                         return self._authorize(db, person[0], candidate[11:]) is None
                 if isinstance(candidate, dict) and isinstance(candidate.get('any_of'), list):

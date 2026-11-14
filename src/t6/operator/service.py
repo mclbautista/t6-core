@@ -215,12 +215,12 @@ class OperatorService:
         if message_id != action.message_id:
             self._store.reject("wrong_message", operator=operator, token=token)
             return TapResult(True, "rejected", action)
+        assert operator is not None
         claim = self._store.claim(token, tap_key, operator, action.stage)
         refused = self._refused(claim)
         if refused is not None:
             return refused
         assert claim.action is not None
-        assert operator is not None
         return self._carry_out(claim.action, choice, operator)
 
     def _refused(self, claim: Claim) -> TapResult | None:
