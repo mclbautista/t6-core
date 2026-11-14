@@ -469,7 +469,7 @@ class DryRunCommandTests(unittest.TestCase):
             before = {p.name: p.stat().st_mtime_ns for p in Path(folder).iterdir()}
             printed = io.StringIO()
             with redirect_stdout(printed):
-                status = main(["drives-import-dry-run", str(path), "--projects", str(projects)])
+                status = main(["admin", "drive", "import", str(path), "--projects", str(projects)])
             after = {p.name: p.stat().st_mtime_ns for p in Path(folder).iterdir()}
 
         self.assertEqual(status, 0)
@@ -500,7 +500,7 @@ class DryRunCommandTests(unittest.TestCase):
             log_sheet = write_workbook(folder, LOG_SHEETS, "log-sheet.xlsx")
             printed = io.StringIO()
             with redirect_stdout(printed):
-                status = main(["drives-import-dry-run", str(path), "--log-sheet", str(log_sheet)])
+                status = main(["admin", "drive", "import", str(path), "--log-sheet", str(log_sheet)])
 
         self.assertEqual(status, 0)
         report = json.loads(printed.getvalue())
@@ -510,7 +510,7 @@ class DryRunCommandTests(unittest.TestCase):
     def test_a_missing_workbook_is_an_error(self) -> None:
         errors = io.StringIO()
         with redirect_stderr(errors):
-            status = main(["drives-import-dry-run", "/nonexistent/workbook.xlsx"])
+            status = main(["admin", "drive", "import", "/nonexistent/workbook.xlsx"])
         self.assertEqual(status, 2)
         self.assertIn("error", json.loads(errors.getvalue()))
 

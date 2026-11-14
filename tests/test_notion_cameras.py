@@ -50,7 +50,7 @@ class CamerasCommandTests(unittest.TestCase):
         return status, out.getvalue(), err.getvalue()
 
     def test_get_prints_cameras_with_domain_names(self) -> None:
-        status, out, err = self.run_command(["cameras", "get"])
+        status, out, err = self.run_command(["camera", "get"])
         self.assertEqual((status, err), (0, ""))
         self.assertEqual(
             json.loads(out),
@@ -67,13 +67,13 @@ class CamerasCommandTests(unittest.TestCase):
 
     def test_get_one_camera_by_page_id(self) -> None:
         self.fake.add_page(CAMERAS, {"Name": title("A7S")})
-        status, out, _ = self.run_command(["cameras", "get", "--page-id", self.page["id"]])
+        status, out, _ = self.run_command(["camera", "get", "--page-id", self.page["id"]])
         self.assertEqual(status, 0)
         self.assertEqual([row["name"] for row in json.loads(out)], ["FX6"])
 
     def test_update_writes_and_prints_the_updated_row(self) -> None:
         payload = json.dumps({"name": "FX6 Mk2", "tags": ["Sony", "Full frame"]})
-        status, out, err = self.run_command(["cameras", "update", self.page["id"]], stdin=payload)
+        status, out, err = self.run_command(["camera", "enrich", self.page["id"]], stdin=payload)
         self.assertEqual((status, err), (0, ""))
         row = json.loads(out)
         self.assertEqual((row["name"], row["tags"]), ("FX6 Mk2", ["Sony", "Full frame"]))
@@ -86,7 +86,7 @@ class CamerasCommandTests(unittest.TestCase):
             path = Path(directory) / "update.json"
             path.write_text(json.dumps({"name": "Renamed"}), encoding="utf-8")
             status, out, _ = self.run_command(
-                ["cameras", "update", self.page["id"], "--json", str(path)]
+                ["camera", "enrich", self.page["id"], "--json", str(path)]
             )
         self.assertEqual((status, json.loads(out)["name"]), (0, "Renamed"))
 
@@ -100,39 +100,39 @@ class CamerasCommandTests(unittest.TestCase):
 
     def test_unknown_fields_fail_with_a_json_error(self) -> None:
         self.assert_fails(
-            ["cameras", "update", self.page["id"]], json.dumps({"Name": "x", "lens": 1}), "unknown fields"
+            ["camera", "enrich", self.page["id"]], json.dumps({"Name": "x", "lens": 1}), "unknown fields"
         )
 
     def test_invalid_values_fail_with_a_json_error(self) -> None:
         payloads: list[object] = [{"name": 5}, {"tags": "Sony"}, {"tags": [1]}, {"wiki": [""]}, {}, []]
         for payload in payloads:
             with self.subTest(payload=payload):
-                self.assert_fails(["cameras", "update", self.page["id"]], json.dumps(payload), "")
+                self.assert_fails(["camera", "enrich", self.page["id"]], json.dumps(payload), "")
 
     def test_malformed_json_fails(self) -> None:
-        self.assert_fails(["cameras", "update", self.page["id"]], "{nope", "not valid JSON")
+        self.assert_fails(["camera", "enrich", self.page["id"]], "{nope", "not valid JSON")
 
     def test_a_page_outside_cameras_is_refused(self) -> None:
         self.fake.add_data_source("ds-other")
         other = self.fake.add_page("ds-other", {"Name": title("Not a camera")})
         status, _, err = self.run_command(
-            ["cameras", "update", other["id"]], stdin=json.dumps({"name": "x"})
+            ["camera", "enrich", other["id"]], stdin=json.dumps({"name": "x"})
         )
         self.assertEqual(status, 2)
         self.assertIn("not in the Cameras", json.loads(err)["error"])
 
     def test_a_missing_page_reports_the_notion_error(self) -> None:
         status, _, err = self.run_command(
-            ["cameras", "update", "nope"], stdin=json.dumps({"name": "x"})
+            ["camera", "enrich", "nope"], stdin=json.dumps({"name": "x"})
         )
         self.assertEqual(status, 2)
         self.assertIn("object_not_found", json.loads(err)["error"])
 
     def test_missing_token_and_missing_data_source_fail(self) -> None:
-        status, _, err = self.run_command(["cameras", "get"], token=None)
+        status, _, err = self.run_command(["camera", "get"], token=None)
         self.assertEqual(status, 2)
         self.assertIn("T6_NOTION_TOKEN", json.loads(err)["error"])
-        status, _, err = self.run_command(["cameras", "get"], data_sources={"bays": "x"})
+        status, _, err = self.run_command(["camera", "get"], data_sources={"bays": "x"})
         self.assertEqual(status, 2)
         self.assertIn("cameras", json.loads(err)["error"])
 

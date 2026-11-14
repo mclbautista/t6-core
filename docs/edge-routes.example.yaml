@@ -1,0 +1,3 @@
+# Configure each provider subscription to send to its matching path.
+- {path: /events/frameio/comments, verifier: frameio_v0, secret_env: FRAMEIO_WEBHOOK_SECRET, job_kind: frameio.resolve_comment, queue: frameio}
+- {path: /events/notion/pages, verifier: notion, secret_env: NOTION_WEBHOOK_TOKEN, job_kind: notion.page_changed, queue: main}
