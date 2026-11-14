@@ -85,8 +85,16 @@ def decode(notion_type: str, prop: JSON | None) -> Any:
     return _DECODERS.get(notion_type, codec.raw)(prop)
 
 
+TEXT_PART_LIMIT = 2000
+"""The most characters Notion takes in one rich-text part."""
+
+
 def _text(value: str | None) -> list[JSON]:
-    return [{"type": "text", "text": {"content": value}}] if value else []
+    """One rich-text part per 2000 characters, as Notion requires; none for blank text."""
+    if not value:
+        return []
+    parts = [value[i : i + TEXT_PART_LIMIT] for i in range(0, len(value), TEXT_PART_LIMIT)]
+    return [{"type": "text", "text": {"content": part}} for part in parts]
 
 
 def _option(value: str | None) -> JSON | None:

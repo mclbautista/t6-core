@@ -44,6 +44,7 @@ __all__ = [
     "JsonValue",
     "Machine",
     "MeetingNote",
+    "Ring",
     "NotionEntity",
     "Project",
     "ProjectStatusChanged",
@@ -314,14 +315,30 @@ class MeetingNote(NotionEntity):
     last_edited: dt.datetime | None = field(default=None, compare=False)
 
 
+class Ring(StrEnum):
+    """The fleet rings, by their Notion option label. A Mac in a ring gets software promoted to it."""
+
+    TESTING = "testing"
+    PILOT = "pilot"
+    PRODUCTION = "production"
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Machine(NotionEntity):
-    """A computer in the fleet. Edit and color suites are called Bays."""
+    """A computer in the fleet. Edit and color suites are called Bays.
+
+    `ring` is a `Ring` when the value is a known one, else the plain option name.
+    `last_check_in` is when Munki last checked in on the machine.
+    """
 
     hostname: str | None = field(default=None, compare=False)
     serial_number: str | None = field(default=None, compare=False)
     lan_ip: str | None = field(default=None, compare=False)
     os_version: str | None = field(default=None, compare=False)
+    munki_manifest: str | None = field(default=None, compare=False)
+    ring: Ring | str | None = field(default=None, compare=False)
+    munki_client_version: str | None = field(default=None, compare=False)
+    last_check_in: dt.date | dt.datetime | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -88,6 +88,21 @@ class JobOrders:
         )
         return self._read(rows[0]) if rows else None
 
+    def find_all_by_telegram_key(self, telegram_key: str) -> tuple[JobOrder, ...]:
+        """Every Job Order whose Telegram Key is exactly `telegram_key`, oldest first, without bodies.
+
+        More than one means the key was written twice; the caller decides what to do about it.
+        """
+        rows = self._client.query_data_source(
+            self._source,
+            filter={
+                "property": JobOrdersRow.notion_id("telegram_key") or JobOrdersRow.notion_name("telegram_key"),
+                "rich_text": {"equals": telegram_key},
+            },
+            sorts=[{"timestamp": "created_time", "direction": "ascending"}],
+        )
+        return tuple(self._order(JobOrdersRow.from_page(page), page) for page in rows)
+
     def list(self) -> tuple[JobOrder, ...]:
         """Every Job Order that is not trashed or archived, without bodies."""
         pages = self._client.query_data_source(self._source)

@@ -8,6 +8,7 @@ import unittest
 
 from t6.domain import Department, JobOrder, JobOrderStatus
 from t6.notion.generated import JobOrdersRow
+from t6.notion.model import encode
 from t6.notion.job_orders import FIELDS, RELATIONS, UNMAPPED, JobOrders
 from t6.notion.schema import check_schema, load_snapshot, refresh_snapshot
 from t6.notion.testing import FakeNotion
@@ -102,6 +103,23 @@ class CreateAndReadTests(unittest.TestCase):
         self.assertEqual((found.page_id, found.source_text), (second.page_id, None))
         self.assertIsNone(self.orders.find_by_telegram_key("nope"))
         self.assertEqual([o.name for o in self.orders.list()], ["A", "B"])
+
+    def test_find_all_by_telegram_key_returns_every_match_without_bodies(self) -> None:
+        first = self.orders.create({"name": "A", "telegram_key": "k", "source_text": "hello"})
+        self.orders.create({"name": "B", "telegram_key": "other"})
+        second = self.orders.create({"name": "C", "telegram_key": "k"})
+        assert isinstance(first, JobOrder) and isinstance(second, JobOrder)
+        found = self.orders.find_all_by_telegram_key("k")
+        self.assertEqual([o.page_id for o in found], [first.page_id, second.page_id])
+        self.assertEqual([o.source_text for o in found], [None, None])
+        self.assertEqual(self.orders.find_all_by_telegram_key("nope"), ())
+
+    def test_a_long_text_field_is_sent_in_parts_of_2000_characters(self) -> None:
+        parts = encode("rich_text", "x" * 4500)["rich_text"]
+        self.assertEqual([len(p["text"]["content"]) for p in parts], [2000, 2000, 500])
+        order = self.orders.create({"name": "A", "notes": "y" * 4500})
+        assert isinstance(order, JobOrder)
+        self.assertEqual(order.notes, "y" * 4500)
 
     def test_a_credential_in_the_body_or_a_field_is_withheld(self) -> None:
         order = self.orders.create({"name": "A", "notes": "pin=1", "source_text": "password: x"})

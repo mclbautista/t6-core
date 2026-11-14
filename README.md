@@ -607,6 +607,29 @@ bound to, and returns that Project whoever holds its code now: this is how a
 reviewer selects a historical Project. Existing relationships are never looked
 up by code. `Resolution.reason` is `None` for every other lookup.
 
+## Fleet
+
+`t6.fleet` (install `t6[notion]`) reads Bays as `Machine` and writes the fleet
+facts. The rules are in `CONTEXT.md` under Fleet.
+
+```python
+from t6.fleet import Fleet, MachineFacts
+from t6.domain import Ring
+
+fleet = Fleet(notion, bays_data_source_id)
+machines = fleet.machines()
+results = fleet.sync(
+    [MachineFacts(names=("201-Bay-01-Mac-Pro-111", "201 Bay 01 Mac Pro"), serial_number="C02...", ring=Ring.PILOT)],
+    apply=False,  # a dry run; True writes
+)
+```
+
+Each `SyncResult` says `matched`, `unmatched` or `ambiguous`, the changes, the
+facts skipped (unknown or stale), and, when applied, the saved `Machine` or the
+typed `Rejected` or `Ambiguous` failure. `t6.fleet.rules` has `match_key`,
+`role_group`, `manifest_chain` and `is_stale`. Run `t6 schema-snapshot` once so
+the Ring options are kept by ID.
+
 ## Optional extras
 
 Install only the adapters an application needs, for example
@@ -925,8 +948,9 @@ link settings, watermark, mode of transfer, blocker, pending, notes, watchdog
 notes, telegram key, status, health (read only), the `project_id`,
 `assigned_ids`, `cc_ids`, `coordinator_ids` and `deliverable_ids` relations,
 and `source_text`, the page body. Notion property names stay in
-`t6.notion.generated`. `get(page_id)`, `find_by_telegram_key(key)` and `list()`
-read; `create({...})` writes through the typed write and returns the saved
+`t6.notion.generated`. `get(page_id)`, `find_by_telegram_key(key)`, `find_all_by_telegram_key(key)`
+(every match, oldest first, for an app recovering from an uncertain create) and
+`list()` read; `create({...})` writes through the typed write and returns the saved
 `JobOrder`, `Rejected` or `Ambiguous` (a body that could not be saved leaves a
 page, so it is `Ambiguous` with that page ID). The only Job Orders property
 no field carries is `place`.
@@ -1312,6 +1336,118 @@ drives-import-dry-run` is described under
 [Importing the legacy workbooks](#importing-the-legacy-workbooks). `t6 health`,
 `t6 backup --into DIR` and `t6 restore --from DIR` use the server's database
 variables and are described in `docs/deployment.md`.
+
+### Studio commands
+
+These read the Notion token from `$T6_NOTION_TOKEN` and the data source IDs
+from `--data-sources FILE` (a JSON object of database key to data source ID,
+as for `schema-check`). They print JSON (indented) with Notion IDs and never write.
+Errors are JSON on stderr with exit status 2.
+
+`t6 departments --data-sources FILE` lists the live Departments (the
+`job_orders` source) in display order with their option IDs. MISC is left out.
+
+```console
+$ t6 departments --data-sources sources.json
+{"departments": [{"id": "cU=L", "name": "TOC"}, {"id": "FeJa", "name": "AE"}, ...]}
+```
+
+`t6 contacts find <name|@handle|alias|telegram id> --data-sources FILE` (the
+`contacts` source) uses the shared matching policy. It prints the `match`, or
+`null` with `needs_review` and the `candidates` (with scores) for a person to
+choose. Fuzzy matching needs `t6[lookup]`.
+
+```console
+$ t6 contacts find @msantos --data-sources sources.json
+{
+  "match": {"id": "<page id>", "name": "Maria Santos", "telegram_handle": "@msantos", "telegram_user_id": 4242},
+  "method": "normalized",
+  "score": 1.0,
+  "needs_review": false,
+  "reason": null,
+  "candidates": [{"id": "<page id>", "name": "Maria Santos", "telegram_handle": "@msantos", "telegram_user_id": 4242, "score": 1.0}]
+}
+```
+
+`t6 projects resolve <code|name> --data-sources FILE [--registry-db FILE]` (the
+`projects` source) resolves a Project Code. A reused code is settled by rotation
+when the registry file knows the Projects (`--registry-db`, default
+`$T6_REGISTRY_DB`); with no registry file every Project counts as a holder, and
+an unreadable file is an error. Text that is not a known code is tried as a name
+and always needs review. The result has the same `match`, `method`,
+`needs_review`, `reason` and `candidates` fields.
+
+```console
+$ t6 projects resolve ALP --data-sources sources.json --registry-db t6-registry.sqlite
+{
+  "match": {"id": "<page id>", "t6_id": "<T6 Project ID>", "name": "Alpha Show", "project_code": "ALP", "status": "In Progress", "rotation": "in"},
+  "method": "exact_id",
+  "score": 1.0,
+  "needs_review": false,
+  "reason": null,
+  "candidates": [{"id": "<page id>", "t6_id": "<T6 Project ID>", "name": "Alpha Show", "project_code": "ALP", "status": "In Progress", "rotation": "in", "score": 1.0}]
+}
+```
+
+`t6 standing-cc` prints `{"standing_cc": "<Contact page ID>"}` from
+`$T6_STANDING_CC` (`null` when unset). It needs no Notion access.
+
+```console
+$ T6_STANDING_CC=<Contact page ID> t6 standing-cc
+{"standing_cc": "<Contact page ID>"}
+```
+
+### Job Order commands
+
+`t6 jo get <page id|telegram key> --data-sources FILE` prints a Job Order with
+every field in studio terms (the `job_orders` source). A Telegram Key is
+`<chat_id>:<message_id>`; a group chat ID is negative, so put the key after `--`.
+
+```console
+$ t6 jo get --data-sources sources.json -- -100123:456
+{"id": "<page id>", "name": "ORC - TOC - JO #62", "department": "TOC", "number": "62", "deadline": "2026-11-14T17:00:00+08:00", ...}
+```
+
+`t6 jo create --file jo.json --data-sources FILE` is a dry run: it prints the
+fields it would write. The file is a JSON object of Job Order fields (the
+`JobOrder` fields, plus `project_id` and `source_text`). Dates without a time
+zone are Manila. The Department is checked against the live options (`TO`
+means TOC) and the standing cc (`$T6_STANDING_CC`) is added to `cc_ids`. Add
+`--apply --actor NAME` to write. It then prints the saved Job Order, or the
+typed `rejected` or `ambiguous` result and exits 1. An `ambiguous` result means
+the write may have happened, so check before you retry.
+
+```console
+$ t6 jo create --file jo.json --data-sources sources.json
+{"dry_run": true, "fields": {"name": "ORC - TOC - JO #62", "department": "TOC", "cc_ids": ["<standing cc>"], ...}}
+$ t6 jo create --file jo.json --data-sources sources.json --apply --actor cyril
+{"result": "saved", "actor": "cyril", "job_order": {"id": "<page id>", ...}}
+```
+
+`t6 jo format --file notes.txt [--date YYYY-MM-DD]` needs no Notion. The file
+is a draft: a header line, `Label: value` lines, then free text. It prints
+`{"text", "findings"}`: the header rewritten as `<PROJECT> - <DEPT> - JO #<N>`,
+the date line (`June 22 / Monday`, computed from `--date`, default today in
+Manila), the fields in order with your labels kept, Watermark defaulted to
+"none", Status and Pending blank. Anything it cannot settle is a finding
+(`header_unparsed`, `missing_title`, `missing_task`, `missing_purpose`,
+`missing_assigned`, `no_deliverable_code`, `link_settings_missing`,
+`mfg_shuttle_out_of_range`), never a guess. Deadlines are left as written.
+
+```console
+$ t6 jo format --file notes.txt --date 2026-06-22
+{"text": "ORC - TOC - JO #62\nJune 22 / Monday\n\nTask: ...", "findings": [{"code": "missing_title", "params": {}}]}
+```
+
+`t6 deadline <phrase> [--assignees CONTACT_ID ...] [--posted ISO]` resolves a
+posted deadline in Manila time with the studio's rules. `--assignees` (Contact
+page IDs, read from Notion) gives the end of shift for "end of shift" and
+"asap"; `--posted` defaults to now. An unreadable phrase is a finding.
+
+```console
+$ t6 deadline "Nov 13 5pm" --posted 2026-11-12T09:00:00+08:00
+{"deadline": "2026-11-13T17:00:00+08:00", "display": "Nov 13 / Fri (17:00)", "source": "stated", "findings": []}
+```
 
 ### Check an app follows the consumer contract
 

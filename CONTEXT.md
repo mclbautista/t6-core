@@ -109,6 +109,11 @@ ADMIN, then any other Department A to Z, then none) and the alias `TO` for
   (short), EpXX and EpXX-XX (episodes).
 - **Formatter defaults**: Watermark is "none"; Link Settings travels with Mode
   of Transfer; MFG shuttle drives are `MFG Shuttle 01` to `04`, never 05.
+- **Formatter layout** (`t6.domain.job_order_format`): canonical header, a date
+  line computed from the date, core fields in order with the writer's labels,
+  Watermark "none" by default, Status and Pending blank, free text last. What
+  cannot be settled (header, Title, Task, Purpose, Assigned, deliverable code,
+  Link Settings, MFG shuttle range) is a finding.
 - **Status groups**: not started (Needs Intake Review, Pending), started (In
   progress, Needs Completion Review, Done), cancelled. Active means not Done
   and not Cancelled.
@@ -134,6 +139,26 @@ words, ignoring emoji, case and spaces.
   Incoming, other, blank.
 - **Code display**: the code in capitals, or "CODE (Name)" when several
   Projects share it; the name when there is no code.
+
+## Fleet
+
+A **Machine** is a computer in the fleet; the Bays row is its record. `t6.fleet`
+owns the Machine to Bays mapping and the fleet facts: Serial Number, Munki
+Manifest, Ring, Munki Client Version, Last Check-in and OS Version.
+
+- **Rings**: testing, pilot, production. Software is imported into testing,
+  verified on the pilot machines, then promoted to production.
+- **Role groups**: nine manifests (toc, sound, production, online, dit,
+  warroom, coordination-admin, client-facing, interns-temporary). A machine
+  manifest includes exactly one. The manifest chain of a machine is itself,
+  its role group, `all` and `site_default`.
+- **Bays write-back**: a machine matches a row by its names against the row's
+  Hostname and Name, ignoring case, spaces and ARD's `-NNN` suffix. It writes
+  only to one unique row, never creates a row, never clears a fact, and is a
+  dry run unless applied.
+- **Staleness**: an observation older than 3600 seconds, or with no time, is
+  stale. Its observed facts (client version, OS version, last check-in) are
+  not written.
 
 ## Consumer contract
 
