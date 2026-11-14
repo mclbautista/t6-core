@@ -223,6 +223,9 @@ _MIGRATIONS = (
     (16, False, """CREATE TABLE deliverables (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), code TEXT NOT NULL, episode TEXT, due TEXT, air TEXT);
         CREATE TABLE deliverable_sync_intents (intent_id INTEGER PRIMARY KEY REFERENCES sync_intents(id), started INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE deliverable_migration_receipts (digest TEXT PRIMARY KEY, snapshot TEXT NOT NULL, entries TEXT NOT NULL)"""),
+    (17, False, """ALTER TABLE concern_notes ADD COLUMN message_id TEXT;
+        CREATE TABLE concern_brief_messages (chat TEXT NOT NULL, message_id TEXT NOT NULL,
+            concern_id TEXT NOT NULL REFERENCES concerns(id), PRIMARY KEY (chat, message_id, concern_id))"""),
 )
 
 

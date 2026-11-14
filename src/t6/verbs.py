@@ -547,8 +547,27 @@ class ConcernRaiseInput(BaseModel):
 class ConcernNoteInput(BaseModel):
     concern: str
     text: str
+    from_reply: str | None = None
+    message_id: str | None = None
     idempotency_key: str | None = None
     confirm: str | None = None
+
+
+class ConcernRecordMessageInput(BaseModel):
+    concern: str
+    chat: str
+    message_id: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class ConcernForMessageInput(BaseModel):
+    chat: str
+    message_id: str
+
+
+class ConcernForMessageOutput(BaseModel):
+    concern_ids: list[str]
 
 
 class ConcernResolveInput(BaseModel):
@@ -579,15 +598,20 @@ class ConcernGetOutput(BaseModel):
     concern: dict[str, Any]
 
 
-def concern_write(inputs: ConcernRaiseInput | ConcernNoteInput | ConcernResolveInput | ConcernReopenInput, open_notion: Callable[..., Any]) -> Outcome:
+def concern_write(inputs: ConcernRaiseInput | ConcernNoteInput | ConcernResolveInput | ConcernReopenInput | ConcernRecordMessageInput, open_notion: Callable[..., Any]) -> Outcome:
     from t6.concern import ConcernStore
     from t6.preview import PreviewTokens
     key = os.environ.get('T6_PREVIEW_SIGNING_KEY', '')
     if not key:
         return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
-    verb = {ConcernRaiseInput: 'raise', ConcernNoteInput: 'note', ConcernResolveInput: 'resolve', ConcernReopenInput: 'reopen'}[type(inputs)]
+    verb = {ConcernRaiseInput: 'raise', ConcernNoteInput: 'note', ConcernResolveInput: 'resolve', ConcernReopenInput: 'reopen', ConcernRecordMessageInput: 'record-message'}[type(inputs)]
     values = inputs.model_dump(exclude={'idempotency_key', 'confirm'})
     return ConcernStore(_people().registry, PreviewTokens(key)).write(verb, values, actor=_actor.get(), idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
+def concern_for_message(inputs: ConcernForMessageInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.concern import ConcernStore
+    return Done(result={'concern_ids': ConcernStore(_people().registry, _people().tokens).for_message(inputs.chat, inputs.message_id)})
 
 
 def concern_get(inputs: ConcernGetInput, open_notion: Callable[..., Any]) -> Outcome:
@@ -951,6 +975,8 @@ VERBS = (
          "operator", "Only a held Project can be resumed.", project_resume),
     Verb("project", "activity", "Show Project activity, newest first", (),
          ActivityInput, ActivityOutput, "reader", "Activity is append-only.", project_activity),
+    Verb("concern", "for-message", "Find Concerns carried by a brief", (), ConcernForMessageInput, ConcernForMessageOutput, "reader", "Return Concern IDs for a brief message.", concern_for_message),
+    Verb("concern", "record-message", "Record a Concern carried by a brief", (), ConcernRecordMessageInput, ConcernOutput, "coordinator", "Record a brief message reference without chat text.", concern_write),
     Verb("concern", "get", "Get a Concern", (), ConcernGetInput, ConcernGetOutput, "reader", "Read a Concern and its age.", concern_get),
     Verb("concern", "raise", "Raise a Concern", (), ConcernRaiseInput, ConcernOutput, "coordinator", "Record a line waiting on a party.", concern_write),
     Verb("concern", "note", "Add a Concern note", (), ConcernNoteInput, ConcernOutput, "coordinator", "Notes are append-only.", concern_write),
@@ -981,9 +1007,13 @@ def invoke(entry: Verb, inputs: BaseModel, *, actor: str, people: People,
            open_notion: Callable[..., Any],
            legacy: Callable[[], int] | None = None) -> Outcome:
     """Authorize an authenticated Person before invoking a registered verb."""
+    if isinstance(inputs, ConcernNoteInput) and inputs.from_reply is not None:
+        person = people.get(actor)
+        if not person or not person['active']:
+            return Refused(rule='person', reason='An active replier Person is required')
     refusal = (None if entry.noun == 'approval' and (person := people.get(actor)) and person['active'] else
                Refused(rule='person', reason='An active Person is required') if entry.noun == 'approval' else
-               people.authorize(actor, entry.role))
+               people.authorize(actor, 'reader' if isinstance(inputs, ConcernNoteInput) and inputs.from_reply is not None else entry.role))
     if refusal:
         return refusal
     if entry.noun == 'person' and entry.verb in ('grant', 'revoke'):
@@ -1097,6 +1127,11 @@ def add_parsers(commands: Any) -> None:
             parser.add_argument('code')
             for name in ('episode', 'due', 'air', 'idempotency-key', 'confirm'):
                 parser.add_argument('--' + name)
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.handler is concern_for_message:
+            parser.add_argument('chat')
+            parser.add_argument('message_id')
             parser.set_defaults(registered_verb=entry)
             continue
         if entry.handler is jo_write and entry.verb != "raise":

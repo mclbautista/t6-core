@@ -99,6 +99,32 @@ class ConcernTests(unittest.TestCase):
         self.assertIsInstance(result, Refused)
         self.assertTrue({'raise', 'note', 'resolve', 'reopen'} <= {v['verb'] for v in catalogue() if v['noun'] == 'concern'})
 
+    def test_brief_reply_is_the_only_chat_text_kept(self) -> None:
+        concern = self.raise_concern()
+        self.write('record-message', {'concern': concern, 'chat': '-100', 'message_id': '42'}, 'brief')
+        self.assertEqual(self.store.for_message('-100', '42'), [concern])
+        self.assertEqual(self.store.for_message('-100', '43'), [])
+        ignored = self.store.write('note', {'concern': concern, 'text': 'unrelated chat text', 'from_reply': '-100:43', 'message_id': '45'}, actor='replier', idempotency_key='ignored')
+        self.assertEqual(ignored, Done(result={'ignored': True}))
+        values = {'concern': concern, 'text': 'The client replied', 'from_reply': '-100:42', 'message_id': '44'}
+        preview = self.store.write('note', values, actor='replier', idempotency_key='reply')
+        assert isinstance(preview, Preview)
+        result = self.store.write('note', values, actor='replier', idempotency_key='reply', confirm=preview.token)
+        self.assertIsInstance(result, Done)
+        record = self.store.get(concern)
+        assert record is not None
+        self.assertEqual([(n['text'], n['actor'], n['message_id']) for n in record['notes']], [('The client replied', 'replier', '44')])
+        with self.registry._transaction() as db:
+            dump = '\n'.join(db.iterdump())
+            self.assertNotIn('unrelated chat text', dump)
+
+    def test_brief_can_carry_multiple_concerns(self) -> None:
+        first = self.raise_concern()
+        second = self.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'studio', 'anchor': 'Waiting', 'as_of': '2026-11-01'}, 'second')['concern_id']
+        for concern in (first, second):
+            self.write('record-message', {'concern': concern, 'chat': 'chat', 'message_id': '1'}, 'mapping-' + concern)
+        self.assertEqual(set(self.store.for_message('chat', '1')), {first, second})
+
 class ConcernQueueTests(unittest.TestCase):
     def test_scheduled_jobs_are_claimed_and_applied_once(self) -> None:
         import tempfile
