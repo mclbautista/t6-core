@@ -48,12 +48,14 @@ class ReviewMessage:
         topic: int | None,
         ask_frameio: Callable[[FrameioRequest], FrameioResult],
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        target: Callable[[str], tuple[int, int | None] | None] | None = None,
     ) -> None:
         self._gateway = gateway
         self._chat = chat
         self._topic = topic
         self._ask = ask_frameio
         self._now = now
+        self._target = target
 
     def handlers(self) -> dict[str, Handler]:
         return {JobKind.FRAMEIO_REVIEW_DONE.value: self.notify}
@@ -84,7 +86,9 @@ class ReviewMessage:
             f"Stopped: {long_date(last)}\n"
             f"{comments} from them, {UNKNOWN if total is None else total} on the file in total"
         )
-        ref = self._gateway.notify(self._chat, text, [], f"frameio-review:{job.dedupe_key}", topic=self._topic)
+        target = self._target(project_id) if self._target is not None else None
+        chat, topic = target if target is not None else (self._chat, self._topic)
+        ref = self._gateway.notify(chat, text, [], f"frameio-review:{job.dedupe_key}", topic=topic)
         return {"message_ref": ref, "count": count}
 
     def _read_file(self, file_id: str) -> FrameioFile | None:

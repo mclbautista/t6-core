@@ -167,11 +167,22 @@ def configured_handlers(
         topic = _whole_number(environ, "T6_REVIEW_TOPIC", required=False)
         assert chat is not None
         queue = QueueClient(transport, settings.secret)
+        target = None
+        external_links = environ.get("T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE")
+        if token and external_links:
+            from t6.notion import NotionClient
+            from t6.notion.external_links import ExternalLinks
+            from t6.worker.registry import RegistryClient
+            from t6.worker.review_target import ReviewTarget
+
+            target = ReviewTarget(ExternalLinks(NotionClient(token), external_links), RegistryClient(transport, settings.secret))
+
         review = ReviewMessage(
             GatewayClient(HttpTransport(gateway_url), gateway_secret),
             chat,
             topic,
             lambda request: ask(queue, request, timeout=review_ask_seconds(request)),
+            target=target,
         )
         handlers.update(review.handlers())
     return {"main": handlers} if handlers else {}
