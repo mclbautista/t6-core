@@ -230,3 +230,21 @@ fields, read from Notion) and `t6.registry` (identity).
   kept per (file, commenting person) and restarts on each of their comments.
 - **Sign-in**: a person signing in to Adobe so the Frame.io worker has a
   token again. The **sign-in alert** is the Telegram message with the link.
+
+## T6 database and IDs
+
+The **t6 database** is the SQLite store for T6 entities. Its numbered schema
+migrations run on open; each records whether it is forward-only. Each migration
+must remain readable by the previous release or be marked forward-only. Migration 2
+is forward-only: rolling back to the previous release requires restoring the
+backup made before migration. Take a backup before upgrading.
+
+A **T6 ID** is an opaque, permanent identifier whose prefix identifies its kind.
+The prefixes are Project `t6p_`, Deliverable `t6v_`, Package `t6k_`, Version
+`t6r_`, Timeline `t6t_`, Person `t6n_`, Bay `t6b_`, Booking `t6g_`, Media
+location `t6m_`, Concern `t6c_`, Approval `t6a_`, Job Order `t6j_`, Drive
+`t6d_`, Milestone `t6s_`, Chat link `t6h_`, and Transcript `t6x_`. Project
+IDs retain their existing 24-hex-digit format; the others use 32 lowercase hex
+digits. Drive IDs retain their UUID4 format. Existing IDs are never rewritten.
+A binding links an external page to an entity ID; replaced pages remain legacy
+bindings. Project bindings and registry behavior continue as before.

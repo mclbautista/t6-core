@@ -13,15 +13,14 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 import json
 from pathlib import Path
-import secrets
 import sqlite3
 import time
 from typing import TypeAlias
 
 from t6.domain.events import JsonValue
+from t6.ids import EntityKind, T6Id
 from t6.registry.core import (
     NOTION,
-    PROJECT_ID_PREFIX,
     AuditEntry,
     Changed,
     ChangeOutcome,
@@ -105,6 +104,29 @@ CREATE TABLE IF NOT EXISTS requests (
 );
 """
 
+# Each migration runs in the same transaction as its version record. Version 1
+# adopts the previous release's schema; version 2 is forward-only because old
+# releases query bindings.project_id. Restore a pre-migration backup to roll back.
+_MIGRATIONS = (
+    (1, False, _SCHEMA),
+    (2, True, "ALTER TABLE bindings RENAME COLUMN project_id TO entity_id"),
+)
+
+
+def _migrate(db: sqlite3.Connection) -> None:
+    db.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, forward_only INTEGER NOT NULL)")
+    row = db.execute("SELECT MAX(version) FROM schema_version").fetchone()
+    current = row[0] or 0
+    if current > _MIGRATIONS[-1][0]:
+        raise RegistryError(f"unsupported database schema version: {current}")
+    for version, forward_only, sql in _MIGRATIONS:
+        if version > current:
+            for statement in sql.split(";"):
+                if statement.strip():
+                    db.execute(statement)
+            db.execute("INSERT INTO schema_version VALUES (?, ?)", (version, int(forward_only)))
+
+
 _Values: TypeAlias = Mapping[str, JsonValue]
 _Step: TypeAlias = Callable[
     [sqlite3.Connection, RegisteredProject, float],
@@ -116,7 +138,7 @@ must not have written anything."""
 
 
 def _new_id() -> str:
-    return PROJECT_ID_PREFIX + secrets.token_hex(12)
+    return str(T6Id.mint(EntityKind.PROJECT))
 
 
 class SqliteProjectRegistry:
@@ -135,9 +157,7 @@ class SqliteProjectRegistry:
         finally:
             setup.close()
         with self._transaction() as db:
-            for statement in _SCHEMA.split(";"):
-                if statement.strip():
-                    db.execute(statement)
+            _migrate(db)
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
@@ -155,6 +175,33 @@ class SqliteProjectRegistry:
                 db.close()
         except sqlite3.OperationalError as problem:
             raise RegistryUnavailable(str(problem)) from problem
+
+    def bind_entity(self, system: str, page_id: str, entity_id: T6Id) -> None:
+        """Bind an external page, retaining any previous page as legacy."""
+        if not isinstance(entity_id, T6Id) or entity_id.kind is EntityKind.PROJECT:
+            raise ValueError("bind non-Project entities with a T6Id; use the registry for Projects")
+        if not system.strip() or not page_id.strip():
+            raise ValueError("system and page_id must not be blank")
+        with self._transaction() as db:
+            row = db.execute(
+                "SELECT entity_id FROM bindings WHERE system = ? AND page_id = ?", (system, page_id)
+            ).fetchone()
+            if row is not None and row[0] != str(entity_id):
+                raise ValueError("page is already bound")
+            db.execute("UPDATE bindings SET active = 0 WHERE system = ? AND entity_id = ?", (system, str(entity_id)))
+            if row is None:
+                db.execute(
+                    "INSERT INTO bindings (system, page_id, entity_id, bound_at, active) VALUES (?, ?, ?, ?, 1)",
+                    (system, page_id, str(entity_id), self._clock()),
+                )
+            else:
+                db.execute("UPDATE bindings SET active = 1 WHERE system = ? AND page_id = ?", (system, page_id))
+
+    def bound_entity(self, system: str, page_id: str) -> str | None:
+        """Resolve active and legacy external pages to their entity ID."""
+        with self._transaction() as db:
+            row = db.execute("SELECT entity_id FROM bindings WHERE system = ? AND page_id = ?", (system, page_id)).fetchone()
+            return None if row is None else str(row[0])
 
     # -- register ------------------------------------------------------------
 
@@ -259,7 +306,7 @@ class SqliteProjectRegistry:
             active = next((binding.page_id for binding in project.bindings if binding.active), None)
             if active == page:
                 return None
-            db.execute("UPDATE bindings SET active = 0 WHERE project_id = ?", (project.id,))
+            db.execute("UPDATE bindings SET active = 0 WHERE entity_id = ?", (project.id,))
             if holder is None:
                 _bind(db, page, project.id, now)
             else:
@@ -386,7 +433,9 @@ class SqliteProjectRegistry:
                     return Observed("ignored", None)
                 _open_review(db, "unbound_page", page, None, {}, now)
                 return Observed("unbound", None)
-            project = _must_read(db, holder)
+            project = _read(db, holder)
+            if project is None:
+                return Observed("ignored", None)
             binding = next(b for b in project.bindings if b.page_id == page)
             here = {"page_id": page}
             if not available:
@@ -453,13 +502,13 @@ def _seen(db: sqlite3.Connection, idempotency_key: str) -> tuple[str, str] | Non
 
 
 def _page_holder(db: sqlite3.Connection, page: str) -> str | None:
-    row = db.execute("SELECT project_id FROM bindings WHERE system = ? AND page_id = ?", (NOTION, page)).fetchone()
+    row = db.execute("SELECT entity_id FROM bindings WHERE system = ? AND page_id = ?", (NOTION, page)).fetchone()
     return None if row is None else str(row[0])
 
 
 def _bind(db: sqlite3.Connection, page: str, project_id: str, now: float) -> None:
     db.execute(
-        "INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES (?, ?, ?, ?, 1)",
+        "INSERT INTO bindings (system, page_id, entity_id, bound_at, active) VALUES (?, ?, ?, ?, 1)",
         (NOTION, page, project_id, now),
     )
     _close_review(db, "unbound_page", page, now)
@@ -523,7 +572,7 @@ def _read(db: sqlite3.Connection, project_id: str) -> RegisteredProject | None:
         return None
     bindings = db.execute(
         "SELECT system, page_id, bound_at, active, available FROM bindings "
-        "WHERE project_id = ? ORDER BY bound_at, page_id",
+        "WHERE entity_id = ? ORDER BY bound_at, page_id",
         (project_id,),
     ).fetchall()
     undone = db.execute(
