@@ -29,9 +29,9 @@ class InstallationTests(unittest.TestCase):
                 text=True,
             )
             wheel = next(root.glob("*.whl"))
-            for extra in ("", "[notion]"):
+            for extra in ("", "[notion]", "[client]"):
                 with self.subTest(extra=extra):
-                    environment = root / ("notion" if extra else "base")
+                    environment = root / (extra.strip("[]") if extra else "base")
                     venv.create(environment, with_pip=True)
                     python = environment / "bin" / "python"
                     self.run_command(python, "-m", "pip", "install", f"{wheel}{extra}")
@@ -63,11 +63,13 @@ else:
                     )
                     self.assertEqual(
                         set(installed["extras"]),
-                        {"notion", "privacy", "llm", "frameio", "resolve", "instagantt", "lookup", "drives", "server", "worker", "transcribe"},
+                        {"client", "notion", "privacy", "llm", "frameio", "resolve", "instagantt", "lookup", "drives", "server", "worker", "transcribe"},
                     )
                     # A fresh environment may include setuptools on Python 3.11.
                     allowed = {"t6", "pip", "setuptools"} | BASE_PACKAGES
-                    if extra:
+                    if extra == "[client]":
+                        self.run_command(python, "-c", "import sys; import t6.client; assert not any(x.startswith(('t6.server', 't6.notion')) for x in sys.modules)")
+                    if extra == "[notion]":
                         allowed |= NOTION_PACKAGES
                         self.run_command(python, "-c", "import t6.notion, t6.notion.testing")
                     self.assertLessEqual(set(installed["packages"]), allowed)

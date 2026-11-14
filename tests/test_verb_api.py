@@ -114,3 +114,49 @@ class VerbAPITests(unittest.TestCase):
         for value in ('{"unknown": ["operator"]}', '{"worker": ["bogus"]}', '{"worker": "operator"}'):
             with self.assertRaises(ValueError):
                 service_permissions_from_env({'T6_API_SERVICE_PERMISSIONS': value})
+
+class ClientTests(VerbAPITests):
+    def test_client_registry_and_retry(self) -> None:
+        from t6.client import Client, Unavailable
+        from t6.verbs import ProjectHoldInput, ActivityInput, Preview, Done, VERBS
+        client = Client('http://127.0.0.1:%s' % self.server.server_port, 'operator-secret')
+        for entry in VERBS:
+            self.assertTrue(callable(getattr(client, (entry.noun + ('_' + entry.verb if entry.verb else '')).replace('-', '_'))))
+        project = self.registry.register(code='RETRY', actor='setup', idempotency_key='setup-retry')
+        assert isinstance(project, Registered)
+        inputs = ProjectHoldInput(project=project.project.id, reason='pause', idempotency_key='retry-key')
+        offline = Client('http://127.0.0.1:1', 'operator-secret', timeout=1)
+        self.assertIsInstance(offline.project_activity(ActivityInput(project=project.project.id)), Unavailable)
+        failed = offline.project_hold(inputs)
+        self.assertIsInstance(failed, Unavailable)
+        self.assertEqual(failed.idempotency_key, 'retry-key')
+        preview = client.project_hold(inputs)
+        self.assertIsInstance(preview, Preview)
+        inputs.confirm = preview.token
+        self.assertIsInstance(client.project_hold(inputs), Done)
+        inputs.confirm = None
+        replay = client.project_hold(inputs)
+        self.assertIsInstance(replay, Preview)
+        inputs.confirm = replay.token
+        self.assertIsInstance(client.project_hold(inputs), Done)
+        self.assertEqual(len([a for a in self.registry.activity(project.project.id) if a.action == 'project_hold']), 1)
+
+    def test_cli_and_health_use_http(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+        from t6.cli import main
+        project = self.registry.register(code='CLI', actor='setup', idempotency_key='setup-cli')
+        assert isinstance(project, Registered)
+        env = {'T6_API_URL': 'http://127.0.0.1:%s' % self.server.server_port, 'T6_API_SECRET': 'operator-secret'}
+        with patch.dict(os.environ, env), redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(main(['project', 'hold', project.project.id, '--reason', 'pause']), 0)
+        preview = json.loads(out.getvalue())
+        self.assertEqual(preview['outcome'], 'preview')
+        with patch.dict(os.environ, env), redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(main(['project', 'hold', project.project.id, '--reason', 'pause',
+                                   '--idempotency-key', preview['plan']['idempotency_key'],
+                                   '--confirm', preview['token']]), 0)
+        self.assertEqual(json.loads(out.getvalue())['outcome'], 'done')
+        with patch.dict(os.environ, env), redirect_stdout(io.StringIO()) as out:
+            main(['health'])
+        self.assertIsInstance(json.loads(out.getvalue())['api']['schema_version'], int)

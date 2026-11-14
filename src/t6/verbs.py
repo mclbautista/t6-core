@@ -508,25 +508,26 @@ def run(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
     entry: Verb = args.registered_verb
     inputs = entry.input_model.model_validate({name: getattr(args, name) for name in entry.input_model.model_fields})
     assert entry.handler is not None
-    outcome: Outcome
+    from t6.client import APIError, Client, Unavailable
     try:
-        if entry.noun == 'person' and entry.verb in ('grant', 'revoke') and not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
-            outcome = Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
-        else:
-            outcome = invoke(entry, inputs, actor=os.environ.get('T6_PERSON_ID', ''), people=_people(), open_notion=open_notion)
-    except (OSError, ValueError) as error:
-        outcome = Refused(rule='identity', reason=str(error))
+        outcome = Client().call(entry.noun, entry.verb, inputs)
+    except APIError as error:
+        outcome = Refused(rule="api", reason=str(error))
+    if isinstance(outcome, Unavailable):
+        print(json.dumps({"outcome": "unavailable", "reason": outcome.reason,
+                          "idempotency_key": outcome.idempotency_key}, ensure_ascii=False, indent=2))
+        return 1
     code, payload = outcome_json(outcome)
     if entry.noun == "departments" and not entry.verb:
         if isinstance(outcome, Done):
-            payload = outcome.result.model_dump(mode="json")
+            payload = outcome.result.model_dump(mode="json") if isinstance(outcome.result, BaseModel) else outcome.result
         elif isinstance(outcome, Refused):
             from t6.cli import _fail
             return _fail(outcome.reason)
     if entry.handler is project_activity and not args.json and isinstance(outcome, Done):
-        for item in outcome.result.entries:
-            when = datetime.fromtimestamp(item.at, timezone.utc).isoformat()
-            print(f"{when}  {item.actor}  {item.summary}")
+        for item in outcome.result["entries"]:
+            when = datetime.fromtimestamp(item["at"], timezone.utc).isoformat()
+            print(f"{when}  {item['actor']}  {item['summary']}")
     else:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     return code
