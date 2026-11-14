@@ -308,6 +308,14 @@ def _ops(args: argparse.Namespace) -> int:
             result = ops.restore(args.source, _database_paths())
         else:
             result = ops.health(_database_paths())
+            from t6.client import APIError, Client, Unavailable
+            try:
+                api = Client().health()
+                result["api"] = ({"reachable": False, "reason": api.reason} if isinstance(api, Unavailable)
+                                 else {"reachable": True, **api})
+            except APIError as error:
+                result["api"] = {"reachable": False, "reason": str(error)}
+            result["ok"] = bool(result["ok"] and result["api"]["reachable"])
     except (OSError, ops.OpsError) as error:
         return _fail(str(error))
     print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -552,21 +560,28 @@ def main(
     pair = legacy_verbs.get((args.command, subcommand))
     if pair is not None:
         entry = next(v for v in verbs.VERBS if (v.noun, v.verb) == pair)
-        def legacy_call() -> int:
-            if args.command in {"contacts", "projects"}:
-                return cli_studio.run(args, open_notion)
-            if args.command == "jo":
-                return cli_jo.run(args, open_notion)
-            return _cameras(args, open_notion)
+        if entry.local_only:
+            return cli_jo.run(args, open_notion) if entry.noun == "jo" else _cameras(args, open_notion)
+        from t6.client import APIError, Client, Unavailable
+        values = {name: getattr(args, name, None) for name in entry.input_model.model_fields}
+        if values.get("date") is not None:
+            values["date"] = str(values["date"])
+        # The actor is established by API authentication.
+        values.pop("actor", None)
+        inputs = entry.input_model.model_validate(values)
         try:
-            outcome = verbs.invoke(entry, entry.input_model.model_construct(),
-                                   actor=os.environ.get("T6_PERSON_ID", ""), people=verbs._people(),
-                                   open_notion=open_notion, legacy=legacy_call)
-        except (ValueError, OSError) as error:
-            outcome = verbs.Refused(rule="identity", reason=str(error))
-        if isinstance(outcome, verbs.Done):
-            return int(outcome.result)
+            outcome = Client().call(entry.noun, entry.verb, inputs)
+        except APIError as error:
+            outcome = verbs.Refused(rule="api", reason=str(error))
+        if isinstance(outcome, Unavailable):
+            print(json.dumps({"outcome": "unavailable", "reason": outcome.reason,
+                              "idempotency_key": outcome.idempotency_key}, indent=2))
+            return 1
+        if isinstance(outcome, verbs.Refused):
+            return _fail(outcome.reason)
         code, payload = verbs.outcome_json(outcome)
+        if isinstance(outcome, verbs.Done):
+            payload = outcome.result
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return code
     if args.command in {"contacts", "projects", "standing-cc"}:

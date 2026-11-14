@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Iterator
 from unittest.mock import patch
 
+from cli_api_fake import client_patch
 from t6.cli import main
 from t6.notion.generated import ContactsRow
 from t6.notion.testing import FakeNotion, rich_text, title
@@ -45,6 +46,9 @@ class PersonTests(unittest.TestCase):
             db.execute("INSERT INTO persons VALUES ('test-actor', 'staff', '[]', '[]', NULL, 0, 1)")
             db.execute("INSERT INTO person_permissions VALUES ('test-actor', 'operator')")
         self.fake = FakeNotion()
+        patcher = client_patch(lambda _token: self.fake.client())
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.fake.add_snapshot_data_source('contacts', 'contacts')
         row = ContactsRow
         self.first = self.fake.add_page('contacts', {
@@ -99,9 +103,9 @@ class PersonTests(unittest.TestCase):
         for mention in ('Ria', '42', 'Maria Santoz Cruz', 'no match'):
             contacts = self.command('contacts', 'find', mention, '--data-sources', str(self.sources))
             people = self.command('person', 'find', mention, '--data-sources', str(self.sources))
+            self.assertEqual(people, contacts)
             for item in ([people['match']] if people['match'] else []) + people['candidates']:
                 self.assertEqual(item.pop('t6_id'), ids[normalize_page_id(item['id'])])
-            self.assertEqual(people, contacts)
         conflict = self.command('person', 'rebind', '--person-id', ids[normalize_page_id(self.first)], '--page-id', self.second)
         self.assertEqual((conflict['outcome'], conflict['rule']), ('refused', 'binding'))
         replacement = self.fake.add_page('contacts', {ContactsRow.notion_name('name'): title('Renamed Maria')})['id']

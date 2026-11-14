@@ -118,7 +118,7 @@ class VerbAPITests(unittest.TestCase):
         with self.registry._transaction() as db:
             db.execute("INSERT INTO person_permissions VALUES (?, 'coordinator')", (self.actor,))
         self.api.open_notion = lambda _: nullcontext(None)
-        data = {'file': 'jo.json', 'data_sources': 'sources.json'}
+        data = {'file_contents': '{}', 'data_sources_contents': '{}'}
         for verb, inputs in (
             ('raise', data), ('assign', {'jo': 'x', 'person': 'x'}),
             ('reassign', {'jo': 'x', 'person': 'x', 'reason': 'r'}),
@@ -178,3 +178,104 @@ class VerbAPITests(unittest.TestCase):
                           'from': {'id': 42}, 'chat': 42}).encode())
         self.assertEqual(api(command).body['outcome'], 'opened')
         self.assertEqual(api(command).body['outcome'], 'already_handled')
+
+class ClientTests(VerbAPITests):
+    def test_client_registry_and_retry(self) -> None:
+        from t6.client import Client, Unavailable
+        from t6.verbs import ProjectHoldInput, ActivityInput, Preview, Done, VERBS
+        client = Client('http://127.0.0.1:%s' % self.server.server_port, 'operator-secret')
+        for entry in VERBS:
+            self.assertTrue(callable(getattr(client, (entry.noun + ('_' + entry.verb if entry.verb else '')).replace('-', '_'))))
+        project = self.registry.register(code='RETRY', actor='setup', idempotency_key='setup-retry')
+        assert isinstance(project, Registered)
+        inputs = ProjectHoldInput(project=project.project.id, reason='pause', idempotency_key='retry-key')
+        offline = Client('http://127.0.0.1:1', 'operator-secret', timeout=1)
+        self.assertIsInstance(offline.project_activity(ActivityInput(project=project.project.id)), Unavailable)
+        failed = offline.project_hold(inputs)
+        assert isinstance(failed, Unavailable)
+        self.assertEqual(failed.idempotency_key, 'retry-key')
+        preview = client.project_hold(inputs)
+        assert isinstance(preview, Preview)
+        inputs.confirm = preview.token
+        self.assertIsInstance(client.project_hold(inputs), Done)
+        inputs.confirm = None
+        replay = client.project_hold(inputs)
+        assert isinstance(replay, Preview)
+        inputs.confirm = replay.token
+        self.assertIsInstance(client.project_hold(inputs), Done)
+        self.assertEqual(len([a for a in self.registry.activity(project.project.id) if a.action == 'project_hold']), 1)
+
+    def test_client_job_order_raise_preview_confirm(self) -> None:
+        from contextlib import nullcontext
+        from pathlib import Path
+        from t6.client import Client
+        from t6.verbs import Done, JoRaiseInput, Preview
+
+        project = self.registry.register(actor='setup', idempotency_key='client-jo')
+        assert isinstance(project, Registered)
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO person_permissions VALUES (?, 'coordinator')", (self.actor,))
+        self.api.open_notion = lambda _: nullcontext(None)
+        draft = Path(self.tmp.name) / 'jo.json'
+        sources = Path(self.tmp.name) / 'sources.json'
+        draft.write_text('{}')
+        sources.write_text('{}')
+        inputs = JoRaiseInput(file=draft, data_sources=sources)
+        client = Client('http://127.0.0.1:%s' % self.server.server_port, 'operator-secret')
+        with patch.dict(os.environ, {'T6_NOTION_TOKEN': 'secret'}), \
+             patch('t6.cli._read_data_sources', return_value={'job_orders': 'jo'}), \
+             patch('t6.cli_jo.prepare_fields', return_value={'project_id': project.project.id}):
+            preview = client.jo_raise(inputs)
+            assert isinstance(preview, Preview)
+            inputs.idempotency_key = preview.plan['idempotency_key']
+            inputs.confirm = preview.token
+            self.assertIsInstance(client.jo_raise(inputs), Done)
+
+    def test_client_tap(self) -> None:
+        from t6.client import Client
+        self.api.tap_app = WebhookApp(self.queue, ServerConfig(), registry=self.registry)
+        client = Client('http://127.0.0.1:%s' % self.server.server_port,
+                        'gateway-secret', telegram_user_id=42)
+        payload = {'data': 'approve:page', 'from': {'id': 42}}
+        first = client.tap(payload, idempotency_key='client-tap')
+        second = client.tap(payload, idempotency_key='client-tap')
+        assert isinstance(first, dict) and isinstance(second, dict)
+        self.assertTrue(first['created'])
+        self.assertFalse(second['created'])
+
+    def test_file_contents_and_missing_configuration(self) -> None:
+        from pathlib import Path
+        from t6.client import Client, Unavailable
+        from t6.verbs import ActivityInput, JoFormatInput, Done
+        with patch.dict(os.environ, {}, clear=True):
+            result = Client().project_activity(ActivityInput(project='x'))
+            assert isinstance(result, Unavailable)
+            self.assertIn('T6_API_URL', result.reason)
+            self.assertIn('T6_API_SECRET', result.reason)
+        path = Path(self.tmp.name) / 'draft.txt'
+        path.write_text('SHOW - TOC - JO #1\nTitle: Test', encoding='utf-8')
+        client = Client('http://127.0.0.1:%s' % self.server.server_port, 'operator-secret')
+        result = client.jo_format(JoFormatInput(file=path))
+        self.assertIsInstance(result, Done)
+        status, _ = self.request('/v1/jo/format', {'file': str(path)})
+        self.assertEqual(status, 422)
+
+    def test_cli_and_health_use_http(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+        from t6.cli import main
+        project = self.registry.register(code='CLI', actor='setup', idempotency_key='setup-cli')
+        assert isinstance(project, Registered)
+        env = {'T6_API_URL': 'http://127.0.0.1:%s' % self.server.server_port, 'T6_API_SECRET': 'operator-secret'}
+        with patch.dict(os.environ, env), redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(main(['project', 'hold', project.project.id, '--reason', 'pause']), 0)
+        preview = json.loads(out.getvalue())
+        self.assertEqual(preview['outcome'], 'preview')
+        with patch.dict(os.environ, env), redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(main(['project', 'hold', project.project.id, '--reason', 'pause',
+                                   '--idempotency-key', preview['plan']['idempotency_key'],
+                                   '--confirm', preview['token']]), 0)
+        self.assertEqual(json.loads(out.getvalue())['outcome'], 'done')
+        with patch.dict(os.environ, env), redirect_stdout(io.StringIO()) as out:
+            main(['health'])
+        self.assertIsInstance(json.loads(out.getvalue())['api']['schema_version'], int)

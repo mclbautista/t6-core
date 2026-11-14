@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from cli_api_fake import client_patch
 from t6.cli import main
 from t6.notion.testing import FakeNotion, title
 
@@ -26,6 +27,9 @@ class CamerasCommandTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.fake = FakeNotion()
+        patcher = client_patch(lambda _token: self.fake.client())
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.fake.add_snapshot_data_source(CAMERAS, "cameras")
         self.page = self.fake.add_page(
             CAMERAS, {"Name": title("FX6"), "Tags": {"type": "multi_select", "multi_select": [{"name": "Sony"}]}}

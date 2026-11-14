@@ -1699,3 +1699,38 @@ the template's UTF-8 bytes, and the schema serialized as UTF-8 JSON with sorted
 keys, no extra whitespace and non-ASCII characters preserved. Only local JSON
 Schema references are supported. Audit records contain the actor and outcome,
 not the task text or output.
+
+### Calling the t6 API
+
+Install `t6[client]` and set `T6_API_URL` and `T6_API_SECRET`. The client
+uses the same typed input models as the verb registry:
+
+```python
+from t6.client import Client, Unavailable
+from t6.verbs import ProjectHoldInput, Preview
+
+client = Client()
+request = ProjectHoldInput(project="t6p_...", reason="Waiting", idempotency_key="outbox-123")
+preview = client.project_hold(request)
+if isinstance(preview, Preview):
+    # Show the plan to a person and obtain their confirmation first.
+    request.confirm = preview.token
+    result = client.project_hold(request)
+```
+
+Handle all five outcomes and `Unavailable`. Before sending a write, persist its
+input and a unique idempotency key in the app's own ledger or outbox. On an
+unavailable response or a lost confirmation response, retain the same key and
+input. Obtain a fresh preview, have it confirmed, and retry with its token and
+the original key. Confirmation tokens are single-use; the key ensures an
+already completed write is returned without applying it twice. `Unavailable`
+contains the key sent with the request. HTTP errors such as authentication or
+invalid input raise `APIError`. Only the gateway may set `telegram_user_id` on
+the client to act on behalf of a Telegram user. The gateway can deliver `/tap`
+with `client.tap(payload, idempotency_key=key)`; use `client.llm_run` for LLM tasks.
+
+`camera enrich` is temporarily local-only: its legacy write lacks the API's
+signed preview and confirmation contract. It uses the admin's own credentials
+until it gains that contract. `jo raise` uses the API for signed preview and
+confirmation. The client sends the contents of data-source configuration and draft files to the API. Project
+resolution uses the server's registry, not a caller-supplied database file.

@@ -121,6 +121,7 @@ class JobOrderStoreTests(unittest.TestCase):
         import os
         from unittest.mock import patch
         from t6.cli import main
+        from cli_api_fake import client_patch
         from t6.notion.testing import FakeNotion
         fake = FakeNotion()
         fake.add_snapshot_data_source('jos', 'job_orders')
@@ -138,7 +139,7 @@ class JobOrderStoreTests(unittest.TestCase):
         env = {'T6_NOTION_TOKEN': 'fake', 'T6_PREVIEW_SIGNING_KEY': 'secret', 'T6_PERSON_ID': actor}
         def command(*args: str) -> dict:  # type: ignore[type-arg]
             out = io.StringIO()
-            with patch.dict(os.environ, env, clear=True), patch('t6.cli._open_registry', return_value=self.registry), patch('t6.verbs._people', return_value=people_for_cli), contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            with patch.dict(os.environ, env, clear=True), patch('t6.cli._open_registry', return_value=self.registry), patch('t6.verbs._people', return_value=people_for_cli), client_patch(lambda _: fake.client()), contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(main(list(args), open_notion=lambda _: fake.client()), 0)
             return json.loads(out.getvalue())  # type: ignore[no-any-return]
         args = ('--file', str(fields), '--data-sources', str(sources), '--idempotency-key', 'same')

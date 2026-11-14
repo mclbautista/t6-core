@@ -317,6 +317,7 @@ class Verb:
     role: str
     rule: str
     handler: Callable[..., Outcome] | None
+    local_only: bool = False
 
 
 # Legacy CLI verbs retain their established arguments and JSON output while
@@ -468,7 +469,7 @@ VERBS = (
     Verb("person", "find", "Find a Person", ("contacts find",), PersonFindInput, LegacyOutput, "reader", "Find a Contact.", None),
     Verb("project", "resolve", "Resolve a Project", ("projects resolve",), ProjectResolveInput, LegacyOutput, "reader", "Resolve a Project.", None),
     Verb("camera", "get", "Get Cameras", ("cameras get",), CameraGetInput, LegacyOutput, "reader", "Read Cameras.", None),
-    Verb("camera", "enrich", "Enrich a Camera", ("cameras update",), CameraEnrichInput, LegacyOutput, "operator", "Update a Camera.", None),
+    Verb("camera", "enrich", "Enrich a Camera", ("cameras update",), CameraEnrichInput, LegacyOutput, "operator", "Update a Camera.", None, local_only=True),
     Verb("departments", "", "Print the studio Departments, read live, in display order, with option IDs", (),
          DepartmentsInput, DepartmentsOutput, "reader", "Notion Department options are the truth; use studio display order.", departments),
 )
@@ -497,7 +498,7 @@ def invoke(entry: Verb, inputs: BaseModel, *, actor: str, people: People,
 
 def catalogue() -> list[dict[str, Any]]:
     return [{"noun": v.noun, "verb": v.verb, "description": v.description, "aliases": list(v.aliases),
-             "role": v.role, "rule": v.rule, "input_schema": v.input_model.model_json_schema(),
+             "role": v.role, "rule": v.rule, "local_only": v.local_only, "input_schema": v.input_model.model_json_schema(),
              "output_schema": v.output_model.model_json_schema()} for v in VERBS]
 
 
@@ -610,25 +611,26 @@ def run(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
     entry: Verb = args.registered_verb
     inputs = entry.input_model.model_validate({name: getattr(args, name) for name in entry.input_model.model_fields})
     assert entry.handler is not None
-    outcome: Outcome
+    from t6.client import APIError, Client, Unavailable
     try:
-        if entry.noun == 'person' and entry.verb in ('grant', 'revoke') and not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
-            outcome = Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
-        else:
-            outcome = invoke(entry, inputs, actor=os.environ.get('T6_PERSON_ID', ''), people=_people(), open_notion=open_notion)
-    except (OSError, ValueError) as error:
-        outcome = Refused(rule='identity', reason=str(error))
+        outcome = Client().call(entry.noun, entry.verb, inputs)
+    except APIError as error:
+        outcome = Refused(rule="api", reason=str(error))
+    if isinstance(outcome, Unavailable):
+        print(json.dumps({"outcome": "unavailable", "reason": outcome.reason,
+                          "idempotency_key": outcome.idempotency_key}, ensure_ascii=False, indent=2))
+        return 1
     code, payload = outcome_json(outcome)
     if entry.noun == "departments" and not entry.verb:
         if isinstance(outcome, Done):
-            payload = outcome.result.model_dump(mode="json")
+            payload = outcome.result.model_dump(mode="json") if isinstance(outcome.result, BaseModel) else outcome.result
         elif isinstance(outcome, Refused):
             from t6.cli import _fail
             return _fail(outcome.reason)
     if entry.handler is project_activity and not args.json and isinstance(outcome, Done):
-        for item in outcome.result.entries:
-            when = datetime.fromtimestamp(item.at, timezone.utc).isoformat()
-            print(f"{when}  {item.actor}  {item.summary}")
+        for item in outcome.result["entries"]:
+            when = datetime.fromtimestamp(item["at"], timezone.utc).isoformat()
+            print(f"{when}  {item['actor']}  {item['summary']}")
     else:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     return code

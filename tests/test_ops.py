@@ -150,7 +150,7 @@ class CommandTests(OpsTestCase):
         live = self.live()
         env = {"T6_REGISTRY_DB": str(live["registry"]), "T6_QUEUE_DB": str(live["queue"]), "T6_OPERATOR_DB": str(live["operator"])}
         backup = Path(self.directory.name) / "backup"
-        with mock.patch.dict(os.environ, env):
+        with mock.patch.dict(os.environ, env), mock.patch("t6.client.Client.health", return_value={"version": "test", "schema_version": 1}):
             self.assertEqual(cli_main(["backup", "--into", str(backup)]), 0)
             self.assertEqual(cli_main(["health"]), 0)
             self.assertEqual(cli_main(["restore", "--from", str(backup)]), 2)  # the databases exist: refused

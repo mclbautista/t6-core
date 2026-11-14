@@ -1227,7 +1227,7 @@ requires-dist = [
     { name = "referencing", marker = "extra == 'server'", specifier = ">=0.35,<1" },
     { name = "rapidfuzz", marker = "extra == 'lookup'", specifier = ">=3.9,<4" },
 ]
-provides-extras = ["notion", "privacy", "llm", "frameio", "resolve", "instagantt", "lookup", "drives", "server", "worker", "transcribe"]
+provides-extras = ["client", "notion", "privacy", "llm", "frameio", "resolve", "instagantt", "lookup", "drives", "server", "worker", "transcribe"]
 
 [package.metadata.requires-dev]
 dev = [

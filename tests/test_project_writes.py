@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from cli_api_fake import client_patch
 from t6.cli import main
 from t6.preview import PreviewTokens, finish_preview_job, submit_preview_job
 from t6.project_writes import ProjectWrites
@@ -21,6 +22,9 @@ class ProjectWritesTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / 'db'
         self.now = 1000.0
+        patcher = client_patch(lambda _token: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.registry = SqliteProjectRegistry(self.path, clock=lambda: self.now)
         with self.registry._transaction() as db:
             db.execute("INSERT INTO persons VALUES ('test-actor', 'staff', '[]', '[]', NULL, 0, 1)")

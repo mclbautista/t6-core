@@ -4,6 +4,8 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import tempfile
+from pathlib import Path
 from importlib.metadata import version
 from typing import Any, Callable, Mapping, cast
 
@@ -81,6 +83,24 @@ class VerbAPI:
             if data.get('idempotency_key') not in (None, header_key):
                 return self.refused('idempotency_key', 'Conflicting idempotency keys')
             data['idempotency_key'] = header_key
+        if entry.local_only:
+            return self.refused('verb', 'This verb currently runs locally')
+        # Materialize only the explicitly supported uploaded text fields in an
+        # isolated directory; never open a path supplied by an HTTP caller.
+        with tempfile.TemporaryDirectory() as directory:
+            for name in ('data_sources', 'file'):
+                if name not in entry.input_model.model_fields:
+                    continue
+                contents = data.pop(name + '_contents', None)
+                if not isinstance(contents, str):
+                    return Response(422, {'errors': [{'loc': [name], 'msg': 'File contents required'}]})
+                uploaded = Path(directory) / name
+                uploaded.write_text(contents, encoding='utf-8')
+                data[name] = str(uploaded)
+            data.pop('registry_db', None)
+            return self._dispatch(entry, data, actor)
+
+    def _dispatch(self, entry: Any, data: dict[str, Any], actor: str) -> Response:
         try:
             inputs = entry.input_model.model_validate(data)
         except ValidationError as error:
