@@ -130,6 +130,38 @@ class OperatorService:
             project_id=project_id,
         )
 
+    def offer_approval(self, approval: Mapping[str, JsonValue]) -> tuple[Action, bool]:
+        rule = approval['tapper_rule']
+        chat = self._chat
+        if isinstance(rule, str) and rule.startswith('person:') and self._people is not None:
+            person = self._people.get(rule[7:])
+            if person and person['active'] and person['telegram_id'] is not None:
+                chat = person['telegram_id']
+        return self._store.create('approval', {'approval_id': approval['id'], 'gate': approval['gate'], 'target': approval['target']},
+                                  chat=chat, offer_key='approval:' + str(approval['id']), ttl=self._ttl, allowed_tapper=rule)
+
+    def approval_action(self, approval_id: str) -> Action | None:
+        return self._store.find_offer('approval:' + approval_id)
+
+    def recover_approvals(self) -> tuple[Action, ...]:
+        if self._people is None:
+            return ()
+        from t6.approval import Approvals
+        approvals = Approvals(self._people.registry, self._people.tokens)
+        with self._people.registry._transaction() as db:
+            ids = [row[0] for row in db.execute('SELECT id FROM approvals')]
+        changed = []
+        for approval_id in ids:
+            approval = approvals.get(approval_id)
+            assert approval is not None
+            action = self.approval_action(approval_id)
+            if approval['state'] == 'requested' and action is None:
+                action, _ = self.offer_approval(approval)
+                changed.append(action)
+            elif approval['state'] != 'requested' and action is not None and action.state != 'done':
+                changed.append(self._store.finish(action.token, {'outcome': approval['state']}))
+        return tuple(changed)
+
     def undelivered(self) -> tuple[Action, ...]:
         return self._store.undelivered()
 
@@ -238,6 +270,34 @@ class OperatorService:
     def _carry_out(self, action: Action, choice: str, operator: int) -> TapResult:
         actor = f"telegram:{operator}"
         key = f"op:{action.token}:{choice}"
+        if action.kind == 'approval':
+            if choice == 'deny' and action.stage == 'choose':
+                moved = self._store.advance(action.token, stage='deny_reason', params=action.params)
+                return TapResult(True, 'choose_reason', moved, changed=True)
+            if (choice == 'grant' and action.stage == 'choose') or (choice in {'changes', 'requirements'} and action.stage == 'deny_reason'):
+                from t6.approval import Approvals
+                from t6.verbs import Done, Preview
+                assert self._people is not None
+                with self._people.registry._transaction() as db:
+                    person = db.execute('SELECT id FROM persons WHERE telegram_id = ? AND active = 1', (operator,)).fetchone()
+                if person is None:
+                    self._store.release(action.token)
+                    return TapResult(True, 'rejected', action)
+                approvals = Approvals(self._people.registry, self._people.tokens)
+                verb = 'grant' if choice == 'grant' else 'deny'
+                values = {'approval': str(action.params['approval_id'])}
+                if verb == 'deny':
+                    values['reason'] = 'Changes requested' if choice == 'changes' else 'Requirements not met'
+                result = approvals.write(verb, values, actor=person[0], idempotency_key=key)
+                if isinstance(result, Preview):
+                    result = approvals.write(verb, values, actor=person[0], idempotency_key=key, confirm=result.token)
+                if isinstance(result, Done):
+                    return self._done(action, {'outcome': 'granted' if verb == 'grant' else 'denied'})
+                current = approvals.get(values['approval'])
+                if current and current['state'] != 'requested':
+                    return self._done(action, {'outcome': current['state']})
+                self._store.release(action.token)
+                return TapResult(True, 'rejected', action)
         if choice == "skip" or choice == "later":
             return self._done(action, {"outcome": "skipped"})
         if action.kind == "unbound_page" and action.stage == "choose" and choice == "reg":
@@ -505,6 +565,13 @@ def _name(project: RegisteredProject) -> str:
 def _render(
     action: Action, project: RegisteredProject | None, registry: ProjectRegistry
 ) -> tuple[str, list[list[tuple[str, str]]]]:
+    if action.kind == 'approval':
+        head = '<b>Approval: ' + html.escape(str(action.params['gate'])) + '</b>\n' + html.escape(str(action.params['target']))
+        if action.state == 'done':
+            return head + '\n' + html.escape(str((action.result or {}).get('outcome', 'done')).capitalize()), []
+        if action.stage == 'deny_reason':
+            return head + '\nChoose a reason:', [[('Changes requested', 'changes'), ('Requirements not met', 'requirements')]]
+        return head + '\nGrant this Approval?', [[('Grant', 'grant'), ('Deny', 'deny')]]
     if action.kind == "manage":
         return _render_manage(action, project, registry)
     label = html.escape(str(action.params.get("label") or "(untitled)"))

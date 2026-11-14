@@ -35,6 +35,10 @@ class VerbAPI:
         self.data_sources = dict(data_sources or {})
         self.privacy_registry = privacy_registry
         self.routes = {f'/v1/{v.noun}' + (f'/{v.verb}' if v.verb else ''): v for v in VERBS}
+        for verb in VERBS:
+            if verb.noun == 'approval':
+                for alias in verb.aliases:
+                    self.routes['/v1/' + alias.replace(' ', '/')] = verb
 
     def __call__(self, request: Request) -> Response:
         path = urlsplit(request.path).path
@@ -80,6 +84,11 @@ class VerbAPI:
                 raise ValueError('Expected a JSON object')
         except (ValueError, UnicodeDecodeError):
             return Response(422, {'errors': [{'loc': [], 'msg': 'Expected a JSON object'}]})
+        if entry.noun == 'approval' and entry.verb == 'request' and path.startswith('/v1/approval/request-'):
+            gate = path.removeprefix('/v1/approval/request-')
+            if 'gate' in data and data['gate'] != gate:
+                return self.refused('gate', 'Gate conflicts with the alias')
+            data['gate'] = gate
         if 'actor' in data:
             return self.refused('identity', 'Actor comes from authentication')
         header_key = request.header('idempotency-key')
@@ -134,6 +143,24 @@ class VerbAPI:
                         outcome = Done(result=mask(outcome.model_dump(mode='json')['result']))
                     except ValueError:
                         outcome = Refused(rule='masking', reason='A client name occurs in an identifier')
+        elif entry.noun == 'approval':
+            if self.tap_app is None or self.tap_app._operator is None:
+                outcome = Refused(rule='config', reason='Operator cards are not configured')
+            else:
+                self.tap_app._redeliver_cards()
+                outcome = invoke(entry, inputs, actor=actor, people=self.people, open_notion=self.open_notion)
+                if isinstance(outcome, Done):
+                    from t6.approval import Approvals
+                    approval = Approvals(self.people.registry, self.people.tokens).get(outcome.result['approval_id'])
+                    assert approval is not None
+                    if entry.verb == 'request' and approval['state'] == 'requested':
+                        action, _ = self.tap_app._operator.offer_approval(approval)
+                        self.tap_app._deliver(action.token, action.version)
+                    elif entry.verb != 'request':
+                        existing_action = self.tap_app._operator.approval_action(approval['id'])
+                        if existing_action is not None and existing_action.state != 'done':
+                            action = self.tap_app._operator.store.finish(existing_action.token, {'outcome': approval['state']})
+                            self.tap_app._deliver(action.token, action.version)
         elif (entry.noun, entry.verb) == ('llm', 'run'):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or (self.llm_service.run(inputs, actor=actor, registry=self.people.registry) if self.llm_service else Refused(rule='config', reason='LLM service is not configured'))

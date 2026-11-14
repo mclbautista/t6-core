@@ -219,6 +219,11 @@ class ActionStore:
             assert created is not None
             return created, True
 
+    def find_offer(self, offer_key: str) -> Action | None:
+        with self._transaction() as db:
+            row = db.execute(f"SELECT {_COLUMNS} FROM actions WHERE offer_key = ? ORDER BY created_at DESC LIMIT 1", (offer_key,)).fetchone()
+            return None if row is None else _action(row)
+
     def get(self, token: str) -> Action | None:
         with self._transaction() as db:
             return self._read(db, token)

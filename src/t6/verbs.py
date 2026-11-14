@@ -313,6 +313,44 @@ def person_get(inputs: LegacyPersonGetInput, open_notion: Callable[..., Any]) ->
         return Refused(rule="read", reason=str(error))
 
 
+class ApprovalRequestInput(BaseModel):
+    gate: str
+    target: str
+    tapper_rule: str | dict[str, Any] | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class ApprovalGrantInput(BaseModel):
+    approval: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class ApprovalDenyInput(ApprovalGrantInput):
+    reason: str
+
+
+class ApprovalOutput(BaseModel):
+    approval_id: str
+    action: str
+    idempotency_key: str
+    gate: str | None = None
+    target: str | None = None
+    tapper_rule: str | dict[str, Any] | None = None
+    reason: str | None = None
+
+
+def approval_write(inputs: ApprovalRequestInput | ApprovalGrantInput | ApprovalDenyInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.approval import Approvals
+    from t6.preview import PreviewTokens
+    key = os.environ.get('T6_PREVIEW_SIGNING_KEY', '')
+    if not key:
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    verb = 'request' if isinstance(inputs, ApprovalRequestInput) else 'deny' if isinstance(inputs, ApprovalDenyInput) else 'grant'
+    return Approvals(_people().registry, PreviewTokens(key)).write(verb, inputs.model_dump(exclude={'confirm', 'idempotency_key'}), actor=_actor.get(), idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
 @dataclass(frozen=True)
 class Verb:
     noun: str
@@ -710,6 +748,9 @@ def api_read(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
 
 
 VERBS = (
+    Verb('approval', 'request', 'Request an Approval', tuple('approval request-' + gate for gate in ('vfx-committee', 'client-cut', 'grade', 'delivery-sign-off', 'drive-wipe', 'fleet-promotion')), ApprovalRequestInput, ApprovalOutput, 'person', 'An active Person may request an Approval.', approval_write),
+    Verb('approval', 'grant', 'Grant an Approval', tuple('approval grant-' + gate for gate in ('vfx-committee', 'client-cut', 'grade', 'delivery-sign-off', 'drive-wipe', 'fleet-promotion')), ApprovalGrantInput, ApprovalOutput, 'person', 'The allowed-tapper rule applies.', approval_write),
+    Verb('approval', 'deny', 'Deny an Approval', tuple('approval deny-' + gate for gate in ('vfx-committee', 'client-cut', 'grade', 'delivery-sign-off', 'drive-wipe', 'fleet-promotion')), ApprovalDenyInput, ApprovalOutput, 'person', 'The allowed-tapper rule and a reason are required.', approval_write),
     Verb("studio", "notices", "Read studio notices", (), StudioNoticesInput, StudioNoticesOutput, "reader", "Read Project source notices.", api_read),
     Verb("external-link", "find", "Find an External Link", (), ExternalLinkFindInput, ExternalLinkFindOutput, "reader", "Resolve an external reference.", api_read),
     Verb("project", "get", "Get a Project", (), ProjectGetInput, ProjectGetOutput, "reader", "Read a Project.", api_read),
@@ -760,7 +801,9 @@ def invoke(entry: Verb, inputs: BaseModel, *, actor: str, people: People,
            open_notion: Callable[..., Any],
            legacy: Callable[[], int] | None = None) -> Outcome:
     """Authorize an authenticated Person before invoking a registered verb."""
-    refusal = people.authorize(actor, entry.role)
+    refusal = (None if entry.noun == 'approval' and (person := people.get(actor)) and person['active'] else
+               Refused(rule='person', reason='An active Person is required') if entry.noun == 'approval' else
+               people.authorize(actor, entry.role))
     if refusal:
         return refusal
     if entry.noun == 'person' and entry.verb in ('grant', 'revoke'):
@@ -831,8 +874,32 @@ def add_parsers(commands: Any) -> None:
                 parser = commands.add_parser(entry.noun, help=("[verb] " if not entry.verb else "") + entry.description)
                 nouns[entry.noun] = parser.add_subparsers(dest=f"{entry.noun}_verb", required=True) if entry.verb else parser
         parser = nouns[entry.noun]
+        if entry.handler is approval_write and entry.verb == 'request':
+            for alias in entry.aliases:
+                name = alias.split(' ', 1)[1]
+                gate = name.removeprefix('request-')
+                alias_parser = parser.add_parser(name, help='Request a ' + gate + ' Approval')
+                alias_parser.add_argument('target')
+                alias_parser.add_argument('--tapper-rule', type=lambda value: json.loads(value) if value.startswith('{') else value)
+                alias_parser.add_argument('--idempotency-key')
+                alias_parser.add_argument('--confirm')
+                alias_parser.set_defaults(registered_verb=entry, gate=gate)
         if entry.verb:
-            parser = parser.add_parser(entry.verb, help="[verb] " + entry.description)
+            aliases = [alias.split(' ', 1)[1] for alias in entry.aliases] if entry.handler is approval_write and entry.verb != 'request' else []
+            parser = parser.add_parser(entry.verb, aliases=aliases, help="[verb] " + entry.description)
+        if entry.handler is approval_write:
+            if entry.verb == 'request':
+                parser.add_argument('gate')
+                parser.add_argument('target')
+                parser.add_argument('--tapper-rule', type=lambda value: json.loads(value) if value.startswith('{') else value)
+            else:
+                parser.add_argument('approval')
+                if entry.verb == 'deny':
+                    parser.add_argument('--reason', required=True)
+            parser.add_argument('--idempotency-key')
+            parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
         if entry.handler is jo_write and entry.verb != "raise":
             parser.add_argument("jo")
             if entry.verb == "note":

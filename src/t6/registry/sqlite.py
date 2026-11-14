@@ -203,6 +203,10 @@ _MIGRATIONS = (
         page_id TEXT NOT NULL, property TEXT NOT NULL, value TEXT NOT NULL,
         PRIMARY KEY (page_id, property)
     )"""),
+    (13, False, """CREATE TABLE approvals (
+        id TEXT PRIMARY KEY, gate TEXT NOT NULL, target TEXT NOT NULL, requester TEXT NOT NULL,
+        tapper_rule TEXT NOT NULL, state TEXT NOT NULL, decided_by TEXT, decided_at REAL, reason TEXT
+    )"""),
 )
 
 

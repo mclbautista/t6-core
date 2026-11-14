@@ -135,3 +135,23 @@ its `/project` pushes queued as empty `tap` jobs.
 
 To roll back, remove the `project` command from the gateway config and restart
 it. Cards already sent stay answerable while core runs this version.
+
+## Approvals
+
+An Approval is a t6 database record, independent of Frame.io. `approval request`
+accepts the gates `vfx-committee`, `client-cut`, `grade`, `delivery-sign-off`,
+`drive-wipe`, and `fleet-promotion`; the corresponding `request-<gate>` aliases
+supply the gate. The target can be a T6 ID or a free reference. The optional
+`--tapper-rule` accepts the same rules as operator actions (JSON for `any_of`)
+and defaults to `permission:operator`. A single `person:<id>` rule sends the
+card to that active Person's Telegram ID when available; other rules use the
+configured operator chat.
+
+A request is previewed and confirmed before the card is created. The adapter
+uses one operator action per Approval and restores missing cards from requested
+Approvals when the server starts. The normal gateway delivery and single-use
+tap checks apply. Grant is one tap. Denial asks the tapper to choose a reason
+from the card; `approval deny` accepts a free-text `--reason` instead. CLI
+and card decisions apply the same allowed-tapper rule. A decision through the
+CLI also closes the card. The database keeps the decision and its audit and
+Activity entries even if card delivery fails.
