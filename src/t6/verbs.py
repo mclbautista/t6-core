@@ -16,7 +16,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal
 
@@ -95,6 +96,58 @@ def departments(inputs: DepartmentsInput, open_notion: Callable[..., Any]) -> Ou
         return Refused(rule="read", reason=str(error))
 
 
+class ActivityInput(BaseModel):
+    project: str
+    since: str | None = None
+    limit: int | None = None
+
+
+class ActivityItem(BaseModel):
+    project_id: str
+    subject_id: str | None
+    at: float
+    actor: str
+    action: str
+    summary: str
+    audit_id: int | None
+
+
+class ActivityOutput(BaseModel):
+    entries: list[ActivityItem]
+
+
+def project_activity(inputs: ActivityInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.cli import DEFAULT_REGISTRY_DB, REGISTRY_DB_VARIABLE, _open_registry
+    from t6.registry import RegistryError, Rotation, normalize_code
+
+    try:
+        since = None
+        if inputs.since is not None:
+            parsed = datetime.fromisoformat(inputs.since.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            since = parsed.timestamp()
+        if inputs.limit is not None and inputs.limit < 1:
+            raise ValueError("limit must be positive")
+        registry = _open_registry(Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)))
+        if registry is None:
+            return Refused(rule="registry", reason="Project registry is unavailable")
+        project = registry.get(inputs.project)
+        if project is None:
+            _, form = normalize_code(inputs.project)
+            matches = [p for p in registry.list_projects(Rotation.IN) if normalize_code(p.code)[1] == form]
+            if len(matches) > 1:
+                return Ambiguous(candidates=[p.id for p in matches])
+            project = matches[0] if matches else None
+        if project is None:
+            return Refused(rule="project", reason="Project not found")
+        return Done(result=ActivityOutput(entries=[ActivityItem(**asdict(item)) for item in registry.activity(
+            project.id, since=since, limit=inputs.limit
+        )]))
+    except (ValueError, OSError, RegistryError) as error:
+        return Refused(rule="input", reason=str(error))
+
+
 @dataclass(frozen=True)
 class Verb:
     noun: str
@@ -109,6 +162,8 @@ class Verb:
 
 
 VERBS = (
+    Verb("project", "activity", "Show Project activity, newest first", (),
+         ActivityInput, ActivityOutput, "reader", "Activity is append-only.", project_activity),
     Verb("departments", "", "Print the studio Departments, read live, in display order, with option IDs", (),
          DepartmentsInput, DepartmentsOutput, "reader", "Notion Department options are the truth; use studio display order.", departments),
 )
@@ -129,6 +184,13 @@ def add_parsers(commands: Any) -> None:
         parser = nouns[entry.noun]
         if entry.verb:
             parser = parser.add_parser(entry.verb, help="[verb] " + entry.description)
+        if entry.handler is project_activity:
+            parser.add_argument("project")
+            parser.add_argument("--since", help="ISO 8601 date or timestamp (UTC if no offset)")
+            parser.add_argument("--limit", type=int)
+            parser.add_argument("--json", action="store_true", help="Print JSON")
+            parser.set_defaults(registered_verb=entry)
+            continue
         for name, field in entry.input_model.model_fields.items():
             parser.add_argument("--" + name.replace("_", "-"), type=field.annotation, required=field.is_required(),
                                 default=None if field.is_required() else field.default)
@@ -148,5 +210,10 @@ def run(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
         elif isinstance(outcome, Refused):
             from t6.cli import _fail
             return _fail(outcome.reason)
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    if entry.handler is project_activity and not args.json and isinstance(outcome, Done):
+        for item in outcome.result.entries:
+            when = datetime.fromtimestamp(item.at, timezone.utc).isoformat()
+            print(f"{when}  {item.actor}  {item.summary}")
+    else:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
     return code

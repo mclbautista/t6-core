@@ -15,8 +15,8 @@ class VerbTests(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             self.assertEqual(main(["commands", "--json"]), 0)
         catalogue = json.loads(output.getvalue())
-        self.assertEqual([entry["noun"] for entry in catalogue], ["departments"])
-        entry = catalogue[0]
+        self.assertEqual([entry["noun"] for entry in catalogue], ["project", "departments"])
+        entry = catalogue[1]
         self.assertIn("data_sources", entry["input_schema"]["properties"])
         self.assertIn("departments", entry["output_schema"]["properties"])
         output = io.StringIO()

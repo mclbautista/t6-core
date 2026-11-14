@@ -21,6 +21,7 @@ from t6.domain.events import JsonValue
 from t6.ids import EntityKind, T6Id
 from t6.registry.core import (
     NOTION,
+    ActivityEntry,
     AuditEntry,
     Changed,
     ChangeOutcome,
@@ -110,6 +111,14 @@ CREATE TABLE IF NOT EXISTS requests (
 _MIGRATIONS = (
     (1, False, _SCHEMA),
     (2, True, "ALTER TABLE bindings RENAME COLUMN project_id TO entity_id"),
+    (3, True, """CREATE TABLE activity (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL,
+        subject_id TEXT, at REAL NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL,
+        summary TEXT NOT NULL, audit_id INTEGER REFERENCES audit(id)
+    );
+    INSERT INTO activity (project_id, at, actor, action, summary, audit_id)
+        SELECT project_id, at, actor, action, REPLACE(action, '_', ' '), id FROM audit;
+    CREATE INDEX activity_project_order ON activity (project_id, at DESC, id DESC)"""),
 )
 
 
@@ -124,6 +133,11 @@ def _migrate(db: sqlite3.Connection) -> None:
             for statement in sql.split(";"):
                 if statement.strip():
                     db.execute(statement)
+            if version == 3:
+                for table in ("audit", "activity"):
+                    for operation in ("UPDATE", "DELETE"):
+                        db.execute(f"CREATE TRIGGER {table}_no_{operation.lower()} BEFORE {operation} ON {table} "
+                                   f"BEGIN SELECT RAISE(ABORT, '{table} is append-only'); END")
             db.execute("INSERT INTO schema_version VALUES (?, ?)", (version, int(forward_only)))
 
 
@@ -383,6 +397,17 @@ class SqliteProjectRegistry:
             for row in rows
         )
 
+    def activity(self, project_id: str, *, since: float | None = None, limit: int | None = None) -> tuple[ActivityEntry, ...]:
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be positive")
+        with self._transaction() as db:
+            rows = db.execute(
+                "SELECT project_id, subject_id, at, actor, action, summary, audit_id FROM activity "
+                "WHERE project_id = ? AND (? IS NULL OR at >= ?) ORDER BY at DESC, id DESC LIMIT ?",
+                (project_id, since, since, -1 if limit is None else limit),
+            ).fetchall()
+        return tuple(ActivityEntry(*row) for row in rows)
+
     def pending_sync(self) -> tuple[SyncIntent, ...]:
         return self._intents("done_at IS NULL")
 
@@ -546,9 +571,13 @@ def _code_held(db: sqlite3.Connection, code: str, form: str, project_id: str) ->
 def _audit(
     db: sqlite3.Connection, project_id: str, action: str, actor: str, at: float, before: _Values | None, after: _Values
 ) -> None:
-    db.execute(
+    cursor = db.execute(
         "INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)",
         (project_id, action, actor, at, None if before is None else json.dumps(before), json.dumps(after)),
+    )
+    db.execute(
+        "INSERT INTO activity (project_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?)",
+        (project_id, at, actor, action, action.replace("_", " "), cursor.lastrowid),
     )
 
 

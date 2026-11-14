@@ -10,6 +10,7 @@ implementation the server runs.
 from t6.registry.core import (
     NOTION,
     PROJECT_ID_PREFIX,
+    ActivityEntry,
     AuditEntry,
     Changed,
     ChangeOutcome,
@@ -40,6 +41,7 @@ from t6.registry.sqlite import SqliteProjectRegistry
 __all__ = [
     "NOTION",
     "PROJECT_ID_PREFIX",
+    "ActivityEntry",
     "AuditEntry",
     "ChangeOutcome",
     "Changed",
