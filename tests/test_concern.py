@@ -1,5 +1,6 @@
 import sqlite3
 import unittest
+from typing import Any
 
 from t6.concern import ConcernStore, WEEK
 from t6.ids import EntityKind, T6Id
@@ -10,7 +11,7 @@ from test_person import MemoryRegistry
 
 
 class ConcernTests(unittest.TestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         self.registry = MemoryRegistry()
         self.addCleanup(self.registry.db.close)
         self.now = 1000000.0
@@ -23,20 +24,24 @@ class ConcernTests(unittest.TestCase):
             db.execute("INSERT INTO persons VALUES ('coordinator', 'staff', '[]', '[]', NULL, 0, 1)")
         self.store = ConcernStore(self.registry, PreviewTokens('secret'))
 
-    def write(self, verb, values, key):
+    def write(self, verb: str, values: dict[str, Any], key: str) -> dict[str, Any]:
         preview = self.store.write(verb, values, actor='person', idempotency_key=key)
-        self.assertIsInstance(preview, Preview)
+        assert isinstance(preview, Preview)
         done = self.store.write(verb, values, actor='person', idempotency_key=key, confirm=preview.token)
-        self.assertIsInstance(done, Done)
+        assert isinstance(done, Done)
         retry = self.store.write(verb, values, actor='person', idempotency_key=key)
-        self.assertIsInstance(retry, Preview)
+        assert isinstance(retry, Preview)
         self.assertEqual(done, self.store.write(verb, values, actor='person', idempotency_key=key, confirm=retry.token))
-        return done.result
+        result = done.result
+        assert isinstance(result, dict)
+        return result
 
-    def raise_concern(self):
-        return self.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'client', 'anchor': 'Waiting kay client — raw line', 'as_of': '2026-11-01'}, 'raise')['concern_id']
+    def raise_concern(self) -> str:
+        concern = self.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'client', 'anchor': 'Waiting kay client — raw line', 'as_of': '2026-11-01'}, 'raise')['concern_id']
+        assert isinstance(concern, str)
+        return concern
 
-    def test_lifecycle_timers_and_append_only(self):
+    def test_lifecycle_timers_and_append_only(self) -> None:
         concern = self.raise_concern()
         opened = self.now
         self.now += 2 * WEEK
@@ -52,13 +57,16 @@ class ConcernTests(unittest.TestCase):
         self.assertFalse(self.store.silence(concern, evidence, 'expired'))
         self.write('reopen', {'concern': concern}, 'reopen')
         record = self.store.get(concern)
+        assert record is not None
         self.assertEqual(record['age_seconds'], 6 * WEEK)
         self.assertEqual(record['anchor'], 'Waiting kay client — raw line')
         self.assertFalse(self.store.silence(concern, evidence, 'expired'))
         self.write('resolve', {'concern': concern}, 'resolve')
         self.now += 10 * WEEK
         self.assertFalse(self.store.silence(concern, evidence, 'expired'))
-        self.assertEqual(self.store.get(concern)['state'], 'closed')
+        record = self.store.get(concern)
+        assert record is not None
+        self.assertEqual(record['state'], 'closed')
         actions = [a.action for a in self.registry.activity(self.project) if a.subject_id == concern]
         for action in ('raise', 'note', 'resolve', 'reopen'):
             self.assertEqual(actions.count('concern_' + action), 1)
@@ -70,7 +78,7 @@ class ConcernTests(unittest.TestCase):
                 db.execute('DELETE FROM concern_notes')
             self.assertEqual(db.execute("SELECT COUNT(*) FROM internal_jobs WHERE kind = 'concern_silence'").fetchone()[0], 4)
 
-    def test_manual_resolve_blocks_pending_timers_and_stale_preview(self):
+    def test_manual_resolve_blocks_pending_timers_and_stale_preview(self) -> None:
         concern = self.raise_concern()
         opened = self.now
         stale = self.store.write('resolve', {'concern': concern}, actor='person', idempotency_key='stale')
@@ -82,15 +90,17 @@ class ConcernTests(unittest.TestCase):
         self.now += 4 * WEEK
         self.assertFalse(self.store.silence(concern, opened, 'quiet'))
         self.assertFalse(self.store.silence(concern, opened, 'expired'))
-        self.assertEqual(self.store.get(concern)['state'], 'closed')
+        record = self.store.get(concern)
+        assert record is not None
+        self.assertEqual(record['state'], 'closed')
 
-    def test_validation_and_catalogue(self):
+    def test_validation_and_catalogue(self) -> None:
         result = self.store.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': '', 'anchor': 'hello', 'as_of': '2026-01-01'}, actor='person')
         self.assertIsInstance(result, Refused)
         self.assertTrue({'raise', 'note', 'resolve', 'reopen'} <= {v['verb'] for v in catalogue() if v['noun'] == 'concern'})
 
 class ConcernQueueTests(unittest.TestCase):
-    def test_scheduled_jobs_are_claimed_and_applied_once(self):
+    def test_scheduled_jobs_are_claimed_and_applied_once(self) -> None:
         import tempfile
         from pathlib import Path
         from t6.registry.sqlite import SqliteProjectRegistry
@@ -117,7 +127,11 @@ class ConcernQueueTests(unittest.TestCase):
                 now[0] += 2 * WEEK
                 job = queue.claim('main')
                 assert job is not None
-                self.assertTrue(store.silence(**job.payload))
-                self.assertFalse(store.silence(**job.payload))
+                concern, evidence_at, target = job.payload['concern'], job.payload['evidence_at'], job.payload['target']
+                assert isinstance(concern, str) and isinstance(evidence_at, (int, float)) and isinstance(target, str)
+                self.assertTrue(store.silence(concern, evidence_at, target))
+                self.assertFalse(store.silence(concern, evidence_at, target))
                 self.assertTrue(queue.ack(job.job_id, job.token))
-                self.assertEqual(store.get(result.result['concern_id'])['state'], state)
+                record = store.get(result.result['concern_id'])
+                assert record is not None
+                self.assertEqual(record['state'], state)

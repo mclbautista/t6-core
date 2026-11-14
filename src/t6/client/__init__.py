@@ -18,7 +18,7 @@ from t6.verbs import (
     JoSubmitInput, JoCloseInput, JoBlockInput, JoUnblockInput, JoDelayInput, JoCancelInput,
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
     LLMRunInput, PersonAddInput, PersonFindInput,
-    PersonGetInput, PersonPermissionInput, PersonRebindInput, PersonShiftInput, PersonClassifyInput,
+    PersonGetInput, PersonProjectRoleInput, PersonPermissionInput, PersonRebindInput, PersonShiftInput, PersonClassifyInput,
     PersonTelegramInput, ProjectHoldInput, ProjectResolveInput, ProjectResumeInput,
 )
 
@@ -124,6 +124,12 @@ class Client:
     def person_revoke(self, inputs: PersonPermissionInput) -> Result:
         return self.call('person', 'revoke', inputs)
 
+    def person_assign(self, inputs: PersonProjectRoleInput) -> Result:
+        return self.call('person', 'assign', inputs)
+
+    def person_unassign(self, inputs: PersonProjectRoleInput) -> Result:
+        return self.call('person', 'unassign', inputs)
+
     def person_get(self, inputs: PersonGetInput) -> Result:
         return self.call('person', 'get', inputs)
 
@@ -156,6 +162,9 @@ class Client:
 
     def project_list(self, inputs: ProjectListInput) -> Result:
         return self.call('project', 'list', inputs)
+
+    def project_archive(self, inputs: ProjectResumeInput) -> Result:
+        return self.call('project', 'archive', inputs)
 
     def project_hold(self, inputs: ProjectHoldInput) -> Result:
         return self.call('project', 'hold', inputs)

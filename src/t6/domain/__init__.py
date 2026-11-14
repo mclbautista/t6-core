@@ -133,6 +133,7 @@ class Project(NotionEntity):
     t6_id: str | None = field(default=None, compare=False)
     rotation: str | None = field(default=None, compare=False)
     """`in`, `out` or `unclassified`, from the registry. `None` when it is not known."""
+    project_roles: tuple[dict[str, str], ...] = field(default=(), compare=False)
     project_code: str | None = field(default=None, compare=False)
     project_type: str | None = field(default=None, compare=False)
     eps: int | None = field(default=None, compare=False)
