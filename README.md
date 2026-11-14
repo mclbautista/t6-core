@@ -1778,3 +1778,16 @@ signed preview and confirmation contract. It uses the admin's own credentials
 until it gains that contract. `jo raise` uses the API for signed preview and
 confirmation. The client sends the contents of data-source configuration and draft files to the API. Project
 resolution uses the server's registry, not a caller-supplied database file.
+
+### Package handoffs
+
+`package prepare <deliverable> <kind> --to <destination> --recipient <person-id>
+--data-sources <file>` snapshots the matching `package_specs` Notion data source.
+Use `--client-spec` to select a client-specific spec and `--note` for context.
+The authenticated Person is the sender. Check an item with `package check
+<package-id> <item>`, then use `package handoff <package-id>`. Missing advisory
+items remain visible in Activity and `package list --missing`; missing blocking
+items prevent handoff. The recipient uses `package accept <package-id>` or
+`package reject <package-id> --reason <reason>`. These writes use the usual
+preview, confirmation token, and idempotency key. `package get <package-id>`
+shows the snapshot, checklist, and derived `kasado` readiness.

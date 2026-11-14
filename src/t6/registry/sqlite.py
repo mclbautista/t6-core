@@ -243,6 +243,12 @@ _MIGRATIONS = (
         id TEXT PRIMARY KEY, deliverable_id TEXT NOT NULL REFERENCES deliverables(id),
         milestone TEXT NOT NULL, occurred_on TEXT NOT NULL, actor TEXT NOT NULL, recorded_at REAL NOT NULL
     )"""),
+    (20, False, """CREATE TABLE packages (
+        id TEXT PRIMARY KEY, deliverable_id TEXT NOT NULL REFERENCES deliverables(id),
+        kind TEXT NOT NULL, from_person TEXT NOT NULL, destination TEXT NOT NULL,
+        recipient TEXT NOT NULL REFERENCES persons(id), note TEXT, spec TEXT NOT NULL,
+        checklist TEXT NOT NULL, state TEXT NOT NULL, reason TEXT, revision INTEGER NOT NULL DEFAULT 1
+    )"""),
 )
 
 
