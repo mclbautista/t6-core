@@ -110,9 +110,7 @@ class PersonTests(unittest.TestCase):
         self.assertEqual([e['action'] for e in rerun['entries']], ['keep', 'keep'])
         self.assertEqual([e['t6_id'] for e in self.apply(rerun)['entries']], [e['t6_id'] for e in rerun['entries']])
         for mention in ('Ria', '42', 'Maria Santoz Cruz', 'no match'):
-            contacts = self.command('contacts', 'find', mention, '--data-sources', str(self.sources))
             people = self.command('person', 'find', mention, '--data-sources', str(self.sources))
-            self.assertEqual(people, contacts)
             for item in ([people['match']] if people['match'] else []) + people['candidates']:
                 self.assertEqual(item.pop('t6_id'), ids[normalize_page_id(item['id'])])
         conflict = self.command('person', 'rebind', '--person-id', ids[normalize_page_id(self.first)], '--page-id', self.second)

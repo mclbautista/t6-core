@@ -434,42 +434,42 @@ class CommandTests(MigrationTestCase):
 
     def test_preview_then_apply_then_classify_then_a_rerun(self) -> None:
         base = ("--data-sources", str(self.sources), "--registry-db", str(self.db))
-        status, shown = self.run_command("migrate-projects", *base)
+        status, shown = self.run_command("admin", "registry", "migrate", *base)
         self.assertEqual((status, shown["to_register"], shown["to_register"] == len(shown["entries"])), (0, 2, True))
         preview_file = Path(self.directory.name) / "preview.json"
         preview_file.write_text(json.dumps(shown))
         self.assertFalse(self.db.exists() and self.registry_count() > 0)
 
-        refused, _ = self.run_command("migrate-projects", *base, "--apply")
+        refused, _ = self.run_command("admin", "registry", "migrate", *base, "--apply")
         self.assertEqual(refused, 2)  # no preview named
-        status, report = self.run_command("migrate-projects", *base, "--apply", "--preview", str(preview_file), "--actor", "cli")
+        status, report = self.run_command("admin", "registry", "migrate", *base, "--apply", "--preview", str(preview_file), "--actor", "cli")
         self.assertEqual((status, len(report["registered"]), len(report["unresolved"])), (0, 2, 2))
 
-        status, again = self.run_command("migrate-projects", *base, "--apply", "--preview", str(preview_file), "--actor", "cli")
+        status, again = self.run_command("admin", "registry", "migrate", *base, "--apply", "--preview", str(preview_file), "--actor", "cli")
         self.assertEqual(status, 2)  # the preview is out of date: both pages are registered now
-        status, fresh = self.run_command("migrate-projects", *base)
+        status, fresh = self.run_command("admin", "registry", "migrate", *base)
         self.assertEqual((fresh["to_register"], fresh["already_registered"]), (0, 2))
 
         decisions = Path(self.directory.name) / "decisions.json"
         decisions.write_text(json.dumps({PAGE: "out", OTHER_PAGE: "in"}))
-        status, done = self.run_command("classify-projects", "--registry-db", str(self.db), "--decisions", str(decisions), "--actor", "cli")
+        status, done = self.run_command("admin", "registry", "classify", "--registry-db", str(self.db), "--decisions", str(decisions), "--actor", "cli")
         self.assertEqual((status, len(done["classified"])), (0, 2))
-        status, done = self.run_command("classify-projects", "--registry-db", str(self.db), "--decisions", str(decisions), "--actor", "cli")
+        status, done = self.run_command("admin", "registry", "classify", "--registry-db", str(self.db), "--decisions", str(decisions), "--actor", "cli")
         self.assertEqual((status, done["classified"], len(done["unchanged"])), (0, [], 2))
 
     def test_a_stale_preview_is_refused_and_a_bad_decision_cannot_run(self) -> None:
         base = ("--data-sources", str(self.sources), "--registry-db", str(self.db))
-        _, shown = self.run_command("migrate-projects", *base)
+        _, shown = self.run_command("admin", "registry", "migrate", *base)
         preview_file = Path(self.directory.name) / "preview.json"
         preview_file.write_text(json.dumps(shown))
         self.notion.add_page(PROJECTS_SOURCE, project_properties(name="C", project_code="XYZ"), page_id=THIRD_PAGE)
-        status, _ = self.run_command("migrate-projects", *base, "--apply", "--preview", str(preview_file), "--actor", "cli")
+        status, _ = self.run_command("admin", "registry", "migrate", *base, "--apply", "--preview", str(preview_file), "--actor", "cli")
         self.assertEqual(status, 2)
         self.assertEqual(self.registry_count(), 0)
 
         decisions = Path(self.directory.name) / "bad.json"
         decisions.write_text(json.dumps({PAGE: "maybe"}))
-        status, _ = self.run_command("classify-projects", "--registry-db", str(self.db), "--decisions", str(decisions), "--actor", "cli")
+        status, _ = self.run_command("admin", "registry", "classify", "--registry-db", str(self.db), "--decisions", str(decisions), "--actor", "cli")
         self.assertEqual(status, 2)
 
     def registry_count(self) -> int:

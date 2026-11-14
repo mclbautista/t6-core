@@ -7,7 +7,7 @@ option ID under `named_options`:
     "named_options": {"status": {"property": "<property ID or name>",
                                  "values": {"NEEDS_INTAKE_REVIEW": "<option ID>"}}}
 
-The key is a domain attribute, not a Notion name. `t6 schema-snapshot` fills
+The key is a domain attribute, not a Notion name. `t6 admin snapshot` fills
 the IDs by matching live option names to the value's label, once; after that
 an option renamed in Notion is still found by its ID. A value with no ID
 recorded is sent and read by its label. `schema-check` reports a named value

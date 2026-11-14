@@ -20,7 +20,7 @@ class JoSyncTests(SyncTestCase):
         from t6.worker.client import WorkerJob
         projection = JobOrderProjection(self.client, RegistryClient(InProcess(self.app), WORKER_SECRET), 'job-orders')
         job = WorkerJob(job_id=1, queue='main', token='token', kind='jo.sync', dedupe_key='test', payload={'intent_id': 1}, attempt=1)
-        with self.assertRaisesRegex(Refused, 'schema-snapshot'):
+        with self.assertRaisesRegex(Refused, 'admin snapshot'):
             projection.sync(job)
 
     def test_conflicting_notion_status_keeps_intent_pending(self) -> None:
