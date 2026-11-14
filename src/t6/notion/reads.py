@@ -1,7 +1,8 @@
 """Read Projects, Contacts and Deliverables as `t6.domain` entities, with no Notion property names.
 
 `ProjectReader`, `ContactReader` and `DeliverableReader` each read one data
-source. Fields are addressed by property ID through the generated models.
+source. `list` skips pages in the trash or archived, and a Project or Contact
+carries the page's `last_edited` time. Fields are addressed by property ID through the generated models.
 Relations come back as page IDs.
 
 Project Code identity and the registry are separate: this mapping fills the
@@ -43,11 +44,22 @@ def _names(text: str | None) -> tuple[str, ...]:
     return tuple(part.strip() for part in re.split(r"[,;\n]", text or "") if part.strip())
 
 
+def page_edited(page: JSON) -> dt.datetime | None:
+    """When Notion last saved the page, from the page's own `last_edited_time`."""
+    value = page.get("last_edited_time")
+    return dt.datetime.fromisoformat(value.replace("Z", "+00:00")) if isinstance(value, str) and value else None
+
+
+def is_live(page: JSON) -> bool:
+    """False for a page that is in the trash or archived."""
+    return not (page.get("in_trash") or page.get("archived"))
+
+
 def _key(model: type[NotionModel], attribute: str) -> str:
     return model.notion_id(attribute) or model.notion_name(attribute)
 
 
-def project_from_row(row: ProjectsRow) -> Project:
+def project_from_row(row: ProjectsRow, last_edited: dt.datetime | None = None) -> Project:
     return Project(
         page_id=row.page_id,
         name=row.name or "",
@@ -72,10 +84,11 @@ def project_from_row(row: ProjectsRow) -> Project:
         post_coordinator_ids=row.t6_post_coordinator,
         director_ids=row.director,
         cinematographer_ids=row.cinematographer,
+        last_edited=last_edited,
     )
 
 
-def contact_from_row(row: ContactsRow) -> Contact:
+def contact_from_row(row: ContactsRow, last_edited: dt.datetime | None = None) -> Contact:
     user_id = (row.telegram_user_id or "").strip()
     return Contact(
         page_id=row.page_id,
@@ -85,6 +98,7 @@ def contact_from_row(row: ContactsRow) -> Contact:
         telegram_user_id=int(user_id) if user_id.isdigit() else None,
         aliases=_names(row.aliases),
         end_of_shift=parse_end_of_shift(row.end_of_shift),
+        last_edited=last_edited,
     )
 
 
@@ -106,11 +120,12 @@ class ProjectReader:
         self._client, self._source = client, data_source_id
 
     def get(self, page_id: str) -> Project:
-        return project_from_row(ProjectsRow.from_page(self._client.retrieve_page(page_id)))
+        page = self._client.retrieve_page(page_id)
+        return project_from_row(ProjectsRow.from_page(page), page_edited(page))
 
     def list(self) -> tuple[Project, ...]:
         pages = self._client.query_data_source(self._source)
-        return tuple(project_from_row(ProjectsRow.from_page(page)) for page in pages)
+        return tuple(project_from_row(ProjectsRow.from_page(page), page_edited(page)) for page in pages if is_live(page))
 
 
 class ContactReader:
@@ -118,11 +133,12 @@ class ContactReader:
         self._client, self._source = client, data_source_id
 
     def get(self, page_id: str) -> Contact:
-        return contact_from_row(ContactsRow.from_page(self._client.retrieve_page(page_id)))
+        page = self._client.retrieve_page(page_id)
+        return contact_from_row(ContactsRow.from_page(page), page_edited(page))
 
     def list(self) -> tuple[Contact, ...]:
         pages = self._client.query_data_source(self._source)
-        return tuple(contact_from_row(ContactsRow.from_page(page)) for page in pages)
+        return tuple(contact_from_row(ContactsRow.from_page(page), page_edited(page)) for page in pages if is_live(page))
 
 
 class DeliverableReader:
