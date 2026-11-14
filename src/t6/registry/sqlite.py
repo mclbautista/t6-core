@@ -223,6 +223,10 @@ _MIGRATIONS = (
     (16, False, """CREATE TABLE deliverables (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), code TEXT NOT NULL, episode TEXT, due TEXT, air TEXT);
         CREATE TABLE deliverable_sync_intents (intent_id INTEGER PRIMARY KEY REFERENCES sync_intents(id), started INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE deliverable_migration_receipts (digest TEXT PRIMARY KEY, snapshot TEXT NOT NULL, entries TEXT NOT NULL)"""),
+    (17, False, """CREATE TABLE milestones (
+        id TEXT PRIMARY KEY, deliverable_id TEXT NOT NULL REFERENCES deliverables(id),
+        milestone TEXT NOT NULL, occurred_on TEXT NOT NULL, actor TEXT NOT NULL, recorded_at REAL NOT NULL
+    )"""),
 )
 
 
@@ -242,6 +246,10 @@ def _migrate(db: sqlite3.Connection) -> None:
                     for operation in ("UPDATE", "DELETE"):
                         db.execute(f"CREATE TRIGGER {table}_no_{operation.lower()} BEFORE {operation} ON {table} "
                                    f"BEGIN SELECT RAISE(ABORT, '{table} is append-only'); END")
+            if version == 17:
+                for operation in ("UPDATE", "DELETE"):
+                    db.execute(f"CREATE TRIGGER milestones_no_{operation.lower()} BEFORE {operation} ON milestones "
+                               "BEGIN SELECT RAISE(ABORT, 'milestones are append-only'); END")
             if version == 13:
                 for operation in ("UPDATE", "DELETE"):
                     db.execute(f"CREATE TRIGGER concern_notes_no_{operation.lower()} BEFORE {operation} ON concern_notes "

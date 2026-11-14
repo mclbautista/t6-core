@@ -4,7 +4,8 @@ from __future__ import annotations
 import json
 import builtins
 import secrets
-from datetime import date
+from datetime import date, datetime
+from t6.domain.studio_time import MANILA
 from typing import Any
 
 from t6.ids import EntityKind, T6Id
@@ -12,6 +13,21 @@ from t6.preview import PreviewTokens
 from t6.registry.core import normalize_page_id, normalize_code
 from t6.registry.sqlite import SqliteProjectRegistry, _intend_sync
 from t6.verbs import Done, Outcome, Refused
+
+
+MILESTONES = ("ingested", "synced", "piclock", "conform done", "color delivered",
+              "VFX approved", "printmaster in", "master approved", "QC passed", "delivered", "archived")
+# Tracks are separate from the main pipeline: completing one never advances another.
+FILM_PIPELINE = ("ingested", "synced", "piclock", "conform done", "master approved", "QC passed", "delivered", "archived")
+FILM_TRACKS = {"color": "color delivered", "VFX": "VFX approved", "GFX/titles": None,
+               "sound": "printmaster in", "music": None, "captions": None}
+
+
+def film_stage(facts: list[dict[str, Any]]) -> dict[str, Any]:
+    recorded = {fact['milestone'] for fact in facts}
+    return {"template": "film", "position": next((m for m in reversed(FILM_PIPELINE) if m in recorded), None),
+            "tracks": {track: "complete" if milestone and milestone in recorded else "pending"
+                       for track, milestone in FILM_TRACKS.items()}}
 
 
 class DeliverableStore:
@@ -26,6 +42,9 @@ class DeliverableStore:
             result = dict(zip(('id', 'project_id', 'code', 'episode', 'due', 'air'), row))
             result['t6_id'] = row[0]
             result['bindings'] = [dict(page_id=b[0], active=bool(b[1])) for b in db.execute("SELECT page_id, active FROM bindings WHERE system = 'notion' AND project_id = ? ORDER BY bound_at, page_id", (row[0],))]
+            result['milestones'] = [dict(zip(('id', 'milestone', 'on', 'actor', 'recorded_at'), fact))
+                                    for fact in db.execute('SELECT id, milestone, occurred_on, actor, recorded_at FROM milestones WHERE deliverable_id=? ORDER BY rowid', (row[0],))]
+            result['stage'] = film_stage(result['milestones'])
             return result
 
     def list(self, project: str) -> list[dict[str, Any]]:
@@ -91,6 +110,65 @@ class DeliverableStore:
             db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (project_id, identifier, now, actor, 'deliverable_define', 'deliverable defined', cursor.lastrowid))
             _intend_sync(db, identifier, 1, now)
             db.execute('INSERT INTO deliverable_sync_intents (intent_id) VALUES (last_insert_rowid())')
+            db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
+            db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(result)))
+            return Done(result=result)
+
+    def record_milestone(self, values: dict[str, Any], *, actor: str, idempotency_key: str | None = None, confirm: str | None = None) -> Outcome:
+        name = values.get('milestone')
+        if not actor.strip() or not values.get('deliverable'):
+            return Refused(rule='input', reason='Deliverable and actor are required')
+        if name not in MILESTONES:
+            return Refused(rule='milestone', reason='Unknown milestone')
+        if (idempotency_key is not None and not idempotency_key.strip()) or (confirm and not idempotency_key):
+            return Refused(rule='idempotency_key', reason='A nonblank idempotency key is required')
+        if values.get('on'):
+            try:
+                date.fromisoformat(values['on'])
+            except (TypeError, ValueError):
+                return Refused(rule='on', reason='An ISO date is required')
+        key = idempotency_key or secrets.token_hex(16)
+        inputs = {**values, 'idempotency_key': key}
+        verb = 'deliverable milestone record'
+        fingerprint = json.dumps({'verb': verb, 'actor': actor, **inputs}, sort_keys=True, separators=(',', ':'))
+        nonce = self.tokens.verify(confirm, verb, actor, inputs) if confirm else None
+        if isinstance(nonce, Refused):
+            return nonce
+        with self.registry._transaction() as db:
+            if nonce and db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce=?', (nonce,)).fetchone():
+                return Refused(rule='token_used', reason='Preview token has already been used')
+            previous = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key=?', (key,)).fetchone()
+            if previous and previous[0] != fingerprint:
+                return Refused(rule='idempotency_key', reason='Idempotency key was used for a different request')
+            if previous:
+                if nonce:
+                    db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
+                    return Done(result=json.loads(previous[1]))
+                return self.tokens.create(verb, actor, inputs, json.loads(previous[1]))
+            ref = values['deliverable']
+            row = db.execute("SELECT id, project_id FROM deliverables WHERE id=? OR id=(SELECT project_id FROM bindings WHERE system='notion' AND page_id=?)", (ref, normalize_page_id(ref))).fetchone()
+            if not row:
+                return Refused(rule='deliverable', reason='Deliverable not found')
+            if nonce is None:
+                plan = {'deliverable_id': row[0], 'project_id': row[1], 'milestone': name,
+                        'on': values.get('on') or datetime.fromtimestamp(self.registry._clock(), MANILA).date().isoformat(), 'idempotency_key': key}
+                preview = self.tokens.create(verb, actor, inputs, plan)
+                preview_nonce = self.tokens.verify(preview.token, verb, actor, inputs)
+                assert isinstance(preview_nonce, str)
+                db.execute('INSERT INTO jo_state_previews VALUES (?, ?)', (preview_nonce, json.dumps(plan)))
+                return preview
+            observed = db.execute('SELECT state FROM jo_state_previews WHERE nonce=?', (nonce,)).fetchone()
+            if not observed:
+                return Refused(rule='preview', reason='Preview not found')
+            plan = json.loads(observed[0])
+            if plan['deliverable_id'] != row[0]:
+                return Refused(rule='deliverable_changed', reason='Deliverable changed since preview')
+            now = self.registry._clock()
+            identifier = str(T6Id.mint(EntityKind.MILESTONE))
+            db.execute('INSERT INTO milestones VALUES (?, ?, ?, ?, ?, ?)', (identifier, row[0], name, plan['on'], actor, now))
+            result = {**plan, 'milestone_id': identifier}
+            cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, NULL, ?)', (row[0], 'milestone_record', actor, now, json.dumps(result)))
+            db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (row[1], row[0], now, actor, 'milestone_record', f'milestone recorded: {name}', cursor.lastrowid))
             db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
             db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(result)))
             return Done(result=result)

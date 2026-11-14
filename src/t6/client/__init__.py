@@ -15,7 +15,7 @@ from t6.verbs import (
     Ambiguous, Done, NeedsPerson, Outcome, Preview, Refused,
     ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
-    JoListInput, JoFindInput, DeliverableListInput, DeliverableGetInput, DeliverableDefineInput, DeliverableRebindInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
+    JoListInput, JoFindInput, DeliverableListInput, DeliverableGetInput, DeliverableDefineInput, DeliverableRebindInput, MilestoneRecordInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
     JoSubmitInput, JoCloseInput, JoBlockInput, JoUnblockInput, JoDelayInput, JoCancelInput,
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
     LLMRunInput, PersonAddInput, PersonFindInput,
@@ -91,7 +91,7 @@ class Client:
             from t6.verbs import VERBS
             model = next(v.input_model for v in VERBS if (v.noun, v.verb) == (noun, verb))
             inputs = model.model_validate(inputs.model_dump(exclude={'data_sources', 'registry_db'}))
-        value = self._request('/v1/' + noun + ('/' + verb if verb else ''), inputs)
+        value = self._request('/v1/' + noun + ('/' + verb.replace(' ', '/') if verb else ''), inputs)
         return value if isinstance(value, Unavailable) else _outcome.validate_python(value)
 
     def health(self) -> dict[str, Any] | Unavailable:
@@ -163,6 +163,9 @@ class Client:
 
     def jo_find(self, inputs: JoFindInput) -> Result:
         return self.call('jo', 'find', inputs)
+
+    def deliverable_milestone_record(self, inputs: MilestoneRecordInput) -> Result:
+        return self.call('deliverable', 'milestone record', inputs)
 
     def deliverable_define(self, inputs: DeliverableDefineInput) -> Result:
         return self.call('deliverable', 'define', inputs)
