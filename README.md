@@ -1299,6 +1299,42 @@ drives-import-dry-run` is described under
 `t6 backup --into DIR` and `t6 restore --from DIR` use the server's database
 variables and are described in `docs/deployment.md`.
 
+### Studio commands
+
+These read the Notion token from `$T6_NOTION_TOKEN` and the data source IDs
+from `--data-sources FILE` (a JSON object of database key to data source ID,
+as for `schema-check`). They print JSON with Notion IDs and never write.
+Errors are JSON on stderr with exit status 2.
+
+`t6 departments --data-sources FILE` lists the live Departments (the
+`job_orders` source) in display order with their option IDs. MISC is left out.
+
+```console
+$ t6 departments --data-sources sources.json
+{"departments": [{"id": "cU=L", "name": "TOC"}, {"id": "FeJa", "name": "AE"}]}
+```
+
+`t6 contacts find <name|@handle|alias|telegram id> --data-sources FILE` (the
+`contacts` source) uses the shared matching policy. It prints the `match`, or
+`null` with `needs_review` and the `candidates` (with scores) for a person to
+choose. Fuzzy matching needs `t6[lookup]`.
+
+```console
+$ t6 contacts find @msantos --data-sources sources.json
+{"match": {"id": "<page id>", "name": "Maria Santos", "telegram_handle": "@msantos", ...},
+ "method": "normalized", "score": 1.0, "needs_review": false, "reason": null, "candidates": [...]}
+```
+
+`t6 projects resolve <code|name> --data-sources FILE [--registry-db FILE]` (the
+`projects` source) resolves a Project Code. A reused code is settled by rotation
+when the registry file knows the Projects (`--registry-db`, default
+`$T6_REGISTRY_DB`); otherwise every Project counts as a holder. Text that is not
+a known code is tried as a name and always needs review. The result has the same
+`match`, `method`, `needs_review`, `reason` and `candidates` fields.
+
+`t6 standing-cc` prints `{"standing_cc": "<Contact page ID>"}` from
+`$T6_STANDING_CC` (`null` when unset). It needs no Notion access.
+
 ### Check an app follows the consumer contract
 
 `t6 check-consumer PATH` scans the Python files under `PATH` and fails when
