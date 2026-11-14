@@ -55,6 +55,7 @@ else:
                             "pydantic<3,>=2.7",
                             "pyyaml<7,>=6; extra == 'server'",
                             "jsonschema<5,>=4.23; extra == 'server'",
+                            "referencing<1,>=0.35; extra == 'server'",
                             "httpx<1,>=0.27; extra == 'transcribe'",
                             "elevenlabs<3,>=2.78.0; extra == 'transcribe'",
                             "psycopg[binary]<4,>=3.2; extra == 'resolve'",
