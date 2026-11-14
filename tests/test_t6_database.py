@@ -27,11 +27,13 @@ class MigrationTests(unittest.TestCase):
             with sqlite3.connect(path) as db:
                 db.executescript((Path(__file__).parent / 'fixtures/registry_schema_v0.sql').read_text())
                 db.execute("INSERT INTO projects VALUES ('t6p_0123456789abcdef01234567', 1, NULL, NULL, 'out', 1)")
+                db.execute("INSERT INTO audit (project_id, action, actor, at, before, after) VALUES ('t6p_0123456789abcdef01234567', 'registered', 'legacy', 1, NULL, '{}')")
                 db.execute("INSERT INTO bindings VALUES ('notion', 'old', 't6p_0123456789abcdef01234567', 1, 0, 1)")
             registry = SqliteProjectRegistry(path)
             self.assertEqual(registry.get_by_page('old').id, 't6p_0123456789abcdef01234567')
+            self.assertEqual(registry.activity('t6p_0123456789abcdef01234567')[0].actor, 'legacy')
             with sqlite3.connect(path) as db:
-                self.assertEqual(db.execute('SELECT version, forward_only FROM schema_version ORDER BY version').fetchall(), [(1, 0), (2, 1)])
+                self.assertEqual(db.execute('SELECT version, forward_only FROM schema_version ORDER BY version').fetchall(), [(1, 0), (2, 1), (3, 1)])
             SqliteProjectRegistry(path)
 
     def test_version_one_upgrades(self):
@@ -43,7 +45,7 @@ class MigrationTests(unittest.TestCase):
                 db.execute('INSERT INTO schema_version VALUES (1, 0)')
             SqliteProjectRegistry(path)
             with sqlite3.connect(path) as db:
-                self.assertEqual(db.execute('SELECT version FROM schema_version ORDER BY version').fetchall(), [(1,), (2,)])
+                self.assertEqual(db.execute('SELECT version FROM schema_version ORDER BY version').fetchall(), [(1,), (2,), (3,)])
                 self.assertIn('entity_id', [row[1] for row in db.execute('PRAGMA table_info(bindings)')])
 
     def test_non_project_bindings_keep_legacy_pages(self):

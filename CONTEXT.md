@@ -239,8 +239,8 @@ fields, read from Notion) and `t6.registry` (identity).
 
 The **t6 database** is the SQLite store for T6 entities. Its numbered schema
 migrations run on open; each records whether it is forward-only. Each migration
-must remain readable by the previous release or be marked forward-only. Migration 2
-is forward-only: rolling back to the previous release requires restoring the
+must remain readable by the previous release or be marked forward-only. Migrations 2 and 3
+are forward-only: rolling back to the previous release requires restoring the
 backup made before migration. Take a backup before upgrading.
 
 A **T6 ID** is an opaque, permanent identifier whose prefix identifies its kind.
