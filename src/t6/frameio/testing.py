@@ -117,15 +117,16 @@ class FakeFrameio:
         text: str,
         author: str = "Reviewer One",
         *,
-        author_id: str = "u1",
+        author_id: str | None = "u1",
         created_at: str = "2026-11-02T09:00:00Z",
     ) -> None:
+        """`author_id=None` is a guest: Frame.io gives the comment no owner."""
         self.comments.setdefault(file_id, []).append(
             {
                 "id": comment_id,
                 "file_id": file_id,
                 "text": text,
-                "owner": {"id": author_id, "name": author},
+                "owner": None if author_id is None else {"id": author_id, "name": author},
                 "created_at": created_at,
                 "completed_at": None,
             }

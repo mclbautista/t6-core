@@ -181,7 +181,7 @@ class FrameioWorker:
         except SignInRequired:
             self._signed_out()
             raise RuntimeError(SIGN_IN_NEEDED) from None
-        except ValueError as error:  # the comment has no file or author: asking again will not help
+        except ValueError as error:  # the comment has no file or time: asking again will not help
             raise Refused(f"unusable comment: {error}") from error
         if not isinstance(found, dict):
             raise Refused("Frame.io gave no comment")
