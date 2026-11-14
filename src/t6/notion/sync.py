@@ -58,6 +58,9 @@ class NotionClient:
         finally:
             self._runner.close()
 
+    def retrieve_user(self, user_id: str) -> JSON:
+        return self._runner.run(self._async.retrieve_user(user_id))
+
     def retrieve_page(self, page_id: str) -> JSON:
         return self._runner.run(self._async.retrieve_page(page_id))
 

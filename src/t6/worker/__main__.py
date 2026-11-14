@@ -119,7 +119,16 @@ def configured_handlers(
         from t6.notion import NotionClient
         from t6.notion.jo_projection import JobOrderProjection
         from t6.worker.registry import RegistryClient
-        handlers.update(JobOrderProjection(NotionClient(token), RegistryClient(transport, settings.secret), job_orders).handlers())
+        jo_projection = JobOrderProjection(NotionClient(token), RegistryClient(transport, settings.secret), job_orders)
+        project_reconcile = handlers.get("notion.page_changed")
+        handlers.update(jo_projection.handlers())
+        if project_reconcile is not None:
+            def reconcile(job: WorkerJob) -> JsonValue:
+                result = project_reconcile(job)
+                if isinstance(result, dict) and result.get("outcome") == "not_a_project_page":
+                    return jo_projection.reconcile(job)
+                return result
+            handlers["notion.page_changed"] = reconcile
     if gateway_url and gateway_secret:
         chat = _whole_number(environ, "T6_REVIEW_CHAT", required=True)
         topic = _whole_number(environ, "T6_REVIEW_TOPIC", required=False)

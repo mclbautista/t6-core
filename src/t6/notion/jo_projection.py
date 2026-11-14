@@ -6,6 +6,10 @@ from typing import Any
 
 from t6.domain.events import JsonValue
 from t6.notion.generated import JobOrdersRow
+from t6.notion import codec
+from t6.notion.editor import editor as notion_editor
+from t6.registry import normalize_page_id
+from urllib.parse import unquote
 from t6.notion.job_orders import JobOrders
 from t6.notion.model import encode
 from t6.notion.sync import NotionClient
@@ -20,7 +24,25 @@ class JobOrderProjection:
         self.notion, self.registry, self.data_source = notion, registry, data_source
 
     def handlers(self) -> dict[str, Handler]:
-        return {'jo.sync': self.sync}
+        return {'jo.sync': self.sync, 'notion.page_changed': self.reconcile}
+
+    def reconcile(self, job: WorkerJob) -> JsonValue:
+        page_id = str(job.payload['page_id'])
+        page = self.notion.retrieve_page(page_id)
+        parent = page.get('parent') or {}
+        if normalize_page_id(str(parent.get('data_source_id', ''))) != normalize_page_id(self.data_source):
+            return {'outcome': 'not_a_job_order_page'}
+        properties = page.get('properties') or {}
+        status = JobOrdersRow.from_page(page).status
+        shown = {'t6_id': codec.rich_text(properties.get('T6 ID')), 'status': str(status) if status else None}
+        updated = job.payload.get('updated_properties')
+        names = [('t6_id', 'T6 ID'), ('status', 'Status')]
+        changed = [key for key, name in names if isinstance(updated, list) and any(unquote(str(item)) in (name, unquote(str((properties.get(name) or {}).get('id', '')))) for item in updated)]
+        editor, editor_id = notion_editor(self.notion, job)
+        result = self.registry.observe_job_order(page_id, shown, changed, editor, str(job.payload.get('event_id') or job.dedupe_key), editor_id=editor_id)
+        if result.get('restore', {}).get('t6_id'):
+            self.notion.update_page(page_id, {'properties': {'T6 ID': {'rich_text': [{'text': {'content': result['restore']['t6_id']}}]}}})
+        return result
 
     def sync(self, job: WorkerJob) -> JsonValue:
         intent_id = int(job.payload['intent_id'])  # type: ignore[arg-type]
@@ -69,8 +91,12 @@ class JobOrderProjection:
                 self.registry.report_jo_sync(intent_id, page_id=page, error=str(failure))
                 raise Refused(f'Notion body needs review: {failure}')
         properties: dict[str, Any] = {'T6 ID': {'rich_text': [{'text': {'content': jo_id}}]}}
+        seen_status = JobOrdersRow.from_page(self.notion.retrieve_page(page)).status
+        seen_value = str(seen_status) if seen_status else None
         if 'status' in state['payload']:
-            properties.update(JobOrdersRow.to_properties(status=state['payload']['status']))
+            allowed = self.registry.projection(page, {'jo_status': seen_value}).get('allowed', {})
+            if allowed.get('jo_status') and state['payload']['status'] == state['current_status']:
+                properties.update(JobOrdersRow.to_properties(status=state['payload']['status']))
         if state['assignee_id']:
             if not state['assignee_page']:
                 raise ValueError('Assignee has no active Contacts page')
@@ -78,5 +104,11 @@ class JobOrderProjection:
         if state['notes']:
             properties['T6 Notes'] = encode('rich_text', '\n'.join(state['notes']))
         self.notion.update_page(page, {'properties': properties})
+        recorded: dict[str, str | None] = {'t6_id': str(jo_id)}
+        if 'status' not in state['payload']:
+            recorded['jo_status'] = seen_value
+        elif 'v%3Fln' in properties:
+            recorded['jo_status'] = str(state['payload']['status'])
+        self.registry.projection(page, recorded, record=True)
         self.registry.report_jo_sync(intent_id, page_id=page)
         return {'jo_id': jo_id, 'page_id': page}

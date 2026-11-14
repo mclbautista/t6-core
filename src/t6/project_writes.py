@@ -16,7 +16,8 @@ class ProjectWrites:
         self.tokens = tokens
 
     def run(self, verb: str, project: str, reason: str | None, *, actor: str,
-            idempotency_key: str | None = None, confirm: str | None = None) -> Outcome:
+            idempotency_key: str | None = None, confirm: str | None = None,
+            notion_editor: str | None = None) -> Outcome:
         if verb not in ('hold', 'resume') or not project.strip() or not actor.strip():
             return Refused(rule='input', reason='A verb, Project and actor are required')
         if verb == 'hold' and (reason is None or not reason.strip()):
@@ -67,7 +68,8 @@ class ProjectWrites:
                        (project_id, int(desired), reason if desired else None))
             db.execute('UPDATE projects SET revision = revision + 1 WHERE id = ?', (project_id,))
             _audit(db, project_id, f'project_{verb}', actor, now,
-                   {'held': held, 'reason': old_reason}, {'held': desired, 'reason': reason if desired else None})
+                   {'held': held, 'reason': old_reason}, {'held': desired, 'reason': reason if desired else None},
+                   summary=f'Project Status set in Notion by {notion_editor}' if notion_editor is not None else None)
             _intend_sync(db, project_id, revision + 1, now)
             db.execute('INSERT INTO status_sync_intents VALUES (last_insert_rowid(), ?)', (int(desired),))
             db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))

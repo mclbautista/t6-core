@@ -320,7 +320,8 @@ class ProjectRegistry(Protocol):
         ...
 
     def observe_page(
-        self, notion_page_id: str, *, actor: str, available: bool, shown: Shown | None = None
+        self, notion_page_id: str, *, actor: str, available: bool, shown: Shown | None = None,
+        editor: str | None = None, changed: tuple[str, ...] | None = None, editor_id: str | None = None
     ) -> Observed:
         """Reconcile a page's current Notion state with the registry. Registers nothing."""
         ...

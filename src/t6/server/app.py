@@ -358,6 +358,7 @@ class WebhookApp:
                 "updated_properties": properties if isinstance(properties, list) else [],
                 "event_id": event_id,
                 "event_type": body["type"],
+                "authors": body.get("authors") if isinstance(body.get("authors"), list) else [],
                 "timestamp": body.get("timestamp") if isinstance(body.get("timestamp"), str) else None,
             },
         )
@@ -690,6 +691,49 @@ class WebhookApp:
     def _registry_answer(
         self, registry: ProjectRegistry, grants: list[Grant], steps: list[str], request: Request
     ) -> Response:
+        if len(steps) == 2 and steps[0] == "notion-project-status":
+            if not any(g.registry_sync for g in grants):
+                return Response(403, {"error": "registry sync not allowed"})
+            if request.method != "POST":
+                return Response(405)
+            notion_body = _json_object(request.body) or {}
+            status, editor, event, editor_id = notion_body.get("status"), notion_body.get("editor"), notion_body.get("event"), notion_body.get("editor_id")
+            field = notion_body.get("field", "status")
+            if field not in ("status", "health") or not (status is None or isinstance(status, str)) or not isinstance(editor, str) or not isinstance(event, str) or not (editor_id is None or isinstance(editor_id, str)):
+                return Response(400, {"error": "invalid Notion observation"})
+            from t6.notion_edits import NotionEdits
+            from t6.registry.sqlite import SqliteProjectRegistry
+            if not isinstance(registry, SqliteProjectRegistry):
+                return Response(503, {"error": "Notion edits unavailable"})
+            return Response(200, NotionEdits(registry).project_status(steps[1], status, editor, event, editor_id, field))
+        if len(steps) == 2 and steps[0] == "notion-projection":
+            if not any(g.registry_sync for g in grants):
+                return Response(403, {"error": "registry sync not allowed"})
+            if request.method != "POST":
+                return Response(405)
+            notion_body = _json_object(request.body) or {}
+            values = notion_body.get("values")
+            if not isinstance(values, dict) or not all(isinstance(k, str) and (v is None or isinstance(v, str)) for k, v in values.items()):
+                return Response(400, {"error": "invalid projection"})
+            from t6.notion_edits import NotionEdits
+            from t6.registry.sqlite import SqliteProjectRegistry
+            if not isinstance(registry, SqliteProjectRegistry):
+                return Response(503, {"error": "Notion edits unavailable"})
+            return Response(200, NotionEdits(registry).projection(steps[1], values, record=notion_body.get("record") is True, initialize=notion_body.get("initialize") is True))
+        if len(steps) == 2 and steps[0] == "notion-jo":
+            if not any(g.registry_sync for g in grants):
+                return Response(403, {"error": "registry sync not allowed"})
+            if request.method != "POST":
+                return Response(405)
+            notion_body = _json_object(request.body) or {}
+            shown, changed, editor, event = notion_body.get("shown"), notion_body.get("changed"), notion_body.get("editor"), notion_body.get("event")
+            if not isinstance(shown, dict) or not isinstance(changed, list) or not all(isinstance(v, str) for v in changed) or not isinstance(editor, str) or not isinstance(event, str):
+                return Response(400, {"error": "invalid Notion observation"})
+            from t6.notion_edits import NotionEdits
+            from t6.registry.sqlite import SqliteProjectRegistry
+            if not isinstance(registry, SqliteProjectRegistry):
+                return Response(503, {"error": "Notion edits unavailable"})
+            return Response(200, NotionEdits(registry).job_order(steps[1], shown, changed, editor, event, editor_id=notion_body.get("editor_id") if isinstance(notion_body.get("editor_id"), str) else None))
         if len(steps) == 2 and steps[0] == "jo-sync":
             if not any(g.registry_sync for g in grants):
                 return Response(403, {"error": "registry sync not allowed"})
@@ -854,7 +898,17 @@ class WebhookApp:
             if not all(value is None or isinstance(value, str) for value in values):
                 return Response(400, {"error": "shown values are strings or null"})
             seen = Shown(*values)
-        observed = registry.observe_page(steps[1], actor=syncer.actor, available=available, shown=seen)
+        editor = body.get("editor")
+        changed = body.get("changed")
+        editor_id = body.get("editor_id")
+        if editor_id is not None and not isinstance(editor_id, str):
+            return Response(400, {"error": "invalid editor id"})
+        if editor is not None and not isinstance(editor, str):
+            return Response(400, {"error": "invalid editor"})
+        if changed is not None and (not isinstance(changed, list) or not all(isinstance(v, str) for v in changed)):
+            return Response(400, {"error": "invalid changed properties"})
+        observed = registry.observe_page(steps[1], actor=syncer.actor, available=available, shown=seen,
+                                         editor=editor, changed=None if changed is None else tuple(changed), editor_id=editor_id)
         return Response(
             200,
             {

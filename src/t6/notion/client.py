@@ -114,6 +114,9 @@ class AsyncNotionClient:
     async def aclose(self) -> None:
         await self._http.aclose()
 
+    async def retrieve_user(self, user_id: str) -> JSON:
+        return await self._call("GET", f"/users/{user_id}", read=True)
+
     # Pages
 
     async def retrieve_page(self, page_id: str) -> JSON:
