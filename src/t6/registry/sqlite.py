@@ -223,6 +223,10 @@ _MIGRATIONS = (
     )"""),
     (16, False, """CREATE TABLE project_archives (project_id TEXT PRIMARY KEY REFERENCES projects(id));
         CREATE TABLE project_person_roles (project_id TEXT NOT NULL REFERENCES projects(id), person_id TEXT NOT NULL REFERENCES persons(id), role TEXT NOT NULL, PRIMARY KEY (project_id, person_id, role))"""),
+    (17, False, """CREATE TABLE milestones (
+        id TEXT PRIMARY KEY, deliverable_id TEXT NOT NULL REFERENCES deliverables(id),
+        milestone TEXT NOT NULL, occurred_on TEXT NOT NULL, actor TEXT NOT NULL, recorded_at REAL NOT NULL
+    )"""),
 )
 
 
@@ -242,6 +246,10 @@ def _migrate(db: sqlite3.Connection) -> None:
                     for operation in ("UPDATE", "DELETE"):
                         db.execute(f"CREATE TRIGGER {table}_no_{operation.lower()} BEFORE {operation} ON {table} "
                                    f"BEGIN SELECT RAISE(ABORT, '{table} is append-only'); END")
+            if version == 17:
+                for operation in ("UPDATE", "DELETE"):
+                    db.execute(f"CREATE TRIGGER milestones_no_{operation.lower()} BEFORE {operation} ON milestones "
+                               "BEGIN SELECT RAISE(ABORT, 'milestones are append-only'); END")
             if version == 15:
                 for operation in ("UPDATE", "DELETE"):
                     db.execute(f"CREATE TRIGGER concern_notes_no_{operation.lower()} BEFORE {operation} ON concern_notes "

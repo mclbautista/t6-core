@@ -202,7 +202,7 @@ class ClientTests(VerbAPITests):
         from t6.verbs import ProjectHoldInput, ActivityInput, Preview, Done, VERBS
         client = Client('http://127.0.0.1:%s' % self.server.server_port, 'operator-secret')
         for entry in VERBS:
-            self.assertTrue(callable(getattr(client, (entry.noun + ('_' + entry.verb if entry.verb else '')).replace('-', '_'))))
+            self.assertTrue(callable(getattr(client, (entry.noun + ('_' + entry.verb if entry.verb else '')).replace('-', '_').replace(' ', '_'))))
         project = self.registry.register(code='RETRY', actor='setup', idempotency_key='setup-retry')
         assert isinstance(project, Registered)
         inputs = ProjectHoldInput(project=project.project.id, reason='pause', idempotency_key='retry-key')

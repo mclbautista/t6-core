@@ -753,6 +753,33 @@ class DeliverableMigrateOutput(BaseModel):
     review: list[dict[str, Any]]
 
 
+class MilestoneRecordInput(BaseModel):
+    deliverable: str
+    milestone: str
+    on: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class MilestoneRecordOutput(BaseModel):
+    milestone_id: str
+    deliverable_id: str
+    project_id: str
+    milestone: str
+    on: str
+    idempotency_key: str
+
+
+def milestone_record(inputs: MilestoneRecordInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.deliverable import DeliverableStore
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    people = _people()
+    return DeliverableStore(people.registry, people.tokens).record_milestone(
+        inputs.model_dump(exclude={'idempotency_key', 'confirm'}), actor=_actor.get(),
+        idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
 class DeliverableGetInput(BaseModel):
     ref: str
 
@@ -766,6 +793,8 @@ class DeliverableRecord(BaseModel):
     due: str | None
     air: str | None
     bindings: list[dict[str, Any]]
+    milestones: list[dict[str, Any]]
+    stage: dict[str, Any]
 
 
 class DeliverableGetOutput(BaseModel):
@@ -927,6 +956,7 @@ VERBS = (
     Verb("standing-cc", "", "Get standing cc", (), StandingCcInput, StandingCcOutput, "reader", "Read configured standing cc.", None),
     Verb("jo", "list", "List Job Orders", (), JoListInput, JoListOutput, "reader", "Filter by Project, assignee or status group.", api_read),
     Verb("jo", "find", "Find Job Orders by Telegram Key", (), JoFindInput, JoListOutput, "reader", "Return all matching orders.", api_read),
+    Verb("deliverable", "milestone record", "Record a Deliverable milestone", (), MilestoneRecordInput, MilestoneRecordOutput, "coordinator", "Milestones are append-only.", milestone_record),
     Verb("deliverable", "define", "Define a Deliverable", (), DeliverableDefineInput, DeliverableDefineOutput, "operator", "Preview and confirm a Deliverable.", deliverable_define),
     Verb("deliverable", "rebind", "Bind a replacement Deliverables page", (), DeliverableRebindInput, DeliverableDefineOutput, "operator", "Retain the old page as a legacy binding.", deliverable_rebind),
     Verb("deliverable", "get", "Get a Deliverable", (), DeliverableGetInput, DeliverableGetOutput, "reader", "Read from t6.", api_read),
@@ -1069,6 +1099,16 @@ def add_parsers(commands: Any) -> None:
                 alias_parser.add_argument('--idempotency-key')
                 alias_parser.add_argument('--confirm')
                 alias_parser.set_defaults(registered_verb=entry, gate=gate)
+        if entry.handler is milestone_record:
+            milestone_parser = parser.add_parser('milestone', help='Deliverable milestones')
+            parser = milestone_parser.add_subparsers(dest='milestone_verb', required=True).add_parser('record')
+            parser.add_argument('deliverable')
+            parser.add_argument('milestone')
+            parser.add_argument('--on')
+            parser.add_argument('--idempotency-key')
+            parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
         if entry.verb:
             aliases = [alias.split(' ', 1)[1] for alias in entry.aliases] if entry.handler is approval_write and entry.verb != 'request' else []
             parser = parser.add_parser(entry.verb, aliases=aliases, help="[verb] " + entry.description)
