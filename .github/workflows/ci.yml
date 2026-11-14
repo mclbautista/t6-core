@@ -23,12 +23,16 @@ jobs:
           uv run --locked python -m unittest discover -s tests -p 'test_llm_task.py' -v
           uv run --locked python -m unittest discover -s tests -p 'test_public_repo_safety.py' -v
       - name: Check tracked cases and files for denied names
+        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
         env:
           NAMES: ${{ secrets.T6_NAMES_DENYLIST }}
           T6_NAMES_DENYLIST_FILE: ${{ runner.temp }}/t6-names-denylist
         run: |
           printf '%s\n' "$NAMES" > "$T6_NAMES_DENYLIST_FILE"
           python scripts/public_repo_safety.py --skip-secrets --require-names
+      - name: Explain fork denylist skip
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: echo "Denylist scan skipped for fork pull request; repository secrets are unavailable."
 
   test:
     runs-on: ubuntu-latest

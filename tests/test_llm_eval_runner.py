@@ -48,6 +48,19 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(result.human_review, ["1", "2"])
         self.assertEqual(result.status, "failed")
 
+    def test_review_flag_does_not_change_code_verdict(self) -> None:
+        for passed in (True, False):
+            with self.subTest(passed=passed):
+                outcomes = []
+                for review in (False, True):
+                    result = run_evals(
+                        [case(1)], record=record(), provider=script(), cost_cap=10,
+                        evaluate=lambda c, p: Attempt(passed, "code verdict", review=review),
+                    )
+                    outcomes.append(result.results[0].passed)
+                    self.assertEqual(result.human_review, ["1"] if review else [])
+                self.assertEqual(outcomes, [passed, passed])
+
     def test_changes_regression_and_acceptance_with_pass_bar(self) -> None:
         cases = [case(i) for i in range(10)]
         good = self.run_cases(cases, script(*(["yes"] * 30)))
@@ -68,6 +81,15 @@ class RunnerTests(unittest.TestCase):
         must = self.run_cases(cases, script(*bad_script), history=[regression], accept={"0": "Cyril"}, must_pass={"0"})
         self.assertEqual(must.status, "failed")
 
+    def test_incomplete_history_compares_only_completed_case_results(self) -> None:
+        cases = [case(1), case(2)]
+        prior = self.run_cases(cases, script(*(["no"] * 3 + ["yes"] * 3)), cost_cap=0.03)
+        self.assertEqual(prior.status, "incomplete")
+        self.assertEqual([r.case_id for r in prior.results], ["1"])
+        current = self.run_cases(cases, script(*(["no"] * 6)), history=[prior])
+        self.assertEqual(current.regressions, ["1"])
+        self.assertEqual(current.changed_failures, [])
+
     def test_cost_cap_and_offline(self) -> None:
         fake = script("yes", "yes", "yes")
         result = self.run_cases([case(1)], fake, cost_cap=0.02)
@@ -78,6 +100,12 @@ class RunnerTests(unittest.TestCase):
         result = self.run_cases([case(1)], fake, offline=True, offline_evaluate=lambda c: Attempt(True, "fixture"))
         self.assertEqual(fake.calls, [])
         self.assertEqual(result.status, "offline")
+
+    def test_cap_reached_on_final_attempt_completes_run(self) -> None:
+        result = self.run_cases([case(1)], script("yes", "yes", "yes"), cost_cap=0.03)
+        self.assertTrue(result.cost_cap_reached)
+        self.assertEqual(len(result.results), 1)
+        self.assertEqual(result.status, "passed")
 
     def test_temperature_for_chat(self) -> None:
         import json

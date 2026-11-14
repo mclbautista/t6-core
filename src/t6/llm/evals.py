@@ -177,7 +177,8 @@ def run_evals(
     after each attempt, so one call may exceed it. Offline evaluation uses a
     separate callback and never invokes ``evaluate``. Chat providers receive
     temperature zero; providers without that setting keep their own defaults. History is chronological;
-    only the immediately preceding recorded live run is compared. Acceptances
+    only completed case results in the immediately preceding live run are compared;
+    cases without a result have no prior outcome. Acceptances
     map case IDs to the name of the person accepting the change.
     """
     if not math.isfinite(cost_cap) or cost_cap < 0:
@@ -190,7 +191,7 @@ def run_evals(
     accepted = dict(accept or {})
     if any(not name.strip() for name in accepted.values()):
         raise ValueError("acceptance requires a person's name")
-    previous = next((r for r in reversed(history) if r.status not in ("offline", "incomplete")), None)
+    previous = next((r for r in reversed(history) if r.status != "offline"), None)
     previous_results = {r.case_id: r for r in previous.results} if previous else {}
     results: list[CaseResult] = []
     review: list[str] = []
@@ -241,7 +242,7 @@ def run_evals(
     status: Literal["passed", "failed", "incomplete", "offline"]
     if offline:
         status = "offline"
-    elif capped or len(results) != len(cases):
+    elif len(results) != len(cases):
         status = "incomplete"
     else:
         status = "passed" if bars and not blocked else "failed"

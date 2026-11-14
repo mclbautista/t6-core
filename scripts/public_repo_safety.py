@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Iterable, Sequence
 from fnmatch import fnmatch
+import json
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -95,7 +96,14 @@ def name_hits(root: Path, paths: Iterable[str], names: Sequence[str]) -> list[st
             continue
         text = content.decode("utf-8", errors="replace")
         for number, line in enumerate(text.splitlines(), start=1):
-            if pattern.search(line):
+            decoded = []
+            if path.endswith(".json"):
+                for match in re.finditer(r'"(?:[^"\\]|\\.)*"', line):
+                    try:
+                        decoded.append(json.loads(match.group()))
+                    except json.JSONDecodeError:
+                        continue
+            if pattern.search(line) or any(pattern.search(value) for value in decoded):
                 hits.append(f"{path}:{number}")
     return hits
 

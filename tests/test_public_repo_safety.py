@@ -128,6 +128,13 @@ class NamesTests(SafetyCheckTestCase):
         self.assertIn("evaluations/cases/example.json:1", result.stdout)
         self.assertNotIn("Jane Example", result.stdout + result.stderr)
 
+    def test_case_file_with_unicode_escaped_name_is_rejected(self) -> None:
+        self.write("evaluations/cases/example.json", r'{"input": "Jane \u0045xample"}' + "\n")
+        result = self.check("--skip-secrets", env={"T6_NAMES_DENYLIST": "Jane Example"})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("evaluations/cases/example.json:1", result.stdout)
+        self.assertNotIn("Jane Example", result.stdout + result.stderr)
+
     def test_denylist_file_inside_repository_is_rejected(self) -> None:
         self.write("names.txt", "Jane Example\n")
         result = self.check("--skip-secrets", "--names-file", str(self.repo / "names.txt"))
