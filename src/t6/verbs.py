@@ -934,6 +934,37 @@ def milestone_record(inputs: MilestoneRecordInput, open_notion: Callable[..., An
         idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
 
 
+class DeliverableMissInput(BaseModel):
+    deliverable: str
+    reason: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class DeliverableDelayInput(DeliverableMissInput):
+    field: Literal['due', 'air']
+    date: str
+
+
+class DeliverableScheduleOutput(BaseModel):
+    action: str
+    deliverable_id: str
+    project_id: str
+    reason: str
+    idempotency_key: str
+
+
+def deliverable_schedule(inputs: DeliverableMissInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.deliverable import DeliverableStore
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    people = _people()
+    action = 'delay' if isinstance(inputs, DeliverableDelayInput) else 'miss'
+    return DeliverableStore(people.registry, people.tokens).schedule_write(
+        action, inputs.model_dump(exclude={'idempotency_key', 'confirm'}), actor=_actor.get(),
+        idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
 class DeliverableGetInput(BaseModel):
     ref: str
 
@@ -1111,6 +1142,8 @@ VERBS = (
     Verb("jo", "list", "List Job Orders", (), JoListInput, JoListOutput, "reader", "Filter by Project, assignee or status group.", api_read),
     Verb("jo", "find", "Find Job Orders by Telegram Key", (), JoFindInput, JoListOutput, "reader", "Return all matching orders.", api_read),
     Verb("deliverable", "milestone record", "Record a Deliverable milestone", (), MilestoneRecordInput, MilestoneRecordOutput, "coordinator", "Milestones are append-only.", milestone_record),
+    Verb("deliverable", "miss", "Record a missed Deliverable", (), DeliverableMissInput, DeliverableScheduleOutput, "coordinator", "A delivered Deliverable cannot be missed.", deliverable_schedule),
+    Verb("deliverable", "delay", "Move a Deliverable date", (), DeliverableDelayInput, DeliverableScheduleOutput, "coordinator", "Date moves require a reason.", deliverable_schedule),
     Verb("deliverable", "define", "Define a Deliverable", (), DeliverableDefineInput, DeliverableDefineOutput, "operator", "Preview and confirm a Deliverable.", deliverable_define),
     Verb("deliverable", "rebind", "Bind a replacement Deliverables page", (), DeliverableRebindInput, DeliverableDefineOutput, "operator", "Retain the old page as a legacy binding.", deliverable_rebind),
     Verb("deliverable", "get", "Get a Deliverable", (), DeliverableGetInput, DeliverableGetOutput, "reader", "Read from t6.", api_read),
@@ -1313,6 +1346,16 @@ def add_parsers(commands: Any) -> None:
             if entry.handler is package_write:
                 parser.add_argument('--idempotency-key')
                 parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.handler is deliverable_schedule:
+            parser.add_argument('deliverable')
+            parser.add_argument('--reason', required=True)
+            if entry.verb == 'delay':
+                parser.add_argument('--field', choices=('due', 'air'), required=True)
+                parser.add_argument('--date', required=True)
+            parser.add_argument('--idempotency-key')
+            parser.add_argument('--confirm')
             parser.set_defaults(registered_verb=entry)
             continue
         if entry.handler is deliverable_rebind:

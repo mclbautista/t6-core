@@ -1,5 +1,7 @@
 """Deliverable identity at the registry boundary."""
 import unittest
+from datetime import datetime, timedelta
+from t6.domain.studio_time import MANILA
 from t6.ids import EntityKind, T6Id
 from t6.preview import PreviewTokens
 from t6.registry import Registered
@@ -94,3 +96,41 @@ class DeliverableTests(unittest.TestCase):
         outcome = self.store.rebind(values, actor='alice', idempotency_key='stale', confirm=preview_write.token)
         assert isinstance(outcome, Refused)
         self.assertEqual(outcome.rule, 'binding_changed')
+
+    def test_delay_and_miss_are_distinct_audited_facts(self) -> None:
+        from t6.verbs import Refused
+        today = datetime.fromtimestamp(self.registry._clock(), MANILA).date()
+        old = (today + timedelta(days=1)).isoformat()
+        new = (today + timedelta(days=3)).isoformat()
+        plan = self.store.define({'project': self.project, 'code': 'EP', 'due': old}, actor='alice', idempotency_key='define')
+        done = self.store.define({'project': self.project, 'code': 'EP', 'due': old}, actor='alice', idempotency_key='define', confirm=plan.token)
+        identifier = done.result['deliverable_id']
+        values = {'deliverable': identifier, 'field': 'due', 'date': new, 'reason': 'client request'}
+        preview = self.store.schedule_write('delay', values, actor='alice', idempotency_key='delay')
+        result = self.store.schedule_write('delay', values, actor='alice', idempotency_key='delay', confirm=preview.token)
+        self.assertIsInstance(result, Done)
+        self.assertEqual(self.store.get(identifier)['due'], new)
+        self.assertIsInstance(self.store.schedule_write('miss', {'deliverable': identifier, 'reason': 'late'}, actor='alice'), Refused)
+        replay = self.store.schedule_write('delay', values, actor='alice', idempotency_key='delay')
+        self.assertEqual(result, self.store.schedule_write('delay', values, actor='alice', idempotency_key='delay', confirm=replay.token))
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute('SELECT old_date, new_date, reason FROM deliverable_date_moves').fetchall(), [(old, new, 'client request')])
+            self.assertEqual(db.execute('SELECT count(*) FROM deliverable_misses').fetchone()[0], 0)
+        self.assertEqual(self.registry.activity(self.project)[0].action, 'deliverable_delay')
+
+    def test_miss_and_delivery_between_preview_and_confirm(self) -> None:
+        from t6.verbs import Refused
+        values = {'project': self.project, 'code': 'EP', 'due': '2000-01-01'}
+        preview = self.store.define(values, actor='alice', idempotency_key='define')
+        identifier = self.store.define(values, actor='alice', idempotency_key='define', confirm=preview.token).result['deliverable_id']
+        miss = {'deliverable': identifier, 'reason': 'late'}
+        preview = self.store.schedule_write('miss', miss, actor='alice', idempotency_key='miss')
+        result = self.store.schedule_write('miss', miss, actor='alice', idempotency_key='miss', confirm=preview.token)
+        self.assertIsInstance(result, Done)
+        self.assertEqual(self.registry.activity(self.project)[0].action, 'deliverable_miss')
+        stale = self.store.schedule_write('miss', miss, actor='alice', idempotency_key='another')
+        milestone = {'deliverable': identifier, 'milestone': 'delivered'}
+        mp = self.store.record_milestone(milestone, actor='alice', idempotency_key='milestone')
+        self.store.record_milestone(milestone, actor='alice', idempotency_key='milestone', confirm=mp.token)
+        self.assertIsInstance(self.store.schedule_write('miss', miss, actor='alice', idempotency_key='another', confirm=stale.token), Refused)
+        self.assertIsInstance(self.store.schedule_write('miss', miss, actor='alice'), Refused)
