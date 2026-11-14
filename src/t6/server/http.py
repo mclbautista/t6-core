@@ -33,7 +33,7 @@ def make_server(
             else:
                 body = self.rfile.read(length) if length else b""
                 answer = handle(Request(self.command, self.path, dict(self.headers.items()), body))
-            payload = json.dumps(dict(answer.body)).encode()
+            payload = json.dumps(answer.body).encode()
             self.send_response(answer.status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))

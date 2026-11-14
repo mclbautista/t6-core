@@ -1,0 +1,116 @@
+import json
+import os
+import tempfile
+import threading
+import unittest
+from typing import Any
+from urllib.request import Request as HttpRequest, urlopen
+from unittest.mock import patch
+
+from t6.person import People
+from t6.preview import PreviewTokens
+from t6.registry.sqlite import SqliteProjectRegistry
+from t6.registry import Registered
+from t6.server.http import make_server
+from t6.server.queue import JobQueue
+from t6.server.verbs import VerbAPI, service_permissions_from_env
+from t6.verbs import catalogue
+
+
+class VerbAPITests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.registry = SqliteProjectRegistry(self.tmp.name + '/registry')
+        self.queue = JobQueue(self.tmp.name + '/queue')
+        self.actor = 't6n_' + '1' * 32
+        self.staff = 't6n_' + '2' * 32
+        with self.registry._transaction() as db:
+            for person, telegram in ((self.actor, 42), (self.staff, 43)):
+                db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', ?, 0, 1)", (person, telegram))
+            db.execute("INSERT INTO person_permissions VALUES (?, 'operator')", (self.actor,))
+        self.env = patch.dict(os.environ, {'T6_PREVIEW_SIGNING_KEY': 'signing-key'})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        api = VerbAPI(People(self.registry, PreviewTokens('signing-key'),
+                             service_permissions_from_env({'T6_API_SERVICE_PERMISSIONS': '{"worker": ["operator"]}'})), self.queue,
+                      {'operator-secret': self.actor, 'staff-secret': self.staff, 'gateway-secret': 'gateway', 'reports-secret': 'reports', 'worker-secret': 'worker'}, lambda _: None)
+        self.api = api
+        self.server = make_server(('127.0.0.1', 0), api)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.thread.join)
+        self.addCleanup(self.server.shutdown)
+
+    def request(self, path: str, body: dict[str, Any] | None = None, secret: str | None = 'operator-secret',
+                headers: dict[str, str] | None = None) -> tuple[int, Any]:
+        from urllib.error import HTTPError
+        headers = dict(headers or {})
+        if secret:
+            headers['Authorization'] = 'Bearer ' + secret
+        request = HttpRequest('http://127.0.0.1:%s%s' % (self.server.server_port, path),
+                              data=json.dumps(body).encode() if body is not None else None, headers=headers)
+        try:
+            response = urlopen(request)
+        except HTTPError as error:
+            response = error
+        with response:
+            return response.status, json.load(response)
+
+    def test_auth_validation_and_catalogue(self) -> None:
+        self.assertEqual(self.request('/v1/commands', secret=None)[0], 401)
+        self.assertEqual(self.request('/v1/commands', secret='unknown')[0], 401)
+        self.assertEqual(self.request('/v1/commands')[1], catalogue())
+        status, errors = self.request('/v1/project/hold', {'project': 'x'})
+        self.assertEqual(status, 422)
+        self.assertEqual(errors['errors'][0]['loc'], ['reason'])
+        self.assertEqual(self.request('/v1/project/hold', {'project': 'x', 'reason': 'r'}, secret='staff-secret')[1]['outcome'], 'refused')
+        self.assertEqual(self.request('/v1/commands', headers={'X-Telegram-User-Id': '42'})[1]['outcome'], 'refused')
+        self.assertEqual(self.request('/v1/commands', secret='gateway-secret', headers={'X-Telegram-User-Id': '42'})[1], catalogue())
+        self.assertIn('schema_version', self.request('/health', secret=None)[1])
+
+    def test_project_hold_preview_confirm(self) -> None:
+        project = self.registry.register(code='ABC', actor='setup', idempotency_key='setup')
+        assert isinstance(project, Registered)
+        project_id = project.project.id
+        data = {'project': project_id, 'reason': 'pause'}
+        preview = self.request('/v1/project/hold', data)[1]
+        self.assertEqual(preview['outcome'], 'preview')
+        result = self.request('/v1/project/hold', {**data, 'confirm': preview['token'], 'idempotency_key': preview['plan']['idempotency_key']})[1]
+        self.assertEqual(result['outcome'], 'done')
+        self.assertEqual(result['result']['project_id'], project_id)
+
+    def test_service_permissions_and_gateway_delegation(self) -> None:
+        project = self.registry.register(code='SERVICE', actor='setup', idempotency_key='service-setup')
+        assert isinstance(project, Registered)
+        project_id = project.project.id
+        data = {'project': project_id, 'reason': 'pause'}
+        read = self.request('/v1/project/activity', {'project': project_id}, secret='reports-secret')[1]
+        self.assertEqual(read['outcome'], 'done')
+        denied = self.request('/v1/project/hold', data, secret='reports-secret')[1]
+        self.assertEqual((denied['outcome'], denied['rule']), ('refused', 'permission'))
+        preview = self.request('/v1/project/hold', data, secret='worker-secret')[1]
+        self.assertEqual(preview['outcome'], 'preview')
+        confirmed = self.request('/v1/project/hold', {**data, 'confirm': preview['token'],
+                                 'idempotency_key': preview['plan']['idempotency_key']}, secret='worker-secret')[1]
+        self.assertEqual(confirmed['outcome'], 'done')
+        self.assertEqual(self.registry.activity(project_id)[0].actor, 'worker')
+        headers = {'X-Telegram-User-Id': '42'}
+        resume = self.request('/v1/project/resume', {'project': project_id}, secret='gateway-secret', headers=headers)[1]
+        self.assertEqual(resume['outcome'], 'preview')
+        result = self.request('/v1/project/resume', {'project': project_id, 'confirm': resume['token'],
+                              'idempotency_key': resume['plan']['idempotency_key']},
+                              secret='gateway-secret', headers=headers)[1]
+        self.assertEqual(result['outcome'], 'done')
+        self.assertEqual(self.registry.activity(project_id)[0].actor, self.actor)
+        denied = self.request('/v1/project/hold', data, secret='gateway-secret',
+                              headers={'X-Telegram-User-Id': '43'})[1]
+        self.assertEqual((denied['outcome'], denied['rule']), ('refused', 'permission'))
+
+    def test_service_grant_configuration_validation(self) -> None:
+        self.assertEqual(service_permissions_from_env({'T6_API_SERVICE_PERMISSIONS': '{"worker": ["operator"]}'}),
+                         {'worker': frozenset({'operator'})})
+        for value in ('{"unknown": ["operator"]}', '{"worker": ["bogus"]}', '{"worker": "operator"}'):
+            with self.assertRaises(ValueError):
+                service_permissions_from_env({'T6_API_SERVICE_PERMISSIONS': value})
