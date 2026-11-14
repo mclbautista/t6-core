@@ -149,3 +149,26 @@ class ShareSettingsTest(unittest.TestCase):
                 read({"X": bad}, "X", 3600.0, minimum=0)
         with self.assertRaises(ConfigError):
             read({"X": "0"}, "X", 30, minimum=1)  # a scan limit of 0 is refused
+
+
+class ReviewAskTimeTest(unittest.TestCase):
+    """The review message waits longer for the share links, and the leases cover the waits (#301)."""
+
+    def test_the_share_links_get_a_longer_wait_than_the_other_reads(self) -> None:
+        from t6.frameio.requests import Comments, FileInfo, ShareLinks
+        from t6.worker.__main__ import REVIEW_ASK_SECONDS, SHARE_ASK_SECONDS, review_ask_seconds
+
+        self.assertEqual(review_ask_seconds(ShareLinks(frameio_project_id="fp1")), SHARE_ASK_SECONDS)
+        self.assertEqual(review_ask_seconds(FileInfo(file_id="f1")), REVIEW_ASK_SECONDS)
+        self.assertEqual(review_ask_seconds(Comments(file_id="f1")), REVIEW_ASK_SECONDS)
+        self.assertGreater(SHARE_ASK_SECONDS, REVIEW_ASK_SECONDS)
+
+    def test_the_main_lease_covers_the_three_asks_of_one_review_message(self) -> None:
+        from t6.worker.__main__ import MAIN_LEASE_SECONDS, REVIEW_ASK_SECONDS, SHARE_ASK_SECONDS
+
+        self.assertGreater(MAIN_LEASE_SECONDS, 2 * REVIEW_ASK_SECONDS + SHARE_ASK_SECONDS)
+
+    def test_the_frameio_lease_covers_a_cold_share_lookup(self) -> None:
+        from t6.worker.__main__ import FRAMEIO_LEASE_SECONDS, SHARE_ASK_SECONDS
+
+        self.assertGreaterEqual(FRAMEIO_LEASE_SECONDS, 2 * SHARE_ASK_SECONDS)
