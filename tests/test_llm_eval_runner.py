@@ -1,28 +1,30 @@
 import tempfile
 import unittest
+from collections.abc import Callable, Mapping, Sequence
+from datetime import date
 from pathlib import Path
 
-from t6.llm.evals import Attempt, Case, RunRecord, run_evals
+from t6.llm.evals import Attempt, Case, RunRecord, SyntheticProvenance, run_evals
 from t6.llm.testing import FakeProvider
-from t6.llm.transport import OpenAIChat
+from t6.llm.transport import OpenAIChat, Provider
 
 
-def case(number):
+def case(number: int) -> Case:
     return Case(id=str(number), task="test", masked_input={}, expected_properties=["valid"],
-                grader="code", provenance={"kind": "synthetic"})
+                grader="code", provenance=SyntheticProvenance(kind="synthetic"))
 
 
-def record():
+def record() -> RunRecord:
     return RunRecord(model_id="fake", provider="fake", prompt_hash="p", schema_hash="s",
-                     t6_version="1", date="2026-11-14", results=[])
+                     t6_version="1", date=date(2026, 11, 14), results=[])
 
 
-def evaluate(c, provider):
+def evaluate(c: Case, provider: Provider) -> Attempt:
     completion = provider.complete([{"role": "user", "content": c.id}], timeout=1)
     return Attempt(completion.content == "yes", completion.content or "empty", completion.tokens.total / 100, completion.content == "review")
 
 
-def script(*answers):
+def script(*answers: str) -> FakeProvider:
     fake = FakeProvider()
     for answer in answers:
         fake.reply(answer, prompt_tokens=1)
@@ -30,16 +32,23 @@ def script(*answers):
 
 
 class RunnerTests(unittest.TestCase):
-    def run_cases(self, cases, fake, **kwargs):
-        return run_evals(cases, record=record(), provider=fake, evaluate=evaluate, cost_cap=kwargs.pop("cost_cap", 10), **kwargs)
+    def run_cases(
+        self, cases: Sequence[Case], fake: Provider, *, cost_cap: float = 10,
+        history: Sequence[RunRecord] = (), accept: Mapping[str, str] | None = None,
+        path: str | Path | None = None, must_pass: set[str] | frozenset[str] = frozenset(),
+        offline: bool = False, offline_evaluate: Callable[[Case], Attempt] | None = None,
+    ) -> RunRecord:
+        return run_evals(cases, record=record(), provider=fake, evaluate=evaluate, cost_cap=cost_cap,
+                         history=history, accept=accept, path=path, must_pass=must_pass,
+                         offline=offline, offline_evaluate=offline_evaluate)
 
-    def test_majority_and_judge(self):
+    def test_majority_and_judge(self) -> None:
         result = self.run_cases([case(1), case(2)], script("yes", "yes", "review", "yes", "review", "no"))
         self.assertEqual([r.passed for r in result.results], [True, False])
         self.assertEqual(result.human_review, ["1", "2"])
         self.assertEqual(result.status, "failed")
 
-    def test_changes_regression_and_acceptance_with_pass_bar(self):
+    def test_changes_regression_and_acceptance_with_pass_bar(self) -> None:
         cases = [case(i) for i in range(10)]
         good = self.run_cases(cases, script(*(["yes"] * 30)))
         bad_script = ["no"] * 3 + ["yes"] * 27
@@ -59,7 +68,7 @@ class RunnerTests(unittest.TestCase):
         must = self.run_cases(cases, script(*bad_script), history=[regression], accept={"0": "Cyril"}, must_pass={"0"})
         self.assertEqual(must.status, "failed")
 
-    def test_cost_cap_and_offline(self):
+    def test_cost_cap_and_offline(self) -> None:
         fake = script("yes", "yes", "yes")
         result = self.run_cases([case(1)], fake, cost_cap=0.02)
         self.assertEqual(len(fake.calls), 2)
@@ -70,10 +79,10 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(fake.calls, [])
         self.assertEqual(result.status, "offline")
 
-    def test_temperature_for_chat(self):
+    def test_temperature_for_chat(self) -> None:
         import json
-        bodies = []
-        def send(url, headers, body, timeout):
+        bodies: list[dict[str, object]] = []
+        def send(url: str, headers: dict[str, str], body: bytes, timeout: float) -> bytes:
             bodies.append(json.loads(body))
             return b'{"choices":[{"message":{"content":"yes"}}]}'
         provider = OpenAIChat(base_url="https://example.invalid", api_key="x", model="m", send=send)
