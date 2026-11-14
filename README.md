@@ -607,6 +607,29 @@ bound to, and returns that Project whoever holds its code now: this is how a
 reviewer selects a historical Project. Existing relationships are never looked
 up by code. `Resolution.reason` is `None` for every other lookup.
 
+## Fleet
+
+`t6.fleet` (install `t6[notion]`) reads Bays as `Machine` and writes the fleet
+facts. The rules are in `CONTEXT.md` under Fleet.
+
+```python
+from t6.fleet import Fleet, MachineFacts
+from t6.domain import Ring
+
+fleet = Fleet(notion, bays_data_source_id)
+machines = fleet.machines()
+results = fleet.sync(
+    [MachineFacts(names=("201-Bay-01-Mac-Pro-111", "201 Bay 01 Mac Pro"), serial_number="C02...", ring=Ring.PILOT)],
+    apply=False,  # a dry run; True writes
+)
+```
+
+Each `SyncResult` says `matched`, `unmatched` or `ambiguous`, the changes, the
+facts skipped (unknown or stale), and, when applied, the saved `Machine` or the
+typed `Rejected` or `Ambiguous` failure. `t6.fleet.rules` has `match_key`,
+`role_group`, `manifest_chain` and `is_stale`. Run `t6 schema-snapshot` once so
+the Ring options are kept by ID.
+
 ## Optional extras
 
 Install only the adapters an application needs, for example

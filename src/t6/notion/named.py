@@ -19,19 +19,21 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
-from t6.domain import Department, JobOrderStatus
+from t6.domain import Department, JobOrderStatus, Ring
 from t6.notion.model import OptionId
 
 JSON = dict[str, Any]
 
 NAMED_FIELDS: dict[str, dict[str, type[StrEnum]]] = {
     "job_orders": {"status": JobOrderStatus, "department": Department},
+    "bays": {"ring": Ring},
 }
 """Snapshot database key, then domain attribute, to the enum of known values."""
 
 FIRST_FILL_PROPERTY: dict[tuple[str, str], str] = {
     ("job_orders", "status"): "Status",
     ("job_orders", "department"): "Department",
+    ("bays", "ring"): "Ring",
 }
 """The property name to look for the first time a named block is filled."""
 
