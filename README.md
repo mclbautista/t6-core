@@ -939,11 +939,25 @@ no ID recorded is sent by its label, and a status or department Notion has but
 t6-core does not know reads as its plain name. `t6 schema-check` reports a
 named value whose option is gone under `named_missing`, as drift.
 
+### Meeting Notes
+
+`t6.notion.meeting_notes.MeetingNotes(client, data_source_id)` reads and writes
+Meeting Notes pages as `t6.domain.MeetingNote` (title as `name`, meeting date,
+project IDs, attendee IDs and names, ready to send, sent at, last edited).
+`with_title`, `with_title_prefix` and `ready_to_send` read. `create` saves the
+properties through the typed write and appends the body blocks in chunks of
+100, returning the saved note, `Rejected` or `Ambiguous` (a body that could
+not be saved leaves a page, so it is `Ambiguous` with that page ID). `trash`
+and `mark_sent` change a note. A page body is a list of Notion blocks; read it
+with `NotionClient.list_block_children`.
+
 ### Projects, Contacts and Deliverables
 
 `t6.notion.reads` has `ProjectReader`, `ContactReader` (each with `get` and
 `list`) and `DeliverableReader.for_project`, returning `t6.domain` entities
-addressed by property ID. `Project` carries status, stage, health, playdate,
+addressed by property ID. `list` skips pages in the trash or archived, and
+`Project`, `Contact` and `JobOrder` carry `last_edited`, the page's own
+last-edited time. `Project` carries status, stage, health, playdate,
 submission and archival deadlines, PM and tech notes, `has_post_supe`, and the
 role relations as page IDs (`editor_ids`, `assistant_editor_ids`,
 `online_editor_ids`, `colorist_ids`, `sound_tech_ids`, `post_coordinator_ids`,

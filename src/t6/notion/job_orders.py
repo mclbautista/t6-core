@@ -20,6 +20,7 @@ from t6.domain import JobOrder
 from t6.notion import codec, named
 from t6.notion.errors import NotionError
 from t6.notion.generated import JobOrdersRow
+from t6.notion.reads import is_live, page_edited
 from t6.notion.schema import load_snapshot
 from t6.notion.sync import NotionClient
 from t6.notion.writes import Ambiguous, Rejected, create_row
@@ -88,8 +89,9 @@ class JobOrders:
         return self._read(rows[0]) if rows else None
 
     def list(self) -> tuple[JobOrder, ...]:
-        """Every Job Order, without bodies."""
-        return tuple(self._order(JobOrdersRow.from_page(page), page) for page in self._client.query_data_source(self._source))
+        """Every Job Order that is not trashed or archived, without bodies."""
+        pages = self._client.query_data_source(self._source)
+        return tuple(self._order(JobOrdersRow.from_page(page), page) for page in pages if is_live(page))
 
     def create(self, fields: Mapping[str, Any]) -> JobOrder | Rejected | Ambiguous:
         """Create a Job Order from domain fields and return it as saved.
@@ -149,6 +151,7 @@ class JobOrders:
             project_id=row.projects[0] if row.projects else None,
             **{name: getattr(row, attribute) for name, attribute in RELATIONS.items()},
             source_text=body,
+            last_edited=page_edited(page),
         )
 
 
