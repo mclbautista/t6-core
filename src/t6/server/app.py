@@ -461,12 +461,12 @@ class WebhookApp:
         except RegistryUnavailable:
             return
 
-    def _tap(self, request: Request) -> Response:
+    def _tap(self, request: Request, *, authenticated: bool = False) -> Response:
         if request.method != "POST":
             return Response(405)
-        if not self._config.tap_secret:
+        if not authenticated and not self._config.tap_secret:
             return Response(503, {"error": "tap secret not configured"})
-        if not _same(self._config.tap_secret, _bearer(request)):
+        if not authenticated and not _same(self._config.tap_secret, _bearer(request)):
             return Response(401, {"error": "bad secret"})
         body = _json_object(request.body)
         key = request.header("idempotency-key") or (body or {}).get("idempotency_key")

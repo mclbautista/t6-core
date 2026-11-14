@@ -54,9 +54,9 @@ def main() -> int:
     if registry is not None:
         api = VerbAPI(People(registry, PreviewTokens(environ.get("T6_PREVIEW_SIGNING_KEY", "read-only")),
                              service_permissions_from_env(environ)),
-                      queue, secrets_from_env(environ), _open_notion)
+                      queue, secrets_from_env(environ), _open_notion, app)
         def tailnet(request: Request) -> Response:
-            if request.path.split("?", 1)[0].startswith("/v1/") or request.path.split("?", 1)[0] == "/health":
+            if request.path.split("?", 1)[0].startswith("/v1/") or request.path.split("?", 1)[0] in {"/health", "/tap"}:
                 return api(request)
             return app.tailnet(request)
         server = make_server(_address(environ.get("T6_TAILNET_BIND", "127.0.0.1:8081")), tailnet)
