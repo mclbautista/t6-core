@@ -444,7 +444,10 @@ class WebhookApp:
                     f"registry.sync:{intent.id}",
                     {"project_id": intent.project_id, "revision": intent.revision},
                 )
-            self._registry.mark_dispatched(intent.id for intent in intents)
+            jo_intents = self._registry.undispatched_jo_sync()
+            for intent in jo_intents:
+                self._queue.submit(MAIN_QUEUE, JobKind.JO_SYNC.value, f"jo.sync:{intent.id}", {"intent_id": intent.id})
+            self._registry.mark_dispatched(intent.id for intent in (*intents, *jo_intents))
         except RegistryUnavailable:
             return
 
@@ -687,6 +690,27 @@ class WebhookApp:
     def _registry_answer(
         self, registry: ProjectRegistry, grants: list[Grant], steps: list[str], request: Request
     ) -> Response:
+        if len(steps) == 2 and steps[0] == "jo-sync":
+            if not any(g.registry_sync for g in grants):
+                return Response(403, {"error": "registry sync not allowed"})
+            try:
+                intent_id = int(steps[1])
+            except ValueError:
+                return Response(400, {"error": "invalid intent"})
+            if request.method == "GET":
+                state = registry.jo_sync_state(intent_id)
+                return Response(404) if state is None else Response(200, {"state": state})
+            if request.method != "POST":
+                return Response(405)
+            body = _json_object(request.body)
+            if body is None:
+                return Response(400, {"error": "body is not a JSON object"})
+            if body.get("begin") is True:
+                return Response(200, {"started": registry.begin_jo_create(intent_id)})
+            page_id, error = body.get("page_id"), body.get("error")
+            if not (page_id is None or isinstance(page_id, str)) or not (error is None or isinstance(error, str)):
+                return Response(400, {"error": "invalid sync result"})
+            return Response(200 if registry.report_jo_sync(intent_id, page_id=page_id, error=error) else 404, {})
         if steps == ["review-items"]:
             if request.method != "GET":
                 return Response(405)

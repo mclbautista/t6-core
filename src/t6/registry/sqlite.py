@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 import sqlite3
 import time
-from typing import TypeAlias
+from typing import Any, TypeAlias
 
 from t6.domain.events import JsonValue
 from t6.ids import EntityKind, T6Id
@@ -166,6 +166,20 @@ _MIGRATIONS = (
         CREATE UNIQUE INDEX one_active_person_per_telegram ON persons (telegram_id)
             WHERE active = 1 AND telegram_id IS NOT NULL
     """),
+    (8, False, """
+        CREATE TABLE job_orders (
+            id TEXT PRIMARY KEY, project_id TEXT REFERENCES projects(id),
+            telegram_key TEXT UNIQUE, assignee_id TEXT REFERENCES persons(id), fields TEXT NOT NULL
+        );
+        CREATE TABLE job_order_notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, job_order_id TEXT NOT NULL REFERENCES job_orders(id),
+            text TEXT NOT NULL, actor TEXT NOT NULL, at REAL NOT NULL
+        );
+        CREATE TABLE jo_migration_receipts (digest TEXT PRIMARY KEY, snapshot TEXT NOT NULL, entries TEXT NOT NULL);
+        CREATE TABLE jo_sync_intents (
+            intent_id INTEGER PRIMARY KEY REFERENCES sync_intents(id), operation TEXT NOT NULL, payload TEXT NOT NULL, started INTEGER NOT NULL DEFAULT 0
+        )
+    """),
 )
 
 
@@ -185,11 +199,15 @@ def _migrate(db: sqlite3.Connection) -> None:
                     for operation in ("UPDATE", "DELETE"):
                         db.execute(f"CREATE TRIGGER {table}_no_{operation.lower()} BEFORE {operation} ON {table} "
                                    f"BEGIN SELECT RAISE(ABORT, '{table} is append-only'); END")
+            if version == 8:
+                for operation in ("UPDATE", "DELETE"):
+                    db.execute(f"CREATE TRIGGER job_order_notes_no_{operation.lower()} BEFORE {operation} ON job_order_notes "
+                               f"BEGIN SELECT RAISE(ABORT, 'job_order_notes is append-only'); END")
             db.execute("INSERT INTO schema_version VALUES (?, ?)", (version, int(forward_only)))
 
     db.execute("INSERT INTO activity (project_id, at, actor, action, summary, audit_id) "
                "SELECT project_id, at, actor, action, REPLACE(action, '_', ' '), id FROM audit "
-               "WHERE NOT EXISTS (SELECT 1 FROM activity WHERE activity.audit_id = audit.id)")
+               "WHERE NOT EXISTS (SELECT 1 FROM job_orders WHERE job_orders.id = audit.project_id) AND NOT EXISTS (SELECT 1 FROM activity WHERE activity.audit_id = audit.id)")
 
 
 _Values: TypeAlias = Mapping[str, JsonValue]
@@ -472,7 +490,7 @@ class SqliteProjectRegistry:
     # -- sync and reconciliation ---------------------------------------------
 
     def undispatched_sync(self) -> tuple[SyncIntent, ...]:
-        return self._intents("done_at IS NULL AND dispatched_at IS NULL AND id NOT IN (SELECT intent_id FROM status_sync_intents)")
+        return self._intents("done_at IS NULL AND dispatched_at IS NULL AND id NOT IN (SELECT intent_id FROM status_sync_intents) AND id NOT IN (SELECT intent_id FROM jo_sync_intents)")
 
     def _intents(self, where: str) -> tuple[SyncIntent, ...]:
         with self._transaction() as db:
@@ -482,6 +500,45 @@ class SqliteProjectRegistry:
                 f"FROM sync_intents WHERE {where} ORDER BY id"
             ).fetchall()
         return tuple(SyncIntent(row[0], row[1], row[2], row[3], None if row[4] is None else bool(row[4])) for row in rows)
+
+    def undispatched_jo_sync(self) -> tuple[SyncIntent, ...]:
+        return self._intents("done_at IS NULL AND dispatched_at IS NULL AND id IN (SELECT intent_id FROM jo_sync_intents)")
+
+    def jo_sync_state(self, intent_id: int) -> dict[str, Any] | None:
+        with self._transaction() as db:
+            row = db.execute("SELECT s.project_id, s.revision, s.done_at, j.operation, j.started, o.project_id, o.assignee_id, o.fields FROM sync_intents s JOIN jo_sync_intents j ON j.intent_id = s.id JOIN job_orders o ON o.id = s.project_id WHERE s.id = ?", (intent_id,)).fetchone()
+            if not row:
+                return None
+            def page(entity_id: str | None) -> str | None:
+                found = db.execute("SELECT page_id FROM bindings WHERE system = 'notion' AND project_id = ? AND active = 1", (entity_id,)).fetchone()
+                return str(found[0]) if found else None
+            notes = [n[0] for n in db.execute('SELECT text FROM job_order_notes WHERE job_order_id = ? ORDER BY id', (row[0],)).fetchall()]
+            return {'jo_id': row[0], 'revision': row[1], 'done': row[2] is not None, 'operation': row[3],
+                    'started': bool(row[4]), 'page_id': page(row[0]), 'project_page': page(row[5]),
+                    'assignee_id': row[6], 'assignee_page': page(row[6]), 'fields': json.loads(row[7]), 'notes': notes}
+
+    def begin_jo_create(self, intent_id: int) -> bool:
+        with self._transaction() as db:
+            return db.execute("UPDATE jo_sync_intents SET started = 1 WHERE intent_id = ? AND operation = 'create' AND started = 0", (intent_id,)).rowcount == 1
+
+    def report_jo_sync(self, intent_id: int, *, page_id: str | None = None, error: str | None = None) -> bool:
+        with self._transaction() as db:
+            row = db.execute('SELECT s.project_id, s.done_at FROM sync_intents s JOIN jo_sync_intents j ON j.intent_id = s.id WHERE s.id = ?', (intent_id,)).fetchone()
+            if not row:
+                return False
+            if page_id:
+                page_id = normalize_page_id(page_id)
+                bound = db.execute("SELECT project_id FROM bindings WHERE system = 'notion' AND page_id = ?", (page_id,)).fetchone()
+                active = db.execute("SELECT page_id FROM bindings WHERE system = 'notion' AND project_id = ? AND active = 1", (row[0],)).fetchone()
+                if bound and bound[0] != row[0] or active and active[0] != page_id:
+                    raise RegistryError('Notion page binding conflicts with another entity')
+                if not bound:
+                    db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, ?, 1)", (page_id, row[0], self._clock()))
+            if error is not None:
+                db.execute('UPDATE sync_intents SET error = ?, error_final = 1 WHERE id = ?', (error, intent_id))
+            else:
+                db.execute('UPDATE sync_intents SET done_at = ?, error = NULL WHERE id = ? AND done_at IS NULL', (self._clock(), intent_id))
+            return True
 
     def mark_dispatched(self, intent_ids: Iterable[int]) -> None:
         now = self._clock()
@@ -496,7 +553,7 @@ class SqliteProjectRegistry:
     ) -> RegisteredProject | None:
         now = self._clock()
         with self._transaction() as db:
-            covered = "project_id = ? AND done_at IS NULL AND revision <= ? AND id NOT IN (SELECT intent_id FROM status_sync_intents)"
+            covered = "project_id = ? AND done_at IS NULL AND revision <= ? AND id NOT IN (SELECT intent_id FROM status_sync_intents) AND id NOT IN (SELECT intent_id FROM jo_sync_intents)"
             if ok:
                 db.execute(f"UPDATE sync_intents SET done_at = ? WHERE {covered}", (now, project_id, revision))
             else:

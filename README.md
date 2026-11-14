@@ -104,6 +104,7 @@ Mac mini. Both use only the standard library.
 | `T6_WORKER_POLL_SECONDS` | optional: sleep after an empty poll, default `5` |
 | `T6_NOTION_TOKEN` | main worker: Notion integration token, for the Project registry sync |
 | `T6_NOTION_PROJECTS_DATA_SOURCE` | main worker: ID of the Projects data source |
+| `T6_NOTION_JOB_ORDERS_DATA_SOURCE` | main worker: ID of the Job Orders data source |
 | `T6_REVIEW_CHAT` | main worker: required when the gateway variables are set, the Telegram chat ID that gets the [review message](#frameio) |
 | `T6_REVIEW_TOPIC` | main worker: optional, the forum topic ID in that chat. Leave it unset for the General topic: Telegram rejects topic 1 |
 | `T6_GATEWAY_URL`, `T6_GATEWAY_SECRET` | Frame.io worker: required, the gateway whose `/notify` sends the sign-in alert |
@@ -1398,30 +1399,40 @@ $ T6_STANDING_CC=<Contact page ID> t6 standing-cc
 
 ### Job Order commands
 
-`t6 jo get <page id|telegram key> --data-sources FILE` prints a Job Order with
-every field in studio terms (the `job_orders` source). A Telegram Key is
-`<chat_id>:<message_id>`; a group chat ID is negative, so put the key after `--`.
+`t6 admin jo migrate --data-sources FILE` previews the existing Job Orders.
+Save its JSON and apply it with `--apply --preview FILE`. It binds by page ID
+or an existing Telegram Key, never by name. Conflicts and unresolved Project or
+Person references appear in `review`; a repeated apply keeps the IDs and
+bindings. A uniquely matched replacement becomes active when the old active
+page is absent from the migration snapshot; the old binding remains legacy.
+Migrate Projects and People first when their relations are available.
 
-```console
-$ t6 jo get --data-sources sources.json -- -100123:456
-{"id": "<page id>", "name": "ORC - TOC - JO #62", "department": "TOC", "number": "62", "deadline": "2026-11-14T17:00:00+08:00", ...}
-```
+`t6 jo get <t6j ID|page id|telegram key> --data-sources FILE` returns the
+Job Order, its T6 ID, active page, assignee Person and append-only notes. A
+Telegram Key is `<chat_id>:<message_id>`; put a negative chat ID after `--`.
+For an unbound legacy page, get still returns its existing Notion fields.
 
-`t6 jo raise --file jo.json --data-sources FILE` is a dry run: it prints the
-fields it would write. The file is a JSON object of Job Order fields (the
-`JobOrder` fields, plus `project_id` and `source_text`). Dates without a time
-zone are Manila. The Department is checked against the live options (`TO`
-means TOC) and the standing cc (`$T6_STANDING_CC`) is added to `cc_ids`. Add
-`--apply --actor NAME` to write. It then prints the saved Job Order, or the
-typed `rejected` or `ambiguous` result and exits 1. An `ambiguous` result means
-the write may have happened, so check before you retry.
+`t6 jo raise --file jo.json --data-sources FILE` previews a new Job Order;
+`jo create` is an alias. The JSON accepts the previous create fields, including
+`project_id` (a registered T6 Project ID or its Notion page), Contact page IDs
+in `assigned_ids`, and `source_text`. Dates without a time zone are Manila;
+the Department is checked against Notion's options, standing cc is added and
+Watermark defaults to `none`. Confirm with `--confirm TOKEN` and the preview's
+`--idempotency-key KEY`. The accepted result contains the `t6j_` ID and a null
+`page_id` while Notion creation is pending; use `jo get` or replay the same
+confirmed request with a fresh preview after sync to obtain the page ID.
 
-```console
-$ t6 jo raise --file jo.json --data-sources sources.json
-{"dry_run": true, "fields": {"name": "ORC - TOC - JO #62", "department": "TOC", "cc_ids": ["<standing cc>"], ...}}
-$ t6 jo raise --file jo.json --data-sources sources.json --apply --actor cyril
-{"result": "saved", "actor": "cyril", "job_order": {"id": "<page id>", ...}}
-```
+`t6 jo assign JO PERSON`, `t6 jo reassign JO PERSON --reason TEXT`, and
+`t6 jo note JO TEXT` follow the same preview/confirm flow. PERSON is a `t6n_`
+ID. The local account is the actor. Notes and audit are append-only and each
+write appears in Project Activity. A repeat with the same idempotency key and
+a fresh preview returns the original result.
+
+The main worker needs `T6_NOTION_JOB_ORDERS_DATA_SOURCE` and access to a Job
+Orders data source with `T6 ID` and `T6 Notes` rich-text properties. T6 Notes
+shows the append-only T6 notes; the existing human-edited JO Notes is preserved. A create whose outcome is
+unknown is checked by T6 ID before recovery; if no unique page can be found,
+the sync fails for review rather than creating another page.
 
 `t6 jo format --file notes.txt [--date YYYY-MM-DD]` needs no Notion. The file
 is a draft: a header line, `Label: value` lines, then free text. It prints

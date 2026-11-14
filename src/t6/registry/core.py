@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 import re
-from typing import Protocol, TypeAlias
+from typing import Any, Protocol, TypeAlias
 
 from t6.domain.events import JsonValue
 from t6.lookup.normalize import Normalizers
@@ -305,6 +305,11 @@ class ProjectRegistry(Protocol):
     def undispatched_sync(self) -> tuple[SyncIntent, ...]:
         """Sync intents that have no queue job yet, oldest first."""
         ...
+
+    def undispatched_jo_sync(self) -> tuple[SyncIntent, ...]: ...
+    def jo_sync_state(self, intent_id: int) -> dict[str, Any] | None: ...
+    def begin_jo_create(self, intent_id: int) -> bool: ...
+    def report_jo_sync(self, intent_id: int, *, page_id: str | None = None, error: str | None = None) -> bool: ...
 
     def mark_dispatched(self, intent_ids: Iterable[int]) -> None: ...
 

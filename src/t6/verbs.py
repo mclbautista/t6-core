@@ -302,8 +302,67 @@ class JoGetInput(BaseModel):
 class JoRaiseInput(BaseModel):
     file: Path
     data_sources: Path
-    apply: bool = False
-    actor: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class JoWriteOutput(BaseModel):
+    jo_id: str
+    project_id: str
+    action: str
+    idempotency_key: str
+    page_id: str | None = None
+
+
+class JoAssignInput(BaseModel):
+    jo: str
+    person: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class JoReassignInput(JoAssignInput):
+    reason: str
+
+
+class JoNoteInput(BaseModel):
+    jo: str
+    text: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+def jo_write(inputs: JoRaiseInput | JoAssignInput | JoReassignInput | JoNoteInput, open_notion: Callable[..., Any]) -> Outcome:
+    import pwd
+    from t6.cli import TOKEN_VARIABLE, _read_data_sources
+    from t6.cli_jo import prepare_fields
+    from t6.job_order import JobOrderStore
+    from t6.notion import NotionError
+    from t6.preview import PreviewTokens
+
+    key = os.environ.get("T6_PREVIEW_SIGNING_KEY", "")
+    if not key:
+        return Refused(rule="config", reason="Set T6_PREVIEW_SIGNING_KEY")
+    try:
+        registry = _people().registry
+        values: dict[str, Any]
+        if isinstance(inputs, JoRaiseInput):
+            token = os.environ.get(TOKEN_VARIABLE)
+            if not token:
+                return Refused(rule="credentials", reason=f"set {TOKEN_VARIABLE}")
+            with open_notion(token) as client:
+                fields = prepare_fields(client, _read_data_sources(inputs.data_sources)["job_orders"], inputs.file)
+            verb, values = "raise", {"fields": fields}
+        elif isinstance(inputs, JoReassignInput):
+            verb, values = "reassign", {"jo": inputs.jo, "person": inputs.person, "reason": inputs.reason}
+        elif isinstance(inputs, JoAssignInput):
+            verb, values = "assign", {"jo": inputs.jo, "person": inputs.person}
+        else:
+            verb, values = "note", {"jo": inputs.jo, "text": inputs.text}
+        return JobOrderStore(registry, PreviewTokens(key)).write(verb, values, actor=pwd.getpwuid(os.getuid()).pw_name,
+            idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+    except (ValueError, OSError, KeyError, TypeError, NotionError) as error:
+        return Refused(rule="input", reason=str(error))
 
 
 class JoFormatInput(BaseModel):
@@ -345,7 +404,10 @@ VERBS = (
     Verb("project", "activity", "Show Project activity, newest first", (),
          ActivityInput, ActivityOutput, "reader", "Activity is append-only.", project_activity),
     Verb("jo", "get", "Get a Job Order", (), JoGetInput, LegacyOutput, "reader", "Read a Job Order.", None),
-    Verb("jo", "raise", "Raise a Job Order", ("jo create",), JoRaiseInput, LegacyOutput, "writer", "Create a Job Order.", None),
+    Verb("jo", "raise", "Raise a Job Order", ("jo create",), JoRaiseInput, JoWriteOutput, "writer", "Create a Job Order.", jo_write),
+    Verb("jo", "assign", "Assign a Job Order", (), JoAssignInput, JoWriteOutput, "writer", "The Person must differ from the current assignee.", jo_write),
+    Verb("jo", "reassign", "Reassign a Job Order", (), JoReassignInput, JoWriteOutput, "writer", "A reason is required.", jo_write),
+    Verb("jo", "note", "Add a Job Order note", (), JoNoteInput, JoWriteOutput, "writer", "Notes are append-only.", jo_write),
     Verb("jo", "format", "Format a Job Order", (), JoFormatInput, LegacyOutput, "reader", "Format a draft.", None),
     Verb("person", "find", "Find a Person", ("contacts find",), PersonFindInput, LegacyOutput, "reader", "Find a Contact.", None),
     Verb("project", "resolve", "Resolve a Project", ("projects resolve",), ProjectResolveInput, LegacyOutput, "reader", "Resolve a Project.", None),
@@ -398,6 +460,9 @@ def add_parsers(commands: Any) -> None:
             if entry.noun == "person":
                 parser = commands.choices["contacts"]
                 nouns[entry.noun] = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+            elif entry.noun == "jo":
+                parser = commands.choices["jo"]
+                nouns[entry.noun] = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
             elif entry.noun == "project":
                 parser = commands.choices["projects"]
                 nouns[entry.noun] = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
@@ -407,6 +472,15 @@ def add_parsers(commands: Any) -> None:
         parser = nouns[entry.noun]
         if entry.verb:
             parser = parser.add_parser(entry.verb, help="[verb] " + entry.description)
+        if entry.handler is jo_write and entry.verb != "raise":
+            parser.add_argument("jo")
+            parser.add_argument("text" if entry.verb == "note" else "person")
+            if entry.verb == "reassign":
+                parser.add_argument("--reason", required=True)
+            parser.add_argument("--idempotency-key")
+            parser.add_argument("--confirm")
+            parser.set_defaults(registered_verb=entry)
+            continue
         if entry.handler in (project_hold, project_resume):
             parser.add_argument("project")
             if entry.handler is project_hold:

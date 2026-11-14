@@ -11,7 +11,7 @@ from t6.cli import main
 class RenameTests(unittest.TestCase):
     def test_renamed_commands_share_handlers_and_output(self) -> None:
         rows = [
-            ("jo create", "jo raise", "--file x --data-sources x", "t6.cli_jo.run"),
+            ("jo create", "jo raise", "--file x --data-sources x", "t6.verbs.run"),
             ("contacts find", "person find", "name --data-sources x", "t6.cli_studio.run"),
             ("projects resolve", "project resolve", "name --data-sources x", "t6.cli_studio.run"),
             ("cameras get", "camera get", "--data-sources x", "t6.cli._cameras"),

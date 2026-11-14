@@ -176,6 +176,30 @@ def _migrate_people(args: argparse.Namespace, open_notion: Callable[..., Any]) -
     return 0
 
 
+
+def _migrate_job_orders(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
+    import pwd
+    from t6.job_order import JobOrderStore
+    from t6.notion import NotionError
+    from t6.notion.job_orders import JobOrders
+    from t6.preview import PreviewTokens
+    from t6.registry import SqliteProjectRegistry
+    token = os.environ.get(TOKEN_VARIABLE)
+    if not token:
+        return _fail(f"set {TOKEN_VARIABLE} to a Notion integration token")
+    if args.apply and not args.preview:
+        return _fail("--apply needs --preview FILE")
+    try:
+        with open_notion(token) as client:
+            orders = JobOrders(client, _read_data_sources(args.data_sources)["job_orders"]).list()
+        store = JobOrderStore(SqliteProjectRegistry(args.registry_db), PreviewTokens("migration"))
+        digest = json.loads(args.preview.read_text(encoding="utf-8"))["digest"] if args.apply else None
+        report = store.migrate(orders, actor=pwd.getpwuid(os.getuid()).pw_name, apply=args.apply, digest=digest)
+    except (OSError, ValueError, KeyError, NotionError) as error:
+        return _fail(str(error))
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
 def _migrate_projects(
     args: argparse.Namespace, open_notion: Callable[[str], NotionClient]
 ) -> int:
@@ -440,8 +464,8 @@ def main(
     from t6 import cli_jo, cli_studio, verbs
 
     cli_studio.add_parsers(commands)
-    verbs.add_parsers(commands)
     cli_jo.add_parsers(commands)
+    verbs.add_parsers(commands)
     # Share parsers so both names accept exactly the same arguments.
     admin = commands.add_parser("admin", help="Administration commands")
     admin_commands = admin.add_subparsers(dest="admin_command", required=True)
@@ -454,6 +478,13 @@ def main(
     person_migrate.add_argument("--registry-db", type=Path, default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)))
     person_migrate.add_argument("--apply", action="store_true")
     person_migrate.add_argument("--preview", type=Path)
+    jo_admin = admin_commands.add_parser("jo", help="Job Order administration")
+    jo_admin_commands = jo_admin.add_subparsers(dest="jo_admin_command", required=True)
+    jo_migrate = jo_admin_commands.add_parser("migrate", help="Preview or apply Job Order migration")
+    jo_migrate.add_argument("--data-sources", type=Path, required=True)
+    jo_migrate.add_argument("--registry-db", type=Path, default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)))
+    jo_migrate.add_argument("--apply", action="store_true")
+    jo_migrate.add_argument("--preview", type=Path)
     drive = admin_commands.add_parser("drive", help="Drive administration")
     drive_commands = drive.add_subparsers(dest="drive_command", required=True)
 
@@ -473,7 +504,7 @@ def main(
     camera_commands = next(a for a in cameras._actions if isinstance(a, argparse._SubParsersAction))
     route(camera_commands, "enrich", camera_commands.choices["update"], "Enrich a Camera")
     jo_commands = next(a for a in commands.choices["jo"]._actions if isinstance(a, argparse._SubParsersAction))
-    route(jo_commands, "raise", jo_commands.choices["create"], "Raise a Job Order")
+    route(jo_commands, "create", jo_commands.choices["raise"], "Raise a Job Order")
 
     raw = list(sys.argv[1:] if argv is None else argv)
     renames = {
@@ -497,12 +528,12 @@ def main(
                             {"snapshot": "schema-snapshot", "consumer-check": "check-consumer"}.get(args.admin_command, args.admin_command))
     if getattr(args, "admin_command", None) == "person":
         return _migrate_people(args, open_notion)
+    if getattr(args, "admin_command", None) == "jo":
+        return _migrate_job_orders(args, open_notion)
     args.person_lookup = args.command == "person"
     args.command = {"check": "schema-check", "person": "contacts", "project": "projects", "camera": "cameras"}.get(args.command, args.command)
     if getattr(args, "cameras_command", None) == "enrich":
         args.cameras_command = "update"
-    if getattr(args, "jo_command", None) == "raise":
-        args.jo_command = "create"
     if args.command == "commands":
         print(json.dumps(verbs.catalogue(), ensure_ascii=False, indent=2))
         return 0

@@ -114,6 +114,12 @@ def configured_handlers(
             NotionClient(token), RegistryClient(transport, settings.secret), projects, offer=offer
         )
         handlers.update(projection.handlers())
+    job_orders = environ.get("T6_NOTION_JOB_ORDERS_DATA_SOURCE")
+    if token and job_orders:
+        from t6.notion import NotionClient
+        from t6.notion.jo_projection import JobOrderProjection
+        from t6.worker.registry import RegistryClient
+        handlers.update(JobOrderProjection(NotionClient(token), RegistryClient(transport, settings.secret), job_orders).handlers())
     if gateway_url and gateway_secret:
         chat = _whole_number(environ, "T6_REVIEW_CHAT", required=True)
         topic = _whole_number(environ, "T6_REVIEW_TOPIC", required=False)

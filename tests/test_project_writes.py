@@ -86,7 +86,7 @@ class ProjectWritesTests(unittest.TestCase):
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 self.assertEqual(main(['project', 'hold', self.project, '--reason', 'pause', '--confirm', preview['token'],
-                                       '--idempotency-key', preview['plan']['idempotency_key']]), 0)
+                                       '--idempotency-key=' + preview['plan']['idempotency_key']]), 0)
             self.assertEqual(json.loads(out.getvalue())['outcome'], 'done')
 
     def test_preview_by_fake_job(self) -> None:
