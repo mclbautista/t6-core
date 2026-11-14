@@ -85,6 +85,14 @@ def run(args: argparse.Namespace, open_notion: Callable[[str], NotionClient]) ->
         with open_notion(token) as client:
             if args.command == "contacts":
                 result = _contacts_find(client, sources[source_key], args.mention)
+                if getattr(args, "person_lookup", False):
+                    from t6.verbs import _people
+                    try:
+                        people = _people()
+                    except ValueError:
+                        people = None
+                    for item in ([result["match"]] if result["match"] else []) + result["candidates"]:
+                        item["t6_id"] = people.registry.bound_entity("notion", item["id"]) if people else None
             else:
                 result = _projects_resolve(client, sources[source_key], args.text, args.registry_db)
     except (OSError, ValueError, ImportError, NotionError) as error:

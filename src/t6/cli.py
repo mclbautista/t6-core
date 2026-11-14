@@ -152,6 +152,30 @@ def _schema_snapshot(
     return 0
 
 
+def _migrate_people(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
+    import pwd
+    from t6.notion.contacts import Contacts
+    from t6.notion import NotionError
+    from t6.person import People
+    from t6.preview import PreviewTokens
+    from t6.registry import SqliteProjectRegistry
+    token = os.environ.get(TOKEN_VARIABLE)
+    if not token:
+        return _fail(f"set {TOKEN_VARIABLE} to a Notion integration token")
+    if args.apply and not args.preview:
+        return _fail("--apply needs --preview FILE")
+    try:
+        with open_notion(token) as client:
+            contacts = Contacts(client, _read_data_sources(args.data_sources)["contacts"]).list()
+        people = People(SqliteProjectRegistry(args.registry_db), PreviewTokens("migration"))
+        digest = json.loads(args.preview.read_text(encoding="utf-8"))["digest"] if args.apply else None
+        report = people.migrate(contacts, actor=pwd.getpwuid(os.getuid()).pw_name, apply=args.apply, digest=digest)
+    except (OSError, ValueError, KeyError, NotionError) as error:
+        return _fail(str(error))
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
 def _migrate_projects(
     args: argparse.Namespace, open_notion: Callable[[str], NotionClient]
 ) -> int:
@@ -423,6 +447,13 @@ def main(
     admin_commands = admin.add_subparsers(dest="admin_command", required=True)
     registry = admin_commands.add_parser("registry", help="Project registry administration")
     registry_commands = registry.add_subparsers(dest="registry_command", required=True)
+    person_admin = admin_commands.add_parser("person", help="Person administration")
+    person_admin_commands = person_admin.add_subparsers(dest="person_admin_command", required=True)
+    person_migrate = person_admin_commands.add_parser("migrate", help="Preview or apply Contacts migration")
+    person_migrate.add_argument("--data-sources", type=Path, required=True)
+    person_migrate.add_argument("--registry-db", type=Path, default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)))
+    person_migrate.add_argument("--apply", action="store_true")
+    person_migrate.add_argument("--preview", type=Path)
     drive = admin_commands.add_parser("drive", help="Drive administration")
     drive_commands = drive.add_subparsers(dest="drive_command", required=True)
 
@@ -464,6 +495,9 @@ def main(
                         "drive": {"import": "drives-import-dry-run"}}.get(args.admin_command, {}).get(
                             getattr(args, "registry_command", getattr(args, "drive_command", "")),
                             {"snapshot": "schema-snapshot", "consumer-check": "check-consumer"}.get(args.admin_command, args.admin_command))
+    if getattr(args, "admin_command", None) == "person":
+        return _migrate_people(args, open_notion)
+    args.person_lookup = args.command == "person"
     args.command = {"check": "schema-check", "person": "contacts", "project": "projects", "camera": "cameras"}.get(args.command, args.command)
     if getattr(args, "cameras_command", None) == "enrich":
         args.cameras_command = "update"

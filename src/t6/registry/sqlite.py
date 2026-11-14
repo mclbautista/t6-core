@@ -142,6 +142,30 @@ _MIGRATIONS = (
             held INTEGER NOT NULL
         )
     """),
+    (6, False, """
+        CREATE TABLE persons (
+            id TEXT PRIMARY KEY, kind TEXT NOT NULL, departments TEXT NOT NULL,
+            roles TEXT NOT NULL, telegram_id INTEGER, master_brief INTEGER NOT NULL,
+            active INTEGER NOT NULL
+        );
+        CREATE UNIQUE INDEX one_active_person_per_telegram ON persons (telegram_id)
+            WHERE active = 1 AND telegram_id IS NOT NULL
+    """),
+    (7, False, """
+        CREATE TABLE person_migration_receipts (digest TEXT PRIMARY KEY, contacts TEXT NOT NULL, entries TEXT NOT NULL);
+        CREATE TABLE persons_v7 (
+            id TEXT PRIMARY KEY, kind TEXT, departments TEXT NOT NULL,
+            roles TEXT NOT NULL, telegram_id INTEGER, master_brief INTEGER NOT NULL,
+            active INTEGER NOT NULL
+        );
+        INSERT INTO persons_v7 SELECT * FROM persons;
+        UPDATE persons_v7 SET kind = NULL WHERE kind = 'staff' AND id IN
+            (SELECT project_id FROM audit WHERE action = 'person_migrated');
+        DROP TABLE persons;
+        ALTER TABLE persons_v7 RENAME TO persons;
+        CREATE UNIQUE INDEX one_active_person_per_telegram ON persons (telegram_id)
+            WHERE active = 1 AND telegram_id IS NOT NULL
+    """),
 )
 
 

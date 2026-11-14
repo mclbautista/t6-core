@@ -19,10 +19,13 @@ import os
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Literal, get_args, get_origin
+from typing import TYPE_CHECKING, Any, Callable, Literal, get_args, get_origin
 from types import UnionType
 
 from pydantic import BaseModel, Field, RootModel
+
+if TYPE_CHECKING:
+    from t6.person import People
 
 
 class Done(BaseModel):
@@ -199,6 +202,79 @@ def project_hold(inputs: ProjectHoldInput, open_notion: Callable[..., Any]) -> O
 def project_resume(inputs: ProjectResumeInput, open_notion: Callable[..., Any]) -> Outcome:
     return _project_write(inputs, "resume")
 
+class PersonAddInput(BaseModel):
+    page_id: str
+    kind: str
+    departments: list[str] = []
+    roles: list[str] = []
+    telegram_id: int | None = None
+    master_brief: bool = False
+    active: bool = True
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class PersonTelegramInput(BaseModel):
+    person_id: str
+    telegram_id: int
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class PersonRebindInput(BaseModel):
+    person_id: str
+    page_id: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class PersonGetInput(BaseModel):
+    person_id: str
+    data_sources: Path
+
+
+def _people() -> People:
+    from t6.cli import DEFAULT_REGISTRY_DB, REGISTRY_DB_VARIABLE, _open_registry
+    from t6.person import People
+    from t6.preview import PreviewTokens
+    registry = _open_registry(Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)))
+    if registry is None:
+        raise ValueError("Registry is unavailable")
+    return People(registry, PreviewTokens(os.environ.get("T6_PREVIEW_SIGNING_KEY", "read-only")))
+
+
+def person_write(inputs: PersonAddInput | PersonTelegramInput | PersonRebindInput, open_notion: Callable[..., Any]) -> Outcome:
+    import pwd
+    if not os.environ.get("T6_PREVIEW_SIGNING_KEY"):
+        return Refused(rule="config", reason="Set T6_PREVIEW_SIGNING_KEY")
+    try:
+        values = inputs.model_dump(exclude={"confirm", "idempotency_key"})
+        return _people().write("add" if isinstance(inputs, PersonAddInput) else "rebind" if isinstance(inputs, PersonRebindInput) else "set-telegram", values,
+                               actor=pwd.getpwuid(os.getuid()).pw_name,
+                               idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+    except (ValueError, OSError) as error:
+        return Refused(rule="input", reason=str(error))
+
+
+def person_get(inputs: PersonGetInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.cli import TOKEN_VARIABLE
+    from t6.notion.contacts import Contacts
+    try:
+        person = _people().get(inputs.person_id)
+        if person is None:
+            return Refused(rule="person", reason="Person not found")
+        token = os.environ.get(TOKEN_VARIABLE)
+        if not token:
+            return Refused(rule="credentials", reason=f"set {TOKEN_VARIABLE}")
+        from t6.cli import _read_data_sources
+        with open_notion(token) as client:
+            page = next(b["page_id"] for b in person["bindings"] if b["active"])
+            person["display_name"] = Contacts(client, _read_data_sources(inputs.data_sources)["contacts"]).get(page).name
+        return Done(result=person)
+    except (ValueError, OSError, KeyError, StopIteration) as error:
+        return Refused(rule="read", reason=str(error))
+
+
 @dataclass(frozen=True)
 class Verb:
     noun: str
@@ -258,6 +334,10 @@ class CameraEnrichInput(BaseModel):
 
 
 VERBS = (
+    Verb("person", "add", "Register a Person", (), PersonAddInput, LegacyOutput, "writer", "A page belongs to one Person.", person_write),
+    Verb("person", "rebind", "Bind a replacement Contacts page", (), PersonRebindInput, LegacyOutput, "writer", "A page belongs to one Person.", person_write),
+    Verb("person", "set-telegram", "Set a Person Telegram ID", (), PersonTelegramInput, LegacyOutput, "writer", "An active Person uniquely holds a Telegram ID.", person_write),
+    Verb("person", "get", "Get a Person", (), PersonGetInput, LegacyOutput, "reader", "Read a Person.", person_get),
     Verb("project", "hold", "Hold a Project", (), ProjectHoldInput, ProjectWriteOutput,
          "writer", "A held Project cannot be held again.", project_hold),
     Verb("project", "resume", "Resume a held Project", (), ProjectResumeInput, ProjectWriteOutput,
@@ -315,7 +395,10 @@ def add_parsers(commands: Any) -> None:
         if entry.handler is None:
             continue
         if entry.noun not in nouns:
-            if entry.noun == "project":
+            if entry.noun == "person":
+                parser = commands.choices["contacts"]
+                nouns[entry.noun] = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+            elif entry.noun == "project":
                 parser = commands.choices["projects"]
                 nouns[entry.noun] = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
             else:
