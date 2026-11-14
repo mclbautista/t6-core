@@ -101,7 +101,6 @@ class ReadTests(unittest.TestCase):
         for result, key, name in (
             (self.client.jo_list(JoListInput(project=project)), 'job_orders', 'Work'),
             (self.client.jo_find(JoFindInput(telegram_key='-100:3')), 'job_orders', 'Work'),
-            (self.client.deliverable_list(DeliverableListInput(project=project)), 'deliverables', 'Trailer'),
             (self.client.meeting_notes_list(MeetingNotesListInput(project=project, since='2026-11-01')), 'meeting_notes', 'Notes'),
         ):
             self.assertIsInstance(result, Done)
@@ -114,6 +113,25 @@ class ReadTests(unittest.TestCase):
         assert isinstance(result, Done)
         self.assertEqual(result.result['meeting_notes'][0]['body'][0]['text'], 'Meeting details')
         self.assertTrue(result.result['meeting_notes'][0]['body'][0]['spans'][0]['bold'])
+
+    def test_deliverable_reads_use_t6_identity(self) -> None:
+        from t6.deliverable import DeliverableStore
+        from t6.registry import Registered
+        from t6.verbs import DeliverableGetInput, DeliverableListInput, Preview
+        project = self.registry.register(actor='setup', idempotency_key='deliverable-project', notion_page_id=self.project['id'])
+        assert isinstance(project, Registered)
+        store = DeliverableStore(self.registry, PreviewTokens('key'))
+        values = {'project': project.project.id, 'code': 'TLR', 'episode': None, 'due': None, 'air': None}
+        preview = store.define(values, actor='setup', idempotency_key='deliverable')
+        assert isinstance(preview, Preview)
+        done = store.define(values, actor='setup', idempotency_key='deliverable', confirm=preview.token)
+        assert isinstance(done, Done)
+        identifier = done.result['deliverable_id']
+        listed = self.client.deliverable_list(DeliverableListInput(project=project.project.id))
+        found = self.client.deliverable_get(DeliverableGetInput(ref=identifier))
+        assert isinstance(listed, Done) and isinstance(found, Done)
+        self.assertEqual(listed.result['deliverables'][0]['t6_id'], identifier)
+        self.assertEqual(found.result['deliverable']['id'], identifier)
 
     def test_get_find_and_studio_reads(self) -> None:
         from t6.verbs import (ProjectGetInput, ProjectResolveInput, JoGetInput,
