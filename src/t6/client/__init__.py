@@ -13,7 +13,7 @@ from urllib.request import Request, urlopen
 from pydantic import BaseModel, TypeAdapter
 from t6.verbs import (
     Ambiguous, Done, NeedsPerson, Outcome, Preview, Refused,
-    PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput,
+    DeliverableDeliverInput, PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
     ConcernForMessageInput, ConcernRecordMessageInput, ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
     JoListInput, JoFindInput, DeliverableListInput, DeliverableGetInput, DeliverableDefineInput, DeliverableRebindInput, DeliverableMissInput, DeliverableDelayInput, MilestoneRecordInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
@@ -173,6 +173,9 @@ class Client:
 
     def deliverable_delay(self, inputs: DeliverableDelayInput) -> Result:
         return self.call('deliverable', 'delay', inputs)
+
+    def deliverable_deliver(self, inputs: DeliverableDeliverInput) -> Result:
+        return self.call("deliverable", "deliver", inputs)
 
     def deliverable_define(self, inputs: DeliverableDefineInput) -> Result:
         return self.call('deliverable', 'define', inputs)

@@ -28,7 +28,13 @@ class PackageStore:
     def get(self, package: str) -> dict[str, Any] | None:
         with self.registry._transaction() as db:
             row = db.execute('SELECT * FROM packages WHERE id = ?', (package,)).fetchone()
-            return self._record(row) if row else None
+            if not row:
+                return None
+            record = self._record(row)
+            carrier = db.execute('SELECT kind, ref FROM delivery_carriers WHERE package_id=?', (package,)).fetchone()
+            if carrier:
+                record['carrier'], record['ref'] = carrier
+            return record
 
     def list(self, missing: bool = False) -> list[dict[str, Any]]:
         with self.registry._transaction() as db:
@@ -67,7 +73,7 @@ class PackageStore:
                 if not row:
                     return Refused(rule='deliverable', reason='Deliverable not found')
                 project = row[0]
-                if not db.execute('SELECT 1 FROM persons WHERE id = ? AND active = 1', (values['recipient'],)).fetchone():
+                if not (values['kind'] == 'delivery' and values['recipient'] == 'client') and not db.execute('SELECT 1 FROM persons WHERE id = ? AND active = 1', (values['recipient'],)).fetchone():
                     return Refused(rule='recipient', reason='Active recipient Person not found')
                 if self.specs is None:
                     return Refused(rule='spec', reason='Package Spec reader is required')
@@ -138,6 +144,92 @@ class PackageStore:
             if verb == 'handoff' and plan['missing']:
                 summary += '; missing: ' + ', '.join(plan['missing'])
             db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (project, package, now, actor, 'package_' + verb, summary, cursor.lastrowid))
+            db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
+            db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(result)))
+            return Done(result=result)
+
+    def deliver(self, values: dict[str, Any], *, actor: str, idempotency_key: str | None = None, confirm: str | None = None) -> Outcome:
+        from datetime import datetime
+        from t6.domain.studio_time import MANILA
+        from t6.registry.core import normalize_page_id
+
+        if values.get('carrier') not in ('drive', 'frameio-share', 'transfer-link'):
+            return Refused(rule='carrier', reason='Unknown carrier')
+        if not values.get('deliverable'):
+            return Refused(rule='deliverable', reason='Deliverable is required')
+        if (idempotency_key is not None and not idempotency_key.strip()) or (confirm and not idempotency_key):
+            return Refused(rule='idempotency_key', reason='A nonblank idempotency key is required')
+        key = idempotency_key or secrets.token_hex(16)
+        inputs = {**values, 'idempotency_key': key}
+        verb = 'deliverable deliver'
+        fingerprint = json.dumps({'verb': verb, 'actor': actor, **inputs}, sort_keys=True, separators=(',', ':'))
+        nonce = self.tokens.verify(confirm, verb, actor, inputs) if confirm else None
+        if isinstance(nonce, Refused):
+            return nonce
+        with self.registry._transaction() as db:
+            if nonce and db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce=?', (nonce,)).fetchone():
+                return Refused(rule='token_used', reason='Preview token has already been used')
+            previous = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key=?', (key,)).fetchone()
+            if previous:
+                if previous[0] != fingerprint:
+                    return Refused(rule='idempotency_key', reason='Idempotency key was used for a different request')
+                if nonce:
+                    db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
+                    return Done(result=json.loads(previous[1]))
+                return self.tokens.create(verb, actor, inputs, json.loads(previous[1]))
+            if not db.execute('SELECT 1 FROM persons WHERE id=? AND active=1', (actor,)).fetchone():
+                return Refused(rule='person', reason='An active Person is required')
+            ref = values['deliverable']
+            row = db.execute("SELECT id, project_id FROM deliverables WHERE id=? OR id=(SELECT project_id FROM bindings WHERE system='notion' AND page_id=?)", (ref, normalize_page_id(ref))).fetchone()
+            if not row:
+                return Refused(rule='deliverable', reason='Deliverable not found')
+            prepared = db.execute("SELECT * FROM packages WHERE deliverable_id=? AND kind='delivery' AND recipient='client' AND state='prepared' ORDER BY rowid", (row[0],)).fetchall()
+            if len(prepared) > 1:
+                return Ambiguous(candidates=[p[0] for p in prepared])
+            record = self._record(prepared[0]) if prepared else None
+            if record:
+                spec, checklist = record['spec'], record['checklist']
+            else:
+                if self.specs is None:
+                    return Refused(rule='spec', reason='Package Spec reader is required')
+                try:
+                    specs = self.specs.find('delivery', None)
+                except ValueError as error:
+                    return Refused(rule='spec', reason=str(error))
+                if not specs:
+                    return Refused(rule='spec', reason='Package Spec not found')
+                if len(specs) > 1:
+                    return Ambiguous(candidates=[s.page_id for s in specs])
+                spec = asdict(specs[0])
+                checklist = [{**asdict(item), 'checked_by': None, 'checked_at': None} for item in specs[0].items]
+            blocking = [i['text'] for i in checklist if i['blocking'] and i['checked_at'] is None]
+            if blocking:
+                return Refused(rule='checklist', reason='Missing blocking items: ' + ', '.join(blocking))
+            snapshot = json.dumps([row[0], row[1], record['id'] if record else None, record['revision'] if record else None, spec, checklist], sort_keys=True)
+            missing = [i['text'] for i in checklist if i['checked_at'] is None]
+            plan = {'action': 'deliver', 'deliverable_id': row[0], 'project_id': row[1], 'carrier': values['carrier'], 'ref': values.get('ref'), 'missing': missing, 'idempotency_key': key}
+            if not nonce:
+                preview = self.tokens.create(verb, actor, inputs, plan)
+                preview_nonce = self.tokens.verify(preview.token, verb, actor, inputs)
+                db.execute('INSERT INTO jo_state_previews VALUES (?, ?)', (preview_nonce, snapshot))
+                return preview
+            observed = db.execute('SELECT state FROM jo_state_previews WHERE nonce=?', (nonce,)).fetchone()
+            if not observed or observed[0] != snapshot:
+                return Refused(rule='package_changed', reason='Package or spec changed since preview; preview again')
+            now = self.registry._clock()
+            package = record['id'] if record else str(T6Id.mint(EntityKind.PACKAGE))
+            if record:
+                db.execute("UPDATE packages SET state='handed_off', revision=revision+1 WHERE id=?", (package,))
+            else:
+                db.execute('INSERT INTO packages VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, 1)', (package, row[0], 'delivery', actor, 'client', 'client', json.dumps(spec), json.dumps(checklist), 'handed_off'))
+            db.execute('INSERT INTO delivery_carriers VALUES (?, ?, ?)', (package, values['carrier'], values.get('ref')))
+            milestone = str(T6Id.mint(EntityKind.MILESTONE))
+            day = datetime.fromtimestamp(now, MANILA).date().isoformat()
+            db.execute('INSERT INTO milestones VALUES (?, ?, ?, ?, ?, ?)', (milestone, row[0], 'delivered', day, actor, now))
+            result = {**plan, 'package_id': package, 'milestone_id': milestone, 'on': day}
+            cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)', (package, 'deliverable_deliver', actor, now, json.dumps(record), json.dumps(result)))
+            summary = 'Deliverable delivered' + ('; missing: ' + ', '.join(missing) if missing else '')
+            db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (row[1], package, now, actor, 'deliverable_deliver', summary, cursor.lastrowid))
             db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
             db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(result)))
             return Done(result=result)
