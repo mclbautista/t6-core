@@ -20,12 +20,14 @@ from t6.verbs import VERBS, Done, Refused, catalogue, invoke
 
 class VerbAPI:
     def __init__(self, people: People, queue: Any, secrets: Mapping[str, str],
-                 open_notion: Callable[..., Any], tap_app: WebhookApp | None = None) -> None:
+                 open_notion: Callable[..., Any], tap_app: WebhookApp | None = None,
+                 *, llm_service: Any = None) -> None:
         if any(not secret or not (identity.startswith('t6n_') or identity in SERVICES)
                for secret, identity in secrets.items()):
             raise ValueError('Each API secret must bind to a Person or named service')
         self.people, self.queue, self.secrets, self.open_notion = people, queue, dict(secrets), open_notion
         self.tap_app = tap_app
+        self.llm_service = llm_service
         self.routes = {f'/v1/{v.noun}' + (f'/{v.verb}' if v.verb else ''): v for v in VERBS}
 
     def __call__(self, request: Request) -> Response:
@@ -83,7 +85,10 @@ class VerbAPI:
             inputs = entry.input_model.model_validate(data)
         except ValidationError as error:
             return Response(422, {'errors': cast(JsonValue, error.errors(include_url=False, include_context=False, include_input=False))})
-        if entry.handler is None:
+        if (entry.noun, entry.verb) == ('llm', 'run'):
+            refusal = self.people.authorize(actor, entry.role)
+            outcome = refusal or (self.llm_service.run(inputs, actor=actor, registry=self.people.registry) if self.llm_service else Refused(rule='config', reason='LLM service is not configured'))
+        elif entry.handler is None:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._legacy_read(entry.noun, entry.verb, inputs)
         else:
