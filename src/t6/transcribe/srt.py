@@ -2,6 +2,8 @@
 
 from typing import Any
 
+from .speakers import SpeakerMap, speaker_name
+
 
 def _offset_seconds(offset: float | str, fps: float) -> float:
     if isinstance(offset, str):
@@ -25,7 +27,10 @@ def _timestamp(seconds: float) -> str:
     return f"{hours:02}:{minutes:02}:{secs:02},{milliseconds:03}"
 
 
-def render_srt(transcript: dict[str, Any], *, offset: float | str = 0, fps: float = 24) -> str:
+def render_srt(
+    transcript: dict[str, Any], *, offset: float | str = 0, fps: float = 24,
+    speaker_map: SpeakerMap | None = None, source: str = "",
+) -> str:
     """Render timed words, wrapping at 42 characters and splitting by speaker.
 
     Timecodes are non-drop-frame and use 24 fps unless specified. Words with
@@ -42,7 +47,8 @@ def render_srt(transcript: dict[str, Any], *, offset: float | str = 0, fps: floa
 
     def flush() -> None:
         if lines:
-            cues.append((start, end, "\n".join(lines)))
+            name = speaker_name(speaker, source, speaker_map) if speaker_map is not None else ""
+            cues.append((start, end, (f"{name}:\n" if name else "") + "\n".join(lines)))
             lines.clear()
 
     for word in transcript.get("words", []):

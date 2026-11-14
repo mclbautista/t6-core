@@ -79,3 +79,50 @@ class SrtTests(unittest.TestCase):
         self.assertIn("01:00:02,500 --> 01:00:03,500", shifted)
         self.assertEqual(shifted, render_srt(data, offset=3600.5))
         self.assertEqual(render_srt({"words": []}), "")
+
+
+class TranscriptRenderTests(unittest.TestCase):
+    def test_map_and_docx_and_srt_agree(self) -> None:
+        import io
+        import zipfile
+        from xml.etree import ElementTree as ET
+
+        from t6.transcribe import parse_speaker_map, render_docx
+
+        mapping = parse_speaker_map(
+            "source,speaker,name\n,speaker_0,Alice\nclip.wav,speaker_0,Alicia\n,speaker_1,Bob\n"
+        )
+        data = {"words": [
+            {"type": "word", "text": "Hello & hi", "start": 0, "end": 1, "speaker_id": "speaker_0"},
+            {"type": "spacing", "text": " "},
+            {"type": "word", "text": "there", "start": 1, "end": 2, "speaker_id": "speaker_0"},
+            {"type": "word", "text": "Yes", "start": 2, "end": 3, "speaker_id": "speaker_1"},
+            {"type": "word", "text": "Bye", "start": 3, "end": 4, "speaker_id": "speaker_2"},
+        ]}
+        docx = render_docx(data, source="clip.wav", speaker_map=mapping, offset="01:00:00:12")
+        with zipfile.ZipFile(io.BytesIO(docx)) as archive:
+            self.assertIsNone(archive.testzip())
+            root = ET.fromstring(archive.read("word/document.xml"))
+        ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+        paragraphs = ["".join(p.itertext()) for p in root.findall(".//w:p", ns)]
+        self.assertEqual(paragraphs, [
+            "Alicia [01:00:00,500] Hello & hi there",
+            "Bob [01:00:02,500] Yes",
+            "speaker_2 [01:00:03,500] Bye",
+        ])
+        srt = render_srt(data, source="clip.wav", speaker_map=mapping)
+        for name in ("Alicia", "Bob", "speaker_2"):
+            self.assertIn(f"\n{name}:\n", srt)
+        self.assertIn("Alice:", render_srt(data, source="other.wav", speaker_map=mapping))
+
+    def test_invalid_speaker_maps_report_lines(self) -> None:
+        from t6.transcribe import parse_speaker_map
+
+        for content, line in (
+            ("source,speaker\n", 1),
+            ("source,speaker,name\n,speaker_0,A\n,speaker_0,B\n", 3),
+            ("source,speaker,name\n,speaker_0\n", 2),
+            ('source,speaker,name\n,speaker_0,"unterminated\n', 2),
+        ):
+            with self.subTest(content=content), self.assertRaisesRegex(ValueError, f"line {line}"):
+                parse_speaker_map(content)
