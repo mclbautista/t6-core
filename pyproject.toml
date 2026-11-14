@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "t6"
-version = "0.3.6"
+version = "0.3.7"
 description = "Shared T6 domain and tool adapters"
 readme = "README.md"
 requires-python = ">=3.11"
