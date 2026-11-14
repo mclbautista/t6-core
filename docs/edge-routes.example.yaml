@@ -1,0 +1,7 @@
+# Configure the provider to send each subscription to its matching path.
+- {path: /events/frameio/comments, verifier: frameio_v0, secret_env: FRAMEIO_WEBHOOK_SECRET, job_kind: frameio.comment.created, queue: frameio}
+- {path: /events/frameio/versions, verifier: frameio_v0, secret_env: FRAMEIO_WEBHOOK_SECRET, job_kind: frameio.file.versioned, queue: frameio}
+- {path: /events/frameio/uploads, verifier: frameio_v0, secret_env: FRAMEIO_WEBHOOK_SECRET, job_kind: frameio.upload, queue: frameio}
+- {path: /events/frameio/shares, verifier: frameio_v0, secret_env: FRAMEIO_WEBHOOK_SECRET, job_kind: frameio.share.viewed, queue: frameio}
+- {path: /events/notion/pages, verifier: notion, secret_env: NOTION_WEBHOOK_TOKEN, job_kind: notion.page.event, queue: main}
+- {path: /events/google/calendar, verifier: google_channel, secret_env: GOOGLE_CHANNEL_TOKEN, job_kind: google.calendar.notification, queue: main}

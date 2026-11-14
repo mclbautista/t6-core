@@ -42,6 +42,7 @@ class InstallationTests(unittest.TestCase):
                         set(installed["dependencies"]),
                         {
                             "httpx<1,>=0.27; extra == 'notion'",
+                            "pyyaml<7,>=6; extra == 'server'",
                             "pydantic<3,>=2.7; extra == 'llm'",
                             "psycopg[binary]<4,>=3.2; extra == 'resolve'",
                             "openpyxl<4,>=3.1; extra == 'drives'",

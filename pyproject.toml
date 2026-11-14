@@ -21,7 +21,7 @@ resolve = ["psycopg[binary]>=3.2,<4"]
 instagantt = []
 lookup = ["rapidfuzz>=3.9,<4"]
 drives = ["openpyxl>=3.1,<4"]
-server = []
+server = ["PyYAML>=6,<7"]
 worker = []
 
 [project.scripts]
@@ -37,6 +37,8 @@ dev = [
     "openpyxl>=3.1,<4",
     "psycopg[binary]>=3.2,<4",
     "pydantic>=2.7,<3",
+    "PyYAML>=6,<7",
+    "types-PyYAML>=6,<7",
     "rapidfuzz>=3.9,<4",
     "types-openpyxl>=3.1,<4",
 ]
