@@ -1536,6 +1536,23 @@ path and names checks. Other public T6 repositories turn the checks on by
 calling the reusable workflow; see the header of
 `.github/workflows/public-repo-safety.yml`.
 
+The `Privacy contract` CI job runs the privacy and LLM boundary tests and
+requires the names check on pushes and pull requests from this repository. The
+check fails if the Actions secret is empty. Fork pull requests skip the denylist
+scan and print a notice; this repository does not accept fork pull requests.
+Configure the job as a required status check in branch protection. Its denylist
+is written from the Actions secret to a temporary file outside the checkout.
+Never commit the denylist; keep local copies outside the repository, for example:
+
+```sh
+T6_NAMES_DENYLIST_FILE=~/.t6-names python3 scripts/public_repo_safety.py --skip-secrets
+```
+
+The names check covers all tracked text files, including case files. It warns
+and skips locally when no denylist is configured, but fails in CI when required
+and missing. JSON strings are checked after decoding as well as in raw text.
+Real cases also require masking and human review before entering a repository.
+
 ## Development
 
 This is a single-package uv workspace. Install uv, then run:
