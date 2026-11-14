@@ -289,12 +289,15 @@ def _database_paths() -> dict[str, Path]:
 
 
 def _check_consumer(args: argparse.Namespace) -> int:
-    from t6.consumer import check
+    from t6.consumer import apply_allowlist, check
 
     if not args.path.exists():
         return _fail(f"{args.path} does not exist")
-    findings = check(args.path)
-    print(json.dumps({"findings": [finding.as_json() for finding in findings]}, indent=2))
+    findings, exceptions = apply_allowlist(args.path, check(args.path))
+    report: dict[str, object] = {"findings": [finding.as_json() for finding in findings]}
+    if exceptions:
+        report["exceptions"] = exceptions
+    print(json.dumps(report, indent=2))
     return 1 if findings else 0
 
 
@@ -462,7 +465,7 @@ def main(
     dry_run.add_argument("--projects", type=Path, metavar="FILE", help="JSON list of {\"page_id\", \"name\"} to resolve Project names against; without it every Project is unresolved")
     consumer = commands.add_parser(
         "check-consumer",
-        help="Fail when app code calls Notion, OpenRouter, DeepSeek or Frame.io directly, or imports t6.notion.generated",
+        help="Check app imports, credentials and direct calls against ADR 0002",
         description=(
             "Scans the Python files under PATH. Prints {\"findings\": [{file, line, rule, detail}]} and exits 1 "
             "if there are any. Run it in an app's CI (see the README)."
