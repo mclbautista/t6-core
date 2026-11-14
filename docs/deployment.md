@@ -137,3 +137,5 @@ Jobs are deduplicated by route and provider event ID (or body hash when absent);
 Google uses channel ID and message number. The Notion verification-token
 handshake is acknowledged without queuing, as in full mode. Full mode remains
 the default.
+
+Workers can also poll internal jobs by setting `T6_DATABASE` to the local t6 SQLite database path. The worker polls that job table and its configured VPS queue in turn; the database must be shared with internal job submitters. Back up the database before upgrading: migration 3 is forward-only.

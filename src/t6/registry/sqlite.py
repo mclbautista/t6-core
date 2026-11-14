@@ -119,6 +119,16 @@ _MIGRATIONS = (
     INSERT INTO activity (project_id, at, actor, action, summary, audit_id)
         SELECT project_id, at, actor, action, REPLACE(action, '_', ' '), id FROM audit;
     CREATE INDEX activity_project_order ON activity (project_id, at DESC, id DESC)"""),
+    (4, True, """
+        CREATE TABLE internal_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, queue TEXT NOT NULL, kind TEXT NOT NULL,
+            dedupe_key TEXT NOT NULL, payload TEXT NOT NULL, run_at REAL NOT NULL,
+            state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+            lease_token TEXT, lease_until REAL, result TEXT, created_at REAL NOT NULL,
+            UNIQUE (kind, dedupe_key)
+        );
+        CREATE INDEX internal_jobs_claimable ON internal_jobs (queue, state, run_at)
+    """),
 )
 
 
