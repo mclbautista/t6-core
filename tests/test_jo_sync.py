@@ -1,4 +1,6 @@
 """JO outbox reaches fake Notion through the main worker."""
+import json
+
 from test_registry_sync import SyncTestCase
 from test_registry_service import WORKER_SECRET
 from test_server_app import InProcess
@@ -12,6 +14,38 @@ from t6.worker.registry import RegistryClient
 
 
 class JoSyncTests(SyncTestCase):
+    def test_state_changes_project_status_once_per_intent(self) -> None:
+        from t6.notion.jo_projection import JobOrderProjection
+        from t6.notion.generated import JobOrdersRow
+        project_page = self.page()
+        self.new('SHOW', page=project_page)
+        self.drain()
+        self.notion.add_snapshot_data_source('job-orders', 'job_orders')
+        self.notion.add_property('job-orders', 'T6 ID', 'rich_text')
+        self.notion.add_property('job-orders', 'T6 Notes', 'rich_text')
+        store = JobOrderStore(self.registry, PreviewTokens('secret'))
+        values = {'fields': {'project_id': project_page, 'name': 'JO'}}
+        preview = store.write('raise', values, actor='alice', idempotency_key='raise')
+        assert isinstance(preview, Preview)
+        made = store.write('raise', values, actor='alice', idempotency_key='raise', confirm=preview.token)
+        assert isinstance(made, Done)
+        jo = made.result['jo_id']
+        transport = InProcess(self.app)
+        worker = Worker(QueueClient(transport, WORKER_SECRET), 'main', JobOrderProjection(self.client, RegistryClient(transport, WORKER_SECRET), 'job-orders').handlers())
+        self.assertTrue(worker.run_once())
+        for verb, extra, expected in [('submit', {}, 'In progress'), ('block', {'reason': 'waiting'}, 'In progress'), ('unblock', {}, 'In progress'), ('close', {}, 'Done')]:
+            data = {'jo': jo, **extra}
+            preview = store.write(verb, data, actor='alice', idempotency_key=verb)
+            assert isinstance(preview, Preview)
+            self.assertIsInstance(store.write(verb, data, actor='alice', idempotency_key=verb, confirm=preview.token), Done)
+            self.start()
+            self.assertTrue(worker.run_once())
+            record = store.get(jo)
+            page = self.notion.page(record['bindings'][0]['page_id'])
+            self.assertEqual(JobOrdersRow.from_page(page).status, expected)
+        status_writes = [r for r in self.notion.requests if r.method == 'PATCH' and 'v%3Fln' in json.loads(r.content).get('properties', {})]
+        self.assertEqual(len(status_writes), 4)
+
     def test_raise_outbox_creates_one_page_and_worker_retry_does_not_duplicate(self) -> None:
         from t6.notion.jo_projection import JobOrderProjection
         project_page = self.page()

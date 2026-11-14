@@ -192,6 +192,14 @@ _MIGRATIONS = (
             intent_id INTEGER PRIMARY KEY REFERENCES sync_intents(id), operation TEXT NOT NULL, payload TEXT NOT NULL, started INTEGER NOT NULL DEFAULT 0
         )
     """),
+    (11, False, """
+        CREATE TABLE jo_state (
+            job_order_id TEXT PRIMARY KEY REFERENCES job_orders(id),
+            status TEXT NOT NULL, blocked INTEGER NOT NULL DEFAULT 0,
+            block_reason TEXT, delayed_until TEXT, delay_reason TEXT
+        );
+        CREATE TABLE jo_state_previews (nonce TEXT PRIMARY KEY, state TEXT NOT NULL)
+    """),
 )
 
 
@@ -533,7 +541,7 @@ class SqliteProjectRegistry:
 
     def jo_sync_state(self, intent_id: int) -> dict[str, Any] | None:
         with self._transaction() as db:
-            row = db.execute("SELECT s.project_id, s.revision, s.done_at, j.operation, j.started, o.project_id, o.assignee_id, o.fields FROM sync_intents s JOIN jo_sync_intents j ON j.intent_id = s.id JOIN job_orders o ON o.id = s.project_id WHERE s.id = ?", (intent_id,)).fetchone()
+            row = db.execute("SELECT s.project_id, s.revision, s.done_at, j.operation, j.started, o.project_id, o.assignee_id, o.fields, j.payload FROM sync_intents s JOIN jo_sync_intents j ON j.intent_id = s.id JOIN job_orders o ON o.id = s.project_id WHERE s.id = ?", (intent_id,)).fetchone()
             if not row:
                 return None
             def page(entity_id: str | None) -> str | None:
@@ -542,7 +550,7 @@ class SqliteProjectRegistry:
             notes = [n[0] for n in db.execute('SELECT text FROM job_order_notes WHERE job_order_id = ? ORDER BY id', (row[0],)).fetchall()]
             return {'jo_id': row[0], 'revision': row[1], 'done': row[2] is not None, 'operation': row[3],
                     'started': bool(row[4]), 'page_id': page(row[0]), 'project_page': page(row[5]),
-                    'assignee_id': row[6], 'assignee_page': page(row[6]), 'fields': json.loads(row[7]), 'notes': notes}
+                    'assignee_id': row[6], 'assignee_page': page(row[6]), 'fields': json.loads(row[7]), 'notes': notes, 'payload': json.loads(row[8])}
 
     def begin_jo_create(self, intent_id: int) -> bool:
         with self._transaction() as db:

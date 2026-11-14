@@ -173,7 +173,7 @@ def _get(client: NotionClient, data_source_id: str, ref: str) -> JSON:
         fields = _order(orders.get(page)) if page else dict(record["fields"])
         fields["notion_notes"] = fields.get("notes")
         fields.update(id=record["id"], t6_id=record["id"], page_id=page,
-                      assignee_id=record["assignee_id"], assignee=people.get(record["assignee_id"]) if record["assignee_id"] else None, notes=record["notes"])
+                      state=record["state"], history=record["history"], assignee_id=record["assignee_id"], assignee=people.get(record["assignee_id"]) if record["assignee_id"] else None, notes=record["notes"])
         return fields
     if parse_telegram_key(ref) is not None:
         found = orders.find_by_telegram_key(ref)

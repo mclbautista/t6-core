@@ -69,6 +69,8 @@ class JobOrderProjection:
                 self.registry.report_jo_sync(intent_id, page_id=page, error=str(failure))
                 raise Refused(f'Notion body needs review: {failure}')
         properties: dict[str, Any] = {'T6 ID': {'rich_text': [{'text': {'content': jo_id}}]}}
+        if 'status' in state['payload']:
+            properties.update(JobOrdersRow.to_properties(status=state['payload']['status']))
         if state['assignee_id']:
             if not state['assignee_page']:
                 raise ValueError('Assignee has no active Contacts page')
