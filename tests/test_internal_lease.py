@@ -27,10 +27,10 @@ class InternalLeaseTests(unittest.TestCase):
             queue = InternalJobQueue(Path(directory) / "db")
             submitted = queue.submit("main", "x", "one")
             def handler(job: WorkerJob) -> str:
-                time.sleep(0.3)
-                self.assertIsNone(queue.claim("main", 0.15))
+                time.sleep(2.5)
+                self.assertIsNone(queue.claim("main", 1.0))
                 return "done"
-            worker = Worker(InternalQueueClient(queue), "main", {"x": handler}, lease_seconds=0.15)
+            worker = Worker(InternalQueueClient(queue), "main", {"x": handler}, lease_seconds=1.0)
             self.assertTrue(worker.run_once())
             result = queue.result(submitted.job_id, "main")
             assert result is not None

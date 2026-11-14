@@ -21,6 +21,7 @@ lookup = ["rapidfuzz>=3.9,<4"]
 drives = ["openpyxl>=3.1,<4"]
 server = ["PyYAML>=6,<7"]
 worker = []
+transcribe = ["elevenlabs>=2.78.0,<3", "httpx>=0.27,<1"]
 
 [project.scripts]
 t6 = "t6.cli:main"
@@ -28,6 +29,7 @@ t6 = "t6.cli:main"
 [dependency-groups]
 dev = [
     "deptry>=0.20,<1",
+    "elevenlabs>=2.78.0,<3",
     "hatchling>=1.26,<2",
     "httpx>=0.27,<1",
     "import-linter>=2.1,<3",
