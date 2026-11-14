@@ -80,6 +80,13 @@ class EdgeTests(ServerTestCase):
         app = WebhookApp(self.queue, replace(self.app._config, edge_routes=routes), self.clock, self.tokens.append)
         self.assertEqual(app.public(Request("POST", "/x", {}, b'{"verification_token":"new"}')).status, 200)
         self.assertEqual(self.tokens[-1], "new")
+        signed = Request("POST", "/x", {"X-Notion-Signature": "sha256=00"}, b'{"verification_token":"signed"}')
+        self.assertEqual(app.public(signed).status, 200)
+        self.assertEqual(self.tokens[-1], "signed")
+        configured = WebhookApp(self.queue, replace(self.app._config, edge_routes=load_routes(str(self.file), {"MISSING": "secret"})), self.clock, self.tokens.append)
+        self.assertEqual(configured.public(signed).status, 401)
+        self.assertEqual(self.tokens, ["new", "signed"])
+        self.assertEqual(self.pending(), 0)
         self.assertNotEqual(app.public(Request("POST", "/x", {}, b"{}")).status, 200)
         self.file.write_text("- {path: /x, verifier: frameio_v0, secret_env: MISSING, job_kind: x, queue: main}")
         with self.assertRaisesRegex(ValueError, "MISSING"):

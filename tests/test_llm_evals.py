@@ -36,7 +36,7 @@ class EvalTypesTests(unittest.TestCase):
     def test_run_record_file_round_trips_with_required_fields(self) -> None:
         data: dict[str, Any] = {
             "model_id": "model-1", "provider": "provider-1", "prompt_hash": "abc",
-            "schema_hash": "def", "t6_version": "0.3.4", "date": "2026-11-14",
+            "schema_hash": "def", "t6_version": "0.4.0", "date": "2026-11-14",
             "results": [{"case_id": "blocker-1", "passed": False, "reason": "no blocker"}],
         }
         record = RunRecord.model_validate(data)
