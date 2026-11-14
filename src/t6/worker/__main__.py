@@ -252,10 +252,15 @@ def main(
         for signum in (signal.SIGTERM, signal.SIGINT):
             signal.signal(signum, lambda _signum, _frame: stop.set())
     client = QueueClient(transport, settings.secret)
+    internal_client = None
+    if environ.get("T6_DATABASE"):
+        from t6.worker.internal_queue import InternalJobQueue, InternalQueueClient
+
+        internal_client = InternalQueueClient(InternalJobQueue(environ["T6_DATABASE"]))
     if read_api is not None:
         threading.Thread(target=read_api.serve_forever, daemon=True).start()
     try:
-        serve(Worker(client, settings.queue, queue_handlers), stop, settings.poll_seconds, tick)
+        serve(Worker(client, settings.queue, queue_handlers, internal_client=internal_client), stop, settings.poll_seconds, tick)
     finally:
         if read_api is not None:
             read_api.shutdown()

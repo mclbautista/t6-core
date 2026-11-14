@@ -31,7 +31,7 @@ class MigrationTests(unittest.TestCase):
             registry = SqliteProjectRegistry(path)
             self.assertEqual(registry.get_by_page('old').id, 't6p_0123456789abcdef01234567')
             with sqlite3.connect(path) as db:
-                self.assertEqual(db.execute('SELECT version, forward_only FROM schema_version ORDER BY version').fetchall(), [(1, 0), (2, 1)])
+                self.assertEqual(db.execute('SELECT version, forward_only FROM schema_version ORDER BY version').fetchall(), [(1, 0), (2, 1), (3, 1)])
             SqliteProjectRegistry(path)
 
     def test_version_one_upgrades(self):
@@ -43,7 +43,7 @@ class MigrationTests(unittest.TestCase):
                 db.execute('INSERT INTO schema_version VALUES (1, 0)')
             SqliteProjectRegistry(path)
             with sqlite3.connect(path) as db:
-                self.assertEqual(db.execute('SELECT version FROM schema_version ORDER BY version').fetchall(), [(1,), (2,)])
+                self.assertEqual(db.execute('SELECT version FROM schema_version ORDER BY version').fetchall(), [(1,), (2,), (3,)])
                 self.assertIn('entity_id', [row[1] for row in db.execute('PRAGMA table_info(bindings)')])
 
     def test_non_project_bindings_keep_legacy_pages(self):

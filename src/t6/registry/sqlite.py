@@ -110,6 +110,16 @@ CREATE TABLE IF NOT EXISTS requests (
 _MIGRATIONS = (
     (1, False, _SCHEMA),
     (2, True, "ALTER TABLE bindings RENAME COLUMN project_id TO entity_id"),
+    (3, True, """
+        CREATE TABLE internal_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, queue TEXT NOT NULL, kind TEXT NOT NULL,
+            dedupe_key TEXT NOT NULL, payload TEXT NOT NULL, run_at REAL NOT NULL,
+            state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+            lease_token TEXT, lease_until REAL, result TEXT, created_at REAL NOT NULL,
+            UNIQUE (kind, dedupe_key)
+        );
+        CREATE INDEX internal_jobs_claimable ON internal_jobs (queue, state, run_at)
+    """),
 )
 
 
