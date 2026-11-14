@@ -108,12 +108,12 @@ class NotionEdits:
             if row is not None and old == status:
                 return {'outcome': 'unchanged'}
         normalized = ''.join(c for c in (status or '').lower() if c.isalnum())
-        verb = ('resume' if normalized in ('inprogress', 'inprogresstvc', 'airing') else 'hold' if normalized in ('standby', 'archiving') else None) if field == 'status' else None
+        verb = ('resume' if normalized in ('inprogress', 'inprogresstvc', 'airing') else 'hold' if normalized in ('standby', 'archiving') else 'archive' if normalized == 'archived' else None) if field == 'status' else None
         result: Any = Refused(rule='project_' + field, reason=f'No matching Project {property_name} verb')
         if verb:
             writes = ProjectWrites(self.registry, PreviewTokens('internal-notion-reconciliation'))
             key = 'notion:' + event + ':project-status'
-            result = People(self.registry, writes.tokens).authorize(actor, 'operator') if person else Refused(rule='permission', reason='Notion editor is not bound to a Person')
+            result = People(self.registry, writes.tokens).authorize(actor, 'coordinator' if verb == 'archive' else 'operator') if person else Refused(rule='permission', reason='Notion editor is not bound to a Person')
             reason = f'set in Notion by {editor}' if verb == 'hold' else None
             if result is None:
                 result = writes.run(verb, project.id, reason, actor=actor, idempotency_key=key, notion_editor=editor)

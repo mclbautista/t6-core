@@ -72,6 +72,36 @@ class ProjectWritesTests(unittest.TestCase):
         self.registry.report_sync(self.project, 99, ok=True)
         self.assertEqual(len(self.registry.pending_sync()), 2)
 
+    def test_archive_is_idempotent_blocks_jo_and_can_resume(self) -> None:
+        from t6.job_order import JobOrderStore
+        before = len(self.registry.activity(self.project))
+        for key in ('archive-one', 'archive-two'):
+            preview = self.call('archive', key)
+            assert isinstance(preview, Preview)
+            self.assertIsInstance(self.call('archive', key, preview.token), Done)
+        self.assertEqual(len(self.registry.activity(self.project)), before + 1)
+        orders = JobOrderStore(self.registry, self.tokens)
+        refused = orders.write('raise', {'fields': {'project_id': self.project}}, actor='alice')
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'project_archived')
+        preview = self.call('resume', 'restore')
+        assert isinstance(preview, Preview)
+        self.assertIsInstance(self.call('resume', 'restore', preview.token), Done)
+        self.assertIsInstance(orders.write('raise', {'fields': {'project_id': self.project}}, actor='alice'), Preview)
+
+    def test_project_role_assignment_is_visible_and_audited(self) -> None:
+        from t6.person import People
+        people = People(self.registry, self.tokens)
+        values = {'person_id': 'test-actor', 'project': self.project, 'role': 'editor'}
+        for verb in ('assign', 'unassign'):
+            preview = people.write(verb, values, actor='test-actor', idempotency_key=verb)
+            assert isinstance(preview, Preview)
+            self.assertIsInstance(people.write(verb, values, actor='test-actor', idempotency_key=verb, confirm=preview.token), Done)
+            person = people.get('test-actor')
+            assert person is not None
+            self.assertEqual(person['project_roles'], [{'project_id': self.project, 'role': 'editor'}] if verb == 'assign' else [])
+        self.assertEqual([a.action for a in self.registry.activity(self.project)][:2], ['person_unassign', 'person_assign'])
+
     def test_expired_and_changed_input_or_actor_are_refused(self) -> None:
         preview = self.call('hold', 'key')
         assert isinstance(preview, Preview)

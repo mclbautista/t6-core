@@ -203,6 +203,8 @@ _MIGRATIONS = (
         page_id TEXT NOT NULL, property TEXT NOT NULL, value TEXT NOT NULL,
         PRIMARY KEY (page_id, property)
     )"""),
+    (13, False, """CREATE TABLE project_archives (project_id TEXT PRIMARY KEY REFERENCES projects(id));
+        CREATE TABLE project_person_roles (project_id TEXT NOT NULL REFERENCES projects(id), person_id TEXT NOT NULL REFERENCES persons(id), role TEXT NOT NULL, PRIMARY KEY (project_id, person_id, role))"""),
 )
 
 
@@ -534,8 +536,8 @@ class SqliteProjectRegistry:
 
     def status_sync_state(self, intent_id: int) -> dict[str, Any] | None:
         with self._transaction() as db:
-            row = db.execute("SELECT s.project_id, s.done_at, i.held, h.held, b.page_id FROM sync_intents s JOIN status_sync_intents i ON i.intent_id=s.id LEFT JOIN project_hold_state h ON h.project_id=s.project_id LEFT JOIN bindings b ON b.project_id=s.project_id AND b.system='notion' AND b.active=1 WHERE s.id=?", (intent_id,)).fetchone()
-            return None if row is None else {'project_id': row[0], 'done': row[1] is not None, 'held': bool(row[2]), 'current_held': bool(row[3]), 'page_id': row[4]}
+            row = db.execute("SELECT s.project_id, s.done_at, i.held, h.held, b.page_id, EXISTS(SELECT 1 FROM project_archives a WHERE a.project_id=s.project_id) FROM sync_intents s JOIN status_sync_intents i ON i.intent_id=s.id LEFT JOIN project_hold_state h ON h.project_id=s.project_id LEFT JOIN bindings b ON b.project_id=s.project_id AND b.system='notion' AND b.active=1 WHERE s.id=?", (intent_id,)).fetchone()
+            return None if row is None else {'project_id': row[0], 'done': row[1] is not None, 'held': row[2] if row[2] == 2 else bool(row[2]), 'current_held': 2 if row[5] else bool(row[3]), 'page_id': row[4]}
 
     def report_status_sync(self, intent_id: int) -> None:
         with self._transaction() as db:

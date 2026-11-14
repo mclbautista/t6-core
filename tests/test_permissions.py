@@ -68,6 +68,19 @@ class PermissionTests(unittest.TestCase):
         self.assertIsInstance(invoke(entry, inputs, actor='staff', people=self.people, open_notion=lambda: None), Refused)
         self.assertEqual(len(called), 1)
 
+    def test_project_role_verbs_require_coordinator_or_operator(self) -> None:
+        from t6.verbs import PersonProjectRoleInput, ProjectResumeInput, catalogue
+        entries = {(v.noun, v.verb): v for v in VERBS}
+        for name, inputs in ((('person', 'assign'), PersonProjectRoleInput(person_id='staff', project='missing', role='editor')),
+                             (('person', 'unassign'), PersonProjectRoleInput(person_id='staff', project='missing', role='editor')),
+                             (('project', 'archive'), ProjectResumeInput(project='missing'))):
+            denied = invoke(entries[name], inputs, actor='staff', people=self.people, open_notion=lambda: None)
+            assert isinstance(denied, Refused)
+            self.assertEqual(denied.reason, 'needs coordinator')
+            self.assertIn(name, {(v['noun'], v['verb']) for v in catalogue()})
+        self.people.seed_operators([42])
+        self.assertIsNone(self.people.authorize('operator', 'coordinator'))
+
     def test_admin_may_manage_permissions(self) -> None:
         with self.registry._transaction() as db:
             db.execute("INSERT INTO person_permissions VALUES ('operator', 'admin')")

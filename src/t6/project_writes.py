@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import secrets
-from typing import Any
 
 from t6.preview import PreviewTokens
 from t6.registry.sqlite import SqliteProjectRegistry, _audit, _intend_sync
@@ -18,7 +17,7 @@ class ProjectWrites:
     def run(self, verb: str, project: str, reason: str | None, *, actor: str,
             idempotency_key: str | None = None, confirm: str | None = None,
             notion_editor: str | None = None) -> Outcome:
-        if verb not in ('hold', 'resume') or not project.strip() or not actor.strip():
+        if verb not in ('hold', 'resume', 'archive') or not project.strip() or not actor.strip():
             return Refused(rule='input', reason='A verb, Project and actor are required')
         if verb == 'hold' and (reason is None or not reason.strip()):
             return Refused(rule='reason', reason='A reason is required to hold a Project')
@@ -57,13 +56,35 @@ class ProjectWrites:
                 observed = db.execute('SELECT state FROM jo_state_previews WHERE nonce = ?', (nonce,)).fetchone()
                 if not observed or observed[0] != snapshot:
                     return Refused(rule='project_changed', reason='Project changed since preview; preview again')
+            archived = db.execute('SELECT 1 FROM project_archives WHERE project_id = ?', (project_id,)).fetchone() is not None
+            if verb == 'archive':
+                plan = {'project_id': project_id, 'action': verb, 'reason': None, 'idempotency_key': key, 'status': 'archived'}
+                if nonce is None:
+                    preview = self.tokens.create('project archive', actor, inputs, plan)
+                    preview_nonce = self.tokens.verify(preview.token, 'project archive', actor, inputs)
+                    assert isinstance(preview_nonce, str)
+                    db.execute('INSERT INTO jo_state_previews VALUES (?, ?)', (preview_nonce, snapshot))
+                    return preview
+                if not archived:
+                    now = self.registry._clock()
+                    db.execute('INSERT INTO project_archives VALUES (?)', (project_id,))
+                    db.execute('UPDATE projects SET revision = revision + 1 WHERE id = ?', (project_id,))
+                    _audit(db, project_id, 'project_archive', actor, now, {'archived': False}, {'archived': True},
+                           summary=f'Project Status set in Notion by {notion_editor}' if notion_editor is not None else None)
+                    _intend_sync(db, project_id, revision + 1, now)
+                    db.execute('INSERT INTO status_sync_intents VALUES (last_insert_rowid(), 2)')
+                db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
+                db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(plan)))
+                return Done(result=plan)
+            if archived and verb == 'hold':
+                return Refused(rule='project_archived', reason='Project is archived')
             state = db.execute('SELECT held, reason FROM project_hold_state WHERE project_id = ?', (project_id,)).fetchone()
             held, old_reason = (bool(state[0]), state[1]) if state else (False, None)
             desired = verb == 'hold'
-            if previous is None and held == desired:
+            if previous is None and held == desired and not archived:
                 return Refused(rule='project_held' if held else 'project_not_held',
                                reason='Project is already held' if held else 'Project is not held')
-            plan: dict[str, Any] = {'project_id': project_id, 'action': verb, 'reason': reason,
+            plan = {'project_id': project_id, 'action': verb, 'reason': reason,
                                     'idempotency_key': key, 'status': 'held' if desired else 'resumed'}
             if nonce is None:
                 preview = self.tokens.create(f'project {verb}', actor, inputs, plan)
@@ -73,11 +94,13 @@ class ProjectWrites:
                 return preview
             now = self.registry._clock()
             result = dict(plan)
+            if archived and verb == 'resume':
+                db.execute('DELETE FROM project_archives WHERE project_id = ?', (project_id,))
             db.execute('INSERT INTO project_hold_state VALUES (?, ?, ?) ON CONFLICT(project_id) DO UPDATE SET held=excluded.held, reason=excluded.reason',
                        (project_id, int(desired), reason if desired else None))
             db.execute('UPDATE projects SET revision = revision + 1 WHERE id = ?', (project_id,))
             _audit(db, project_id, f'project_{verb}', actor, now,
-                   {'held': held, 'reason': old_reason}, {'held': desired, 'reason': reason if desired else None},
+                   {'held': held, 'reason': old_reason, 'archived': archived}, {'held': desired, 'reason': reason if desired else None, 'archived': False},
                    summary=f'Project Status set in Notion by {notion_editor}' if notion_editor is not None else None)
             _intend_sync(db, project_id, revision + 1, now)
             db.execute('INSERT INTO status_sync_intents VALUES (last_insert_rowid(), ?)', (int(desired),))

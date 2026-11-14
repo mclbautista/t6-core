@@ -196,6 +196,10 @@ def _project_write(inputs: ProjectHoldInput | ProjectResumeInput, verb: str) -> 
         return Refused(rule="registry", reason=str(error))
 
 
+def project_archive(inputs: ProjectResumeInput, open_notion: Callable[..., Any]) -> Outcome:
+    return _project_write(inputs, "archive")
+
+
 def project_hold(inputs: ProjectHoldInput, open_notion: Callable[..., Any]) -> Outcome:
     return _project_write(inputs, "hold")
 
@@ -236,6 +240,29 @@ class PersonShiftInput(BaseModel):
     end: str
     idempotency_key: str | None = None
     confirm: str | None = None
+
+
+class PersonProjectRoleInput(BaseModel):
+    person_id: str
+    project: str
+    role: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+def person_project_role(inputs: PersonProjectRoleInput, open_notion: Callable[..., Any], verb: str) -> Outcome:
+    if not os.environ.get("T6_PREVIEW_SIGNING_KEY"):
+        return Refused(rule="config", reason="Set T6_PREVIEW_SIGNING_KEY")
+    return _people().write(verb, inputs.model_dump(exclude={"confirm", "idempotency_key"}), actor=_actor.get(),
+                           idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
+def person_assign(inputs: PersonProjectRoleInput, open_notion: Callable[..., Any]) -> Outcome:
+    return person_project_role(inputs, open_notion, 'assign')
+
+
+def person_unassign(inputs: PersonProjectRoleInput, open_notion: Callable[..., Any]) -> Outcome:
+    return person_project_role(inputs, open_notion, 'unassign')
 
 
 class PersonClassifyInput(BaseModel):
@@ -342,6 +369,8 @@ class PersonWriteOutput(BaseModel):
     start: str | None = None
     end: str | None = None
     permission: str | None = None
+    project: str | None = None
+    role: str | None = None
 
 
 class FormatFinding(BaseModel):
@@ -608,6 +637,7 @@ class ReadContact(Contact):
     departments: tuple[str, ...] = ()
     roles: tuple[str, ...] = ()
     shift: dict[str, str] | None = None
+    project_roles: tuple[dict[str, str], ...] = ()
     permissions: tuple[str, ...] = ()
     master_brief: bool = False
     active: bool = True
@@ -728,7 +758,10 @@ VERBS = (
     Verb("person", "classify", "Classify a Person", (), PersonClassifyInput, PersonWriteOutput, "operator", "Set the reviewed Person kind.", person_write),
     Verb("person", "grant", "Grant a permission", (), PersonPermissionInput, PersonWriteOutput, "operator", "Only an operator or admin may grant permissions.", person_write),
     Verb("person", "revoke", "Revoke a permission", (), PersonPermissionInput, PersonWriteOutput, "operator", "Only an operator or admin may revoke permissions.", person_write),
+    Verb("person", "assign", "Assign a Project role", (), PersonProjectRoleInput, PersonWriteOutput, "coordinator", "Assign a Person to a Project role.", person_assign),
+    Verb("person", "unassign", "Remove a Project role", (), PersonProjectRoleInput, PersonWriteOutput, "coordinator", "Remove a Person from a Project role.", person_unassign),
     Verb("person", "get", "Get a Person", (), PersonGetInput, PersonGetOutput, "reader", "Read a Person.", person_get),
+    Verb("project", "archive", "Archive a Project", (), ProjectResumeInput, ProjectWriteOutput, "coordinator", "An archived Project cannot accept new work.", project_archive),
     Verb("project", "hold", "Hold a Project", (), ProjectHoldInput, ProjectWriteOutput,
          "operator", "A held Project cannot be held again.", project_hold),
     Verb("project", "resume", "Resume a held Project", (), ProjectResumeInput, ProjectWriteOutput,
@@ -853,7 +886,7 @@ def add_parsers(commands: Any) -> None:
                                     required=field.is_required(), default=field.get_default())
             parser.set_defaults(registered_verb=entry)
             continue
-        if entry.handler in (project_hold, project_resume):
+        if entry.handler in (project_hold, project_resume, project_archive):
             parser.add_argument("project")
             if entry.handler is project_hold:
                 parser.add_argument("--reason", required=True)
@@ -866,6 +899,13 @@ def add_parsers(commands: Any) -> None:
             parser.add_argument("--since", help="ISO 8601 date or timestamp (UTC if no offset)")
             parser.add_argument("--limit", type=int)
             parser.add_argument("--json", action="store_true", help="Print JSON")
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.input_model is PersonProjectRoleInput:
+            for name in ('person_id', 'project', 'role'):
+                parser.add_argument(name)
+            parser.add_argument('--idempotency-key')
+            parser.add_argument('--confirm')
             parser.set_defaults(registered_verb=entry)
             continue
         if entry.input_model is PersonShiftInput:

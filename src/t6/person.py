@@ -36,8 +36,9 @@ class People:
                 return None
             bindings = db.execute("SELECT page_id, active FROM bindings WHERE system = 'notion' AND project_id = ? ORDER BY bound_at", (person_id,)).fetchall()
             shift = db.execute('SELECT pattern, start, end FROM person_shifts WHERE person_id = ?', (person_id,)).fetchone()
+            project_roles = [dict(project_id=r[0], role=r[1]) for r in db.execute('SELECT project_id, role FROM project_person_roles WHERE person_id = ? ORDER BY project_id, role', (person_id,))]
             permissions = [r[0] for r in db.execute("SELECT permission FROM person_permissions WHERE person_id = ? ORDER BY permission", (person_id,))]
-        return dict(shift=dict(pattern=shift[0], start=shift[1], end=shift[2]) if shift else None, permissions=permissions, id=row[0], kind=row[1], departments=json.loads(row[2]), roles=json.loads(row[3]), telegram_id=row[4], master_brief=bool(row[5]), active=bool(row[6]), bindings=[dict(page_id=b[0], active=bool(b[1])) for b in bindings])
+        return dict(project_roles=project_roles, shift=dict(pattern=shift[0], start=shift[1], end=shift[2]) if shift else None, permissions=permissions, id=row[0], kind=row[1], departments=json.loads(row[2]), roles=json.loads(row[3]), telegram_id=row[4], master_brief=bool(row[5]), active=bool(row[6]), bindings=[dict(page_id=b[0], active=bool(b[1])) for b in bindings])
 
     def authorize(self, actor: str, role: str) -> Refused | None:
         with self.registry._transaction() as db:
@@ -46,7 +47,7 @@ class People:
     def _authorize(self, db: Any, actor: str, role: str) -> Refused | None:
         if actor in SERVICES:
             service_grants = self.service_permissions.get(actor, frozenset())
-            if role == 'reader' or role in service_grants or (role == 'operator' and 'admin' in service_grants):
+            if role == 'reader' or role in service_grants or (role in ('operator', 'coordinator') and 'admin' in service_grants) or (role == 'coordinator' and 'operator' in service_grants):
                 return None
             return Refused(rule='permission', reason=f'needs {role}')
         person = db.execute("SELECT kind, active FROM persons WHERE id = ?", (actor,)).fetchone()
@@ -55,7 +56,7 @@ class People:
         if role == 'reader':
             return None if person[0] == 'staff' else Refused(rule='permission', reason='needs active staff Person')
         permissions = {row[0] for row in db.execute('SELECT permission FROM person_permissions WHERE person_id = ?', (actor,))}
-        if role not in permissions and not (role == 'operator' and 'admin' in permissions):
+        if role not in permissions and not (role in ('operator', 'coordinator') and 'admin' in permissions) and not (role == 'coordinator' and 'operator' in permissions):
             return Refused(rule='permission', reason=f'needs {role}')
         return None
 
@@ -182,13 +183,32 @@ class People:
                 if db.execute("SELECT 1 FROM bindings WHERE system = 'notion' AND page_id = ?", (page,)).fetchone():
                     return Refused(rule='binding', reason='Page is already bound')
                 person_id = None
-            elif verb in ('set-telegram', 'rebind', 'shift', 'classify', 'grant', 'revoke'):
+            elif verb in ('set-telegram', 'rebind', 'shift', 'classify', 'grant', 'revoke', 'assign', 'unassign'):
                 person_id = values.get('person_id')
                 target = db.execute('SELECT active FROM persons WHERE id = ?', (person_id,)).fetchone()
                 if not target:
                     return Refused(rule='person', reason='Person not found')
             else:
                 return Refused(rule='input', reason='Unknown verb')
+            if verb in ('assign', 'unassign'):
+                project = values.get('project')
+                role = values.get('role')
+                if not isinstance(role, str) or not role.strip():
+                    return Refused(rule='role', reason='A role is required')
+                row = db.execute('SELECT id FROM projects WHERE id = ?', (project,)).fetchone()
+                if not row and isinstance(project, str):
+                    from t6.registry import normalize_code
+                    _, form = normalize_code(project)
+                    row = db.execute("SELECT id FROM projects WHERE code_form = ? AND rotation = 'in'", (form,)).fetchone()
+                if not row:
+                    return Refused(rule='project', reason='Project not found')
+                project_id = row[0]
+                assigned = db.execute('SELECT 1 FROM project_person_roles WHERE project_id = ? AND person_id = ? AND role = ?', (project_id, person_id, role.strip())).fetchone() is not None
+                relation_snapshot = json.dumps([project_id, assigned])
+                if nonce is not None:
+                    observed = db.execute('SELECT state FROM jo_state_previews WHERE nonce = ?', (nonce,)).fetchone()
+                    if not observed or observed[0] != relation_snapshot:
+                        return Refused(rule='project_changed', reason='Project role changed since preview; preview again')
             if verb == 'shift':
                 start, end = values.get('start', ''), values.get('end', '')
                 try:
@@ -218,13 +238,28 @@ class People:
                     return Refused(rule='telegram_id', reason=f'Telegram ID is held by {holder[0]}')
             plan = {'action': verb, **values, 'idempotency_key': key}
             if nonce is None:
-                return self.tokens.create(f'person {verb}', actor, inputs, plan)
+                preview = self.tokens.create(f'person {verb}', actor, inputs, plan)
+                if verb in ('assign', 'unassign'):
+                    preview_nonce = self.tokens.verify(preview.token, f'person {verb}', actor, inputs)
+                    assert isinstance(preview_nonce, str)
+                    db.execute('INSERT INTO jo_state_previews VALUES (?, ?)', (preview_nonce, relation_snapshot))
+                return preview
             now = self.registry._clock()
             if verb == 'add':
                 person_id = str(T6Id.mint(EntityKind.PERSON))
                 db.execute('INSERT INTO persons VALUES (?, ?, ?, ?, ?, ?, ?)', (person_id, values['kind'], json.dumps(values.get('departments', [])), json.dumps(values.get('roles', [])), telegram, int(values.get('master_brief', False)), int(values.get('active', True))))
                 db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, ?, 1)", (page, person_id, now))
                 before = None
+            elif verb in ('assign', 'unassign'):
+                role = values['role'].strip()
+                held = db.execute('SELECT 1 FROM project_person_roles WHERE project_id = ? AND person_id = ? AND role = ?', (project_id, person_id, role)).fetchone() is not None
+                before = {'person_id': person_id, 'role': role, 'assigned': held}
+                if verb == 'assign':
+                    db.execute('INSERT OR IGNORE INTO project_person_roles VALUES (?, ?, ?)', (project_id, person_id, role))
+                else:
+                    db.execute('DELETE FROM project_person_roles WHERE project_id = ? AND person_id = ? AND role = ?', (project_id, person_id, role))
+                if held != (verb == 'assign'):
+                    _audit(db, project_id, 'person_' + verb, actor, now, before, {'person_id': person_id, 'role': role, 'assigned': verb == 'assign'})
             elif verb == 'rebind':
                 current = db.execute("SELECT page_id FROM bindings WHERE system = 'notion' AND project_id = ? AND active = 1", (person_id,)).fetchone()
                 before = {'page_id': current[0] if current else None}
