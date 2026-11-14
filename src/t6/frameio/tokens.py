@@ -33,6 +33,9 @@ SCOPE = "openid email profile offline_access additional_info.roles"
 EXPIRY_MARGIN_SECONDS = 300.0
 """An access token this close to its end is replaced before it is used."""
 
+USER_AGENT = "t6-frameio-worker"
+"""Sent on every request to Frame.io and Adobe. The default `Python-urllib` agent is refused with a 403 HTML page (#291)."""
+
 Post = Callable[[str, Mapping[str, str], Mapping[str, str]], tuple[int, dict[str, Any]]]
 """Sends a form to a URL with headers. Returns the status and the JSON object answered."""
 
@@ -43,7 +46,7 @@ class AdobeUnavailable(Exception):
 
 def http_post(url: str, headers: Mapping[str, str], form: Mapping[str, str]) -> tuple[int, dict[str, Any]]:
     request = urllib.request.Request(
-        url, data=urllib.parse.urlencode(form).encode(), headers=dict(headers), method="POST"
+        url, data=urllib.parse.urlencode(form).encode(), headers={"User-Agent": USER_AGENT, **headers}, method="POST"
     )
     try:
         with urllib.request.urlopen(request, timeout=30.0) as response:
