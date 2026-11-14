@@ -162,6 +162,8 @@ class JobOrdersRow(NotionModel):
     watermark: str | None = notion("Watermark", "rich_text", id="X%5DN%3A")
     cc: tuple[str, ...] = notion("cc", "relation", id="%5BY%7D%7D", default=())
     coordinator: tuple[str, ...] = notion("\U0001f5c2\U0000fe0f Coordinator", "relation", id="V%3B%3B%7B", default=())
+    t6_id: str | None = notion("T6 ID", "rich_text")
+    t6_notes: str | None = notion("T6 Notes", "rich_text")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

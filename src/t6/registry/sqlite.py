@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 import sqlite3
 import time
-from typing import TypeAlias
+from typing import Any, TypeAlias
 
 from t6.domain.events import JsonValue
 from t6.ids import EntityKind, T6Id
@@ -128,6 +128,81 @@ _MIGRATIONS = (
         );
         CREATE INDEX internal_jobs_claimable ON internal_jobs (queue, state, run_at)
     """),
+    (5, False, """
+        CREATE TABLE project_hold_state (
+            project_id TEXT PRIMARY KEY REFERENCES projects(id),
+            held INTEGER NOT NULL, reason TEXT
+        );
+        CREATE TABLE used_preview_tokens (nonce TEXT PRIMARY KEY);
+        CREATE TABLE verb_requests (
+            idempotency_key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, result TEXT NOT NULL
+        );
+        CREATE TABLE status_sync_intents (
+            intent_id INTEGER PRIMARY KEY REFERENCES sync_intents(id),
+            held INTEGER NOT NULL
+        )
+    """),
+    (6, False, """
+        CREATE TABLE persons (
+            id TEXT PRIMARY KEY, kind TEXT NOT NULL, departments TEXT NOT NULL,
+            roles TEXT NOT NULL, telegram_id INTEGER, master_brief INTEGER NOT NULL,
+            active INTEGER NOT NULL
+        );
+        CREATE UNIQUE INDEX one_active_person_per_telegram ON persons (telegram_id)
+            WHERE active = 1 AND telegram_id IS NOT NULL
+    """),
+    (7, False, """
+        CREATE TABLE person_migration_receipts (digest TEXT PRIMARY KEY, contacts TEXT NOT NULL, entries TEXT NOT NULL);
+        CREATE TABLE persons_v7 (
+            id TEXT PRIMARY KEY, kind TEXT, departments TEXT NOT NULL,
+            roles TEXT NOT NULL, telegram_id INTEGER, master_brief INTEGER NOT NULL,
+            active INTEGER NOT NULL
+        );
+        INSERT INTO persons_v7 SELECT * FROM persons;
+        UPDATE persons_v7 SET kind = NULL WHERE kind = 'staff' AND id IN
+            (SELECT project_id FROM audit WHERE action = 'person_migrated');
+        DROP TABLE persons;
+        ALTER TABLE persons_v7 RENAME TO persons;
+        CREATE UNIQUE INDEX one_active_person_per_telegram ON persons (telegram_id)
+            WHERE active = 1 AND telegram_id IS NOT NULL
+    """),
+    (8, False, """CREATE TABLE person_shifts (
+        person_id TEXT PRIMARY KEY REFERENCES persons(id), pattern TEXT NOT NULL,
+        start TEXT NOT NULL, end TEXT NOT NULL
+    )"""),
+    (9, False, """
+        CREATE TABLE person_permissions (
+            person_id TEXT NOT NULL REFERENCES persons(id), permission TEXT NOT NULL,
+            PRIMARY KEY (person_id, permission)
+        );
+        CREATE TABLE permission_seed (id INTEGER PRIMARY KEY, unmatched TEXT NOT NULL)
+    """),
+    (10, False, """
+        CREATE TABLE job_orders (
+            id TEXT PRIMARY KEY, project_id TEXT REFERENCES projects(id),
+            telegram_key TEXT UNIQUE, assignee_id TEXT REFERENCES persons(id), fields TEXT NOT NULL
+        );
+        CREATE TABLE job_order_notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, job_order_id TEXT NOT NULL REFERENCES job_orders(id),
+            text TEXT NOT NULL, actor TEXT NOT NULL, at REAL NOT NULL
+        );
+        CREATE TABLE jo_migration_receipts (digest TEXT PRIMARY KEY, snapshot TEXT NOT NULL, entries TEXT NOT NULL);
+        CREATE TABLE jo_sync_intents (
+            intent_id INTEGER PRIMARY KEY REFERENCES sync_intents(id), operation TEXT NOT NULL, payload TEXT NOT NULL, started INTEGER NOT NULL DEFAULT 0
+        )
+    """),
+    (11, False, """
+        CREATE TABLE jo_state (
+            job_order_id TEXT PRIMARY KEY REFERENCES job_orders(id),
+            status TEXT NOT NULL, blocked INTEGER NOT NULL DEFAULT 0,
+            block_reason TEXT, delayed_until TEXT, delay_reason TEXT
+        );
+        CREATE TABLE jo_state_previews (nonce TEXT PRIMARY KEY, state TEXT NOT NULL)
+    """),
+    (12, False, """CREATE TABLE notion_last_seen (
+        page_id TEXT NOT NULL, property TEXT NOT NULL, value TEXT NOT NULL,
+        PRIMARY KEY (page_id, property)
+    )"""),
 )
 
 
@@ -147,11 +222,17 @@ def _migrate(db: sqlite3.Connection) -> None:
                     for operation in ("UPDATE", "DELETE"):
                         db.execute(f"CREATE TRIGGER {table}_no_{operation.lower()} BEFORE {operation} ON {table} "
                                    f"BEGIN SELECT RAISE(ABORT, '{table} is append-only'); END")
+            if version == 10:
+                for operation in ("UPDATE", "DELETE"):
+                    db.execute(f"CREATE TRIGGER job_order_notes_no_{operation.lower()} BEFORE {operation} ON job_order_notes "
+                               f"BEGIN SELECT RAISE(ABORT, 'job_order_notes is append-only'); END")
             db.execute("INSERT INTO schema_version VALUES (?, ?)", (version, int(forward_only)))
 
+    jo_filter = ("NOT EXISTS (SELECT 1 FROM job_orders WHERE job_orders.id = audit.project_id) AND "
+                 if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'job_orders'").fetchone() else "")
     db.execute("INSERT INTO activity (project_id, at, actor, action, summary, audit_id) "
                "SELECT project_id, at, actor, action, REPLACE(action, '_', ' '), id FROM audit "
-               "WHERE NOT EXISTS (SELECT 1 FROM activity WHERE activity.audit_id = audit.id)")
+               f"WHERE {jo_filter}NOT EXISTS (SELECT 1 FROM activity WHERE activity.audit_id = audit.id)")
 
 
 _Values: TypeAlias = Mapping[str, JsonValue]
@@ -209,7 +290,7 @@ class SqliteProjectRegistry:
             raise ValueError("bind non-Project entities with a T6Id; use the registry for Projects")
         if not system.strip() or not page_id.strip() or not actor.strip():
             raise ValueError("system, page_id and actor must not be blank")
-        page_id = _page(page_id) if system == NOTION else page_id
+        page_id = _page(page_id) if system in (NOTION, "notion_user") else page_id
         with self._transaction() as db:
             row = db.execute(
                 "SELECT project_id FROM bindings WHERE system = ? AND page_id = ?", (system, page_id)
@@ -232,7 +313,7 @@ class SqliteProjectRegistry:
 
     def bound_entity(self, system: str, page_id: str) -> str | None:
         """Resolve active and legacy external pages to their entity ID."""
-        page_id = _page(page_id) if system == NOTION else page_id
+        page_id = _page(page_id) if system in (NOTION, "notion_user") else page_id
         with self._transaction() as db:
             row = db.execute("SELECT project_id FROM bindings WHERE system = ? AND page_id = ?", (system, page_id)).fetchone()
             return None if row is None else str(row[0])
@@ -434,14 +515,69 @@ class SqliteProjectRegistry:
     # -- sync and reconciliation ---------------------------------------------
 
     def undispatched_sync(self) -> tuple[SyncIntent, ...]:
-        return self._intents("done_at IS NULL AND dispatched_at IS NULL")
+        return self._intents("done_at IS NULL AND dispatched_at IS NULL AND id NOT IN (SELECT intent_id FROM status_sync_intents) AND id NOT IN (SELECT intent_id FROM jo_sync_intents)")
 
     def _intents(self, where: str) -> tuple[SyncIntent, ...]:
         with self._transaction() as db:
             rows = db.execute(
-                f"SELECT id, project_id, revision, created_at FROM sync_intents WHERE {where} ORDER BY id"
+                f"SELECT id, project_id, revision, created_at, "
+                f"(SELECT held FROM status_sync_intents WHERE intent_id = sync_intents.id) "
+                f"FROM sync_intents WHERE {where} ORDER BY id"
             ).fetchall()
-        return tuple(SyncIntent(*row) for row in rows)
+        return tuple(SyncIntent(row[0], row[1], row[2], row[3], None if row[4] is None else bool(row[4])) for row in rows)
+
+    def undispatched_jo_sync(self) -> tuple[SyncIntent, ...]:
+        return self._intents("done_at IS NULL AND dispatched_at IS NULL AND id IN (SELECT intent_id FROM jo_sync_intents)")
+
+    def undispatched_status_sync(self) -> tuple[SyncIntent, ...]:
+        return self._intents("done_at IS NULL AND dispatched_at IS NULL AND id IN (SELECT intent_id FROM status_sync_intents)")
+
+    def status_sync_state(self, intent_id: int) -> dict[str, Any] | None:
+        with self._transaction() as db:
+            row = db.execute("SELECT s.project_id, s.done_at, i.held, h.held, b.page_id FROM sync_intents s JOIN status_sync_intents i ON i.intent_id=s.id LEFT JOIN project_hold_state h ON h.project_id=s.project_id LEFT JOIN bindings b ON b.project_id=s.project_id AND b.system='notion' AND b.active=1 WHERE s.id=?", (intent_id,)).fetchone()
+            return None if row is None else {'project_id': row[0], 'done': row[1] is not None, 'held': bool(row[2]), 'current_held': bool(row[3]), 'page_id': row[4]}
+
+    def report_status_sync(self, intent_id: int) -> None:
+        with self._transaction() as db:
+            db.execute('UPDATE sync_intents SET done_at=? WHERE id IN (SELECT intent_id FROM status_sync_intents WHERE intent_id=?)', (self._clock(), intent_id))
+
+    def jo_sync_state(self, intent_id: int) -> dict[str, Any] | None:
+        with self._transaction() as db:
+            row = db.execute("SELECT s.project_id, s.revision, s.done_at, j.operation, j.started, o.project_id, o.assignee_id, o.fields, j.payload FROM sync_intents s JOIN jo_sync_intents j ON j.intent_id = s.id JOIN job_orders o ON o.id = s.project_id WHERE s.id = ?", (intent_id,)).fetchone()
+            if not row:
+                return None
+            def page(entity_id: str | None) -> str | None:
+                found = db.execute("SELECT page_id FROM bindings WHERE system = 'notion' AND project_id = ? AND active = 1", (entity_id,)).fetchone()
+                return str(found[0]) if found else None
+            notes = [n[0] for n in db.execute('SELECT text FROM job_order_notes WHERE job_order_id = ? ORDER BY id', (row[0],)).fetchall()]
+            current = db.execute('SELECT status FROM jo_state WHERE job_order_id = ?', (row[0],)).fetchone()
+            current_status = current[0] if current else json.loads(row[7]).get('status') or 'Needs Intake Review'
+            return {'current_status': current_status, 'jo_id': row[0], 'revision': row[1], 'done': row[2] is not None, 'operation': row[3],
+                    'started': bool(row[4]), 'page_id': page(row[0]), 'project_page': page(row[5]),
+                    'assignee_id': row[6], 'assignee_page': page(row[6]), 'fields': json.loads(row[7]), 'notes': notes, 'payload': json.loads(row[8])}
+
+    def begin_jo_create(self, intent_id: int) -> bool:
+        with self._transaction() as db:
+            return db.execute("UPDATE jo_sync_intents SET started = 1 WHERE intent_id = ? AND operation = 'create' AND started = 0", (intent_id,)).rowcount == 1
+
+    def report_jo_sync(self, intent_id: int, *, page_id: str | None = None, error: str | None = None) -> bool:
+        with self._transaction() as db:
+            row = db.execute('SELECT s.project_id, s.done_at FROM sync_intents s JOIN jo_sync_intents j ON j.intent_id = s.id WHERE s.id = ?', (intent_id,)).fetchone()
+            if not row:
+                return False
+            if page_id:
+                page_id = normalize_page_id(page_id)
+                bound = db.execute("SELECT project_id FROM bindings WHERE system = 'notion' AND page_id = ?", (page_id,)).fetchone()
+                active = db.execute("SELECT page_id FROM bindings WHERE system = 'notion' AND project_id = ? AND active = 1", (row[0],)).fetchone()
+                if bound and bound[0] != row[0] or active and active[0] != page_id:
+                    raise RegistryError('Notion page binding conflicts with another entity')
+                if not bound:
+                    db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, ?, 1)", (page_id, row[0], self._clock()))
+            if error is not None:
+                db.execute('UPDATE sync_intents SET error = ?, error_final = 1 WHERE id = ?', (error, intent_id))
+            else:
+                db.execute('UPDATE sync_intents SET done_at = ?, error = NULL WHERE id = ? AND done_at IS NULL', (self._clock(), intent_id))
+            return True
 
     def mark_dispatched(self, intent_ids: Iterable[int]) -> None:
         now = self._clock()
@@ -456,7 +592,7 @@ class SqliteProjectRegistry:
     ) -> RegisteredProject | None:
         now = self._clock()
         with self._transaction() as db:
-            covered = "project_id = ? AND done_at IS NULL AND revision <= ?"
+            covered = "project_id = ? AND done_at IS NULL AND revision <= ? AND id NOT IN (SELECT intent_id FROM status_sync_intents) AND id NOT IN (SELECT intent_id FROM jo_sync_intents)"
             if ok:
                 db.execute(f"UPDATE sync_intents SET done_at = ? WHERE {covered}", (now, project_id, revision))
             else:
@@ -467,7 +603,8 @@ class SqliteProjectRegistry:
             return _read(db, project_id)
 
     def observe_page(
-        self, notion_page_id: str, *, actor: str, available: bool, shown: Shown | None = None
+        self, notion_page_id: str, *, actor: str, available: bool, shown: Shown | None = None,
+        editor: str | None = None, changed: tuple[str, ...] | None = None, editor_id: str | None = None
     ) -> Observed:
         page = _page(notion_page_id)
         now = self._clock()
@@ -497,6 +634,24 @@ class SqliteProjectRegistry:
             if not binding.active:
                 return Observed("restored" if restored else "legacy", _must_read(db, holder))
             expected = Shown(project.id, project.code, project.rotation.value)
+            if shown is not None and editor is not None:
+                person = db.execute("SELECT p.id FROM persons p JOIN bindings b ON b.project_id = p.id WHERE b.system = 'notion_user' AND b.page_id = ?", (normalize_page_id(editor_id),)).fetchone() if editor_id else None
+                edit_actor = str(person[0]) if person else editor
+                for name, value, wanted in zip(('t6_id', 'code', 'rotation'),
+                                               (shown.t6_id, shown.code, shown.rotation),
+                                               (expected.t6_id, expected.code, expected.rotation)):
+                    if changed is not None and name not in changed:
+                        continue
+                    previous = db.execute('SELECT value FROM notion_last_seen WHERE page_id = ? AND property = ?', (page, name)).fetchone()
+                    old = json.loads(previous[0]) if previous else wanted
+                    if value != old and value != wanted:
+                        label = {'t6_id': 'T6 ID', 'code': 'Project Code', 'rotation': 'Rotation'}[name]
+                        cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)',
+                                            (holder, 'notion_identity_edit', edit_actor, now, json.dumps({name: old}), json.dumps({name: value})))
+                        db.execute('INSERT INTO activity (project_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?)',
+                                   (holder, now, edit_actor, 'notion_identity_edit', f'{label} edited in Notion by {editor}, put back', cursor.lastrowid))
+                    db.execute('INSERT INTO notion_last_seen VALUES (?, ?, ?) ON CONFLICT(page_id, property) DO UPDATE SET value=excluded.value',
+                               (page, name, json.dumps(value)))
             if shown == expected:
                 _close_review(db, "projection_conflict", page, now)
                 outcome = "restored" if restored else "in_sync"
@@ -589,7 +744,7 @@ def _code_held(db: sqlite3.Connection, code: str, form: str, project_id: str) ->
 
 
 def _audit(
-    db: sqlite3.Connection, project_id: str, action: str, actor: str, at: float, before: _Values | None, after: _Values
+    db: sqlite3.Connection, project_id: str, action: str, actor: str, at: float, before: _Values | None, after: _Values, *, summary: str | None = None
 ) -> None:
     cursor = db.execute(
         "INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)",
@@ -597,7 +752,7 @@ def _audit(
     )
     db.execute(
         "INSERT INTO activity (project_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?)",
-        (project_id, at, actor, action, action.replace("_", " "), cursor.lastrowid),
+        (project_id, at, actor, action, summary or action.replace("_", " "), cursor.lastrowid),
     )
 
 

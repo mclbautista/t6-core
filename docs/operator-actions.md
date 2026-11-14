@@ -47,15 +47,23 @@ stays within Telegram's 64.
 ## The tap
 
 The gateway pushes `{"data": "op:<token>:<choice>", "from": {"id"}, "chat",
-"message_id", ...}` to `POST /tap` with `Idempotency-Key: tap-<update_id>`.
+"message_id", ...}` to the API's `POST /tap` with `Idempotency-Key: tap-<update_id>`,
+`Authorization: Bearer <gateway secret>` and `X-Telegram-User-Id` matching
+`from.id`. Bind that secret to `gateway` in `T6_API_SECRETS`. Only an active
+Person can tap; a missing Person is refused and recorded.
 
 | Answer | Meaning |
 | --- | --- |
 | 200 `{"outcome": ...}` | decided: `registered`, `bound`, `classified`, `choose_project`, `skipped`, `no_candidates`, `page_taken`, `code_held`, `stale`, `expired`, `already_handled`, `busy` or `rejected`. The gateway stops retrying |
 | 503 | not decided (card not confirmed yet, registry unavailable, operator actions off). The gateway retries |
 
-`rejected` covers a user not on `T6_OPERATOR_IDS`, a wrong chat or message, an
-unknown token and an unknown choice; each is recorded and changes nothing.
+Each action stores an allowed-tapper rule. The default is `permission:operator`;
+other rules are `person:<t6n_ID>`, `permission:<name>`, or
+`{"any_of": [<rule>, ...]}`. At tap time core resolves the Telegram ID to an
+active Person and checks their current permissions. A refused tap records the
+rule in `rejections`. A wrong chat or message, unknown token, or unknown choice
+is also rejected and recorded; none changes the action. `T6_OPERATOR_IDS` still
+selects the destination for existing operator cards and authorizes `/project`.
 Other `/tap` payloads still queue the generic `tap` job.
 
 ## Project Codes and rotation (`/project`)
@@ -117,7 +125,11 @@ its `/project` pushes queued as empty `tap` jobs.
    `T6_TAP_SECRET`, `T6_GATEWAY_URL` and `T6_GATEWAY_SECRET` stay as they are.
 2. Deploy the gateway with pushed commands (#72), add the `project` command to
    its `config.yaml` with the same people as `T6_OPERATOR_IDS`, and restart it.
-   The push uses the tailnet-only tap URL the taps already use (#57).
+   Set `t6core.push_url` in the gateway configuration to the API's LAN address,
+   for example `http://<t6-api-lan-address>:8081/tap`, and configure the gateway
+   to send its API secret and `X-Telegram-User-Id` for each push. The API listener
+   must be reachable on that LAN address. The gateway no longer needs a Tailscale
+   sidecar for tap delivery. The VPS `/tap` is unavailable in edge mode (#184).
 3. Send `/project` as an operator: the list arrives. Send it from another
    account: the gateway refuses it.
 

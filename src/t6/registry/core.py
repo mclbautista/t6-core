@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 import re
-from typing import Protocol, TypeAlias
+from typing import Any, Protocol, TypeAlias
 
 from t6.domain.events import JsonValue
 from t6.lookup.normalize import Normalizers
@@ -154,6 +154,8 @@ class SyncIntent:
     project_id: str
     revision: int
     created_at: float
+    status_held: bool | None = None
+    """Requested Project Status projection, or None for an identity intent."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,6 +306,14 @@ class ProjectRegistry(Protocol):
         """Sync intents that have no queue job yet, oldest first."""
         ...
 
+    def undispatched_jo_sync(self) -> tuple[SyncIntent, ...]: ...
+    def undispatched_status_sync(self) -> tuple[SyncIntent, ...]: ...
+    def status_sync_state(self, intent_id: int) -> dict[str, Any] | None: ...
+    def report_status_sync(self, intent_id: int) -> None: ...
+    def jo_sync_state(self, intent_id: int) -> dict[str, Any] | None: ...
+    def begin_jo_create(self, intent_id: int) -> bool: ...
+    def report_jo_sync(self, intent_id: int, *, page_id: str | None = None, error: str | None = None) -> bool: ...
+
     def mark_dispatched(self, intent_ids: Iterable[int]) -> None: ...
 
     def report_sync(
@@ -313,7 +323,8 @@ class ProjectRegistry(Protocol):
         ...
 
     def observe_page(
-        self, notion_page_id: str, *, actor: str, available: bool, shown: Shown | None = None
+        self, notion_page_id: str, *, actor: str, available: bool, shown: Shown | None = None,
+        editor: str | None = None, changed: tuple[str, ...] | None = None, editor_id: str | None = None
     ) -> Observed:
         """Reconcile a page's current Notion state with the registry. Registers nothing."""
         ...

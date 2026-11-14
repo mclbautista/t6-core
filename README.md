@@ -104,6 +104,7 @@ Mac mini. Both use only the standard library.
 | `T6_WORKER_POLL_SECONDS` | optional: sleep after an empty poll, default `5` |
 | `T6_NOTION_TOKEN` | main worker: Notion integration token, for the Project registry sync |
 | `T6_NOTION_PROJECTS_DATA_SOURCE` | main worker: ID of the Projects data source |
+| `T6_NOTION_JOB_ORDERS_DATA_SOURCE` | main worker: ID of the Job Orders data source |
 | `T6_REVIEW_CHAT` | main worker: required when the gateway variables are set, the Telegram chat ID that gets the [review message](#frameio) |
 | `T6_REVIEW_TOPIC` | main worker: optional, the forum topic ID in that chat. Leave it unset for the General topic: Telegram rejects topic 1 |
 | `T6_GATEWAY_URL`, `T6_GATEWAY_SECRET` | Frame.io worker: required, the gateway whose `/notify` sends the sign-in alert |
@@ -119,7 +120,7 @@ Mac mini. Both use only the standard library.
 | --- | --- |
 | `T6_FRAMEIO_WEBHOOK_SECRET` | Frame.io signing secret |
 | `T6_NOTION_WEBHOOK_TOKEN` | Notion `verification_token` |
-| `T6_TAP_SECRET` | the gateway's `T6CORE_SECRET` |
+| `T6_TAP_SECRET` | legacy full-server tap secret; API taps use the gateway identity in `T6_API_SECRETS` |
 | `T6_WORKER_SECRET` | main worker: claims `main`, may submit to `main` and `frameio`, reads Projects and reports Notion sync results |
 | `T6_FRAMEIO_WORKER_SECRET` | Frame.io worker: claims `frameio`, may start review timers (`POST /review/timers`); also turns on `/frameio/callback` |
 | `T6_FRAMEIO_CALLER_SECRET` | a caller outside the main worker (t6-notion-reports): may submit to `frameio` and read its results, nothing else |
@@ -133,6 +134,10 @@ Mac mini. Both use only the standard library.
 | `T6_OPERATOR_DB`, `T6_OPERATOR_TTL_SECONDS` | operator action database, default `t6-operator.sqlite`; how long a card stays live, default 7 days |
 | `T6_REVIEW_QUIET_SECONDS` | server: how long one person must make no new comment on one Frame.io file before the review message is sent, default 900 (15 minutes); must be a positive number |
 | `T6_GATEWAY_URL`, `T6_GATEWAY_SECRET` | main worker: the Sixto gateway and this module's secret there; turn on delivery of operator cards |
+
+On first open of a t6 database, `T6_OPERATOR_IDS` seeds the `operator` permission for matching Persons; unmatched IDs are reported on stderr. The seed is recorded even when the variable is empty, and later changes to it do not change Person permissions. Set it before the first open of an existing database containing Persons. Legacy operator cards still use the variable independently until their authorization is migrated.
+
+Until the CLI becomes an API client (#200), set `T6_PERSON_ID` to the local caller’s Person ID. Registered verbs use that Person’s stored permissions; it is configuration, not a command-line actor flag. API authentication will supply the actor in #197 and #200.
 
 Tests use `t6.server.testing.FakeClock`; no test opens a connection to a
 provider.
@@ -888,6 +893,14 @@ module has one model per database, such as `BaysRow` and `JobOrdersRow`. Run
 `uv run python scripts/generate_models.py` after the snapshot changes. A test
 fails when the module is out of date.
 
+Job Order projection requires the `T6 ID` and `T6 Notes` rich-text properties
+and their actual Notion IDs. An administrator must create both properties in
+the Job Orders data source, run `t6 admin snapshot --data-sources FILE --out
+src/t6/notion/schema_snapshot.json`, and run `uv run python
+scripts/generate_models.py` before releasing the updated snapshot and model.
+Until both IDs are recorded, the worker refuses JO projection with a message
+identifying this step.
+
 - A model field maps a Python name to the Notion property ID and exact name
   (a trailing space `Blocker ` or an emoji `🗂️ Coordinator` are kept). Reads
   find the property by ID and writes key it by ID.
@@ -1398,30 +1411,40 @@ $ T6_STANDING_CC=<Contact page ID> t6 standing-cc
 
 ### Job Order commands
 
-`t6 jo get <page id|telegram key> --data-sources FILE` prints a Job Order with
-every field in studio terms (the `job_orders` source). A Telegram Key is
-`<chat_id>:<message_id>`; a group chat ID is negative, so put the key after `--`.
+`t6 admin jo migrate --data-sources FILE` previews the existing Job Orders.
+Save its JSON and apply it with `--apply --preview FILE`. It binds by page ID
+or an existing Telegram Key, never by name. Conflicts and unresolved Project or
+Person references appear in `review`; a repeated apply keeps the IDs and
+bindings. A uniquely matched replacement becomes active when the old active
+page is absent from the migration snapshot; the old binding remains legacy.
+Migrate Projects and People first when their relations are available.
 
-```console
-$ t6 jo get --data-sources sources.json -- -100123:456
-{"id": "<page id>", "name": "ORC - TOC - JO #62", "department": "TOC", "number": "62", "deadline": "2026-11-14T17:00:00+08:00", ...}
-```
+`t6 jo get <t6j ID|page id|telegram key> --data-sources FILE` returns the
+Job Order, its T6 ID, active page, assignee Person and append-only notes. A
+Telegram Key is `<chat_id>:<message_id>`; put a negative chat ID after `--`.
+For an unbound legacy page, get still returns its existing Notion fields.
 
-`t6 jo raise --file jo.json --data-sources FILE` is a dry run: it prints the
-fields it would write. The file is a JSON object of Job Order fields (the
-`JobOrder` fields, plus `project_id` and `source_text`). Dates without a time
-zone are Manila. The Department is checked against the live options (`TO`
-means TOC) and the standing cc (`$T6_STANDING_CC`) is added to `cc_ids`. Add
-`--apply --actor NAME` to write. It then prints the saved Job Order, or the
-typed `rejected` or `ambiguous` result and exits 1. An `ambiguous` result means
-the write may have happened, so check before you retry.
+`t6 jo raise --file jo.json --data-sources FILE` previews a new Job Order;
+`jo create` is an alias. The JSON accepts the previous create fields, including
+`project_id` (a registered T6 Project ID or its Notion page), Contact page IDs
+in `assigned_ids`, and `source_text`. Dates without a time zone are Manila;
+the Department is checked against Notion's options, standing cc is added and
+Watermark defaults to `none`. Confirm with `--confirm TOKEN` and the preview's
+`--idempotency-key KEY`. The accepted result contains the `t6j_` ID and a null
+`page_id` while Notion creation is pending; use `jo get` or replay the same
+confirmed request with a fresh preview after sync to obtain the page ID.
 
-```console
-$ t6 jo raise --file jo.json --data-sources sources.json
-{"dry_run": true, "fields": {"name": "ORC - TOC - JO #62", "department": "TOC", "cc_ids": ["<standing cc>"], ...}}
-$ t6 jo raise --file jo.json --data-sources sources.json --apply --actor cyril
-{"result": "saved", "actor": "cyril", "job_order": {"id": "<page id>", ...}}
-```
+`t6 jo assign JO PERSON`, `t6 jo reassign JO PERSON --reason TEXT`, and
+`t6 jo note JO TEXT` follow the same preview/confirm flow. PERSON is a `t6n_`
+ID. The local account is the actor. Notes and audit are append-only and each
+write appears in Project Activity. A repeat with the same idempotency key and
+a fresh preview returns the original result.
+
+The main worker needs `T6_NOTION_JOB_ORDERS_DATA_SOURCE` and access to a Job
+Orders data source with `T6 ID` and `T6 Notes` rich-text properties. T6 Notes
+shows the append-only T6 notes; the existing human-edited JO Notes is preserved. A create whose outcome is
+unknown is checked by T6 ID before recovery; if no unique page can be found,
+the sync fails for review rather than creating another page.
 
 `t6 jo format --file notes.txt [--date YYYY-MM-DD]` needs no Notion. The file
 is a draft: a header line, `Label: value` lines, then free text. It prints
@@ -1450,17 +1473,28 @@ $ t6 deadline "Nov 13 5pm" --posted 2026-11-12T09:00:00+08:00
 
 ### Check an app follows the consumer contract
 
-`t6 admin consumer-check PATH` scans the Python files under `PATH` and fails when
-app code names a Notion, OpenRouter, DeepSeek or Frame.io API host in a string
-(a direct HTTP call), or imports `t6.notion.generated`
-([ADR 0002](docs/adr/0002-consumer-contract.md)). Docstrings and virtualenv or
-cache directories are not scanned. It prints JSON and exits 1 when there are
-findings (2 when the path does not exist):
+`t6 admin consumer-check PATH` scans Python and common configuration files for
+Notion and LLM adapter imports, credential names, and direct service hosts
+([ADR 0002](docs/adr/0002-consumer-contract.md)). The API client, pure domain
+rules, privacy helpers, and Frame.io client are allowed. Python docstrings and
+virtualenv or cache directories are skipped. The command prints JSON and exits
+1 for findings, or 2 if the path does not exist.
 
-```console
-$ t6 admin consumer-check .
-{"findings": [{"file": "app/notes.py", "line": 12, "rule": "direct-http", "detail": "names the Notion API host api.notion.com"}]}
+A temporary exception can be recorded in `.t6-consumer-allowlist.json` at the
+app root. Each entry names one file and rule, and expires at the end of the
+specified local date. All entries are printed on every run; expired or invalid
+entries fail the check. For example:
+
+```json
+[
+  {"name": "migration issue 123", "file": "app/legacy.py", "rule": "adapter-import", "expires": "2027-01-31"}
+]
 ```
+
+Exceptions match an exact path relative to the app root and a finding rule
+(`adapter-import`, `credential`, or `direct-http`); keep them narrow and remove
+them after migration. This is a static check and cannot detect dynamically
+constructed names or calls.
 
 To add it to an app's CI, install t6 at the pinned release tag and run it on the
 app's source:
@@ -1617,6 +1651,19 @@ The old commands remain available until 0.5.0 and print a deprecation notice on 
 | `drives-import-dry-run` | `admin drive import` |
 | `version`, `commands --json`, `health` | unchanged |
 
+Project hold and resume use a preview followed by confirmation. Configure
+`T6_REGISTRY_DB` and `T6_PREVIEW_SIGNING_KEY` for the local CLI. For example,
+`t6 project hold PROJECT --reason "waiting"` returns a token and an
+`idempotency_key` in its plan. Repeat the same command with `--confirm TOKEN`
+and `--idempotency-key KEY` to confirm it; resume uses `t6 project resume
+PROJECT` in the same way. The local operating-system account is recorded as
+the actor. Tokens expire after 15 minutes and are single-use. Keep the same
+idempotency key for retries and obtain a fresh preview token for each attempt.
+
+Hold and resume queue Project Status projection intents. The current sync
+worker only projects identity fields, so these intents remain pending until a
+Status-capable worker is provided.
+
 ## Transcription
 
 Install `t6[transcribe]` for the ElevenLabs adapter. Construct an ElevenLabs
@@ -1636,3 +1683,90 @@ Pass the resulting map and clip path as `speaker_map` and `source` to
 its original unlabeled output when no map is supplied. `render_docx` returns
 validated DOCX bytes, with one paragraph per speaker turn and the same offset
 and frame-rate options as SRT. Neither renderer calls ElevenLabs.
+
+### Studio verb HTTP API
+
+The full server exposes the studio API on its tailnet listener. Set
+`T6_API_SECRETS` to a JSON object mapping each distinct bearer secret to one
+Person ID (for example `t6n_...`) or one of `gateway`, `worker`, `reports`,
+`watchdog`, `munki`, and `hermes`. Keep this configuration secret. Set
+`T6_PREVIEW_SIGNING_KEY` for previewed writes. Send `Authorization: Bearer
+<secret>` and use `GET /v1/commands` for the catalogue. Invoke a verb with
+`POST /v1/<noun>/<verb>` and its JSON input. `departments` is at
+`POST /v1/departments`. Supply the preview token as `confirm` and preserve the
+`idempotency_key` from its plan (or use the `Idempotency-Key` header). Only
+the gateway may send `X-Telegram-User-Id` to act as the active Person bound
+to that ID. Named services have the `reader` role by default. To grant additional roles,
+set `T6_API_SERVICE_PERMISSIONS` to a JSON object mapping service names to role
+lists, for example `{"worker":["operator"],"reports":["coordinator"]}`.
+Valid additional roles are `operator`, `coordinator`, `bookings`, `drives`,
+and `admin`; admin includes operator. Grants apply to every secret bound to
+that service. Gateway requests carrying `X-Telegram-User-Id` use the resolved
+Person's permissions instead of the gateway's grants. The legacy `camera enrich`
+endpoint returns `refused` because it does not yet support signed preview and
+confirmation. `GET /health` reports the
+package version, database schema version and job counts by state.
+
+For gateway tap delivery, bind its secret to `gateway` in `T6_API_SECRETS` and
+set the gateway's `t6core.push_url` to `http://<t6-api-lan-address>:8081/tap`.
+Each push must include `X-Telegram-User-Id` matching the payload's `from.id`.
+The API listener must bind to a reachable LAN address; edge mode does not serve
+`/tap` on the VPS. See [operator actions](docs/operator-actions.md#rollout).
+
+### LLM tasks on the API
+
+Grant the `llm` permission explicitly through `T6_API_SERVICE_PERMISSIONS` (or
+Person permissions). Set `T6_LLM_CONFIG` to a JSON file on the API host. It
+contains `llm` in the format accepted by `t6.llm.LLMConfig`, including a
+`default` provider, and a `privacy_registry` object with `people` (objects with
+`name`, optional `aliases` and `handles`), `projects` (objects with `name` and
+optional `code`) and `ids`. Keep this registry current: masking can only
+recognize registered names. Provider keys are read from the provider's named
+environment variable, never from the file. The configured providers and their
+models are the allowlist. `require_zdr` defaults to true; `max_bytes` defaults
+to 100000 for the combined UTF-8 template, input and canonical schema.
+Install the `server` extra for JSON Schema validation.
+
+POST `/v1/llm/run` with `task_name`, `prompt_template`, `output_schema`,
+`input_text`, `masking_preset` (`names` or `strict`), and optional `model_hint`.
+The template must contain exactly one literal `{input}` marker. The response
+contains the restored output, provider, model, token counts and SHA-256 hashes:
+the template's UTF-8 bytes, and the schema serialized as UTF-8 JSON with sorted
+keys, no extra whitespace and non-ASCII characters preserved. Only local JSON
+Schema references are supported. Audit records contain the actor and outcome,
+not the task text or output.
+
+### Calling the t6 API
+
+Install `t6[client]` and set `T6_API_URL` and `T6_API_SECRET`. The client
+uses the same typed input models as the verb registry:
+
+```python
+from t6.client import Client, Unavailable
+from t6.verbs import ProjectHoldInput, Preview
+
+client = Client()
+request = ProjectHoldInput(project="t6p_...", reason="Waiting", idempotency_key="outbox-123")
+preview = client.project_hold(request)
+if isinstance(preview, Preview):
+    # Show the plan to a person and obtain their confirmation first.
+    request.confirm = preview.token
+    result = client.project_hold(request)
+```
+
+Handle all five outcomes and `Unavailable`. Before sending a write, persist its
+input and a unique idempotency key in the app's own ledger or outbox. On an
+unavailable response or a lost confirmation response, retain the same key and
+input. Obtain a fresh preview, have it confirmed, and retry with its token and
+the original key. Confirmation tokens are single-use; the key ensures an
+already completed write is returned without applying it twice. `Unavailable`
+contains the key sent with the request. HTTP errors such as authentication or
+invalid input raise `APIError`. Only the gateway may set `telegram_user_id` on
+the client to act on behalf of a Telegram user. The gateway can deliver `/tap`
+with `client.tap(payload, idempotency_key=key)`; use `client.llm_run` for LLM tasks.
+
+`camera enrich` is temporarily local-only: its legacy write lacks the API's
+signed preview and confirmation contract. It uses the admin's own credentials
+until it gains that contract. `jo raise` uses the API for signed preview and
+confirmation. The client sends the contents of data-source configuration and draft files to the API. Project
+resolution uses the server's registry, not a caller-supplied database file.

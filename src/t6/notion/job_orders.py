@@ -58,7 +58,7 @@ RELATIONS: dict[str, str] = {
     "coordinator_ids": "coordinator",
     "deliverable_ids": "deliverable",
 }
-UNMAPPED: frozenset[str] = frozenset({"place"})
+UNMAPPED: frozenset[str] = frozenset({"place", "t6_id", "t6_notes"})
 """Job Orders properties no `JobOrder` field carries on purpose. `place` is a location Notion adds."""
 READ_ONLY = frozenset({"health"})
 BLOCK_TEXT_LIMIT = 2000
@@ -108,7 +108,7 @@ class JobOrders:
         pages = self._client.query_data_source(self._source)
         return tuple(self._order(JobOrdersRow.from_page(page), page) for page in pages if is_live(page))
 
-    def create(self, fields: Mapping[str, Any]) -> JobOrder | Rejected | Ambiguous:
+    def create(self, fields: Mapping[str, Any], *, t6_id: str | None = None) -> JobOrder | Rejected | Ambiguous:
         """Create a Job Order from domain fields and return it as saved.
 
         `fields` may hold any `JobOrder` field except `page_id` and `health`,
@@ -127,7 +127,10 @@ class JobOrders:
         values.update({RELATIONS[name]: tuple(fields[name]) for name in RELATIONS if name in fields})
         if fields.get("project_id"):
             values["projects"] = (fields["project_id"],)
-        saved = create_row(self._client, JobOrdersRow, self._source, values)
+        if t6_id:
+            from t6.notion.jo_projection import projection_ids
+            t6_property, _ = projection_ids()
+        saved = create_row(self._client, JobOrdersRow, self._source, values, extra_properties={t6_property: {"rich_text": [{"text": {"content": t6_id}}]}} if t6_id else None)
         if isinstance(saved, (Rejected, Ambiguous)):
             return saved
         body = fields.get("source_text")
@@ -136,6 +139,19 @@ class JobOrders:
             if failed is not None:
                 return failed
         return self.get(saved.page_id)
+
+    def ensure_body(self, page_id: str, text: str) -> Ambiguous | None:
+        """Finish an interrupted body write without appending the same body twice."""
+        try:
+            held = _body_text(self._client.list_block_children(page_id))
+        except NotionError as error:
+            return Ambiguous("readback_failed", str(error), page_id)
+        expected = withhold(text).text
+        if held == expected:
+            return None
+        if held is not None:
+            return Ambiguous("mismatch", "the existing page body differs from the requested body", page_id, ("source_text",))
+        return self._write_body(page_id, text)
 
     def _write_body(self, page_id: str, text: str) -> Ambiguous | None:
         expected = withhold(text).text

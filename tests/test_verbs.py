@@ -47,6 +47,15 @@ class VerbTests(unittest.TestCase):
                 main([noun, verb, "--help"] if verb else [noun, "--help"])
             self.assertEqual(exit.exception.code, 0)
 
+    def test_write_and_formatter_catalogue_outputs_are_described(self) -> None:
+        from t6.verbs import VERBS
+        for entry in VERBS:
+            if entry.noun == 'person' and entry.verb in ('add', 'rebind', 'set-telegram', 'shift', 'classify', 'grant', 'revoke') or (entry.noun, entry.verb) in (('jo', 'format'), ('camera', 'enrich')):
+                with self.subTest(verb=(entry.noun, entry.verb)):
+                    schema = entry.output_model.model_json_schema()
+                    self.assertEqual(schema.get('type'), 'object')
+                    self.assertTrue(schema.get('properties'))
+
     def test_activity_finds_all_rotations_and_reports_ambiguity(self) -> None:
         import os
         import tempfile

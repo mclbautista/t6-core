@@ -1098,6 +1098,14 @@
           "name": "🗂️ Coordinator",
           "type": "relation",
           "id": "V%3B%3B%7B"
+        },
+        {
+          "name": "T6 ID",
+          "type": "rich_text"
+        },
+        {
+          "name": "T6 Notes",
+          "type": "rich_text"
         }
       ],
       "named_options": {

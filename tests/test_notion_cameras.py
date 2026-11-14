@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from cli_api_fake import client_patch
 from t6.cli import main
 from t6.notion.testing import FakeNotion, title
 
@@ -18,7 +19,23 @@ CAMERAS = "ds-cameras"
 
 class CamerasCommandTests(unittest.TestCase):
     def setUp(self) -> None:
+        from unittest.mock import patch
+        from test_person import MemoryRegistry
+        from t6.person import People
+        from t6.preview import PreviewTokens
+        registry = MemoryRegistry()
+        self.addCleanup(registry.db.close)
+        with registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES ('operator', 'staff', '[]', '[]', NULL, 0, 1)")
+            db.execute("INSERT INTO person_permissions VALUES ('operator', 'operator')")
+        people = People(registry, PreviewTokens('key'))
+        patcher = patch('t6.verbs._people', return_value=people)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.fake = FakeNotion()
+        patcher = client_patch(lambda _token: self.fake.client())
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.fake.add_snapshot_data_source(CAMERAS, "cameras")
         self.page = self.fake.add_page(
             CAMERAS, {"Name": title("FX6"), "Tags": {"type": "multi_select", "multi_select": [{"name": "Sony"}]}}
@@ -35,7 +52,9 @@ class CamerasCommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "data-sources.json"
             path.write_text(json.dumps(data_sources or {"cameras": CAMERAS}), encoding="utf-8")
-            environment = {"T6_NOTION_TOKEN": token} if token else {}
+            environment = {'T6_PERSON_ID': 'operator', 'T6_PREVIEW_SIGNING_KEY': 'key'}
+            if token:
+                environment["T6_NOTION_TOKEN"] = token
             out, err = io.StringIO(), io.StringIO()
             with (
                 mock.patch.dict(os.environ, environment, clear=True),
@@ -75,6 +94,9 @@ class CamerasCommandTests(unittest.TestCase):
         payload = json.dumps({"name": "FX6 Mk2", "tags": ["Sony", "Full frame"]})
         status, out, err = self.run_command(["camera", "enrich", self.page["id"]], stdin=payload)
         self.assertEqual((status, err), (0, ""))
+        preview = json.loads(out)
+        status, out, err = self.run_command(["camera", "enrich", self.page["id"], '--confirm', preview['token'], '--idempotency-key', preview['plan']['idempotency_key']], stdin=payload)
+        self.assertEqual((status, err), (0, ""))
         row = json.loads(out)
         self.assertEqual((row["name"], row["tags"]), ("FX6 Mk2", ["Sony", "Full frame"]))
         stored = self.fake.page(self.page["id"])["properties"]
@@ -88,6 +110,8 @@ class CamerasCommandTests(unittest.TestCase):
             status, out, _ = self.run_command(
                 ["camera", "enrich", self.page["id"], "--json", str(path)]
             )
+            preview = json.loads(out)
+            status, out, _ = self.run_command(["camera", "enrich", self.page["id"], "--json", str(path), '--confirm', preview['token'], '--idempotency-key', preview['plan']['idempotency_key']])
         self.assertEqual((status, json.loads(out)["name"]), (0, "Renamed"))
 
     def assert_fails(self, argv: list[str], stdin: str, text: str) -> None:

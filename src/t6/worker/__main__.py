@@ -102,7 +102,11 @@ def configured_handlers(
     gateway_url, gateway_secret = environ.get("T6_GATEWAY_URL"), environ.get("T6_GATEWAY_SECRET")
     operator = OperatorClient(transport, settings.secret)
     if gateway_url and gateway_secret:
-        handlers.update(CardDelivery(operator, GatewayClient(HttpTransport(gateway_url), gateway_secret)).handlers())
+        gateway = GatewayClient(HttpTransport(gateway_url), gateway_secret)
+        handlers.update(CardDelivery(operator, gateway).handlers())
+        from t6.domain.studio_people import operator_ids
+        from t6.worker.operator import StateEditNotification
+        handlers['notion.state_flagged'] = StateEditNotification(gateway, operator_ids(environ)).deliver
     token, projects = environ.get("T6_NOTION_TOKEN"), environ.get("T6_NOTION_PROJECTS_DATA_SOURCE")
     if token and projects:
         from t6.notion import NotionClient
@@ -114,6 +118,21 @@ def configured_handlers(
             NotionClient(token), RegistryClient(transport, settings.secret), projects, offer=offer
         )
         handlers.update(projection.handlers())
+    job_orders = environ.get("T6_NOTION_JOB_ORDERS_DATA_SOURCE")
+    if token and job_orders:
+        from t6.notion import NotionClient
+        from t6.notion.jo_projection import JobOrderProjection
+        from t6.worker.registry import RegistryClient
+        jo_projection = JobOrderProjection(NotionClient(token), RegistryClient(transport, settings.secret), job_orders)
+        project_reconcile = handlers.get("notion.page_changed")
+        handlers.update(jo_projection.handlers())
+        if project_reconcile is not None:
+            def reconcile(job: WorkerJob) -> JsonValue:
+                result = project_reconcile(job)
+                if isinstance(result, dict) and result.get("outcome") == "not_a_project_page":
+                    return jo_projection.reconcile(job)
+                return result
+            handlers["notion.page_changed"] = reconcile
     if gateway_url and gateway_secret:
         chat = _whole_number(environ, "T6_REVIEW_CHAT", required=True)
         topic = _whole_number(environ, "T6_REVIEW_TOPIC", required=False)

@@ -18,6 +18,7 @@ from importlib.metadata import version
 from pathlib import Path
 import sys
 from typing import TYPE_CHECKING, Any
+from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from t6.notion.sync import NotionClient
@@ -152,6 +153,57 @@ def _schema_snapshot(
     return 0
 
 
+def _migrate_people(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
+    import pwd
+    from t6.notion.contacts import Contacts
+    from t6.notion import NotionError
+    from t6.person import People
+    from t6.preview import PreviewTokens
+    from t6.registry import SqliteProjectRegistry
+    token = os.environ.get(TOKEN_VARIABLE)
+    if not token:
+        return _fail(f"set {TOKEN_VARIABLE} to a Notion integration token")
+    if args.apply and not args.preview:
+        return _fail("--apply needs --preview FILE")
+    try:
+        with open_notion(token) as client:
+            contacts = Contacts(client, _read_data_sources(args.data_sources)["contacts"]).list()
+        people = People(SqliteProjectRegistry(args.registry_db), PreviewTokens("migration"))
+        digest = json.loads(args.preview.read_text(encoding="utf-8"))["digest"] if args.apply else None
+        report = people.migrate(contacts, actor=pwd.getpwuid(os.getuid()).pw_name, apply=args.apply, digest=digest)
+        if args.apply:
+            from t6.domain.studio_people import operator_ids
+            report['operator_seed'] = people.seed_operators(operator_ids())
+    except (OSError, ValueError, KeyError, NotionError) as error:
+        return _fail(str(error))
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
+
+def _migrate_job_orders(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
+    import pwd
+    from t6.job_order import JobOrderStore
+    from t6.notion import NotionError
+    from t6.notion.job_orders import JobOrders
+    from t6.preview import PreviewTokens
+    from t6.registry import SqliteProjectRegistry
+    token = os.environ.get(TOKEN_VARIABLE)
+    if not token:
+        return _fail(f"set {TOKEN_VARIABLE} to a Notion integration token")
+    if args.apply and not args.preview:
+        return _fail("--apply needs --preview FILE")
+    try:
+        with open_notion(token) as client:
+            orders = JobOrders(client, _read_data_sources(args.data_sources)["job_orders"]).list()
+        store = JobOrderStore(SqliteProjectRegistry(args.registry_db), PreviewTokens("migration"))
+        digest = json.loads(args.preview.read_text(encoding="utf-8"))["digest"] if args.apply else None
+        report = store.migrate(orders, actor=pwd.getpwuid(os.getuid()).pw_name, apply=args.apply, digest=digest)
+    except (OSError, ValueError, KeyError, NotionError) as error:
+        return _fail(str(error))
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
 def _migrate_projects(
     args: argparse.Namespace, open_notion: Callable[[str], NotionClient]
 ) -> int:
@@ -241,12 +293,15 @@ def _database_paths() -> dict[str, Path]:
 
 
 def _check_consumer(args: argparse.Namespace) -> int:
-    from t6.consumer import check
+    from t6.consumer import apply_allowlist, check
 
     if not args.path.exists():
         return _fail(f"{args.path} does not exist")
-    findings = check(args.path)
-    print(json.dumps({"findings": [finding.as_json() for finding in findings]}, indent=2))
+    findings, exceptions = apply_allowlist(args.path, check(args.path))
+    report: dict[str, object] = {"findings": [finding.as_json() for finding in findings]}
+    if exceptions:
+        report["exceptions"] = exceptions
+    print(json.dumps(report, indent=2))
     return 1 if findings else 0
 
 
@@ -260,6 +315,14 @@ def _ops(args: argparse.Namespace) -> int:
             result = ops.restore(args.source, _database_paths())
         else:
             result = ops.health(_database_paths())
+            from t6.client import APIError, Client, Unavailable
+            try:
+                api = Client().health()
+                result["api"] = ({"reachable": False, "reason": api.reason} if isinstance(api, Unavailable)
+                                 else {"reachable": True, **api})
+            except APIError as error:
+                result["api"] = {"reachable": False, "reason": str(error)}
+            result["ok"] = bool(result["ok"] and result["api"]["reachable"])
     except (OSError, ops.OpsError) as error:
         return _fail(str(error))
     print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -344,11 +407,13 @@ def main(
     update.add_argument(
         "--json", type=Path, metavar="FILE", help="read the update from FILE instead of stdin"
     )
+    update.add_argument('--idempotency-key')
+    update.add_argument('--confirm')
     for sub in (get, update):
         sub.add_argument(
             "--data-sources",
             type=Path,
-            required=True,
+            required=False,
             metavar="FILE",
             help="JSON object of snapshot database key to live data source ID",
         )
@@ -406,7 +471,7 @@ def main(
     dry_run.add_argument("--projects", type=Path, metavar="FILE", help="JSON list of {\"page_id\", \"name\"} to resolve Project names against; without it every Project is unresolved")
     consumer = commands.add_parser(
         "check-consumer",
-        help="Fail when app code calls Notion, OpenRouter, DeepSeek or Frame.io directly, or imports t6.notion.generated",
+        help="Check app imports, credentials and direct calls against ADR 0002",
         description=(
             "Scans the Python files under PATH. Prints {\"findings\": [{file, line, rule, detail}]} and exits 1 "
             "if there are any. Run it in an app's CI (see the README)."
@@ -416,13 +481,27 @@ def main(
     from t6 import cli_jo, cli_studio, verbs
 
     cli_studio.add_parsers(commands)
-    verbs.add_parsers(commands)
     cli_jo.add_parsers(commands)
+    verbs.add_parsers(commands)
     # Share parsers so both names accept exactly the same arguments.
     admin = commands.add_parser("admin", help="Administration commands")
     admin_commands = admin.add_subparsers(dest="admin_command", required=True)
     registry = admin_commands.add_parser("registry", help="Project registry administration")
     registry_commands = registry.add_subparsers(dest="registry_command", required=True)
+    person_admin = admin_commands.add_parser("person", help="Person administration")
+    person_admin_commands = person_admin.add_subparsers(dest="person_admin_command", required=True)
+    person_migrate = person_admin_commands.add_parser("migrate", help="Preview or apply Contacts migration")
+    person_migrate.add_argument("--data-sources", type=Path, required=True)
+    person_migrate.add_argument("--registry-db", type=Path, default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)))
+    person_migrate.add_argument("--apply", action="store_true")
+    person_migrate.add_argument("--preview", type=Path)
+    jo_admin = admin_commands.add_parser("jo", help="Job Order administration")
+    jo_admin_commands = jo_admin.add_subparsers(dest="jo_admin_command", required=True)
+    jo_migrate = jo_admin_commands.add_parser("migrate", help="Preview or apply Job Order migration")
+    jo_migrate.add_argument("--data-sources", type=Path, required=True)
+    jo_migrate.add_argument("--registry-db", type=Path, default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)))
+    jo_migrate.add_argument("--apply", action="store_true")
+    jo_migrate.add_argument("--preview", type=Path)
     drive = admin_commands.add_parser("drive", help="Drive administration")
     drive_commands = drive.add_subparsers(dest="drive_command", required=True)
 
@@ -442,7 +521,7 @@ def main(
     camera_commands = next(a for a in cameras._actions if isinstance(a, argparse._SubParsersAction))
     route(camera_commands, "enrich", camera_commands.choices["update"], "Enrich a Camera")
     jo_commands = next(a for a in commands.choices["jo"]._actions if isinstance(a, argparse._SubParsersAction))
-    route(jo_commands, "raise", jo_commands.choices["create"], "Raise a Job Order")
+    route(jo_commands, "create", jo_commands.choices["raise"], "Raise a Job Order")
 
     raw = list(sys.argv[1:] if argv is None else argv)
     renames = {
@@ -464,16 +543,70 @@ def main(
                         "drive": {"import": "drives-import-dry-run"}}.get(args.admin_command, {}).get(
                             getattr(args, "registry_command", getattr(args, "drive_command", "")),
                             {"snapshot": "schema-snapshot", "consumer-check": "check-consumer"}.get(args.admin_command, args.admin_command))
+    if getattr(args, "admin_command", None) == "person":
+        return _migrate_people(args, open_notion)
+    if getattr(args, "admin_command", None) == "jo":
+        return _migrate_job_orders(args, open_notion)
+    args.person_lookup = args.command == "person"
     args.command = {"check": "schema-check", "person": "contacts", "project": "projects", "camera": "cameras"}.get(args.command, args.command)
     if getattr(args, "cameras_command", None) == "enrich":
         args.cameras_command = "update"
-    if getattr(args, "jo_command", None) == "raise":
-        args.jo_command = "create"
     if args.command == "commands":
         print(json.dumps(verbs.catalogue(), ensure_ascii=False, indent=2))
         return 0
     if hasattr(args, "registered_verb"):
         return verbs.run(args, open_notion)
+    legacy_verbs = {
+        ("contacts", "find"): ("person", "find"),
+        ("projects", "resolve"): ("project", "resolve"),
+        ("jo", "get"): ("jo", "get"),
+        ("jo", "create"): ("jo", "raise"),
+        ("jo", "format"): ("jo", "format"),
+        ("cameras", "get"): ("camera", "get"),
+        ("cameras", "update"): ("camera", "enrich"),
+    }
+    subcommand = getattr(args, f"{args.command}_command", "")
+    pair = legacy_verbs.get((args.command, subcommand))
+    if pair is not None:
+        entry = next(v for v in verbs.VERBS if (v.noun, v.verb) == pair)
+        if entry.local_only:
+            return cli_jo.run(args, open_notion) if entry.noun == "jo" else _cameras(args, open_notion)
+        from t6.client import APIError, Client, Unavailable
+        values = {name: getattr(args, name, None) for name in entry.input_model.model_fields}
+        if pair == ('camera', 'enrich'):
+            try:
+                values['fields'] = json.loads(args.json.read_text(encoding='utf-8') if args.json else sys.stdin.read())
+            except (OSError, ValueError) as error:
+                return _fail(f'update input is not valid JSON: {error}')
+            if not isinstance(values['fields'], dict):
+                return _fail('update JSON must be an object')
+        if values.get("date") is not None:
+            values["date"] = str(values["date"])
+        # The actor is established by API authentication.
+        values.pop("actor", None)
+        legacy_models: dict[tuple[str, str], type[BaseModel]] = {("person", "find"): verbs.LegacyPersonFindInput,
+                         ("project", "resolve"): verbs.LegacyProjectResolveInput,
+                         ("jo", "get"): verbs.LegacyJoGetInput,
+                         ("camera", "get"): verbs.LegacyCameraGetInput}
+        model = legacy_models.get(pair, entry.input_model) if getattr(args, "data_sources", None) else entry.input_model
+        if pair in legacy_models and getattr(args, "data_sources", None):
+            values = {name: getattr(args, name, None) for name in model.model_fields}
+        inputs = model.model_validate(values)
+        try:
+            outcome = Client().call(entry.noun, entry.verb, inputs)
+        except APIError as error:
+            outcome = verbs.Refused(rule="api", reason=str(error))
+        if isinstance(outcome, Unavailable):
+            print(json.dumps({"outcome": "unavailable", "reason": outcome.reason,
+                              "idempotency_key": outcome.idempotency_key}, indent=2))
+            return 1
+        if isinstance(outcome, verbs.Refused):
+            return _fail(outcome.reason)
+        code, payload = verbs.outcome_json(outcome)
+        if isinstance(outcome, verbs.Done):
+            payload = outcome.result
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return code
     if args.command in {"contacts", "projects", "standing-cc"}:
         return cli_studio.run(args, open_notion)
     if args.command in {"jo", "deadline"}:
