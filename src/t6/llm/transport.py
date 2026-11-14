@@ -13,6 +13,7 @@ OpenAI-style chat completions API that DeepSeek and OpenRouter both serve;
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import email.utils
 import json
@@ -167,6 +168,7 @@ class OpenAIChat:
         self._model = model
         self._retention: Retention = retention
         self._json_mode = json_mode
+        self._temperature: float | None = None
         self._send = send
         self._openrouter = urllib.parse.urlparse(base_url).hostname == "openrouter.ai"
 
@@ -178,10 +180,18 @@ class OpenAIChat:
     def retention(self) -> Retention:
         return self._retention
 
+    def with_temperature(self, temperature: float) -> OpenAIChat:
+        """Return a provider copy with an explicit sampling temperature."""
+        provider = copy.copy(self)
+        provider._temperature = temperature
+        return provider
+
     def complete(self, request: Request, *, timeout: float, zdr: bool = False) -> Completion:
         if isinstance(request, DecisionsRequest):
             raise TypeError("OpenAIChat sends chat messages; use OpenRouterDecisions for a DecisionsRequest")
         payload: dict[str, Any] = {"model": self._model, "messages": list(request)}
+        if self._temperature is not None:
+            payload["temperature"] = self._temperature
         if self._json_mode:
             payload["response_format"] = {"type": "json_object"}
         if zdr and self._openrouter:
