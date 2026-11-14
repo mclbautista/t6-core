@@ -4,9 +4,9 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 
-from t6.llm.evals import Case, RunRecord
+from t6.llm.evals import Case, RunRecord, grade_kinds, grade_quotes, grade_schema
 
 
 class EvalTypesTests(unittest.TestCase):
@@ -53,6 +53,32 @@ class EvalTypesTests(unittest.TestCase):
                 RunRecord.model_validate({**data, "results": [
                     {k: v for k, v in data["results"][0].items() if k != field}
                 ]})
+
+
+class CodeGraderTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.case = Case.model_validate({
+            "id": "synthetic", "task": "brief", "masked_input": {"messages": ["[PERSON_1] needs a cut."]},
+            "expected_properties": ["grounded blocker"], "grader": "code", "provenance": {"kind": "synthetic"},
+        })
+
+    def test_schema_passes_and_fails(self) -> None:
+        schema: dict[str, JsonValue] = {"type": "object", "properties": {"kind": {"const": "blocker"}}, "required": ["kind"]}
+        self.assertTrue(grade_schema(self.case, {"kind": "blocker"}, schema).passed)
+        result = grade_schema(self.case, {"kind": "delay"}, schema)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.case_id, self.case.id)
+
+    def test_required_and_forbidden_kinds(self) -> None:
+        self.assertTrue(grade_kinds(self.case, ["blocker"], required=["blocker"], forbidden=["delay"]).passed)
+        self.assertFalse(grade_kinds(self.case, [], required=["blocker"]).passed)
+        self.assertFalse(grade_kinds(self.case, ["blocker", "delay"], required=["blocker"], forbidden=["delay"]).passed)
+
+    def test_quotes_are_exact_substrings_of_masked_input_values(self) -> None:
+        self.assertTrue(grade_quotes(self.case, ["[PERSON_1] needs a cut.", "needs a cut"]).passed)
+        self.assertFalse(grade_quotes(self.case, ["[PERSON_1] needs a cat."]).passed)
+        self.assertFalse(grade_quotes(self.case, ["messages"]).passed)
+        self.assertFalse(grade_quotes(self.case, [""]).passed)
 
 
 if __name__ == "__main__":
