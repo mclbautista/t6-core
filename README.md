@@ -509,7 +509,7 @@ result = import_per_project_workbook(path, store, lookup=lookup, logged_by=Ref(t
 ```
 
 - The per-project workbook has one tab per Project: an optional
-  `PROJECT NAME: ...` row, a header row starting with `HARD DRIVE LABEL`, then
+  `PROJECT NAME: ...` or `PROJECT: ...` row, a header row starting with `HARD DRIVE LABEL`, then
   one row per drive. A tab with no project name row uses the tab title.
 - A row becomes a Drive (brand, capacity, format) with an Assignment for the
   tab's Project, a received event when the row has a received date and a
@@ -524,6 +524,7 @@ result = import_per_project_workbook(path, store, lookup=lookup, logged_by=Ref(t
 
   | Reason | What happened to the row |
   | --- | --- |
+  | `pre-header line` | unparsed non-empty line preserved as evidence; no release facts guessed |
   | `no label` | imported if another meaningful identifying detail exists |
   | `note in serial cell` | imported with suspected candidate and original cell preserved |
   | `shared serial` | distinct review-flagged Drives with suspected serials; never merged |
