@@ -1382,6 +1382,58 @@ $ T6_STANDING_CC=<Contact page ID> t6 standing-cc
 {"standing_cc": "<Contact page ID>"}
 ```
 
+### Job Order commands
+
+`t6 jo get <page id|telegram key> --data-sources FILE` prints a Job Order with
+every field in studio terms (the `job_orders` source). A Telegram Key is
+`<chat_id>:<message_id>`; a group chat ID is negative, so put the key after `--`.
+
+```console
+$ t6 jo get --data-sources sources.json -- -100123:456
+{"id": "<page id>", "name": "ORC - TOC - JO #62", "department": "TOC", "number": "62", "deadline": "2026-11-14T17:00:00+08:00", ...}
+```
+
+`t6 jo create --file jo.json --data-sources FILE` is a dry run: it prints the
+fields it would write. The file is a JSON object of Job Order fields (the
+`JobOrder` fields, plus `project_id` and `source_text`). Dates without a time
+zone are Manila. The Department is checked against the live options (`TO`
+means TOC) and the standing cc (`$T6_STANDING_CC`) is added to `cc_ids`. Add
+`--apply --actor NAME` to write. It then prints the saved Job Order, or the
+typed `rejected` or `ambiguous` result and exits 1. An `ambiguous` result means
+the write may have happened, so check before you retry.
+
+```console
+$ t6 jo create --file jo.json --data-sources sources.json
+{"dry_run": true, "fields": {"name": "ORC - TOC - JO #62", "department": "TOC", "cc_ids": ["<standing cc>"], ...}}
+$ t6 jo create --file jo.json --data-sources sources.json --apply --actor cyril
+{"result": "saved", "actor": "cyril", "job_order": {"id": "<page id>", ...}}
+```
+
+`t6 jo format --file notes.txt [--date YYYY-MM-DD]` needs no Notion. The file
+is a draft: a header line, `Label: value` lines, then free text. It prints
+`{"text", "findings"}`: the header rewritten as `<PROJECT> - <DEPT> - JO #<N>`,
+the date line (`June 22 / Monday`, computed from `--date`, default today in
+Manila), the fields in order with your labels kept, Watermark defaulted to
+"none", Status and Pending blank. Anything it cannot settle is a finding
+(`header_unparsed`, `missing_title`, `missing_task`, `missing_purpose`,
+`missing_assigned`, `no_deliverable_code`, `link_settings_missing`,
+`mfg_shuttle_out_of_range`), never a guess. Deadlines are left as written.
+
+```console
+$ t6 jo format --file notes.txt --date 2026-06-22
+{"text": "ORC - TOC - JO #62\nJune 22 / Monday\n\nTask: ...", "findings": [{"code": "missing_title", "params": {}}]}
+```
+
+`t6 deadline <phrase> [--assignees CONTACT_ID ...] [--posted ISO]` resolves a
+posted deadline in Manila time with the studio's rules. `--assignees` (Contact
+page IDs, read from Notion) gives the end of shift for "end of shift" and
+"asap"; `--posted` defaults to now. An unreadable phrase is a finding.
+
+```console
+$ t6 deadline "Nov 13 5pm" --posted 2026-11-12T09:00:00+08:00
+{"deadline": "2026-11-13T17:00:00+08:00", "display": "Nov 13 / Fri (17:00)", "source": "stated", "findings": []}
+```
+
 ### Check an app follows the consumer contract
 
 `t6 check-consumer PATH` scans the Python files under `PATH` and fails when
