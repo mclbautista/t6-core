@@ -7,6 +7,8 @@ import sys
 from dataclasses import replace
 
 from t6.operator import ActionStore, OperatorService
+from t6.person import People
+from t6.preview import PreviewTokens
 from t6.registry import SqliteProjectRegistry
 from t6.server.app import ServerConfig, WebhookApp
 from t6.server.http import serve
@@ -39,7 +41,7 @@ def main() -> int:
     operator = None
     if registry is not None and config.operator_ids:
         store = ActionStore(environ.get("T6_OPERATOR_DB", "t6-operator.sqlite"))
-        operator = OperatorService(registry, store, config.operator_ids, ttl=config.operator_ttl_seconds)
+        operator = OperatorService(registry, store, config.operator_ids, people=People(registry, PreviewTokens(environ.get("T6_PREVIEW_SIGNING_KEY", "read-only"))), ttl=config.operator_ttl_seconds)
     app = WebhookApp(queue, config, on_notion_verification=lambda token: print(
         f"Notion verification token: {token}", file=sys.stderr, flush=True
     ), registry=registry, operator=operator)

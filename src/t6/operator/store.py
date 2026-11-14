@@ -19,6 +19,7 @@ import time
 
 from t6.domain.events import JsonValue
 from t6.registry.core import RegistryUnavailable
+from t6.person import PERMISSIONS
 
 __all__ = ["Action", "ActionStore", "Claim"]
 
@@ -40,7 +41,8 @@ CREATE TABLE IF NOT EXISTS actions (
     result TEXT,
     version INTEGER NOT NULL DEFAULT 1,
     shown_sync TEXT,
-    offer_key TEXT NOT NULL
+    offer_key TEXT NOT NULL,
+    allowed_tapper TEXT NOT NULL DEFAULT '"permission:operator"'
 );
 CREATE UNIQUE INDEX IF NOT EXISTS one_live_offer ON actions (offer_key) WHERE state IN ('pending', 'claimed');
 CREATE INDEX IF NOT EXISTS by_project ON actions (project_id);
@@ -50,13 +52,14 @@ CREATE TABLE IF NOT EXISTS rejections (
     reason TEXT NOT NULL,
     operator INTEGER,
     token TEXT,
-    detail TEXT NOT NULL
+    detail TEXT NOT NULL,
+    rule TEXT
 )
 """
 
 _COLUMNS = (
     "token, kind, stage, state, params, chat, message_ref, message_id, created_at, expires_at, "
-    "claimed_by, operator, project_id, result, version, shown_sync"
+    "claimed_by, operator, project_id, result, version, shown_sync, allowed_tapper"
 )
 
 
@@ -86,6 +89,8 @@ class Action:
     result: Mapping[str, JsonValue] | None
     version: int
     """Goes up whenever the card must be shown again (a new stage, a result, a sync outcome)."""
+    allowed_tapper: JsonValue
+    """The rule recorded when the action was created."""
     shown_sync: str | None
     """The Notion sync status the card last promised to show."""
 
@@ -115,7 +120,18 @@ def _action(row: tuple[object, ...]) -> Action:
         result=None if row[13] is None else json.loads(str(row[13])),
         version=int(str(row[14])),
         shown_sync=None if row[15] is None else str(row[15]),
+        allowed_tapper=json.loads(str(row[16])),
     )
+
+
+def _validate_rule(rule: JsonValue) -> None:
+    if isinstance(rule, str) and ((rule.startswith("permission:") and rule[11:] in PERMISSIONS) or (rule.startswith("person:t6n_") and len(rule) > 11)):
+        return
+    if isinstance(rule, dict) and set(rule) == {"any_of"} and isinstance(rule["any_of"], list) and rule["any_of"]:
+        for child in rule["any_of"]:
+            _validate_rule(child)
+        return
+    raise ValueError("invalid allowed-tapper rule")
 
 
 class ActionStore:
@@ -134,6 +150,9 @@ class ActionStore:
             for statement in _SCHEMA.split(";"):
                 if statement.strip():
                     db.execute(statement)
+            for table, column, definition in (("actions", "allowed_tapper", "TEXT NOT NULL DEFAULT '\"permission:operator\"'"), ("rejections", "rule", "TEXT")):
+                if column not in {row[1] for row in db.execute(f"PRAGMA table_info({table})")}:
+                    db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
@@ -166,12 +185,14 @@ class ActionStore:
         ttl: float,
         project_id: str | None = None,
         shown_sync: str | None = None,
+        allowed_tapper: JsonValue = "permission:operator",
     ) -> tuple[Action, bool]:
         """A new pending action, or the live one already offered under `offer_key`.
 
         An offer stays live until it is used or has expired, so a repeated
         trigger (a second webhook for the same page) does not send a second card.
         """
+        _validate_rule(allowed_tapper)
         now = self._clock()
         with self._transaction() as db:
             live = db.execute(
@@ -191,8 +212,8 @@ class ActionStore:
             token = self._new_token()
             db.execute(
                 "INSERT INTO actions (token, kind, stage, state, params, chat, created_at, expires_at, project_id, "
-                "shown_sync, offer_key) VALUES (?, ?, 'choose', 'pending', ?, ?, ?, ?, ?, ?, ?)",
-                (token, kind, json.dumps(dict(params)), chat, now, now + ttl, project_id, shown_sync, offer_key),
+                "shown_sync, offer_key, allowed_tapper) VALUES (?, ?, 'choose', 'pending', ?, ?, ?, ?, ?, ?, ?, ?)",
+                (token, kind, json.dumps(dict(params)), chat, now, now + ttl, project_id, shown_sync, offer_key, json.dumps(allowed_tapper)),
             )
             created = self._read(db, token)
             assert created is not None
@@ -316,11 +337,11 @@ class ActionStore:
             assert shown is not None
             return shown
 
-    def reject(self, reason: str, *, operator: int | None, token: str | None, detail: str = "") -> None:
+    def reject(self, reason: str, *, operator: int | None, token: str | None, detail: str = "", rule: JsonValue = None) -> None:
         with self._transaction() as db:
             db.execute(
-                "INSERT INTO rejections (at, reason, operator, token, detail) VALUES (?, ?, ?, ?, ?)",
-                (self._clock(), reason, operator, token, detail),
+                "INSERT INTO rejections (at, reason, operator, token, detail, rule) VALUES (?, ?, ?, ?, ?, ?)",
+                (self._clock(), reason, operator, token, detail, None if rule is None else json.dumps(rule)),
             )
 
     def rejections(self) -> tuple[tuple[str, int | None, str | None], ...]:

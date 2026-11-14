@@ -1,8 +1,8 @@
 """Operator actions: Sixto cards that let an authorized person change the registry.
 
 Core owns every decision here. The gateway only carries a card to Telegram and a
-tap back (see `docs/operator-actions.md`). A tap is accepted only from an
-allow-listed Telegram user, from the chat and message the card was sent to, once,
+tap back (see `docs/operator-actions.md`). A tap is accepted only from a Person
+allowed by the card, from the chat and message the card was sent to, once,
 and while the card is live. Each registry change carries an idempotency key
 derived from the card and the choice, so a retry never changes anything twice.
 
@@ -21,6 +21,7 @@ import time
 
 from t6.domain.events import JsonValue
 from t6.operator.store import Action, ActionStore, Claim
+from t6.person import People
 from t6.registry import (
     NOTION,
     Changed,
@@ -85,11 +86,13 @@ class OperatorService:
         store: ActionStore,
         operators: Sequence[int],
         *,
+        people: People | None = None,
         ttl: float = DEFAULT_TTL_SECONDS,
         clock: Callable[[], float] = time.time,
     ) -> None:
         if not operators:
             raise ValueError("at least one operator is needed")
+        self._people = people
         self._registry = registry
         self._store = store
         self._operators = frozenset(operators)
@@ -190,13 +193,20 @@ class OperatorService:
     def _tap(
         self, token: str, choice: str, operator: int | None, chat: object, message_id: object, tap_key: str
     ) -> TapResult:
-        if operator is None or operator not in self._operators:
-            self._store.reject("not_allowed", operator=operator, token=token or None)
+        if self._people is None and (operator is None or operator not in self._operators):
+            existing = self._store.get(token)
+            self._store.reject("not_allowed", operator=operator, token=token or None,
+                               rule=None if existing is None else existing.allowed_tapper)
             return TapResult(True, "rejected")
         action = self._store.get(token)
         if action is None:
             self._store.reject("unknown_token", operator=operator, token=None, detail=token[:40])
             return TapResult(True, "rejected")
+        allowed = (self._people.allows_telegram(operator, action.allowed_tapper) if self._people is not None
+                   else action.allowed_tapper == "permission:operator" and operator in self._operators)
+        if not allowed:
+            self._store.reject("not_allowed", operator=operator, token=token, rule=action.allowed_tapper)
+            return TapResult(True, "rejected", action)
         if chat != action.chat:
             self._store.reject("wrong_chat", operator=operator, token=token)
             return TapResult(True, "rejected", action)
@@ -210,6 +220,7 @@ class OperatorService:
         if refused is not None:
             return refused
         assert claim.action is not None
+        assert operator is not None
         return self._carry_out(claim.action, choice, operator)
 
     def _refused(self, claim: Claim) -> TapResult | None:
