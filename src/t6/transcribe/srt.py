@@ -1,5 +1,6 @@
 """Render ElevenLabs word JSON as SRT without requiring the SDK."""
 
+import textwrap
 from typing import Any
 
 from .speakers import SpeakerMap, speaker_name
@@ -48,7 +49,8 @@ def render_srt(
     def flush() -> None:
         if lines:
             name = speaker_name(speaker, source, speaker_map) if speaker_map is not None else ""
-            cues.append((start, end, (f"{name}:\n" if name else "") + "\n".join(lines)))
+            label = "\n".join(textwrap.wrap(f"{name}:", width=42)) + "\n" if name else ""
+            cues.append((start, end, label + "\n".join(lines)))
             lines.clear()
 
     for word in transcript.get("words", []):

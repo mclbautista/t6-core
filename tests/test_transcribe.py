@@ -115,6 +115,12 @@ class TranscriptRenderTests(unittest.TestCase):
             self.assertIn(f"\n{name}:\n", srt)
         self.assertIn("Alice:", render_srt(data, source="other.wav", speaker_map=mapping))
 
+    def test_long_speaker_label_wraps(self) -> None:
+        data = {"words": [{"type": "word", "text": "Hi", "start": 0, "end": 1, "speaker_id": "s"}]}
+        result = render_srt(data, speaker_map={('', 's'): 'A' * 90})
+        self.assertTrue(all(len(line) <= 42 for line in result.splitlines()[2:]))
+        self.assertIn('A' * 42, result)
+
     def test_invalid_speaker_maps_report_lines(self) -> None:
         from t6.transcribe import parse_speaker_map
 

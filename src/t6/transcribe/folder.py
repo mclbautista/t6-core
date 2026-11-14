@@ -1,7 +1,7 @@
 """Preview and run a resumable folder of WAV transcriptions.
 
 Call :func:`preview_folder` and present its estimate before passing the plan to
-:func:`run_folder`. DOCX support is supplied by the caller as a bytes renderer.
+:func:`run_folder`. The built-in DOCX renderer can be overridden by the caller.
 """
 
 import csv
@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .docx import render_docx
+from .speakers import SpeakerMap
 from .srt import render_srt
 
 
@@ -76,17 +78,50 @@ def _output(root: Path, source: Path, suffix: str) -> Path:
     return path
 
 
+def _load_transcript(path: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+        if not isinstance(data, dict) or not isinstance(data.get('words'), list):
+            return None
+        for word in data['words']:
+            if not isinstance(word, dict) or not isinstance(word.get('type'), str):
+                return None
+            if word['type'] == 'word':
+                if not isinstance(word.get('text'), str):
+                    return None
+                for key in ('start', 'end'):
+                    value = word.get(key)
+                    if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)):
+                        return None
+                if word.get('speaker_id') is not None and not isinstance(word['speaker_id'], str):
+                    return None
+        return data
+    except (OSError, UnicodeError, ValueError):
+        return None
+
+
 def _valid_output(path: Path, suffix: str) -> bool:
     if not path.is_file() or path.stat().st_size == 0:
         return False
+    if suffix == '.json':
+        return _load_transcript(path) is not None
     if suffix == '.docx':
         try:
             with zipfile.ZipFile(path) as doc:
                 if doc.testzip() is not None:
                     return False
-                for name in ('[Content_Types].xml', 'word/document.xml'):
-                    ElementTree.fromstring(doc.read(name))
-                return True
+                types = ElementTree.fromstring(doc.read('[Content_Types].xml'))
+                rels = ElementTree.fromstring(doc.read('_rels/.rels'))
+                document = ElementTree.fromstring(doc.read('word/document.xml'))
+                ct = 'http://schemas.openxmlformats.org/package/2006/content-types'
+                rel = 'http://schemas.openxmlformats.org/package/2006/relationships'
+                w = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+                return (types.tag == f'{{{ct}}}Types'
+                        and any(e.get('PartName') == '/word/document.xml' and e.get('ContentType') == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml' for e in types.findall(f'{{{ct}}}Override'))
+                        and any(e.get('Extension') == 'rels' and e.get('ContentType') == 'application/vnd.openxmlformats-package.relationships+xml' for e in types.findall(f'{{{ct}}}Default'))
+                        and rels.tag == f'{{{rel}}}Relationships'
+                        and any(e.get('Type') == 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument' and e.get('Target') in ('word/document.xml', '/word/document.xml') and e.get('TargetMode') != 'External' and e.get('Id') for e in rels.findall(f'{{{rel}}}Relationship'))
+                        and document.tag == f'{{{w}}}document' and document.find(f'{{{w}}}body') is not None)
         except (OSError, zipfile.BadZipFile, KeyError, ElementTree.ParseError):
             return False
     return True
@@ -169,7 +204,8 @@ def preview_folder(
         except ValueError:
             unreadable.append(str(relative))
             continue
-        clips.append(Clip(relative, seconds, all(_valid_output(p, '.' + f) for p, f in zip(outputs, suffixes))))
+        marker = _output(output, relative, '.transcribing')
+        clips.append(Clip(relative, seconds, not marker.exists() and all(_valid_output(p, '.' + f) for p, f in zip(outputs, suffixes))))
     if unreadable:
         raise ValueError('Unreadable durations: ' + ', '.join(unreadable))
     plan = FolderPreview(root, output, suffixes, tuple(clips), rate)
@@ -197,14 +233,13 @@ def run_folder(
     plan: FolderPreview, transcribe: Callable[[Path], dict[str, Any]], *,
     docx_renderer: Callable[[dict[str, Any]], bytes] | None = None,
     progress: Callable[[dict[str, Any]], None] | None = None,
+    speaker_map: SpeakerMap | None = None,
 ) -> None:
     """Run a previously previewed plan; report each completed or failed clip.
 
     The callback receives state, completed, failed, total, current_clip,
     processed_seconds and total_seconds. Interruptions propagate to the caller.
     """
-    if 'docx' in plan.formats and docx_renderer is None:
-        raise ValueError('DOCX output requires a docx_renderer')
     pending = [clip for clip in plan.clips if not clip.done]
     total_seconds = sum(clip.seconds for clip in pending)
     completed = failed = 0
@@ -219,23 +254,31 @@ def run_folder(
             source = _inside(plan.audio_folder / clip.source, plan.audio_folder)
             # Recheck output paths before making a potentially paid call.
             paths = {fmt: _output(plan.output_folder, clip.source, '.' + fmt) for fmt in plan.formats}
-            transcript = transcribe(source)
-            _write(plan.output_folder, paths['json'],
-                   json.dumps(transcript, ensure_ascii=False, indent=2).encode('utf-8'))
-            outputs.append(str(paths['json']))
-            data: dict[str, bytes] = {}
+            marker = _output(plan.output_folder, clip.source, '.transcribing')
+            _write(plan.output_folder, marker, b'in progress')
+            transcript = _load_transcript(paths['json'])
+            if transcript is None:
+                transcript = transcribe(source)
+            data: dict[str, bytes] = {
+                'json': json.dumps(transcript, ensure_ascii=False, indent=2).encode('utf-8')
+            }
             if 'srt' in paths:
-                data['srt'] = render_srt(transcript).encode('utf-8')
+                data['srt'] = render_srt(transcript, speaker_map=speaker_map, source=str(clip.source)).encode('utf-8')
             if 'docx' in paths:
-                assert docx_renderer is not None
-                data['docx'] = docx_renderer(transcript)
-            for fmt, path in paths.items():
-                if fmt == 'json':
-                    continue
-                _write(plan.output_folder, path, data[fmt])
-                outputs.append(str(path))
-            if not all(_valid_output(path, '.' + fmt) for fmt, path in paths.items()):
-                raise ValueError('Renderer produced an empty or invalid output')
+                data['docx'] = (docx_renderer(transcript) if docx_renderer is not None else
+                                render_docx(transcript, speaker_map=speaker_map, source=str(clip.source)))
+            # Validate the entire set before replacing any existing output.
+            with tempfile.TemporaryDirectory() as directory:
+                for fmt, content in data.items():
+                    staged = Path(directory) / ('output.' + fmt)
+                    staged.write_bytes(content)
+                    if not _valid_output(staged, '.' + fmt):
+                        raise ValueError('Renderer produced an empty or invalid output')
+                for fmt, path in paths.items():
+                    _write(plan.output_folder, path, data[fmt])
+                    outputs.append(str(path))
+            _inside(marker, plan.output_folder)
+            marker.unlink()
             completed += 1
             state = 'completed'
         except Exception as exc:
