@@ -1616,3 +1616,26 @@ idempotency key for retries and obtain a fresh preview token for each attempt.
 Hold and resume queue Project Status projection intents. The current sync
 worker only projects identity fields, so these intents remain pending until a
 Status-capable worker is provided.
+
+### Studio verb HTTP API
+
+The full server exposes the studio API on its tailnet listener. Set
+`T6_API_SECRETS` to a JSON object mapping each distinct bearer secret to one
+Person ID (for example `t6n_...`) or one of `gateway`, `worker`, `reports`,
+`watchdog`, `munki`, and `hermes`. Keep this configuration secret. Set
+`T6_PREVIEW_SIGNING_KEY` for previewed writes. Send `Authorization: Bearer
+<secret>` and use `GET /v1/commands` for the catalogue. Invoke a verb with
+`POST /v1/<noun>/<verb>` and its JSON input. `departments` is at
+`POST /v1/departments`. Supply the preview token as `confirm` and preserve the
+`idempotency_key` from its plan (or use the `Idempotency-Key` header). Only
+the gateway may send `X-Telegram-User-Id` to act as the active Person bound
+to that ID. Named services have the `reader` role by default. To grant additional roles,
+set `T6_API_SERVICE_PERMISSIONS` to a JSON object mapping service names to role
+lists, for example `{"worker":["operator"],"reports":["coordinator"]}`.
+Valid additional roles are `operator`, `coordinator`, `bookings`, `drives`,
+and `admin`; admin includes operator. Grants apply to every secret bound to
+that service. Gateway requests carrying `X-Telegram-User-Id` use the resolved
+Person's permissions instead of the gateway's grants. The legacy `jo raise`
+and `camera enrich` endpoints return `refused` because those writes do not yet
+support signed preview and confirmation; issue #194 replaces `jo raise`. `GET /health` reports the
+package version, database schema version and job counts by state.

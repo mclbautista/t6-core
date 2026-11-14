@@ -6,7 +6,7 @@ import json
 import secrets
 import re
 from datetime import time
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from t6.ids import EntityKind, T6Id
 from t6.preview import PreviewTokens
@@ -15,12 +15,19 @@ from t6.registry.sqlite import SqliteProjectRegistry, _audit
 from t6.verbs import Done, Outcome, Refused
 
 
+SERVICES = frozenset({'gateway', 'worker', 'reports', 'watchdog', 'munki', 'hermes'})
+
 PERMISSIONS = frozenset({"operator", "coordinator", "bookings", "drives", "admin"})
 
 
 class People:
-    def __init__(self, registry: SqliteProjectRegistry, tokens: PreviewTokens) -> None:
+    def __init__(self, registry: SqliteProjectRegistry, tokens: PreviewTokens,
+                 service_permissions: Mapping[str, frozenset[str]] | None = None) -> None:
         self.registry, self.tokens = registry, tokens
+        self.service_permissions = dict(service_permissions or {})
+        if any(name not in SERVICES or not grants <= PERMISSIONS
+               for name, grants in self.service_permissions.items()):
+            raise ValueError('Invalid service or permission in service grants')
 
     def get(self, person_id: str) -> dict[str, Any] | None:
         with self.registry._transaction() as db:
@@ -36,8 +43,12 @@ class People:
         with self.registry._transaction() as db:
             return self._authorize(db, actor, role)
 
-    @staticmethod
-    def _authorize(db: Any, actor: str, role: str) -> Refused | None:
+    def _authorize(self, db: Any, actor: str, role: str) -> Refused | None:
+        if actor in SERVICES:
+            service_grants = self.service_permissions.get(actor, frozenset())
+            if role == 'reader' or role in service_grants or (role == 'operator' and 'admin' in service_grants):
+                return None
+            return Refused(rule='permission', reason=f'needs {role}')
         person = db.execute("SELECT kind, active FROM persons WHERE id = ?", (actor,)).fetchone()
         if not person or not person[1]:
             return Refused(rule='permission', reason='needs active Person')

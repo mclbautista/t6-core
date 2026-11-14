@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
 
 _actor: ContextVar[str] = ContextVar("verb_actor", default="")
+_registry: ContextVar[Any] = ContextVar("verb_registry", default=None)
 
 
 class Done(BaseModel):
@@ -137,7 +138,7 @@ def project_activity(inputs: ActivityInput, open_notion: Callable[..., Any]) -> 
             since = parsed.timestamp()
         if inputs.limit is not None and inputs.limit < 1:
             raise ValueError("limit must be positive")
-        registry = _open_registry(Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)))
+        registry = _registry.get() or _open_registry(Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)))
         if registry is None:
             return Refused(rule="registry", reason="Project registry is unavailable")
         project = registry.get(inputs.project)
@@ -187,7 +188,7 @@ def _project_write(inputs: ProjectHoldInput | ProjectResumeInput, verb: str) -> 
     key = os.environ.get("T6_PREVIEW_SIGNING_KEY", "")
     if not key:
         return Refused(rule="config", reason="Set T6_PREVIEW_SIGNING_KEY")
-    registry = _open_registry(Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)))
+    registry = _registry.get() or _open_registry(Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)))
     if registry is None:
         return Refused(rule="registry", reason="Project registry is unavailable")
     try:
@@ -256,7 +257,7 @@ def _people() -> People:
     from t6.cli import DEFAULT_REGISTRY_DB, REGISTRY_DB_VARIABLE, _open_registry
     from t6.person import People
     from t6.preview import PreviewTokens
-    registry = _open_registry(Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)))
+    registry = _registry.get() or _open_registry(Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)))
     if registry is None:
         raise ValueError("Registry is unavailable")
     return People(registry, PreviewTokens(os.environ.get("T6_PREVIEW_SIGNING_KEY", "read-only")))
@@ -402,10 +403,12 @@ def invoke(entry: Verb, inputs: BaseModel, *, actor: str, people: People,
     if entry.handler is None:
         return Done(result=legacy()) if legacy is not None else Refused(rule='verb', reason='Verb has no registered handler')
     token = _actor.set(actor)
+    registry_token = _registry.set(people.registry)
     try:
         return entry.handler(inputs, open_notion)
     finally:
         _actor.reset(token)
+        _registry.reset(registry_token)
 
 
 def catalogue() -> list[dict[str, Any]]:

@@ -8,10 +8,16 @@ from dataclasses import replace
 
 from t6.operator import ActionStore, OperatorService
 from t6.registry import SqliteProjectRegistry
-from t6.server.app import ServerConfig, WebhookApp
+from t6.server.app import Request, Response, ServerConfig, WebhookApp
 from t6.server.http import serve
 from t6.server.queue import JobQueue
 from t6.server.routes import load_routes
+from t6.server.verbs import VerbAPI, secrets_from_env, service_permissions_from_env
+from t6.person import People
+from t6.preview import PreviewTokens
+from t6.cli import _open_notion
+from t6.server.http import make_server
+import threading
 
 
 def _address(value: str) -> tuple[str, int]:
@@ -43,6 +49,18 @@ def main() -> int:
     app = WebhookApp(queue, config, on_notion_verification=lambda token: print(
         f"Notion verification token: {token}", file=sys.stderr, flush=True
     ), registry=registry, operator=operator)
+    if registry is not None:
+        api = VerbAPI(People(registry, PreviewTokens(environ.get("T6_PREVIEW_SIGNING_KEY", "read-only")),
+                             service_permissions_from_env(environ)),
+                      queue, secrets_from_env(environ), _open_notion)
+        def tailnet(request: Request) -> Response:
+            if request.path.split("?", 1)[0].startswith("/v1/") or request.path.split("?", 1)[0] == "/health":
+                return api(request)
+            return app.tailnet(request)
+        server = make_server(_address(environ.get("T6_TAILNET_BIND", "127.0.0.1:8081")), tailnet)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        make_server(_address(environ.get("T6_PUBLIC_BIND", "127.0.0.1:8080")), app.public).serve_forever()
+        return 0
     serve(
         app,
         _address(environ.get("T6_PUBLIC_BIND", "127.0.0.1:8080")),
