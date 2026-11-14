@@ -164,7 +164,11 @@ Manifest, Ring, Munki Client Version, Last Check-in and OS Version.
 
 The rules every app follows to use t6-core (scope, boundary, `t6.domain`,
 Notion IDs, CI enforcement, version pins) are recorded in
-`docs/adr/0002-consumer-contract.md`.
+[ADR 0002](docs/adr/0002-consumer-contract.md). The related decisions are
+[credential ownership](docs/adr/0003-one-owner-per-credential.md),
+[entity identity, relations and history](docs/adr/0004-entity-identity-relations-and-history.md),
+[studio verbs](docs/adr/0005-studio-verbs.md), and
+[the two queues](docs/adr/0006-two-queues.md).
 
 ## Project
 
