@@ -134,6 +134,19 @@ class AuditEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class ActivityEntry:
+    """One Project activity, with an optional link to its raw audit record."""
+
+    project_id: str
+    subject_id: str | None
+    at: float
+    actor: str
+    action: str
+    summary: str
+    audit_id: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class SyncIntent:
     """A committed change that still has to be shown in Notion."""
 
@@ -277,6 +290,10 @@ class ProjectRegistry(Protocol):
 
     def audit(self, project_id: str) -> tuple[AuditEntry, ...]:
         """The Project's audit entries, oldest first."""
+        ...
+
+    def activity(self, project_id: str, *, since: float | None = None, limit: int | None = None) -> tuple[ActivityEntry, ...]:
+        """The Project activity, newest first."""
         ...
 
     def pending_sync(self) -> tuple[SyncIntent, ...]:

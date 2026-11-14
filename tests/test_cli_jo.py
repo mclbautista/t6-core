@@ -52,7 +52,7 @@ class JoCommandTests(unittest.TestCase):
         return status, out.getvalue(), err.getvalue()
 
     def create(self, fields: dict[str, object], *extra: str, environment: dict[str, str] | None = None) -> tuple[int, str, str]:
-        return self.run_command(["jo", "create", "--file", self.write("jo.json", json.dumps(fields)), *extra], environment=environment)
+        return self.run_command(["jo", "raise", "--file", self.write("jo.json", json.dumps(fields)), *extra], environment=environment)
 
     def test_create_is_a_dry_run_by_default(self) -> None:
         status, out, err = self.create(FIELDS, environment={"T6_STANDING_CC": "standing"})

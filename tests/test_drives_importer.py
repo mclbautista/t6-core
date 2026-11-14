@@ -143,6 +143,36 @@ class PerProjectImportTests(unittest.TestCase):
             self.path, self.store, lookup=make_lookup(), logged_by=LOGGED_BY
         )
 
+    def test_pre_header_lines_and_both_project_forms(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = write_workbook(folder, {"Tab A": [
+                ["PROJECT: Example Project\nExtra project note"],
+                ["Released June 1, 2024 to Example Person", "Another note\n  \nFinal note"],
+                [],
+                HEADER,
+                ["Example drive", None, "SN-0001"],
+                ["PROJECT NAME: Second Example"],
+                ["Unparsed second block"],
+                HEADER,
+                ["Second drive", None, "SN-0002"],
+            ]})
+            store = InMemoryDriveStore()
+            result = import_per_project_workbook(path, store, lookup=make_lookup(), logged_by=LOGGED_BY)
+
+            self.assertEqual(result.imported, 2)
+            for serial, project in [("SN-0001", "Example Project"), ("SN-0002", "Second Example")]:
+                drive = drive_id(store, serial)
+                self.assertEqual(store.assignment_history(drive)[0].project, Ref(text=project))
+                self.assertEqual(store.list_events(drive), ())
+            self.assertEqual(
+                [item for item in result.review if item.reason == "pre-header line"],
+                [ReviewItem("Tab A", row, "pre-header line", detail, str(path.resolve())) for row, detail in [
+                    (1, "Extra project note"),
+                    (2, "Released June 1, 2024 to Example Person"),
+                    (2, "Another note"), (2, "Final note"), (7, "Unparsed second block"),
+                ]],
+            )
+
     def test_a_clean_row_becomes_a_drive_with_its_facts(self) -> None:
         drive = self.store.find_by_serial("ZX100AA1")
         assert drive is not None
@@ -439,7 +469,7 @@ class DryRunCommandTests(unittest.TestCase):
             before = {p.name: p.stat().st_mtime_ns for p in Path(folder).iterdir()}
             printed = io.StringIO()
             with redirect_stdout(printed):
-                status = main(["drives-import-dry-run", str(path), "--projects", str(projects)])
+                status = main(["admin", "drive", "import", str(path), "--projects", str(projects)])
             after = {p.name: p.stat().st_mtime_ns for p in Path(folder).iterdir()}
 
         self.assertEqual(status, 0)
@@ -470,7 +500,7 @@ class DryRunCommandTests(unittest.TestCase):
             log_sheet = write_workbook(folder, LOG_SHEETS, "log-sheet.xlsx")
             printed = io.StringIO()
             with redirect_stdout(printed):
-                status = main(["drives-import-dry-run", str(path), "--log-sheet", str(log_sheet)])
+                status = main(["admin", "drive", "import", str(path), "--log-sheet", str(log_sheet)])
 
         self.assertEqual(status, 0)
         report = json.loads(printed.getvalue())
@@ -480,7 +510,7 @@ class DryRunCommandTests(unittest.TestCase):
     def test_a_missing_workbook_is_an_error(self) -> None:
         errors = io.StringIO()
         with redirect_stderr(errors):
-            status = main(["drives-import-dry-run", "/nonexistent/workbook.xlsx"])
+            status = main(["admin", "drive", "import", "/nonexistent/workbook.xlsx"])
         self.assertEqual(status, 2)
         self.assertIn("error", json.loads(errors.getvalue()))
 

@@ -269,7 +269,7 @@ that serves it. SQLite takes turns between it and the running server.
    ([Notion sync](#notion-sync-and-reconciliation)).
 2. **Back up** the registry file (`sqlite3 t6-registry.sqlite ".backup
    backup.sqlite"`) and note the Notion export you would restore from.
-3. **Preview**: `t6 migrate-projects --data-sources sources.json > preview.json`.
+3. **Preview**: `t6 admin registry migrate --data-sources sources.json > preview.json`.
    `sources.json` maps `projects` (required) and `job_orders`, `deliverables`,
    `external_links` to data source IDs. The preview lists each distinct page,
    whether it would be registered or is already, how many Job Orders,
@@ -278,7 +278,7 @@ that serves it. SQLite takes turns between it and the running server.
    source was not given is listed under `references_not_counted`, never shown
    as zero. Drive Assignments are always listed there: they cannot be counted
    per Project yet. Read the preview before the next step.
-4. **Apply**: `t6 migrate-projects --data-sources sources.json --apply --preview
+4. **Apply**: `t6 admin registry migrate --data-sources sources.json --apply --preview
    preview.json --actor <name>`. It registers every page that has no Project,
    **unclassified**, with its recorded code, and prints a report. It refuses
    (exit 2) when the pages differ from the preview. Exit 1 means some pages
@@ -286,7 +286,7 @@ that serves it. SQLite takes turns between it and the running server.
    them in Notion and run it again. A rerun keeps every ID it already issued
    and registers only what is new.
 5. **Classify**: write a JSON object of T6 ID (or page ID) to `in` or `out`
-   and run `t6 classify-projects --decisions decisions.json --actor <name>`.
+   and run `t6 admin registry classify --decisions decisions.json --actor <name>`.
    Rotation is a decision, never derived from Status. `GET
    /registry/unclassified` lists what is left. Only unclassified Projects
    change; a classified Project is never reclassified here.
@@ -431,7 +431,7 @@ loses nothing.
 ### Deployment, health and recovery
 
 `docs/deployment.md` is the runbook for the VPS: process layout, configuration,
-rollout order, `t6 health`, `t6 backup` and `t6 restore`, and a verification log
+rollout order, `t6 health`, `t6 admin backup` and `t6 admin restore`, and a verification log
 that separates what the tests prove from what still has to be run on the VPS.
 
 ## Drives
@@ -509,7 +509,7 @@ result = import_per_project_workbook(path, store, lookup=lookup, logged_by=Ref(t
 ```
 
 - The per-project workbook has one tab per Project: an optional
-  `PROJECT NAME: ...` row, a header row starting with `HARD DRIVE LABEL`, then
+  `PROJECT NAME: ...` or `PROJECT: ...` row, a header row starting with `HARD DRIVE LABEL`, then
   one row per drive. A tab with no project name row uses the tab title.
 - A row becomes a Drive (brand, capacity, format) with an Assignment for the
   tab's Project, a received event when the row has a received date and a
@@ -524,6 +524,7 @@ result = import_per_project_workbook(path, store, lookup=lookup, logged_by=Ref(t
 
   | Reason | What happened to the row |
   | --- | --- |
+  | `pre-header line` | unparsed non-empty line preserved as evidence; no release facts guessed |
   | `no label` | imported if another meaningful identifying detail exists |
   | `note in serial cell` | imported with suspected candidate and original cell preserved |
   | `shared serial` | distinct review-flagged Drives with suspected serials; never merged |
@@ -559,7 +560,7 @@ result = import_per_project_workbook(path, store, lookup=lookup, logged_by=Ref(t
     imported, because a label alone does not identify a Drive.
   - A Drive already in the store, for example from the per-project workbook,
     keeps its record and gains the new Assignment and events.
-- `t6 drives-import-dry-run WORKBOOK [--log-sheet FILE] [--projects FILE]` runs
+- `t6 admin drive import WORKBOOK [--log-sheet FILE] [--projects FILE]` runs
   the import into an in-memory store that is thrown away and prints
   `{"imported": n, "review": [...]}`. `WORKBOOK` is the per-project workbook.
   Nothing is written anywhere. `--projects` is a JSON list of
@@ -627,7 +628,7 @@ results = fleet.sync(
 Each `SyncResult` says `matched`, `unmatched` or `ambiguous`, the changes, the
 facts skipped (unknown or stale), and, when applied, the saved `Machine` or the
 typed `Rejected` or `Ambiguous` failure. `t6.fleet.rules` has `match_key`,
-`role_group`, `manifest_chain` and `is_stale`. Run `t6 schema-snapshot` once so
+`role_group`, `manifest_chain` and `is_stale`. Run `t6 admin snapshot` once so
 the Ring options are kept by ID.
 
 ## Optional extras
@@ -648,7 +649,7 @@ Install only the adapters an application needs, for example
 | `server` | Webhook server and queue (stdlib only) |
 | `worker` | Job workers (stdlib only) |
 
-The `notion` extra installs `httpx`, the `llm` extra installs `pydantic`, the `lookup` extra installs `rapidfuzz`, the `resolve` extra installs `psycopg` and the `drives` extra installs `openpyxl`.
+The `notion` extra installs `httpx`, the `lookup` extra installs `rapidfuzz`, the `resolve` extra installs `psycopg` and the `drives` extra installs `openpyxl`.
 The `privacy`, `instagantt`, `server` and `worker` extras are implemented and
 need no third-party packages. The `frameio` extra holds the
 [Frame.io worker](#frameio) and needs none; its briefing feed also needs the `notion` extra. The `notion` extra does not install Frame.io, Adobe sign-in, or
@@ -880,7 +881,7 @@ multi-select and status properties also list their option IDs. It holds no
 option names, because they contain show and client names. A property or option
 keeps its ID when it is renamed in Notion, so t6-core addresses by ID and the
 name is for display and errors. After a rename, run
-`t6 schema-snapshot --data-sources FILE --out FILE` (same file format as
+`t6 admin snapshot --data-sources FILE --out FILE` (same file format as
 `schema-check`) and regenerate; no code changes. A property whose entry has no
 ID yet is addressed by name. The `t6.notion.generated`
 module has one model per database, such as `BaysRow` and `JobOrdersRow`. Run
@@ -956,18 +957,32 @@ page, so it is `Ambiguous` with that page ID). The only Job Orders property
 no field carries is `place`.
 
 `status` and `department` are named values (`JobOrderStatus`, `Department` in
-`t6.domain`). `t6 schema-snapshot` records each one's Notion option ID in the
+`t6.domain`). `t6 admin snapshot` records each one's Notion option ID in the
 snapshot (`named_options`), found by matching the live option name once. After
 that an option renamed in Notion is still read and written by ID. A value with
 no ID recorded is sent by its label, and a status or department Notion has but
-t6-core does not know reads as its plain name. `t6 schema-check` reports a
+t6-core does not know reads as its plain name. `t6 admin schema-check` reports a
 named value whose option is gone under `named_missing`, as drift.
+
+### Meeting Notes
+
+`t6.notion.meeting_notes.MeetingNotes(client, data_source_id)` reads and writes
+Meeting Notes pages as `t6.domain.MeetingNote` (title as `name`, meeting date,
+project IDs, attendee IDs and names, ready to send, sent at, last edited).
+`with_title`, `with_title_prefix` and `ready_to_send` read. `create` saves the
+properties through the typed write and appends the body blocks in chunks of
+100, returning the saved note, `Rejected` or `Ambiguous` (a body that could
+not be saved leaves a page, so it is `Ambiguous` with that page ID). `trash`
+and `mark_sent` change a note. A page body is a list of Notion blocks; read it
+with `NotionClient.list_block_children`.
 
 ### Projects, Contacts and Deliverables
 
 `t6.notion.reads` has `ProjectReader`, `ContactReader` (each with `get` and
 `list`) and `DeliverableReader.for_project`, returning `t6.domain` entities
-addressed by property ID. `Project` carries status, stage, health, playdate,
+addressed by property ID. `list` skips pages in the trash or archived, and
+`Project`, `Contact` and `JobOrder` carry `last_edited`, the page's own
+last-edited time. `Project` carries status, stage, health, playdate,
 submission and archival deadlines, PM and tech notes, `has_post_supe`, and the
 role relations as page IDs (`editor_ids`, `assistant_editor_ids`,
 `online_editor_ids`, `colorist_ids`, `sound_tech_ids`, `post_coordinator_ids`,
@@ -978,14 +993,14 @@ any other text are `None`, meaning flexible. `Deliverable` carries
 
 ### Schema check
 
-`t6 schema-check` diffs live Notion against the snapshot. It needs the Notion
+`t6 admin schema-check` diffs live Notion against the snapshot. It needs the Notion
 extra, a token in `T6_NOTION_TOKEN`, and a JSON file that maps snapshot
 database keys to live data source IDs (keep that file out of the repository):
 
 ```console
 $ cat data-sources.json
 {"projects": "<data source id>", "bays": "<data source id>"}
-$ t6 schema-check --data-sources data-sources.json
+$ t6 admin schema-check --data-sources data-sources.json
 ```
 
 The report is JSON. For each database it lists `added`, `removed` and
@@ -993,7 +1008,7 @@ The report is JSON. For each database it lists `added`, `removed` and
 which are information and not drift. Databases without an ID are listed under
 `skipped`.
 
-**Renames and the scheduled check.** `t6 schema-check --fix-snapshot` rewrites
+**Renames and the scheduled check.** `t6 admin schema-check --fix-snapshot` rewrites
 the snapshot (`--snapshot FILE`, else the bundled one) with the new names after
 renames, then run `scripts/generate_models.py`. If a property was added,
 removed or changed in type, it prints the report, exits 1 and changes nothing:
@@ -1059,16 +1074,16 @@ when the command cannot run (for example, no token).
 
 ### Cameras
 
-`t6 cameras get` and `t6 cameras update` let a skill read and change Cameras
+`t6 camera get` and `t6 camera enrich` let a skill read and change Cameras
 without Notion property names. Both need the Notion extra, `T6_NOTION_TOKEN`,
 and the same `--data-sources` file, which must have a `cameras` entry. Fields
 use the generated model's names: `name`, `tags`, `related_to_projects_cameras`
 and `wiki`, plus the row `id`.
 
 ```console
-$ t6 cameras get --data-sources data-sources.json            # JSON list
-$ t6 cameras get --page-id <page id> --data-sources data-sources.json
-$ echo '{"tags": ["Sony", "Full frame"]}' | t6 cameras update <page id> --data-sources data-sources.json
+$ t6 camera get --data-sources data-sources.json            # JSON list
+$ t6 camera get --page-id <page id> --data-sources data-sources.json
+$ echo '{"tags": ["Sony", "Full frame"]}' | t6 camera enrich <page id> --data-sources data-sources.json
 ```
 
 `update` reads a JSON object from stdin (or `--json FILE`), writes only those
@@ -1139,8 +1154,7 @@ placeholder it did not issue in both.
 
 ## LLM
 
-`t6.llm` runs typed LLM tasks. Install it with `pip install 't6[llm]'`
-(pydantic v2 is its only dependency). A `Task` has a prompt tag, an input
+`t6.llm` runs typed LLM tasks. Pydantic v2 is a base dependency. A `Task` has a prompt tag, an input
 model and a pydantic output model. Prompts stay in the app: the task's
 `render` function turns the input into chat messages.
 
@@ -1313,21 +1327,20 @@ $ t6 version
 {"version": "0.3.4"}
 ```
 
-`python -m t6 version` provides the same output. `t6 schema-check` is
-described under [Schema check](#schema-check). `t6 migrate-projects` and
-`t6 classify-projects` are described under
+`python -m t6 version` provides the same output. `t6 admin schema-check` is
+described under [Schema check](#schema-check). `t6 admin registry migrate` and
+`t6 admin registry classify` are described under
 [Migrating existing Projects](#migrating-existing-projects); they read the
-registry file at `--registry-db` (default `$T6_REGISTRY_DB`). `t6
-drives-import-dry-run` is described under
+registry file at `--registry-db` (default `$T6_REGISTRY_DB`). `t6 admin drive import` is described under
 [Importing the legacy workbooks](#importing-the-legacy-workbooks). `t6 health`,
-`t6 backup --into DIR` and `t6 restore --from DIR` use the server's database
+`t6 admin backup --into DIR` and `t6 admin restore --from DIR` use the server's database
 variables and are described in `docs/deployment.md`.
 
 ### Studio commands
 
 These read the Notion token from `$T6_NOTION_TOKEN` and the data source IDs
 from `--data-sources FILE` (a JSON object of database key to data source ID,
-as for `schema-check`). They print JSON (indented) with Notion IDs and never write.
+as for `admin schema-check`). They print JSON (indented) with Notion IDs and never write.
 Errors are JSON on stderr with exit status 2.
 
 `t6 departments --data-sources FILE` lists the live Departments (the
@@ -1338,13 +1351,13 @@ $ t6 departments --data-sources sources.json
 {"departments": [{"id": "cU=L", "name": "TOC"}, {"id": "FeJa", "name": "AE"}, ...]}
 ```
 
-`t6 contacts find <name|@handle|alias|telegram id> --data-sources FILE` (the
+`t6 person find <name|@handle|alias|telegram id> --data-sources FILE` (the
 `contacts` source) uses the shared matching policy. It prints the `match`, or
 `null` with `needs_review` and the `candidates` (with scores) for a person to
 choose. Fuzzy matching needs `t6[lookup]`.
 
 ```console
-$ t6 contacts find @msantos --data-sources sources.json
+$ t6 person find @msantos --data-sources sources.json
 {
   "match": {"id": "<page id>", "name": "Maria Santos", "telegram_handle": "@msantos", "telegram_user_id": 4242},
   "method": "normalized",
@@ -1355,7 +1368,7 @@ $ t6 contacts find @msantos --data-sources sources.json
 }
 ```
 
-`t6 projects resolve <code|name> --data-sources FILE [--registry-db FILE]` (the
+`t6 project resolve <code|name> --data-sources FILE [--registry-db FILE]` (the
 `projects` source) resolves a Project Code. A reused code is settled by rotation
 when the registry file knows the Projects (`--registry-db`, default
 `$T6_REGISTRY_DB`); with no registry file every Project counts as a holder, and
@@ -1364,7 +1377,7 @@ and always needs review. The result has the same `match`, `method`,
 `needs_review`, `reason` and `candidates` fields.
 
 ```console
-$ t6 projects resolve ALP --data-sources sources.json --registry-db t6-registry.sqlite
+$ t6 project resolve ALP --data-sources sources.json --registry-db t6-registry.sqlite
 {
   "match": {"id": "<page id>", "t6_id": "<T6 Project ID>", "name": "Alpha Show", "project_code": "ALP", "status": "In Progress", "rotation": "in"},
   "method": "exact_id",
@@ -1394,7 +1407,7 @@ $ t6 jo get --data-sources sources.json -- -100123:456
 {"id": "<page id>", "name": "ORC - TOC - JO #62", "department": "TOC", "number": "62", "deadline": "2026-11-14T17:00:00+08:00", ...}
 ```
 
-`t6 jo create --file jo.json --data-sources FILE` is a dry run: it prints the
+`t6 jo raise --file jo.json --data-sources FILE` is a dry run: it prints the
 fields it would write. The file is a JSON object of Job Order fields (the
 `JobOrder` fields, plus `project_id` and `source_text`). Dates without a time
 zone are Manila. The Department is checked against the live options (`TO`
@@ -1404,9 +1417,9 @@ typed `rejected` or `ambiguous` result and exits 1. An `ambiguous` result means
 the write may have happened, so check before you retry.
 
 ```console
-$ t6 jo create --file jo.json --data-sources sources.json
+$ t6 jo raise --file jo.json --data-sources sources.json
 {"dry_run": true, "fields": {"name": "ORC - TOC - JO #62", "department": "TOC", "cc_ids": ["<standing cc>"], ...}}
-$ t6 jo create --file jo.json --data-sources sources.json --apply --actor cyril
+$ t6 jo raise --file jo.json --data-sources sources.json --apply --actor cyril
 {"result": "saved", "actor": "cyril", "job_order": {"id": "<page id>", ...}}
 ```
 
@@ -1437,7 +1450,7 @@ $ t6 deadline "Nov 13 5pm" --posted 2026-11-12T09:00:00+08:00
 
 ### Check an app follows the consumer contract
 
-`t6 check-consumer PATH` scans the Python files under `PATH` and fails when
+`t6 admin consumer-check PATH` scans the Python files under `PATH` and fails when
 app code names a Notion, OpenRouter, DeepSeek or Frame.io API host in a string
 (a direct HTTP call), or imports `t6.notion.generated`
 ([ADR 0002](docs/adr/0002-consumer-contract.md)). Docstrings and virtualenv or
@@ -1445,7 +1458,7 @@ cache directories are not scanned. It prints JSON and exits 1 when there are
 findings (2 when the path does not exist):
 
 ```console
-$ t6 check-consumer .
+$ t6 admin consumer-check .
 {"findings": [{"file": "app/notes.py", "line": 12, "rule": "direct-http", "detail": "names the Notion API host api.notion.com"}]}
 ```
 
@@ -1454,7 +1467,7 @@ app's source:
 
 ```yaml
 - run: pip install 't6 @ git+https://github.com/mclbautista/t6-core.git@v0.3.4'
-- run: t6 check-consumer .
+- run: t6 admin consumer-check .
 ```
 
 ## Container image
@@ -1564,6 +1577,28 @@ The table layout in `t6.resolve.schema` and the SQL in `t6.resolve.postgres`
 have not been run against a live server. Check them first, then correct the
 schema entries and fixtures. The versions in `SCHEMAS` (18, 19) are placeholders until
 `DaVinci Resolve Version` is filled on active shows.
+
+### CLI rename table
+
+The old commands remain available until 0.5.0 and print a deprecation notice on stderr.
+
+| Previous command | Current command |
+| --- | --- |
+| `jo create` | `jo raise` |
+| `jo get`, `jo format` | unchanged |
+| `contacts find` | `person find` |
+| `projects resolve` | `project resolve` |
+| `cameras get` | `camera get` |
+| `cameras update` | `camera enrich` |
+| `departments`, `standing-cc`, `deadline` | unchanged |
+| `migrate-projects` | `admin registry migrate` |
+| `classify-projects` | `admin registry classify` |
+| `schema-check`, `check` | `admin schema-check` |
+| `schema-snapshot` | `admin snapshot` |
+| `backup`, `restore` | `admin backup`, `admin restore` |
+| `check-consumer` | `admin consumer-check` |
+| `drives-import-dry-run` | `admin drive import` |
+| `version`, `commands --json`, `health` | unchanged |
 
 ## Transcription
 

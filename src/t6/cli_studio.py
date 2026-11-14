@@ -1,4 +1,4 @@
-"""Studio commands of the `t6` CLI: `departments`, `contacts find`, `projects resolve`, `standing-cc`.
+"""Studio commands of the `t6` CLI: `contacts find`, `projects resolve`, `standing-cc`.
 
 Each prints one JSON document with Notion page and option IDs. Errors are JSON
 on stderr with exit status 2 (see `t6.cli`). Nothing here writes to Notion.
@@ -27,12 +27,6 @@ def add_parsers(commands: Any) -> None:
     def data_sources(parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--data-sources", type=Path, required=True, metavar="FILE", help="JSON of database key to data source ID")
 
-    departments = commands.add_parser(
-        "departments",
-        help="Print the studio Departments, read live, in display order, with option IDs",
-        description=f"Reads ${TOKEN_VARIABLE}. Needs a 'job_orders' entry in --data-sources.",
-    )
-    data_sources(departments)
     contacts = commands.add_parser("contacts", help="Contact commands")
     contacts_commands = contacts.add_subparsers(dest="contacts_command", required=True)
     find = contacts_commands.add_parser(
@@ -85,13 +79,11 @@ def run(args: argparse.Namespace, open_notion: Callable[[str], NotionClient]) ->
         return _fail(f"set {TOKEN_VARIABLE} to a Notion integration token")
     try:
         sources = _read_data_sources(args.data_sources)
-        source_key = {"departments": "job_orders", "contacts": "contacts", "projects": "projects"}[args.command]
+        source_key = {"contacts": "contacts", "projects": "projects"}[args.command]
         if source_key not in sources:
             return _fail(f"--data-sources has no '{source_key}' entry")
         with open_notion(token) as client:
-            if args.command == "departments":
-                result = _departments(client, sources[source_key])
-            elif args.command == "contacts":
+            if args.command == "contacts":
                 result = _contacts_find(client, sources[source_key], args.mention)
             else:
                 result = _projects_resolve(client, sources[source_key], args.text, args.registry_db)
@@ -105,12 +97,6 @@ def _print(result: JSON) -> int:
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
-
-
-def _departments(client: NotionClient, data_source_id: str) -> JSON:
-    from t6.notion.departments import get_departments
-
-    return {"departments": [{"id": d.option_id, "name": d.name} for d in get_departments(client, data_source_id)]}
 
 
 def _contact(contact: Contact) -> JSON:

@@ -62,6 +62,7 @@ from t6.registry import (
     Rotation,
     Shown,
 )
+from t6.server.routes import Route
 from t6.server.queue import DIAGNOSTIC_QUEUE, FRAMEIO_QUEUE, MAIN_QUEUE, JobQueue
 from t6.server.signatures import WebhookRejected, verify_frameio, verify_notion
 
@@ -122,6 +123,7 @@ class Grant:
 class ServerConfig:
     """Secrets, from the environment. An empty secret turns that route off (503)."""
 
+    edge_routes: tuple[Route, ...] | None = None
     frameio_webhook_secret: str = ""
     notion_webhook_token: str = ""
     tap_secret: str = ""
@@ -221,6 +223,13 @@ class WebhookApp:
 
     def public(self, request: Request) -> Response:
         path = urlsplit(request.path).path
+        if self._config.edge_routes is not None:
+            if path == "/health":
+                return Response(200) if request.method == "GET" else Response(405)
+            if path == "/frameio/callback":
+                return self._frameio_callback(request)
+            route = next((r for r in self._config.edge_routes if r.path == path), None)
+            return self._edge_webhook(request, route) if route else Response(404)
         if path == "/frameio/callback":
             return self._frameio_callback(request)
         if path != "/webhook" and not path.startswith("/webhook/"):
@@ -235,6 +244,47 @@ class WebhookApp:
         except WebhookRejected as rejection:
             return Response(401, {"error": rejection.reason})
         return Response(401, {"error": "unknown sender"})
+
+    def _edge_webhook(self, request: Request, route: Route) -> Response:
+        if request.method != "POST":
+            return Response(405)
+        headers = request.headers_lower()
+        body = _json_object(request.body)
+        if route.verifier == "notion" and not route.secret and not headers.get("x-notion-signature") and body and isinstance(body.get("verification_token"), str) and body["verification_token"]:
+            self._on_notion_verification(str(body["verification_token"]))
+            return Response(200)
+        if route.verifier == "frameio_v0" and route.queue == "frameio" and route.job_kind == JobKind.FRAMEIO_RESOLVE_COMMENT.value:
+            return self._frameio(request, route.secret)
+        if route.verifier == "notion" and route.queue == "main" and route.job_kind == JobKind.NOTION_PAGE_CHANGED.value:
+            return self._notion(request, route.secret, handshake=False)
+        try:
+            if route.verifier == "frameio_v0":
+                verify_frameio(route.secret, headers, request.body, self._clock())
+            elif route.verifier == "notion":
+                if not route.secret:
+                    return Response(503, {"error": "notion webhook token not configured"})
+                verify_notion(route.secret, headers, request.body, self._clock())
+            elif not _same(route.secret, headers.get("x-goog-channel-token", "")):
+                raise WebhookRejected("bad channel token")
+        except WebhookRejected as rejection:
+            return Response(401, {"error": rejection.reason})
+        if route.verifier != "google_channel" and body is None:
+            return Response(400, {"error": "body is not a JSON object"})
+        payload: dict[str, JsonValue]
+        if route.verifier == "google_channel":
+            channel, number = headers.get("x-goog-channel-id", ""), headers.get("x-goog-message-number", "")
+            if not channel or not number:
+                return Response(400, {"error": "missing channel id or message number"})
+            metadata: dict[str, JsonValue] = {key: value for key, value in headers.items() if key.startswith("x-goog-") and key != "x-goog-channel-token"}
+            payload = {"headers": metadata}
+            identity = channel + ":" + number
+        else:
+            payload = body or {}
+            event_id = payload.get("id")
+            identity = str(event_id) if isinstance(event_id, str) and event_id else hashlib.sha256(request.body).hexdigest()
+        key = f"edge:{route.path}:{identity}"
+        made = self._queue.submit(route.queue, route.job_kind, key, payload)
+        return Response(200, {"job_id": made.job_id, "created": made.created})
 
     def _frameio_callback(self, request: Request) -> Response:
         """Adobe sends the browser here after sign-in. The authorization code goes
@@ -251,11 +301,12 @@ class WebhookApp:
         self._queue.submit(FRAMEIO_QUEUE, JobKind.FRAMEIO_SIGN_IN.value, key, {"code": code, "state": state})
         return Response(200, {"received": True, "message": "Sign-in received. You can close this page."})
 
-    def _frameio(self, request: Request) -> Response:
-        if not self._config.frameio_webhook_secret:
+    def _frameio(self, request: Request, secret: str | None = None) -> Response:
+        secret = self._config.frameio_webhook_secret if secret is None else secret
+        if not secret:
             return Response(503, {"error": "frameio webhook secret not configured"})
         now = self._clock()
-        verify_frameio(self._config.frameio_webhook_secret, request.headers_lower(), request.body, now)
+        verify_frameio(secret, request.headers_lower(), request.body, now)
         body = _json_object(request.body)
         if body is None:
             return Response(400, {"error": "body is not a JSON object"})
@@ -281,15 +332,16 @@ class WebhookApp:
         )
         return Response(200, {"created": made.created})
 
-    def _notion(self, request: Request) -> Response:
+    def _notion(self, request: Request, secret: str | None = None, *, handshake: bool = True) -> Response:
+        secret = self._config.notion_webhook_token if secret is None else secret
         body = _json_object(request.body)
-        if not request.header("x-notion-signature") and body and "verification_token" in body:
+        if handshake and not request.header("x-notion-signature") and body and "verification_token" in body:
             # Setup handshake: Notion sends its token once and the operator stores it as a secret.
             self._on_notion_verification(str(body["verification_token"]))
             return Response(200)
-        if not self._config.notion_webhook_token:
+        if not secret:
             return Response(503, {"error": "notion webhook token not configured"})
-        verify_notion(self._config.notion_webhook_token, request.headers_lower(), request.body, self._clock())
+        verify_notion(secret, request.headers_lower(), request.body, self._clock())
         if body is None:
             return Response(400, {"error": "body is not a JSON object"})
         if body.get("type") not in NOTION_PAGE_EVENTS:
@@ -316,6 +368,12 @@ class WebhookApp:
 
     def tailnet(self, request: Request) -> Response:
         parts = urlsplit(request.path)
+        if self._config.edge_routes is not None:
+            if parts.path == "/health":
+                return Response(200) if request.method == "GET" else Response(405)
+            if parts.path.startswith("/queue/"):
+                return self._queue_route(parts.path[len("/queue/") :], parts.query, request)
+            return Response(404)
         if parts.path == "/tap":
             return self._tap(request)
         if parts.path.startswith("/queue/"):

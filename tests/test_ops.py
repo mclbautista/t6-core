@@ -104,6 +104,7 @@ class BackupRestoreTests(OpsTestCase):
         bad = Path(self.directory.name) / "bad"
         shutil.copytree(good, bad)
         db = sqlite3.connect(bad / "registry.sqlite")
+        db.execute("DROP TRIGGER audit_no_delete")
         db.execute("DELETE FROM audit")
         db.commit()
         db.close()

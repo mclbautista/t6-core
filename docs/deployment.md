@@ -48,12 +48,12 @@ one leak is one capability. An unset secret turns its route off (503).
    and `page.undeleted`. Then change, delete and restore one test page and check
    the registry (`GET /registry/pages/{id}`): the binding turns unavailable on
    delete and available on restore, and its code stays reserved throughout.
-4. **Back up** (`t6 backup --into DIR`), then **migrate**: `t6 migrate-projects`
+4. **Back up** (`t6 admin backup --into DIR`), then **migrate**: `t6 admin registry migrate`
    without `--apply` to read the preview, review it, then with `--apply --preview`.
    All imported Projects are unclassified and block their codes.
-5. **Classify** with `t6 classify-projects` or the Sixto cards. Back up again.
+5. **Classify** with `t6 admin registry classify` or the Sixto cards. Back up again.
 6. Only now allow code and rotation writes by the callers you intend. Run
-   `t6 schema-check --registry-db ...` and confirm known callers and saved
+   `t6 admin schema-check --registry-db ...` and confirm known callers and saved
    references still resolve (they go through the registry's bindings, including
    legacy ones).
 7. **End-to-end exercise** (record the result): A in with code X, A out, B takes X,
@@ -76,9 +76,9 @@ one leak is one capability. An unset secret turns its route off (503).
 ## Backup and restore
 
 ```sh
-t6 backup --into /backups/2026-11-10          # safe while the server runs
+t6 admin backup --into /backups/2026-11-10          # safe while the server runs
 # disaster: stop the server and worker, start from empty /data
-t6 restore --from /backups/2026-11-10         # verifies checksums and counts, never overwrites
+t6 admin restore --from /backups/2026-11-10         # verifies checksums and counts, never overwrites
 python -m t6.server                           # start; unconfirmed syncs and unsent cards are queued again
 ```
 
@@ -115,3 +115,29 @@ repeat it on the VPS and record it.
 | Backup and restore with semantic counts | yes | not yet |
 | Real Notion webhook verification and subscription | no | not yet |
 | Sixto cards in Telegram through the gateway | no | not yet |
+
+### Edge webhook intake
+
+Set `T6_SERVER_MODE=edge` and `T6_ROUTES_FILE` to a YAML file like
+[edge-routes.example.yaml](edge-routes.example.yaml), and set every named
+secret environment variable before starting `python -m t6.server` (install the
+`server` extra). The server validates the file before opening its databases or
+listeners. Configure each provider subscription to send only the events meant
+for its route; the route selects the job kind and queue, not the payload's type.
+
+The public listener serves configured paths, `GET /health`, and the existing
+Frame.io OAuth callback. The tailnet listener serves `GET /health` and the
+authenticated `/queue/*` routes. Configure the existing worker secrets for the
+queues workers need to claim. The callback still requires a Frame.io worker
+claim grant. Edge mode does not open the registry or operator databases.
+
+Frame.io and Notion jobs contain the verified JSON object. Google jobs contain
+`headers` with the `x-goog-*` notification headers except the channel token.
+Jobs are deduplicated by route and provider event ID (or body hash when absent);
+Google uses channel ID and message number. The Notion verification-token
+handshake is acknowledged without queuing, as in full mode. The server prints the
+token to standard error for the operator to store. For initial edge setup, set
+`T6_NOTION_BOOTSTRAP=1` to allow an unset Notion route secret. That route serves only the unsigned Notion verification handshake and logs its bootstrap status at startup; ordinary events are rejected. All other unset route secrets still prevent startup. Store the token, unset bootstrap, and restart.
+Unsigned events remain rejected. Full mode remains the default.
+
+Workers can also poll internal jobs by setting `T6_DATABASE` to the local t6 SQLite database path. The worker polls that job table and its configured VPS queue in turn; the database must be shared with internal job submitters. Back up the database before upgrading.

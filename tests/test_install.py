@@ -8,7 +8,10 @@ import tempfile
 import unittest
 import venv
 
-# httpx and what it pulls in. No Frame.io, Adobe sign-in or LLM libraries.
+# Base pydantic and its dependencies; adapter libraries remain optional.
+BASE_PACKAGES = {"pydantic", "pydantic-core", "pydantic_core", "annotated-types", "typing-extensions", "typing_extensions", "typing-inspection"}
+
+# httpx and what it pulls in.
 NOTION_PACKAGES = {
     "httpx", "httpcore", "h11", "anyio", "idna", "certifi", "sniffio",
     "typing-extensions", "typing_extensions", "exceptiongroup",
@@ -31,10 +34,7 @@ class InstallationTests(unittest.TestCase):
                     environment = root / ("notion" if extra else "base")
                     venv.create(environment, with_pip=True)
                     python = environment / "bin" / "python"
-                    # The base package must install with no index at all. The
-                    # Notion extra fetches httpx and its dependencies.
-                    offline = [] if extra else ["--no-index"]
-                    self.run_command(python, "-m", "pip", "install", *offline, f"{wheel}{extra}")
+                    self.run_command(python, "-m", "pip", "install", f"{wheel}{extra}")
                     self.run_command(python, "-c", "import t6.domain; import t6.lookup; import t6.drives, t6.drives.testing")
                     if not extra:
                         self.run_command(python, "-c", "import t6.transcribe; from t6.transcribe import render_srt")
@@ -52,9 +52,10 @@ else:
                         set(installed["dependencies"]),
                         {
                             "httpx<1,>=0.27; extra == 'notion'",
+                            "pydantic<3,>=2.7",
+                            "pyyaml<7,>=6; extra == 'server'",
                             "httpx<1,>=0.27; extra == 'transcribe'",
                             "elevenlabs<3,>=2.78.0; extra == 'transcribe'",
-                            "pydantic<3,>=2.7; extra == 'llm'",
                             "psycopg[binary]<4,>=3.2; extra == 'resolve'",
                             "openpyxl<4,>=3.1; extra == 'drives'",
                             "rapidfuzz<4,>=3.9; extra == 'lookup'",
@@ -65,7 +66,7 @@ else:
                         {"notion", "privacy", "llm", "frameio", "resolve", "instagantt", "lookup", "drives", "server", "worker", "transcribe"},
                     )
                     # A fresh environment may include setuptools on Python 3.11.
-                    allowed = {"t6", "pip", "setuptools"}
+                    allowed = {"t6", "pip", "setuptools"} | BASE_PACKAGES
                     if extra:
                         allowed |= NOTION_PACKAGES
                         self.run_command(python, "-c", "import t6.notion, t6.notion.testing")

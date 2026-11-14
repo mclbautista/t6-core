@@ -164,7 +164,11 @@ Manifest, Ring, Munki Client Version, Last Check-in and OS Version.
 
 The rules every app follows to use t6-core (scope, boundary, `t6.domain`,
 Notion IDs, CI enforcement, version pins) are recorded in
-`docs/adr/0002-consumer-contract.md`.
+[ADR 0002](docs/adr/0002-consumer-contract.md). The related decisions are
+[credential ownership](docs/adr/0003-one-owner-per-credential.md),
+[entity identity, relations and history](docs/adr/0004-entity-identity-relations-and-history.md),
+[studio verbs](docs/adr/0005-studio-verbs.md), and
+[the two queues](docs/adr/0006-two-queues.md).
 
 ## Project
 
@@ -230,3 +234,20 @@ fields, read from Notion) and `t6.registry` (identity).
   kept per (file, commenting person) and restarts on each of their comments.
 - **Sign-in**: a person signing in to Adobe so the Frame.io worker has a
   token again. The **sign-in alert** is the Telegram message with the link.
+
+## T6 database and IDs
+
+The **t6 database** is the SQLite store for T6 entities. Its numbered schema
+migrations run on open; each records whether it is forward-only. Each migration
+must remain readable by the previous release or be marked forward-only. Migrations 2 through 4 are compatible with the previous release. The bindings
+column named `project_id` holds IDs of any entity kind. Take a backup before upgrading.
+
+A **T6 ID** is an opaque, permanent identifier whose prefix identifies its kind.
+The prefixes are Project `t6p_`, Deliverable `t6v_`, Package `t6k_`, Version
+`t6r_`, Timeline `t6t_`, Person `t6n_`, Bay `t6b_`, Booking `t6g_`, Media
+location `t6m_`, Concern `t6c_`, Approval `t6a_`, Job Order `t6j_`, Drive
+`t6d_`, Milestone `t6s_`, Chat link `t6h_`, and Transcript `t6x_`. Project
+IDs retain their existing 24-hex-digit format; the others use 32 lowercase hex
+digits. Drive IDs retain their UUID4 format. Existing IDs are never rewritten.
+A binding links an external page to an entity ID; replaced pages remain legacy
+bindings. Project bindings and registry behavior continue as before.

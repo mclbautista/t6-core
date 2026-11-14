@@ -43,6 +43,7 @@ __all__ = [
     "JobOrderStatus",
     "JsonValue",
     "Machine",
+    "MeetingNote",
     "Ring",
     "NotionEntity",
     "Project",
@@ -153,6 +154,8 @@ class Project(NotionEntity):
     post_coordinator_ids: tuple[str, ...] = field(default=(), compare=False)
     director_ids: tuple[str, ...] = field(default=(), compare=False)
     cinematographer_ids: tuple[str, ...] = field(default=(), compare=False)
+    last_edited: dt.datetime | None = field(default=None, compare=False)
+    """When Notion last saved the page, as Notion reports it."""
 
     def __post_init__(self) -> None:
         NotionEntity.__post_init__(self)
@@ -271,6 +274,8 @@ class JobOrder(NotionEntity):
     coordinator_ids: tuple[str, ...] = field(default=(), compare=False)
     deliverable_ids: tuple[str, ...] = field(default=(), compare=False)
     source_text: str | None = field(default=None, compare=False)
+    last_edited: dt.datetime | None = field(default=None, compare=False)
+    """When Notion last saved the page, as Notion reports it."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -291,6 +296,23 @@ class Contact(NotionEntity):
     aliases: tuple[str, ...] = field(default=(), compare=False)
     end_of_shift: dt.time | None = field(default=None, compare=False)
     """When the person's shift ends, a time of day. `None` means flexible: no fixed end."""
+    last_edited: dt.datetime | None = field(default=None, compare=False)
+    """When Notion last saved the page, as Notion reports it."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MeetingNote(NotionEntity):
+    """A Meeting Notes page. `name` is the title. The body is read with `t6.notion.meeting_notes`."""
+
+    meeting_date: dt.date | dt.datetime | None = field(default=None, compare=False)
+    project_ids: tuple[str, ...] = field(default=(), compare=False)
+    attendee_ids: tuple[str, ...] = field(default=(), compare=False)
+    """Notion user IDs of the Team Attendees, in Notion's order."""
+    attendee_names: tuple[str, ...] = field(default=(), compare=False)
+    """Names of the Team Attendees, in the same order as `attendee_ids`. Blank where Notion gives none."""
+    ready_to_send: bool = field(default=False, compare=False)
+    sent_at: dt.date | dt.datetime | None = field(default=None, compare=False)
+    last_edited: dt.datetime | None = field(default=None, compare=False)
 
 
 class Ring(StrEnum):

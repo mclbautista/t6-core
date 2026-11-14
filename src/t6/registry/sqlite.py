@@ -13,15 +13,15 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 import json
 from pathlib import Path
-import secrets
 import sqlite3
 import time
 from typing import TypeAlias
 
 from t6.domain.events import JsonValue
+from t6.ids import EntityKind, T6Id
 from t6.registry.core import (
     NOTION,
-    PROJECT_ID_PREFIX,
+    ActivityEntry,
     AuditEntry,
     Changed,
     ChangeOutcome,
@@ -105,6 +105,55 @@ CREATE TABLE IF NOT EXISTS requests (
 );
 """
 
+# Each migration runs in the same transaction as its version record. Version 1
+# adopts the previous release's schema. bindings.project_id stores IDs of any entity kind.
+_MIGRATIONS = (
+    (1, False, _SCHEMA),
+    (2, False, ""),
+    (3, False, """CREATE TABLE activity (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL,
+        subject_id TEXT, at REAL NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL,
+        summary TEXT NOT NULL, audit_id INTEGER REFERENCES audit(id)
+    );
+    INSERT INTO activity (project_id, at, actor, action, summary, audit_id)
+        SELECT project_id, at, actor, action, REPLACE(action, '_', ' '), id FROM audit;
+    CREATE INDEX activity_project_order ON activity (project_id, at DESC, id DESC)"""),
+    (4, False, """
+        CREATE TABLE internal_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, queue TEXT NOT NULL, kind TEXT NOT NULL,
+            dedupe_key TEXT NOT NULL, payload TEXT NOT NULL, run_at REAL NOT NULL,
+            state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+            lease_token TEXT, lease_until REAL, result TEXT, created_at REAL NOT NULL,
+            UNIQUE (kind, dedupe_key)
+        );
+        CREATE INDEX internal_jobs_claimable ON internal_jobs (queue, state, run_at)
+    """),
+)
+
+
+def _migrate(db: sqlite3.Connection) -> None:
+    db.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, forward_only INTEGER NOT NULL)")
+    row = db.execute("SELECT MAX(version) FROM schema_version").fetchone()
+    current = row[0] or 0
+    if db.execute("SELECT 1 FROM schema_version WHERE version > ? AND forward_only != 0", (_MIGRATIONS[-1][0],)).fetchone():
+        raise RegistryError(f"unsupported database schema version: {current}")
+    for version, forward_only, sql in _MIGRATIONS:
+        if version > current:
+            for statement in sql.split(";"):
+                if statement.strip():
+                    db.execute(statement)
+            if version == 3:
+                for table in ("audit", "activity"):
+                    for operation in ("UPDATE", "DELETE"):
+                        db.execute(f"CREATE TRIGGER {table}_no_{operation.lower()} BEFORE {operation} ON {table} "
+                                   f"BEGIN SELECT RAISE(ABORT, '{table} is append-only'); END")
+            db.execute("INSERT INTO schema_version VALUES (?, ?)", (version, int(forward_only)))
+
+    db.execute("INSERT INTO activity (project_id, at, actor, action, summary, audit_id) "
+               "SELECT project_id, at, actor, action, REPLACE(action, '_', ' '), id FROM audit "
+               "WHERE NOT EXISTS (SELECT 1 FROM activity WHERE activity.audit_id = audit.id)")
+
+
 _Values: TypeAlias = Mapping[str, JsonValue]
 _Step: TypeAlias = Callable[
     [sqlite3.Connection, RegisteredProject, float],
@@ -116,7 +165,7 @@ must not have written anything."""
 
 
 def _new_id() -> str:
-    return PROJECT_ID_PREFIX + secrets.token_hex(12)
+    return str(T6Id.mint(EntityKind.PROJECT))
 
 
 class SqliteProjectRegistry:
@@ -135,9 +184,7 @@ class SqliteProjectRegistry:
         finally:
             setup.close()
         with self._transaction() as db:
-            for statement in _SCHEMA.split(";"):
-                if statement.strip():
-                    db.execute(statement)
+            _migrate(db)
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
@@ -155,6 +202,40 @@ class SqliteProjectRegistry:
                 db.close()
         except sqlite3.OperationalError as problem:
             raise RegistryUnavailable(str(problem)) from problem
+
+    def bind_entity(self, system: str, page_id: str, entity_id: T6Id, *, actor: str) -> None:
+        """Bind an external page, retaining any previous page as legacy."""
+        if not isinstance(entity_id, T6Id) or entity_id.kind is EntityKind.PROJECT:
+            raise ValueError("bind non-Project entities with a T6Id; use the registry for Projects")
+        if not system.strip() or not page_id.strip() or not actor.strip():
+            raise ValueError("system, page_id and actor must not be blank")
+        page_id = _page(page_id) if system == NOTION else page_id
+        with self._transaction() as db:
+            row = db.execute(
+                "SELECT project_id FROM bindings WHERE system = ? AND page_id = ?", (system, page_id)
+            ).fetchone()
+            if row is not None and row[0] != str(entity_id):
+                raise ValueError("page is already bound")
+            active = db.execute("SELECT page_id FROM bindings WHERE system = ? AND project_id = ? AND active = 1", (system, str(entity_id))).fetchone()
+            if active is not None and active[0] == page_id:
+                return
+            now = self._clock()
+            db.execute("UPDATE bindings SET active = 0 WHERE system = ? AND project_id = ?", (system, str(entity_id)))
+            if row is None:
+                db.execute(
+                    "INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES (?, ?, ?, ?, 1)",
+                    (system, page_id, str(entity_id), now),
+                )
+            else:
+                db.execute("UPDATE bindings SET active = 1 WHERE system = ? AND page_id = ?", (system, page_id))
+            _audit(db, str(entity_id), "page_bound", actor, now, {"page_id": None if active is None else active[0]}, {"page_id": page_id})
+
+    def bound_entity(self, system: str, page_id: str) -> str | None:
+        """Resolve active and legacy external pages to their entity ID."""
+        page_id = _page(page_id) if system == NOTION else page_id
+        with self._transaction() as db:
+            row = db.execute("SELECT project_id FROM bindings WHERE system = ? AND page_id = ?", (system, page_id)).fetchone()
+            return None if row is None else str(row[0])
 
     # -- register ------------------------------------------------------------
 
@@ -336,6 +417,17 @@ class SqliteProjectRegistry:
             for row in rows
         )
 
+    def activity(self, project_id: str, *, since: float | None = None, limit: int | None = None) -> tuple[ActivityEntry, ...]:
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be positive")
+        with self._transaction() as db:
+            rows = db.execute(
+                "SELECT project_id, subject_id, at, actor, action, summary, audit_id FROM activity "
+                "WHERE project_id = ? AND (? IS NULL OR at >= ?) ORDER BY at DESC, id DESC LIMIT ?",
+                (project_id, since, since, -1 if limit is None else limit),
+            ).fetchall()
+        return tuple(ActivityEntry(*row) for row in rows)
+
     def pending_sync(self) -> tuple[SyncIntent, ...]:
         return self._intents("done_at IS NULL")
 
@@ -386,7 +478,9 @@ class SqliteProjectRegistry:
                     return Observed("ignored", None)
                 _open_review(db, "unbound_page", page, None, {}, now)
                 return Observed("unbound", None)
-            project = _must_read(db, holder)
+            project = _read(db, holder)
+            if project is None:
+                return Observed("ignored", None)
             binding = next(b for b in project.bindings if b.page_id == page)
             here = {"page_id": page}
             if not available:
@@ -497,9 +591,13 @@ def _code_held(db: sqlite3.Connection, code: str, form: str, project_id: str) ->
 def _audit(
     db: sqlite3.Connection, project_id: str, action: str, actor: str, at: float, before: _Values | None, after: _Values
 ) -> None:
-    db.execute(
+    cursor = db.execute(
         "INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)",
         (project_id, action, actor, at, None if before is None else json.dumps(before), json.dumps(after)),
+    )
+    db.execute(
+        "INSERT INTO activity (project_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?)",
+        (project_id, at, actor, action, action.replace("_", " "), cursor.lastrowid),
     )
 
 

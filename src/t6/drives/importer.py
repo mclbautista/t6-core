@@ -5,7 +5,7 @@ reader. The importer writes only through `DriveStore` and never guesses: every
 row it cannot read with confidence is listed in the result's review report.
 
 The per-project workbook has one tab per Project. A tab holds an optional
-`PROJECT NAME: ...` row, a header row starting with `HARD DRIVE LABEL`, then
+`PROJECT NAME: ...` or `PROJECT: ...` row, a header row starting with `HARD DRIVE LABEL`, then
 one row per drive. A tab can repeat that pattern.
 
 The log sheet workbook has two kinds of tab, told apart by their header row.
@@ -51,7 +51,7 @@ __all__ = [
     "import_per_project_workbook",
 ]
 
-_PROJECT_NAME = re.compile(r"PROJECT NAME\s*:\s*(.*)", re.IGNORECASE | re.DOTALL)
+_PROJECT_NAME = re.compile(r"\bPROJECT(?: NAME)?\s*:\s*(.*)", re.IGNORECASE)
 _TAB_DATE = re.compile(r"DATE\s*:\s*(.+)", re.IGNORECASE)
 _LABEL = "HARD DRIVE LABEL"
 _SERIAL_COLUMN = "SERIAL NUMBER"
@@ -137,9 +137,9 @@ def import_per_project_workbook(
     suspected. Unreadable rows remain traceable review items. Unchanged reruns
     use row receipts and append no duplicate history. See docs/drive-identity.md.
     """
-    review: list[ReviewItem] = []
+    rows, review = _read_per_project(Path(path))
     imported = _import_drive_rows(
-        _read_per_project(Path(path)),
+        rows,
         lambda row, problems: _per_project_facts(row, lookup, logged_by, problems),
         store,
         review,
@@ -218,8 +218,9 @@ def _receipt(row: _Row, problems: list[str]) -> tuple[bool, date | None]:
     return True, _cell_date(value, problems)
 
 
-def _read_per_project(path: Path) -> list[_Row]:
+def _read_per_project(path: Path) -> tuple[list[_Row], list[ReviewItem]]:
     rows = []
+    review = []
     workbook = load_workbook(path, read_only=True, data_only=True)
     for sheet in workbook.worksheets:
         project: str | None = None
@@ -227,7 +228,8 @@ def _read_per_project(path: Path) -> list[_Row]:
         columns: list[str] | None = None
         for number, values in enumerate(sheet.iter_rows(values_only=True), start=1):
             first = str(values[0] or "").strip() if values else ""
-            named = _PROJECT_NAME.search(first)
+            first_lines = first.splitlines()
+            named = _PROJECT_NAME.search(first_lines[0]) if first_lines else None
             if named:
                 project, project_row, columns = named.group(1).strip() or None, number, None
             elif first.upper() == _LABEL:
@@ -238,8 +240,17 @@ def _read_per_project(path: Path) -> list[_Row]:
                 rows.append(
                     _Row(sheet.title, number, project or sheet.title, project_row, _cells(columns, values))
                 )
+            if columns is None:
+                unparsed = ([*first_lines[1:], *values[1:]] if named else values)
+                for value in unparsed:
+                    if value is not None:
+                        for line in str(value).splitlines():
+                            if line.strip():
+                                review.append(ReviewItem(
+                                    sheet.title, number, "pre-header line", line.strip(), str(path.resolve())
+                                ))
     workbook.close()
-    return [replace(row, workbook=str(path.resolve())) for row in rows]
+    return [replace(row, workbook=str(path.resolve())) for row in rows], review
 
 
 def _read_log_sheet(path: Path) -> tuple[list[_Row], list[_Row]]:
