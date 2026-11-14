@@ -932,6 +932,49 @@ class DeliverableMigrateOutput(BaseModel):
     review: list[dict[str, Any]]
 
 
+class VersionAddInput(BaseModel):
+    deliverable: str
+    frameio_file: str
+    note: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class VersionFindInput(BaseModel):
+    frameio_file: str
+
+
+class VersionFindOutput(BaseModel):
+    version: dict[str, Any] | None
+
+
+class VersionLockInput(BaseModel):
+    version: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class VersionOutput(BaseModel):
+    version_id: str
+    deliverable_id: str
+    project_id: str
+    idempotency_key: str
+
+
+def version_write(inputs: VersionAddInput | VersionLockInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.version import VersionStore
+    from t6.frameio.client import FrameioReader
+    from t6.worker.client import HttpTransport
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    url, secret = os.environ.get('T6_FRAMEIO_READ_URL'), os.environ.get('T6_FRAMEIO_READ_SECRET')
+    reader = FrameioReader(HttpTransport(url), secret) if url and secret else None
+    return VersionStore(_people().registry, _people().tokens, reader).write(
+        'add' if isinstance(inputs, VersionAddInput) else 'lock',
+        inputs.model_dump(exclude={'confirm', 'idempotency_key'}), actor=_actor.get(),
+        idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
 class MilestoneRecordInput(BaseModel):
     deliverable: str
     milestone: str
@@ -1156,6 +1199,9 @@ def api_read(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
 
 
 VERBS = (
+    Verb("version", "find", "Find a Version by Frame.io file", (), VersionFindInput, VersionFindOutput, "reader", "Resolve a review file to its Version.", api_read),
+    Verb("version", "add", "Add a Version", (), VersionAddInput, VersionOutput, "coordinator", "Preview and confirm a Frame.io file.", version_write),
+    Verb("version", "lock", "Lock a Version", (), VersionLockInput, VersionOutput, "coordinator", "Record picture lock.", version_write),
     Verb('approval', 'request', 'Request an Approval', tuple('approval request-' + gate for gate in ('vfx-committee', 'client-cut', 'grade', 'delivery-sign-off', 'drive-wipe', 'fleet-promotion')), ApprovalRequestInput, ApprovalOutput, 'person', 'An active Person may request an Approval.', approval_write),
     Verb('approval', 'grant', 'Grant an Approval', tuple('approval grant-' + gate for gate in ('vfx-committee', 'client-cut', 'grade', 'delivery-sign-off', 'drive-wipe', 'fleet-promotion')), ApprovalGrantInput, ApprovalOutput, 'person', 'The allowed-tapper rule applies.', approval_write),
     Verb('approval', 'deny', 'Deny an Approval', tuple('approval deny-' + gate for gate in ('vfx-committee', 'client-cut', 'grade', 'delivery-sign-off', 'drive-wipe', 'fleet-promotion')), ApprovalDenyInput, ApprovalOutput, 'person', 'The allowed-tapper rule and a reason are required.', approval_write),
@@ -1304,7 +1350,10 @@ def add_parsers(commands: Any) -> None:
         if entry.handler is None:
             continue
         if entry.noun not in nouns:
-            if entry.noun == "person":
+            if entry.noun == "version":
+                parser = commands.choices["version"]
+                nouns[entry.noun] = parser.add_subparsers(dest="version_verb")
+            elif entry.noun == "person":
                 parser = commands.choices["contacts"]
                 nouns[entry.noun] = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
             elif entry.noun == "jo":
@@ -1327,6 +1376,18 @@ def add_parsers(commands: Any) -> None:
                 alias_parser.add_argument('--idempotency-key')
                 alias_parser.add_argument('--confirm')
                 alias_parser.set_defaults(registered_verb=entry, gate=gate)
+        if entry.handler is version_write:
+            parser = parser.add_parser(entry.verb, help=entry.description)
+            if entry.verb == 'add':
+                parser.add_argument('deliverable')
+                parser.add_argument('--frameio-file', required=True)
+                parser.add_argument('--note')
+            else:
+                parser.add_argument('version')
+            parser.add_argument('--idempotency-key')
+            parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
         if entry.handler is milestone_record:
             milestone_parser = parser.add_parser('milestone', help='Deliverable milestones')
             parser = milestone_parser.add_subparsers(dest='milestone_verb', required=True).add_parser('record')

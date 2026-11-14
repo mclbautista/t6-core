@@ -275,7 +275,7 @@ class FrameioReads:
                 if error.status != 404:  # 404: the parent is a folder, not a version stack
                     raise
             else:
-                return tuple(Version.from_api(raw) for raw in stack)
+                return tuple(Version.from_json({**Version.from_api(raw).to_json(), "stack_id": parent}) for raw in stack)
         return (Version.from_api({"id": file_id, **file}),)
 
     def approvals(self, file_id: str) -> tuple[Approval, ...]:
