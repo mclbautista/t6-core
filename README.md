@@ -1465,17 +1465,28 @@ $ t6 deadline "Nov 13 5pm" --posted 2026-11-12T09:00:00+08:00
 
 ### Check an app follows the consumer contract
 
-`t6 admin consumer-check PATH` scans the Python files under `PATH` and fails when
-app code names a Notion, OpenRouter, DeepSeek or Frame.io API host in a string
-(a direct HTTP call), or imports `t6.notion.generated`
-([ADR 0002](docs/adr/0002-consumer-contract.md)). Docstrings and virtualenv or
-cache directories are not scanned. It prints JSON and exits 1 when there are
-findings (2 when the path does not exist):
+`t6 admin consumer-check PATH` scans Python and common configuration files for
+Notion and LLM adapter imports, credential names, and direct service hosts
+([ADR 0002](docs/adr/0002-consumer-contract.md)). The API client, pure domain
+rules, privacy helpers, and Frame.io client are allowed. Python docstrings and
+virtualenv or cache directories are skipped. The command prints JSON and exits
+1 for findings, or 2 if the path does not exist.
 
-```console
-$ t6 admin consumer-check .
-{"findings": [{"file": "app/notes.py", "line": 12, "rule": "direct-http", "detail": "names the Notion API host api.notion.com"}]}
+A temporary exception can be recorded in `.t6-consumer-allowlist.json` at the
+app root. Each entry names one file and rule, and expires at the end of the
+specified local date. All entries are printed on every run; expired or invalid
+entries fail the check. For example:
+
+```json
+[
+  {"name": "migration issue 123", "file": "app/legacy.py", "rule": "adapter-import", "expires": "2027-01-31"}
+]
 ```
+
+Exceptions match an exact path relative to the app root and a finding rule
+(`adapter-import`, `credential`, or `direct-http`); keep them narrow and remove
+them after migration. This is a static check and cannot detect dynamically
+constructed names or calls.
 
 To add it to an app's CI, install t6 at the pinned release tag and run it on the
 app's source:

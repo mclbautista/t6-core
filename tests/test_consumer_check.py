@@ -52,7 +52,7 @@ class CheckConsumerTests(unittest.TestCase):
             "from t6.notion import generated\n",
         ):
             with self.subTest(source=source):
-                self.assert_flags(source, "generated-import")
+                self.assert_flags(source, "adapter-import")
 
     def test_the_line_of_the_finding_is_reported(self) -> None:
         self.assert_flags("import os\n\nurl = 'https://api.notion.com/v1'\n", "direct-http", line=3)
@@ -60,11 +60,40 @@ class CheckConsumerTests(unittest.TestCase):
     def test_other_t6_imports_and_similar_hosts_pass(self) -> None:
         code, _ = run_check(
             {
-                "a.py": "from t6.notion import NotionClient\nfrom t6.notion.codec import relation\n"
+                "a.py": "from t6.client import Client\nfrom t6.privacy import mask\nfrom t6.frameio.client import FrameioReader\n"
                 "x = 'https://notapi.notion.com.evil.test/'\ny = 'api.notion.company'\n"
             }
         )
         self.assertEqual(code, 0)
+
+    def test_adapter_imports_and_credentials_fail(self) -> None:
+        for source in ("import t6.notion", "from t6 import notion", "import t6.llm.transport", "from t6.llm import config"):
+            with self.subTest(source=source):
+                self.assert_flags(source, "adapter-import")
+        for key in ("T6_NOTION_TOKEN", "OPENAI_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS"):
+            with self.subTest(key=key):
+                self.assert_flags(f"token = os.environ.get({key!r})", "credential")
+                code, report = run_check({"config.yaml": f"key: {key}\n"})
+                self.assertEqual((code, report["findings"][0]["rule"]), (1, "credential"))
+
+    def test_frameio_mention_passes(self) -> None:
+        self.assertEqual(run_check({"a.py": "message = 'Open in Frame.io'"})[0], 0)
+
+    def test_allowlist_is_printed_and_expiry_enforced(self) -> None:
+        entry = {"name": "migration", "file": "a.py", "rule": "adapter-import", "expires": "9999-12-31"}
+        files = {"a.py": "import t6.notion", ".t6-consumer-allowlist.json": json.dumps([entry])}
+        code, report = run_check(files)
+        self.assertEqual((code, report["findings"], report["exceptions"]), (0, [], [entry]))
+        entry["expires"] = "2000-01-01"
+        files[".t6-consumer-allowlist.json"] = json.dumps([entry])
+        code, report = run_check(files)
+        self.assertEqual(code, 1)
+        self.assertIn("expired", str(report["findings"]))
+        self.assertEqual(report["exceptions"], [entry])
+
+    def test_invalid_allowlist_fails(self) -> None:
+        code, report = run_check({".t6-consumer-allowlist.json": "{}"})
+        self.assertEqual((code, report["findings"][0]["rule"]), (1, "allowlist"))
 
     def test_docstrings_are_not_scanned(self) -> None:
         code, _ = run_check({"a.py": '"""Talks to api.notion.com through t6."""\n\n\ndef f():\n    """See openrouter.ai."""\n'})
