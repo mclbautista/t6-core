@@ -15,7 +15,7 @@ from t6.verbs import (
     Ambiguous, Done, NeedsPerson, Outcome, Preview, Refused,
     PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
-    ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
+    ConcernForMessageInput, ConcernRecordMessageInput, ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
     JoListInput, JoFindInput, DeliverableListInput, DeliverableGetInput, DeliverableDefineInput, DeliverableRebindInput, MilestoneRecordInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
     JoSubmitInput, JoCloseInput, JoBlockInput, JoUnblockInput, JoDelayInput, JoCancelInput,
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
@@ -218,6 +218,12 @@ class Client:
 
     def package_get(self, inputs: PackageGetInput) -> Result:
         return self.call("package", "get", inputs)
+
+    def concern_for_message(self, inputs: ConcernForMessageInput) -> Result:
+        return self.call('concern', 'for-message', inputs)
+
+    def concern_record_message(self, inputs: ConcernRecordMessageInput) -> Result:
+        return self.call('concern', 'record-message', inputs)
 
     def concern_get(self, inputs: ConcernGetInput) -> Result:
         return self.call("concern", "get", inputs)
