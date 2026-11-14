@@ -242,6 +242,13 @@ class PersonShiftInput(BaseModel):
     confirm: str | None = None
 
 
+class PersonClassifyInput(BaseModel):
+    person_id: str
+    kind: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
 class PersonPermissionInput(BaseModel):
     person_id: str
     permission: str
@@ -255,21 +262,22 @@ class LegacyPersonGetInput(BaseModel):
 
 
 def _people() -> People:
+    import secrets
     from t6.cli import DEFAULT_REGISTRY_DB, REGISTRY_DB_VARIABLE, _open_registry
     from t6.person import People
     from t6.preview import PreviewTokens
     registry = _registry.get() or _open_registry(Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)))
     if registry is None:
         raise ValueError("Registry is unavailable")
-    return People(registry, PreviewTokens(os.environ.get("T6_PREVIEW_SIGNING_KEY", "read-only")))
+    return People(registry, PreviewTokens(os.environ.get("T6_PREVIEW_SIGNING_KEY") or secrets.token_urlsafe(32)))
 
 
-def person_write(inputs: PersonAddInput | PersonTelegramInput | PersonRebindInput | PersonShiftInput | PersonPermissionInput, open_notion: Callable[..., Any]) -> Outcome:
+def person_write(inputs: PersonAddInput | PersonTelegramInput | PersonRebindInput | PersonShiftInput | PersonClassifyInput | PersonPermissionInput, open_notion: Callable[..., Any]) -> Outcome:
     if not os.environ.get("T6_PREVIEW_SIGNING_KEY"):
         return Refused(rule="config", reason="Set T6_PREVIEW_SIGNING_KEY")
     try:
         values = inputs.model_dump(exclude={"confirm", "idempotency_key"})
-        return _people().write("add" if isinstance(inputs, PersonAddInput) else "rebind" if isinstance(inputs, PersonRebindInput) else "shift" if isinstance(inputs, PersonShiftInput) else "set-telegram", values,
+        return _people().write("add" if isinstance(inputs, PersonAddInput) else "rebind" if isinstance(inputs, PersonRebindInput) else "shift" if isinstance(inputs, PersonShiftInput) else "classify" if isinstance(inputs, PersonClassifyInput) else "set-telegram", values,
                                actor=_actor.get(),
                                idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
     except (ValueError, OSError) as error:
@@ -278,6 +286,8 @@ def person_write(inputs: PersonAddInput | PersonTelegramInput | PersonRebindInpu
 
 def person_permission(people: People, verb: str, inputs: PersonPermissionInput, *, actor: str) -> Outcome:
     """Run a permission write as the authenticated Person."""
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
     return people.write(verb, inputs.model_dump(exclude={'confirm', 'idempotency_key'}),
                         actor=actor, idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
 
@@ -453,8 +463,9 @@ class LegacyCameraGetInput(BaseModel):
 
 class CameraEnrichInput(BaseModel):
     page_id: str
-    data_sources: Path
-    json_file: Path | None = Field(default=None, alias="json")
+    fields: dict[str, Any]
+    idempotency_key: str | None = None
+    confirm: str | None = None
 
 
 class LLMRunInput(BaseModel):
@@ -706,6 +717,7 @@ VERBS = (
     Verb("person", "rebind", "Bind a replacement Contacts page", (), PersonRebindInput, LegacyOutput, "operator", "A page belongs to one Person.", person_write),
     Verb("person", "set-telegram", "Set a Person Telegram ID", (), PersonTelegramInput, LegacyOutput, "operator", "An active Person uniquely holds a Telegram ID.", person_write),
     Verb("person", "shift", "Set a Person shift", (), PersonShiftInput, LegacyOutput, "operator", "Set a day or night shift.", person_write),
+    Verb("person", "classify", "Classify a Person", (), PersonClassifyInput, LegacyOutput, "operator", "Set the reviewed Person kind.", person_write),
     Verb("person", "grant", "Grant a permission", (), PersonPermissionInput, LegacyOutput, "operator", "Only an operator or admin may grant permissions.", person_write),
     Verb("person", "revoke", "Revoke a permission", (), PersonPermissionInput, LegacyOutput, "operator", "Only an operator or admin may revoke permissions.", person_write),
     Verb("person", "get", "Get a Person", (), PersonGetInput, PersonGetOutput, "reader", "Read a Person.", person_get),
@@ -730,7 +742,7 @@ VERBS = (
     Verb("person", "find", "Find a Person", ("contacts find",), PersonFindInput, PersonFindOutput, "reader", "Find a Contact.", None),
     Verb("project", "resolve", "Resolve a Project", ("projects resolve",), ProjectResolveInput, ProjectResolveOutput, "reader", "Resolve a Project.", None),
     Verb("camera", "get", "Get Cameras", ("cameras get",), CameraGetInput, CameraGetOutput, "reader", "Read Cameras.", None),
-    Verb("camera", "enrich", "Enrich a Camera", ("cameras update",), CameraEnrichInput, LegacyOutput, "operator", "Update a Camera.", None, local_only=True),
+    Verb("camera", "enrich", "Enrich a Camera", ("cameras update",), CameraEnrichInput, LegacyOutput, "operator", "Update a Camera.", None),
     Verb("departments", "", "Print the studio Departments, read live, in display order, with option IDs", (),
          DepartmentsInput, DepartmentsOutput, "reader", "Notion Department options are the truth; use studio display order.", departments),
 )

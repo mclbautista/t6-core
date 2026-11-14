@@ -72,6 +72,19 @@ class VerbAPITests(unittest.TestCase):
         self.assertEqual(self.request('/v1/commands', secret='gateway-secret', headers={'X-Telegram-User-Id': '42'})[1], catalogue())
         self.assertIn('schema_version', self.request('/health', secret=None)[1])
 
+    def test_permission_writes_require_configured_signing_key(self) -> None:
+        with patch.dict(os.environ, {'T6_PREVIEW_SIGNING_KEY': ''}):
+            result = self.request('/v1/person/grant', {'person_id': self.staff, 'permission': 'admin'})[1]
+        self.assertEqual((result['outcome'], result['rule']), ('refused', 'config'))
+
+    def test_offline_write_generates_retry_key(self) -> None:
+        from t6.client import Client, Unavailable
+        from t6.verbs import ProjectHoldInput
+        result = Client(base_url='http://127.0.0.1:1', secret='x', timeout=0.1).project_hold(
+            ProjectHoldInput(project='show', reason='pause'))
+        assert isinstance(result, Unavailable)
+        self.assertTrue(result.idempotency_key)
+
     def test_project_hold_preview_confirm(self) -> None:
         project = self.registry.register(code='ABC', actor='setup', idempotency_key='setup')
         assert isinstance(project, Registered)
@@ -173,6 +186,10 @@ class VerbAPITests(unittest.TestCase):
         generic = Request('POST', '/tap', headers, json.dumps({'data': 'approve:page', 'from': {'id': 42}}).encode())
         self.assertTrue(api(generic).body['created'])
         self.assertFalse(api(generic).body['created'])
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM audit WHERE action='tap_accepted' AND json_extract(after, '$.key')='generic'").fetchone()[0], 0)
+        denied = Request('POST', '/tap', {**headers, 'X-Telegram-User-Id': '43', 'Idempotency-Key': 'denied'}, json.dumps({'data': 'approve:page', 'from': {'id': 43}}).encode())
+        self.assertEqual(api(denied).body['outcome'], 'rejected')
         headers['Idempotency-Key'] = 'command'
         command = Request('POST', '/tap', headers, json.dumps({'kind': 'command', 'command': 'project',
                           'from': {'id': 42}, 'chat': 42}).encode())

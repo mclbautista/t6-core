@@ -58,7 +58,7 @@ RELATIONS: dict[str, str] = {
     "coordinator_ids": "coordinator",
     "deliverable_ids": "deliverable",
 }
-UNMAPPED: frozenset[str] = frozenset({"place"})
+UNMAPPED: frozenset[str] = frozenset({"place", "t6_id", "t6_notes"})
 """Job Orders properties no `JobOrder` field carries on purpose. `place` is a location Notion adds."""
 READ_ONLY = frozenset({"health"})
 BLOCK_TEXT_LIMIT = 2000
@@ -127,7 +127,10 @@ class JobOrders:
         values.update({RELATIONS[name]: tuple(fields[name]) for name in RELATIONS if name in fields})
         if fields.get("project_id"):
             values["projects"] = (fields["project_id"],)
-        saved = create_row(self._client, JobOrdersRow, self._source, values, extra_properties={"T6 ID": {"rich_text": [{"text": {"content": t6_id}}]}} if t6_id else None)
+        if t6_id:
+            from t6.notion.jo_projection import projection_ids
+            t6_property, _ = projection_ids()
+        saved = create_row(self._client, JobOrdersRow, self._source, values, extra_properties={t6_property: {"rich_text": [{"text": {"content": t6_id}}]}} if t6_id else None)
         if isinstance(saved, (Rejected, Ambiguous)):
             return saved
         body = fields.get("source_text")

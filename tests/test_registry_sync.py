@@ -49,6 +49,19 @@ class SyncTestCase(CodesTestCase):
         self.notion.add_property(PROJECTS, ROTATION, "select")
         self.notion.add_data_source(OTHER_SOURCE)
         self.client = self.notion.client()
+        from unittest.mock import patch
+        from t6.notion.jo_projection import projection_ids
+        def test_projection_ids() -> tuple[str, str]:
+            source = self.notion._data_sources.get('job-orders')
+            if source is None:
+                return projection_ids()
+            props = source['properties']
+            if 'T6 ID' not in props or 'T6 Notes' not in props:
+                return projection_ids()
+            return str(props['T6 ID']['id']), str(props['T6 Notes']['id'])
+        ids_patch = patch('t6.notion.jo_projection.projection_ids', side_effect=test_projection_ids)
+        ids_patch.start()
+        self.addCleanup(ids_patch.stop)
         self.addCleanup(self.client.close)
         self.events = 0
 
@@ -100,6 +113,22 @@ class SyncTestCase(CodesTestCase):
 
 
 class ProjectionTests(SyncTestCase):
+    def test_hold_and_resume_project_status_reach_notion(self) -> None:
+        from t6.preview import PreviewTokens
+        from t6.project_writes import ProjectWrites
+        from t6.verbs import Preview, Done
+        page = self.page()
+        project = self.new('ABC', 'in', page=page)
+        self.drain()
+        writes = ProjectWrites(self.registry, PreviewTokens('secret'))
+        for verb, reason, expected in [('hold', 'paused', 'Standby'), ('resume', None, 'In-Progress')]:
+            preview = writes.run(verb, project['id'], reason, actor='operator', idempotency_key=verb)
+            assert isinstance(preview, Preview)
+            self.assertIsInstance(writes.run(verb, project['id'], reason, actor='operator', idempotency_key=verb, confirm=preview.token), Done)
+            self.start()
+            self.drain()
+            self.assertEqual(codec.select(self.notion.page(page)['properties'].get('Status')), expected)
+
     def test_an_accepted_change_is_pending_at_once_and_reaches_notion_through_the_worker(self) -> None:
         page = self.page()
         project = self.new("ABC", "in", page=page)
@@ -358,7 +387,7 @@ class WorkerRegistrationTests(SyncTestCase):
     def test_the_main_worker_registers_the_notion_handlers_when_configured(self) -> None:
         environ = {"T6_NOTION_TOKEN": "token", "T6_NOTION_PROJECTS_DATA_SOURCE": PROJECTS}
         handlers = configured_handlers(environ, self.SETTINGS, InProcess(self.app))
-        self.assertEqual(set(handlers["main"]), {"registry.sync", "notion.page_changed"})
+        self.assertEqual(set(handlers["main"]), {"registry.sync", "notion.page_changed", "project.status_sync"})
 
     def test_no_handlers_without_notion_settings_or_on_another_queue(self) -> None:
         transport = InProcess(self.app)

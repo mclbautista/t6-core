@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from test_person import MemoryRegistry
 from t6.person import People
@@ -8,6 +9,9 @@ from t6.verbs import Done, Outcome, Preview, Refused, VERBS, PersonPermissionInp
 
 class PermissionTests(unittest.TestCase):
     def setUp(self) -> None:
+        env = patch.dict("os.environ", {"T6_PREVIEW_SIGNING_KEY": "secret"})
+        env.start()
+        self.addCleanup(env.stop)
         self.registry = MemoryRegistry()
         self.addCleanup(self.registry.db.close)
         with self.registry._transaction() as db:
@@ -79,32 +83,12 @@ class PermissionTests(unittest.TestCase):
         self.assertIsInstance(self.invoke('grant', 'operator', 'drives', preview.plan['idempotency_key'], preview.token), Refused)
 
 class SeedOnOpenTests(unittest.TestCase):
-    def test_open_seeds_once_and_reports_unmatched(self) -> None:
-        import contextlib
-        import io
-        import os
-        import sqlite3
+    def test_open_does_not_seed_before_person_migration(self) -> None:
         import tempfile
         from pathlib import Path
-        from unittest.mock import patch
-        from t6.registry import sqlite as migrations
         from t6.registry.sqlite import SqliteProjectRegistry
-
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'db'
-            with sqlite3.connect(path) as db:
-                with patch.object(migrations, '_MIGRATIONS', migrations._MIGRATIONS[:-1]):
-                    migrations._migrate(db)
-                db.execute("INSERT INTO persons VALUES ('alice', 'staff', '[]', '[]', 42, 0, 1)")
-            err = io.StringIO()
-            with patch.dict(os.environ, {'T6_OPERATOR_IDS': '42, 99'}, clear=True), contextlib.redirect_stderr(err):
-                registry = SqliteProjectRegistry(path)
+            with patch.dict('os.environ', {'T6_OPERATOR_IDS': '42'}):
+                registry = SqliteProjectRegistry(Path(directory) / 'db')
             people = People(registry, PreviewTokens('secret'))
-            person = people.get('alice')
-            assert person is not None
-            self.assertEqual(person['permissions'], ['operator'])
-            self.assertIn('99', err.getvalue())
-            with patch.dict(os.environ, {'T6_OPERATOR_IDS': '42'}, clear=True), contextlib.redirect_stderr(io.StringIO()) as second:
-                SqliteProjectRegistry(path)
-            self.assertEqual(second.getvalue(), '')
-            self.assertEqual(len(registry.audit('alice')), 1)
+            self.assertTrue(people.seed_operators([42])['seeded'])

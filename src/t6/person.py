@@ -129,6 +129,11 @@ class People:
                         raise ValueError('Bindings changed since preview; preview again')
                 return {'digest': digest, 'entries': entries, 'review': [e for e in entries if e['problem'] is not None]}
             if apply:
+                # Older releases seeded on database open, before any Person
+                # existed. Discard that premature report as part of import so
+                # the post-import seed can match the newly registered IDs.
+                if not db.execute('SELECT 1 FROM persons LIMIT 1').fetchone():
+                    db.execute('DELETE FROM permission_seed WHERE id = 1')
                 for entry in entries:
                     if entry['action'] != 'register':
                         continue
@@ -177,7 +182,7 @@ class People:
                 if db.execute("SELECT 1 FROM bindings WHERE system = 'notion' AND page_id = ?", (page,)).fetchone():
                     return Refused(rule='binding', reason='Page is already bound')
                 person_id = None
-            elif verb in ('set-telegram', 'rebind', 'shift', 'grant', 'revoke'):
+            elif verb in ('set-telegram', 'rebind', 'shift', 'classify', 'grant', 'revoke'):
                 person_id = values.get('person_id')
                 target = db.execute('SELECT active FROM persons WHERE id = ?', (person_id,)).fetchone()
                 if not target:
@@ -197,6 +202,8 @@ class People:
                     return Refused(rule='shift', reason='Use day or night with valid HH:MM times')
             if verb in ('grant', 'revoke') and values.get('permission') not in PERMISSIONS:
                 return Refused(rule='permission', reason='Unknown permission')
+            if verb == 'classify' and values.get('kind') not in ('staff', 'client', 'vendor'):
+                return Refused(rule='input', reason='A valid kind is required')
             if verb == 'rebind':
                 page = normalize_page_id(values.get('page_id', ''))
                 if not page:
@@ -227,6 +234,9 @@ class People:
                 current = db.execute('SELECT pattern, start, end FROM person_shifts WHERE person_id = ?', (person_id,)).fetchone()
                 before = dict(zip(('pattern', 'start', 'end'), current)) if current else None
                 db.execute('INSERT INTO person_shifts VALUES (?, ?, ?, ?) ON CONFLICT(person_id) DO UPDATE SET pattern=excluded.pattern, start=excluded.start, end=excluded.end', (person_id, values['pattern'], values['start'], values['end']))
+            elif verb == 'classify':
+                before = {'kind': db.execute('SELECT kind FROM persons WHERE id = ?', (person_id,)).fetchone()[0]}
+                db.execute('UPDATE persons SET kind = ? WHERE id = ?', (values['kind'], person_id))
             elif verb in ('grant', 'revoke'):
                 permission = values['permission']
                 held = db.execute('SELECT 1 FROM person_permissions WHERE person_id = ? AND permission = ?', (person_id, permission)).fetchone() is not None

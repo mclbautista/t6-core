@@ -137,12 +137,64 @@ class VerbAPI:
         elif (entry.noun, entry.verb) == ('llm', 'run'):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or (self.llm_service.run(inputs, actor=actor, registry=self.people.registry) if self.llm_service else Refused(rule='config', reason='LLM service is not configured'))
+        elif (entry.noun, entry.verb) == ('camera', 'enrich'):
+            refusal = self.people.authorize(actor, entry.role)
+            outcome = refusal or self._camera_enrich(inputs, actor)
         elif entry.handler is None:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._legacy_read(entry.noun, entry.verb, inputs)
         else:
             outcome = invoke(entry, inputs, actor=actor, people=self.people, open_notion=self.open_notion)
         return Response(200, outcome.model_dump(mode='json'))
+
+    def _camera_enrich(self, inputs: Any, actor: str) -> Any:
+        import secrets
+        from t6.notion.cameras import get_cameras, validate_update, camera_to_json
+        from t6.notion import NotionError
+        from t6.notion.generated import CamerasRow
+        from t6.notion.writes import update_row, Rejected, Ambiguous as WriteAmbiguous
+        from t6.verbs import Ambiguous
+        key = inputs.idempotency_key or secrets.token_hex(16)
+        if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+            return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+        if inputs.confirm and not inputs.idempotency_key:
+            return Refused(rule='idempotency_key', reason='Supply the key from the preview')
+        try:
+            fields = validate_update(inputs.fields)
+            source = self.data_sources['cameras']
+            token = os.environ['T6_NOTION_TOKEN']
+            values = {'page_id': inputs.page_id, 'fields': fields, 'idempotency_key': key}
+            fingerprint = json.dumps({'verb': 'camera enrich', 'actor': actor, **values}, sort_keys=True, separators=(',', ':'))
+            nonce = self.people.tokens.verify(inputs.confirm, 'camera enrich', actor, values) if inputs.confirm else None
+            if isinstance(nonce, Refused):
+                return nonce
+            with self.people.registry._transaction() as db:
+                previous = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key=?', (key,)).fetchone()
+                if previous and previous[0] != fingerprint:
+                    return Refused(rule='idempotency_key', reason='Idempotency key was used for a different request')
+                if nonce and db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce=?', (nonce,)).fetchone():
+                    return Refused(rule='token_used', reason='Preview token has already been used')
+                if previous and nonce:
+                    db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
+                    result = json.loads(previous[1])
+                    return Ambiguous(candidates=[result]) if result.get('pending') else Done(result=result)
+            with self.open_notion(token) as client:
+                before = get_cameras(client, source, page_id=inputs.page_id)[0]
+                if nonce is None:
+                    return self.people.tokens.create('camera enrich', actor, values, {**values, 'before': before})
+                with self.people.registry._transaction() as db:
+                    db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
+                    db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps({'pending': True, 'reason': 'Notion write may have happened'})))
+                saved = update_row(client, CamerasRow, inputs.page_id, fields)
+                if isinstance(saved, (Rejected, WriteAmbiguous)):
+                    return Ambiguous(candidates=[{'reason': str(saved)}])
+                result = camera_to_json(saved)
+                with self.people.registry._transaction() as db:
+                    db.execute('UPDATE verb_requests SET result=? WHERE idempotency_key=?', (json.dumps(result), key))
+                    _audit(db, inputs.page_id, 'camera_enrich', actor, self.people.registry._clock(), before, fields)
+                return Done(result=result)
+        except (ValueError, KeyError, OSError, NotionError) as error:
+            return Refused(rule='input', reason=str(error))
 
     def _typed_read(self, noun: str, verb: str, inputs: Any) -> Any:
         from datetime import date, datetime
@@ -260,6 +312,8 @@ class VerbAPI:
                         record = JobOrderStore(self.people.registry, PreviewTokens('read-only')).get(inputs.ref)
                         if record:
                             page = next((b['page_id'] for b in record['bindings'] if b['active']), None)
+                            if page is None:
+                                return Done(result={'job_order': {**record['fields'], **record, 't6_id': record['id']}})
                         else:
                             from t6.domain.job_order_rules import parse_telegram_key
                             if parse_telegram_key(inputs.ref) is not None:
@@ -277,7 +331,13 @@ class VerbAPI:
                         if (client.retrieve_page(page).get('parent') or {}).get('data_source_id') != self.data_sources['job_orders']:
                             return Refused(rule='job_order', reason='Job Order not found')
                         order = jo_reader.get(page)
-                        return Done(result={'job_order': order_result(order)})
+                        result = order_result(order)
+                        if record:
+                            result['notion_notes'] = result.get('notes')
+                            result.update(id=record['id'], t6_id=record['id'], page_id=page,
+                                          assignee_id=record['assignee_id'], notes=record['notes'],
+                                          state=record['state'], history=record['history'])
+                        return Done(result={'job_order': result})
                     orders = jo_reader.find_all_by_telegram_key(inputs.telegram_key) if verb == 'find' else jo_reader.list()
                     if verb == 'list':
                         orders = tuple(o for o in orders if (not inputs.project or same_project(o.project_id, inputs.project))
@@ -397,9 +457,16 @@ class VerbAPI:
                 _audit(db, f'telegram:{telegram_id}', 'tap_rejected', 'gateway', self.people.registry._clock(), None,
                        {'reason': 'no_person'})
             return Response(200, {'outcome': 'rejected'})
+        data = body.get('data')
+        if body.get('kind') != 'command' and (not isinstance(data, str) or not data.startswith('op:')):
+            action, separator, target = data.partition(':') if isinstance(data, str) else ('', '', '')
+            if action not in {'approve', 'retry'} or not separator or not target or not self.people.allows_telegram(telegram_id, 'permission:operator'):
+                with self.people.registry._transaction() as db:
+                    _audit(db, person[0], 'tap_rejected', person[0], self.people.registry._clock(), None, {'reason': 'not_allowed', 'data': data})
+                return Response(200, {'outcome': 'rejected'})
         response = self.tap_app._tap(request, authenticated=True)
         outcome = response.body.get('outcome')
-        if response.status == 200 and outcome not in {'rejected', 'ignored', 'already_handled', 'busy', 'expired'}:
+        if response.status == 200 and outcome is not None and outcome not in {'rejected', 'ignored', 'already_handled', 'busy', 'expired'}:
             key = request.header('idempotency-key') or body.get('idempotency_key')
             with self.people.registry._transaction() as db:
                 recorded = db.execute("SELECT 1 FROM audit WHERE action = 'tap_accepted' AND json_extract(after, '$.key') = ?", (key,)).fetchone()

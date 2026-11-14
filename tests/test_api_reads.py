@@ -63,6 +63,38 @@ class ReadTests(unittest.TestCase):
         assert isinstance(result, Done)
         self.assertEqual(result.result['projects'][1]['name'], 'Example Show')
 
+    def test_jo_get_includes_t6_state_for_t6_reference(self) -> None:
+        from t6.job_order import JobOrderStore
+        from t6.notion.job_orders import JobOrders
+        from t6.verbs import JoGetInput
+        store = JobOrderStore(self.registry, PreviewTokens('key'))
+        with self.notion.client() as notion:
+            orders = JobOrders(notion, 'job_orders').list()
+        plan = store.migrate(orders, actor='operator')
+        migrated = store.migrate(orders, actor='operator', apply=True, digest=plan['digest'])
+        jo_id = migrated['entries'][0]['t6_id']
+        result = self.client.jo_get(JoGetInput(ref=jo_id))
+        assert isinstance(result, Done)
+        order = result.result['job_order']
+        self.assertEqual(order['t6_id'], jo_id)
+        self.assertEqual(order['state']['status'], 'Needs Intake Review')
+        self.assertEqual(order['history'], [])
+        self.assertEqual(order['notes'], [])
+
+    def test_camera_enrich_requires_preview_and_confirm(self) -> None:
+        from t6.verbs import CameraEnrichInput, Preview
+        operator = Client(self.client.base_url, 'operator')
+        inputs = CameraEnrichInput(page_id=self.camera['id'], fields={'name': 'Updated'})
+        with patch.dict(os.environ, {'T6_PREVIEW_SIGNING_KEY': 'key'}):
+            preview = operator.camera_enrich(inputs)
+            assert isinstance(preview, Preview)
+            self.assertEqual(self.notion.page(self.camera['id'])['properties']['Name']['title'][0]['plain_text'], 'Camera One')
+            inputs.confirm = preview.token
+            inputs.idempotency_key = preview.plan['idempotency_key']
+            result = operator.camera_enrich(inputs)
+        self.assertIsInstance(result, Done)
+        self.assertEqual(self.notion.page(self.camera['id'])['properties']['Name']['title'][0]['plain_text'], 'Updated')
+
     def test_project_related_reads_and_telegram_key(self) -> None:
         from t6.verbs import DeliverableListInput, JoFindInput, JoListInput, MeetingNotesListInput
         project = self.project['id']

@@ -893,6 +893,14 @@ module has one model per database, such as `BaysRow` and `JobOrdersRow`. Run
 `uv run python scripts/generate_models.py` after the snapshot changes. A test
 fails when the module is out of date.
 
+Job Order projection requires the `T6 ID` and `T6 Notes` rich-text properties
+and their actual Notion IDs. An administrator must create both properties in
+the Job Orders data source, run `t6 admin snapshot --data-sources FILE --out
+src/t6/notion/schema_snapshot.json`, and run `uv run python
+scripts/generate_models.py` before releasing the updated snapshot and model.
+Until both IDs are recorded, the worker refuses JO projection with a message
+identifying this step.
+
 - A model field maps a Python name to the Notion property ID and exact name
   (a trailing space `Blocker ` or an emoji `🗂️ Coordinator` are kept). Reads
   find the property by ID and writes key it by ID.

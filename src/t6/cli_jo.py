@@ -69,10 +69,14 @@ def run(args: argparse.Namespace, open_notion: Callable[[str], NotionClient]) ->
         if args.command == "jo" and args.jo_command == "format":
             return _print(_format(args.file.read_text(encoding="utf-8"), args.date))
         if args.command == "deadline" and args.person:
-            from t6.verbs import _people
-            person = _people().get(args.person)
-            if person is None:
-                return _fail("Person not found")
+            from t6.client import Client, Unavailable
+            from t6.verbs import Done, PersonGetInput
+            result = Client().person_get(PersonGetInput(person_id=args.person))
+            if isinstance(result, Unavailable):
+                return _fail(result.reason)
+            if not isinstance(result, Done):
+                return _fail(getattr(result, 'reason', 'Person lookup failed'))
+            person = result.result['person']
             if not args.assignees:
                 return _print(_deadline(args.phrase, args.posted, (), person))
         if args.command == "deadline" and not args.assignees:

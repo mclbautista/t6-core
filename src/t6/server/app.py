@@ -448,7 +448,10 @@ class WebhookApp:
             jo_intents = self._registry.undispatched_jo_sync()
             for intent in jo_intents:
                 self._queue.submit(MAIN_QUEUE, JobKind.JO_SYNC.value, f"jo.sync:{intent.id}", {"intent_id": intent.id})
-            self._registry.mark_dispatched(intent.id for intent in (*intents, *jo_intents))
+            status_intents = self._registry.undispatched_status_sync()
+            for intent in status_intents:
+                self._queue.submit(MAIN_QUEUE, 'project.status_sync', f'project.status_sync:{intent.id}', {'intent_id': intent.id})
+            self._registry.mark_dispatched(intent.id for intent in (*intents, *jo_intents, *status_intents))
         except RegistryUnavailable:
             return
 
@@ -691,6 +694,20 @@ class WebhookApp:
     def _registry_answer(
         self, registry: ProjectRegistry, grants: list[Grant], steps: list[str], request: Request
     ) -> Response:
+        if len(steps) == 2 and steps[0] == 'status-sync':
+            if not any(g.registry_sync for g in grants):
+                return Response(403)
+            try:
+                intent_id = int(steps[1])
+            except ValueError:
+                return Response(400)
+            if request.method == 'GET':
+                state = registry.status_sync_state(intent_id)
+                return Response(200, {'state': state}) if state is not None else Response(404)
+            if request.method == 'POST':
+                registry.report_status_sync(intent_id)
+                return Response(200, {})
+            return Response(405)
         if len(steps) == 2 and steps[0] == "notion-project-status":
             if not any(g.registry_sync for g in grants):
                 return Response(403, {"error": "registry sync not allowed"})

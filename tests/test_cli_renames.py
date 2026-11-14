@@ -36,7 +36,7 @@ class RenameTests(unittest.TestCase):
             ("drives-import-dry-run", "admin drive import", "x", "t6.cli._drives_import_dry_run"),
         ]
         for old, new, options, handler in rows:
-            remote = old in ("contacts find", "projects resolve", "cameras get")
+            remote = old in ("contacts find", "projects resolve", "cameras get", "cameras update")
             target = "t6.client.Client.call" if remote else handler
             with self.subTest(old=old), patch(target) as run:
                 def result(*args: Any) -> int:
@@ -50,7 +50,7 @@ class RenameTests(unittest.TestCase):
                 outputs = []
                 for command in (old, new):
                     out, err = io.StringIO(), io.StringIO()
-                    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), patch('sys.stdin', io.StringIO('{"name":"Camera"}')):
                         status = main((command + " " + options).split())
                     outputs.append((status, out.getvalue(), err.getvalue()))
                 self.assertEqual(outputs[0][:2], outputs[1][:2])

@@ -15,6 +15,8 @@ from cli_api_fake import client_patch
 from t6.cli import main
 from t6.notion.generated import ContactsRow
 from t6.notion.testing import FakeNotion, rich_text, title
+from t6.person import People
+from t6.preview import PreviewTokens
 from t6.registry.core import normalize_page_id
 from t6.registry.sqlite import SqliteProjectRegistry, _migrate
 
@@ -62,6 +64,13 @@ class PersonTests(unittest.TestCase):
         self.sources = Path(self.tmp.name) / 'sources.json'
         self.sources.write_text(json.dumps({'contacts': 'contacts'}))
         self.env = {'T6_NOTION_TOKEN': 'fake', 'T6_PREVIEW_SIGNING_KEY': 'test', 'T6_PERSON_ID': 'test-actor'}
+        from t6.verbs import Done, Refused
+        def person_get(inputs: object) -> object:
+            person = People(self.registry, PreviewTokens('test')).get(getattr(inputs, 'person_id'))
+            return Done(result={'person': person}) if person else Refused(rule='person', reason='Person not found')
+        api_person = patch('t6.client.Client.person_get', side_effect=person_get)
+        api_person.start()
+        self.addCleanup(api_person.stop)
 
     def command(self, *args: str) -> dict:  # type: ignore[type-arg]
         out, err = io.StringIO(), io.StringIO()
@@ -108,6 +117,7 @@ class PersonTests(unittest.TestCase):
                 self.assertEqual(item.pop('t6_id'), ids[normalize_page_id(item['id'])])
         conflict = self.command('person', 'rebind', '--person-id', ids[normalize_page_id(self.first)], '--page-id', self.second)
         self.assertEqual((conflict['outcome'], conflict['rule']), ('refused', 'binding'))
+
         replacement = self.fake.add_page('contacts', {ContactsRow.notion_name('name'): title('Renamed Maria')})['id']
         result = self.confirmed('rebind', '--person-id', ids[normalize_page_id(self.first)], '--page-id', replacement)
         self.assertEqual(result['result']['person_id'], ids[normalize_page_id(self.first)])
@@ -115,6 +125,36 @@ class PersonTests(unittest.TestCase):
         self.assertEqual(self.registry.bound_entity('notion', replacement), ids[normalize_page_id(self.first)])
         with self.registry._transaction() as db:
             self.assertEqual(db.execute("SELECT active FROM bindings WHERE page_id = ?", (normalize_page_id(self.first),)).fetchone()[0], 0)
+
+    def test_migration_seeds_operators_after_import(self) -> None:
+        self.env['T6_OPERATOR_IDS'] = '42,99'
+        result = self.apply(self.migrate())
+        person_id = next(e['t6_id'] for e in result['entries'] if e['telegram_id'] == 42)
+        person = People(self.registry, PreviewTokens('test')).get(person_id)
+        assert person is not None
+        self.assertIn('operator', person['permissions'])
+        self.assertEqual(result['operator_seed']['unmatched'], [99])
+
+    def test_migration_repairs_a_seed_recorded_before_any_person_existed(self) -> None:
+        self.env['T6_OPERATOR_IDS'] = '42'
+        with self.registry._transaction() as db:
+            db.execute("DELETE FROM person_permissions WHERE person_id='test-actor'")
+            db.execute("DELETE FROM persons WHERE id='test-actor'")
+            db.execute("INSERT INTO permission_seed VALUES (1, '[42]')")
+        result = self.apply(self.migrate())
+        person_id = next(e['t6_id'] for e in result['entries'] if e['telegram_id'] == 42)
+        person = People(self.registry, PreviewTokens('test')).get(person_id)
+        assert person is not None
+        self.assertIn('operator', person['permissions'])
+
+    def test_migrated_person_can_be_classified_as_staff(self) -> None:
+        person_id = self.apply(self.migrate())['entries'][0]['t6_id']
+        people = People(self.registry, PreviewTokens('test'))
+        self.assertIsNotNone(people.authorize(person_id, 'reader'))
+        result = self.confirmed('classify', '--person-id', person_id, '--kind', 'staff')
+        self.assertEqual(result['outcome'], 'done')
+        self.assertIsNone(people.authorize(person_id, 'reader'))
+        self.assertEqual(self.registry.activity(person_id)[0].action, 'person_classify')
 
     def test_shift_preview_confirm_deadline_and_history(self) -> None:
         applied = self.apply(self.migrate())
@@ -139,6 +179,15 @@ class PersonTests(unittest.TestCase):
         self.confirmed('shift', person_id, '--pattern', 'day', '--start', '10:00', '--end', '19:00')
         result = self.command('deadline', 'end of shift', '--person', person_id, '--posted', '2026-09-01T10:00:00+08:00')
         self.assertEqual(result['deadline'], '2026-09-01T19:00:00+08:00')
+
+    def test_deadline_person_uses_api(self) -> None:
+        from t6.verbs import Done
+        out = io.StringIO()
+        with patch('t6.client.Client.person_get', return_value=Done(result={'person': {'shift': {'pattern': 'day', 'start': '10:00', 'end': '19:00'}}})) as get, redirect_stdout(out):
+            status = main(['deadline', 'end of shift', '--person', 'remote-person', '--posted', '2026-09-01T10:00:00+08:00'])
+        self.assertEqual(status, 0)
+        self.assertEqual(json.loads(out.getvalue())['deadline'], '2026-09-01T19:00:00+08:00')
+        self.assertEqual(get.call_args.args[0].person_id, 'remote-person')
 
     def test_cli_grant_revoke_and_get_permissions(self) -> None:
         applied = self.apply(self.migrate())

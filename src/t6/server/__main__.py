@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import sys
 from dataclasses import replace
 
@@ -45,16 +46,17 @@ def main() -> int:
         config = replace(config, edge_routes=routes)
     queue = JobQueue(environ.get("T6_QUEUE_DB", "t6-queue.sqlite"))
     registry = None if mode == "edge" else SqliteProjectRegistry(environ.get("T6_REGISTRY_DB", "t6-registry.sqlite"))
+    signing_key = environ.get("T6_PREVIEW_SIGNING_KEY") or secrets.token_urlsafe(32)
     operator = None
     if registry is not None and config.operator_ids:
         store = ActionStore(environ.get("T6_OPERATOR_DB", "t6-operator.sqlite"))
-        operator = OperatorService(registry, store, config.operator_ids, people=People(registry, PreviewTokens(environ.get("T6_PREVIEW_SIGNING_KEY", "read-only"))), ttl=config.operator_ttl_seconds)
+        operator = OperatorService(registry, store, config.operator_ids, people=People(registry, PreviewTokens(signing_key)), ttl=config.operator_ttl_seconds)
     app = WebhookApp(queue, config, on_notion_verification=lambda token: print(
         f"Notion verification token: {token}", file=sys.stderr, flush=True
     ), registry=registry, operator=operator)
     if registry is not None:
         sources, privacy_registry = read_config_from_env(environ)
-        api = VerbAPI(People(registry, PreviewTokens(environ.get("T6_PREVIEW_SIGNING_KEY", "read-only")),
+        api = VerbAPI(People(registry, PreviewTokens(signing_key),
                              service_permissions_from_env(environ)),
                       queue, secrets_from_env(environ), _open_notion, app,
                       llm_service=service_from_env(environ), data_sources=sources, privacy_registry=privacy_registry)

@@ -24,5 +24,8 @@ def client_patch(open_notion: Callable[..., Any]) -> Any:
         api = object.__new__(VerbAPI)
         api.people = people
         api.open_notion = open_notion
+        if (noun, verb) == ('camera', 'enrich'):
+            api.data_sources = {'cameras': 'ds-cameras'}
+            return people.authorize(actor, entry.role) or api._camera_enrich(inputs, actor)
         return people.authorize(actor, entry.role) or api._legacy_read(noun, verb, inputs)
     return patch('t6.client.Client.call', new=call)

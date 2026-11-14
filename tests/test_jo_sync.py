@@ -14,6 +14,43 @@ from t6.worker.registry import RegistryClient
 
 
 class JoSyncTests(SyncTestCase):
+    def test_projection_refuses_when_snapshot_lacks_property_ids(self) -> None:
+        from t6.notion.jo_projection import JobOrderProjection
+        from t6.worker.runner import Refused
+        from t6.worker.client import WorkerJob
+        projection = JobOrderProjection(self.client, RegistryClient(InProcess(self.app), WORKER_SECRET), 'job-orders')
+        job = WorkerJob(job_id=1, queue='main', token='token', kind='jo.sync', dedupe_key='test', payload={'intent_id': 1}, attempt=1)
+        with self.assertRaisesRegex(Refused, 'schema-snapshot'):
+            projection.sync(job)
+
+    def test_projection_survives_property_renames(self) -> None:
+        from unittest.mock import patch
+        from t6.notion.jo_projection import JobOrderProjection
+        project_page = self.page()
+        self.new('SHOW', page=project_page)
+        self.drain()
+        self.notion.add_snapshot_data_source('job-orders', 'job_orders')
+        self.notion.add_property('job-orders', 'T6 ID', 'rich_text')
+        self.notion.add_property('job-orders', 'T6 Notes', 'rich_text')
+        props = self.notion._data_sources['job-orders']['properties']
+        ids = (props['T6 ID']['id'], props['T6 Notes']['id'])
+        self.notion.rename_property('job-orders', 'T6 ID', 'Identity renamed')
+        self.notion.rename_property('job-orders', 'T6 Notes', 'Notes renamed')
+        store = JobOrderStore(self.registry, PreviewTokens('secret'))
+        values = {'fields': {'project_id': project_page, 'name': 'JO'}}
+        preview = store.write('raise', values, actor='alice', idempotency_key='rename')
+        assert isinstance(preview, Preview)
+        result = store.write('raise', values, actor='alice', idempotency_key='rename', confirm=preview.token)
+        assert isinstance(result, Done)
+        transport = InProcess(self.app)
+        with patch('t6.notion.jo_projection.projection_ids', return_value=ids):
+            worker = Worker(QueueClient(transport, WORKER_SECRET), 'main', JobOrderProjection(self.client, RegistryClient(transport, WORKER_SECRET), 'job-orders').handlers())
+            self.assertTrue(worker.run_once())
+        record = store.get(result.result['jo_id'])
+        assert record is not None
+        page = self.notion.page(record['bindings'][0]['page_id'])
+        self.assertEqual(codec.rich_text(page['properties']['Identity renamed']), record['id'])
+
     def test_state_changes_project_status_once_per_intent(self) -> None:
         from t6.notion.jo_projection import JobOrderProjection
         from t6.notion.generated import JobOrdersRow

@@ -64,6 +64,13 @@ class RegistryClient:
         answer = self._call("GET", f"/registry/jo-sync/{intent_id}")
         return None if answer is None else answer["state"]
 
+    def status_sync_state(self, intent_id: int) -> dict[str, Any] | None:
+        answer = self._call('GET', f'/registry/status-sync/{intent_id}')
+        return None if answer is None else answer['state']
+
+    def report_status_sync(self, intent_id: int) -> None:
+        self._call('POST', f'/registry/status-sync/{intent_id}', {})
+
     def begin_jo_create(self, intent_id: int) -> bool:
         answer = self._call("POST", f"/registry/jo-sync/{intent_id}", {"begin": True})
         return bool(answer and answer["started"])

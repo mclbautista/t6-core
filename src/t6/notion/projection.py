@@ -53,7 +53,24 @@ class ProjectProjection:
         self._projects = normalize_page_id(projects_data_source_id)
 
     def handlers(self) -> dict[str, Handler]:
-        return {JobKind.REGISTRY_SYNC.value: self.sync, JobKind.NOTION_PAGE_CHANGED.value: self.reconcile}
+        return {JobKind.REGISTRY_SYNC.value: self.sync, JobKind.NOTION_PAGE_CHANGED.value: self.reconcile, 'project.status_sync': self.sync_status}
+
+    def sync_status(self, job: WorkerJob) -> JsonValue:
+        intent_id = int(str(job.payload['intent_id']))
+        state = self._registry.status_sync_state(intent_id)
+        if state is None or state['done']:
+            return {'skipped': 'completed or missing intent'}
+        page = state['page_id']
+        if page and state['held'] == state['current_held']:
+            before = codec.select((self._notion.retrieve_page(page).get('properties') or {}).get('Status'))
+            allowed = self._registry.projection(page, {'project_status': before}).get('allowed', {})
+            if not allowed.get('project_status'):
+                raise ValueError('Project Status changed in Notion; reconcile before projecting')
+            status = 'Standby' if state['held'] else 'In-Progress'
+            self._notion.update_page(page, {'properties': {ProjectsProperties.STATUS: {'select': {'name': status}}}})
+            self._registry.projection(page, {'project_status': status}, record=True)
+        self._registry.report_status_sync(intent_id)
+        return {'project_id': state['project_id']}
 
     def sync(self, job: WorkerJob) -> JsonValue:
         project_id = str(job.payload["project_id"])

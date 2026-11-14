@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from dataclasses import dataclass
 from typing import Any, cast
 from pathlib import Path
@@ -16,7 +17,7 @@ from t6.verbs import (
     JoSubmitInput, JoCloseInput, JoBlockInput, JoUnblockInput, JoDelayInput, JoCancelInput,
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
     LLMRunInput, PersonAddInput, PersonFindInput,
-    PersonGetInput, PersonPermissionInput, PersonRebindInput, PersonShiftInput,
+    PersonGetInput, PersonPermissionInput, PersonRebindInput, PersonShiftInput, PersonClassifyInput,
     PersonTelegramInput, ProjectHoldInput, ProjectResolveInput, ProjectResumeInput,
 )
 
@@ -81,6 +82,8 @@ class Client:
             return Unavailable(str(error), key)
 
     def call(self, noun: str, verb: str, inputs: BaseModel) -> Result:
+        if 'idempotency_key' in type(inputs).model_fields and not getattr(inputs, 'idempotency_key', None):
+            inputs = inputs.model_copy(update={'idempotency_key': secrets.token_hex(16)})
         if (noun, verb) in {('person', 'get'), ('person', 'find'), ('project', 'resolve'),
                             ('jo', 'get'), ('camera', 'get'), ('departments', '')}:
             from t6.verbs import VERBS
@@ -110,6 +113,9 @@ class Client:
 
     def person_shift(self, inputs: PersonShiftInput) -> Result:
         return self.call('person', 'shift', inputs)
+
+    def person_classify(self, inputs: PersonClassifyInput) -> Result:
+        return self.call('person', 'classify', inputs)
 
     def person_grant(self, inputs: PersonPermissionInput) -> Result:
         return self.call('person', 'grant', inputs)

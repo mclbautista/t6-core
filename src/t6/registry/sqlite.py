@@ -12,7 +12,6 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 import json
-import sys
 from pathlib import Path
 import sqlite3
 import time
@@ -267,19 +266,6 @@ class SqliteProjectRegistry:
             setup.close()
         with self._transaction() as db:
             _migrate(db)
-            if not db.execute('SELECT 1 FROM permission_seed WHERE id = 1').fetchone():
-                from t6.domain.studio_people import operator_ids
-                unmatched = []
-                for telegram_id in dict.fromkeys(operator_ids()):
-                    people = db.execute('SELECT id FROM persons WHERE telegram_id = ?', (telegram_id,)).fetchall()
-                    if not people:
-                        unmatched.append(telegram_id)
-                    for (person_id,) in people:
-                        db.execute("INSERT OR IGNORE INTO person_permissions VALUES (?, 'operator')", (person_id,))
-                        _audit(db, person_id, 'person_grant', 'operator seed', self._clock(), None, {'permission': 'operator'})
-                db.execute('INSERT INTO permission_seed VALUES (1, ?)', (json.dumps(unmatched),))
-                if unmatched:
-                    print('Unmatched T6_OPERATOR_IDS: ' + ', '.join(map(str, unmatched)), file=sys.stderr)
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
@@ -542,6 +528,18 @@ class SqliteProjectRegistry:
 
     def undispatched_jo_sync(self) -> tuple[SyncIntent, ...]:
         return self._intents("done_at IS NULL AND dispatched_at IS NULL AND id IN (SELECT intent_id FROM jo_sync_intents)")
+
+    def undispatched_status_sync(self) -> tuple[SyncIntent, ...]:
+        return self._intents("done_at IS NULL AND dispatched_at IS NULL AND id IN (SELECT intent_id FROM status_sync_intents)")
+
+    def status_sync_state(self, intent_id: int) -> dict[str, Any] | None:
+        with self._transaction() as db:
+            row = db.execute("SELECT s.project_id, s.done_at, i.held, h.held, b.page_id FROM sync_intents s JOIN status_sync_intents i ON i.intent_id=s.id LEFT JOIN project_hold_state h ON h.project_id=s.project_id LEFT JOIN bindings b ON b.project_id=s.project_id AND b.system='notion' AND b.active=1 WHERE s.id=?", (intent_id,)).fetchone()
+            return None if row is None else {'project_id': row[0], 'done': row[1] is not None, 'held': bool(row[2]), 'current_held': bool(row[3]), 'page_id': row[4]}
+
+    def report_status_sync(self, intent_id: int) -> None:
+        with self._transaction() as db:
+            db.execute('UPDATE sync_intents SET done_at=? WHERE id IN (SELECT intent_id FROM status_sync_intents WHERE intent_id=?)', (self._clock(), intent_id))
 
     def jo_sync_state(self, intent_id: int) -> dict[str, Any] | None:
         with self._transaction() as db:

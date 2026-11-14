@@ -171,6 +171,9 @@ def _migrate_people(args: argparse.Namespace, open_notion: Callable[..., Any]) -
         people = People(SqliteProjectRegistry(args.registry_db), PreviewTokens("migration"))
         digest = json.loads(args.preview.read_text(encoding="utf-8"))["digest"] if args.apply else None
         report = people.migrate(contacts, actor=pwd.getpwuid(os.getuid()).pw_name, apply=args.apply, digest=digest)
+        if args.apply:
+            from t6.domain.studio_people import operator_ids
+            report['operator_seed'] = people.seed_operators(operator_ids())
     except (OSError, ValueError, KeyError, NotionError) as error:
         return _fail(str(error))
     print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -404,11 +407,13 @@ def main(
     update.add_argument(
         "--json", type=Path, metavar="FILE", help="read the update from FILE instead of stdin"
     )
+    update.add_argument('--idempotency-key')
+    update.add_argument('--confirm')
     for sub in (get, update):
         sub.add_argument(
             "--data-sources",
             type=Path,
-            required=sub is update,
+            required=False,
             metavar="FILE",
             help="JSON object of snapshot database key to live data source ID",
         )
@@ -568,6 +573,13 @@ def main(
             return cli_jo.run(args, open_notion) if entry.noun == "jo" else _cameras(args, open_notion)
         from t6.client import APIError, Client, Unavailable
         values = {name: getattr(args, name, None) for name in entry.input_model.model_fields}
+        if pair == ('camera', 'enrich'):
+            try:
+                values['fields'] = json.loads(args.json.read_text(encoding='utf-8') if args.json else sys.stdin.read())
+            except (OSError, ValueError) as error:
+                return _fail(f'update input is not valid JSON: {error}')
+            if not isinstance(values['fields'], dict):
+                return _fail('update JSON must be an object')
         if values.get("date") is not None:
             values["date"] = str(values["date"])
         # The actor is established by API authentication.
