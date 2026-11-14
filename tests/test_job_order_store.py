@@ -114,6 +114,27 @@ class JobOrderStoreTests(unittest.TestCase):
         self.assertEqual([e.action for e in self.registry.activity(self.project)[:4]], ['jo_note', 'jo_reassign', 'jo_assign', 'jo_raise'])
         self.assertEqual([e.action for e in self.registry.audit(jo)], ['jo_raise', 'jo_assign', 'jo_reassign', 'jo_note'])
 
+    def test_assignment_preview_rejects_intervening_assignment(self) -> None:
+        from t6.verbs import Done, Preview, Refused
+        with self.registry._transaction() as db:
+            for person in ('first', 'second'):
+                db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', NULL, 0, 1)", (person,))
+        values = {'fields': {'project_id': 'project-page', 'name': 'JO'}}
+        preview = self.orders.write('raise', values, actor='alice', idempotency_key='raise')
+        assert isinstance(preview, Preview)
+        done = self.orders.write('raise', values, actor='alice', idempotency_key='raise', confirm=preview.token)
+        assert isinstance(done, Done)
+        jo = done.result['jo_id']
+        pending = self.orders.write('assign', {'jo': jo, 'person': 'first'}, actor='alice', idempotency_key='a')
+        assert isinstance(pending, Preview)
+        self.assertIsNone(pending.plan['before_assignee'])
+        other = self.orders.write('assign', {'jo': jo, 'person': 'second'}, actor='alice', idempotency_key='b')
+        assert isinstance(other, Preview)
+        self.assertIsInstance(self.orders.write('assign', {'jo': jo, 'person': 'second'}, actor='alice', idempotency_key='b', confirm=other.token), Done)
+        result = self.orders.write('assign', {'jo': jo, 'person': 'first'}, actor='alice', idempotency_key='a', confirm=pending.token)
+        assert isinstance(result, Refused)
+        self.assertEqual(result.rule, 'assignee_changed')
+
     def test_cli_raise_create_alias_and_get(self) -> None:
         import contextlib
         import io

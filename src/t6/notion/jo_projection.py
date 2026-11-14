@@ -44,11 +44,12 @@ class JobOrderProjection:
         properties = page.get('properties') or {}
         status = JobOrdersRow.from_page(page).status
         id_entry = next(((name, prop) for name, prop in properties.items() if unquote(str(prop.get('id', ''))) == unquote(t6_id)), (t6_id, None))
-        id_name, id_property = id_entry
+        _, id_property = id_entry
         shown = {'t6_id': codec.rich_text(id_property), 'status': str(status) if status else None}
         updated = job.payload.get('updated_properties')
-        names = [('t6_id', id_name), ('status', 'Status')]
-        changed = [key for key, name in names if isinstance(updated, list) and any(unquote(str(item)) in (name, unquote(str((properties.get(name) or {}).get('id', '')))) for item in updated)]
+        status_id = JobOrdersRow.notion_id('status')
+        names = [('t6_id', t6_id), ('status', status_id)]
+        changed = [key for key, prop_id in names if prop_id and isinstance(updated, list) and any(unquote(str(item)) == unquote(prop_id) for item in updated)]
         editor, editor_id = notion_editor(self.notion, job)
         result = self.registry.observe_job_order(page_id, shown, changed, editor, str(job.payload.get('event_id') or job.dedupe_key), editor_id=editor_id)
         if result.get('restore', {}).get('t6_id'):
@@ -107,7 +108,9 @@ class JobOrderProjection:
         seen_value = str(seen_status) if seen_status else None
         if 'status' in state['payload']:
             allowed = self.registry.projection(page, {'jo_status': seen_value}).get('allowed', {})
-            if allowed.get('jo_status') and state['payload']['status'] == state['current_status']:
+            if state['payload']['status'] == state['current_status'] and not allowed.get('jo_status'):
+                raise ValueError('JO Status changed in Notion; reconcile before projecting')
+            if state['payload']['status'] == state['current_status']:
                 properties.update(JobOrdersRow.to_properties(status=state['payload']['status']))
         if state['assignee_id']:
             if not state['assignee_page']:
@@ -119,7 +122,7 @@ class JobOrderProjection:
         recorded: dict[str, str | None] = {'t6_id': str(jo_id)}
         if 'status' not in state['payload']:
             recorded['jo_status'] = seen_value
-        elif 'v%3Fln' in properties:
+        elif JobOrdersRow.notion_id('status') in properties:
             recorded['jo_status'] = str(state['payload']['status'])
         self.registry.projection(page, recorded, record=True)
         self.registry.report_jo_sync(intent_id, page_id=page)

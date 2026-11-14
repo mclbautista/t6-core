@@ -23,6 +23,21 @@ class JoSyncTests(SyncTestCase):
         with self.assertRaisesRegex(Refused, 'schema-snapshot'):
             projection.sync(job)
 
+    def test_conflicting_notion_status_keeps_intent_pending(self) -> None:
+        from unittest.mock import MagicMock, patch
+        from t6.notion.jo_projection import JobOrderProjection
+        from t6.worker.client import WorkerJob
+        notion = MagicMock()
+        registry = MagicMock()
+        registry.jo_sync_state.return_value = {'done': False, 'jo_id': 'jo', 'page_id': 'page', 'operation': 'update', 'fields': {}, 'payload': {'status': 'Done'}, 'current_status': 'Done', 'assignee_id': None, 'notes': []}
+        registry.projection.return_value = {'allowed': {'jo_status': False}}
+        notion.retrieve_page.return_value = {'id': 'page', 'properties': {}}
+        job = WorkerJob(job_id=1, queue='main', token='token', kind='jo.sync', dedupe_key='test', payload={'intent_id': 1}, attempt=1)
+        with patch('t6.notion.jo_projection.projection_ids', return_value=('id', 'notes')):
+            with self.assertRaisesRegex(ValueError, 'reconcile'):
+                JobOrderProjection(notion, registry, 'source').sync(job)
+        registry.report_jo_sync.assert_not_called()
+
     def test_projection_survives_property_renames(self) -> None:
         from unittest.mock import patch
         from t6.notion.jo_projection import JobOrderProjection
@@ -36,6 +51,7 @@ class JoSyncTests(SyncTestCase):
         ids = (props['T6 ID']['id'], props['T6 Notes']['id'])
         self.notion.rename_property('job-orders', 'T6 ID', 'Identity renamed')
         self.notion.rename_property('job-orders', 'T6 Notes', 'Notes renamed')
+        self.notion.rename_property('job-orders', 'Status', 'State renamed')
         store = JobOrderStore(self.registry, PreviewTokens('secret'))
         values = {'fields': {'project_id': project_page, 'name': 'JO'}}
         preview = store.write('raise', values, actor='alice', idempotency_key='rename')
@@ -70,6 +86,7 @@ class JoSyncTests(SyncTestCase):
         transport = InProcess(self.app)
         worker = Worker(QueueClient(transport, WORKER_SECRET), 'main', JobOrderProjection(self.client, RegistryClient(transport, WORKER_SECRET), 'job-orders').handlers())
         self.assertTrue(worker.run_once())
+        self.notion.rename_property('job-orders', 'Status', 'State renamed')
         for verb, extra, expected in [('submit', {}, 'In progress'), ('block', {'reason': 'waiting'}, 'In progress'), ('unblock', {}, 'In progress'), ('close', {}, 'Done')]:
             data = {'jo': jo, **extra}
             preview = store.write(verb, data, actor='alice', idempotency_key=verb)
@@ -100,6 +117,7 @@ class JoSyncTests(SyncTestCase):
         result = store.write('raise', values, actor='alice', idempotency_key='raise', confirm=preview.token)
         assert isinstance(result, Done)
         identifier = result.result['jo_id']
+        self.assertIsInstance(result.result['sync_intent_id'], int)
         transport = InProcess(self.app)
         projection = JobOrderProjection(self.client, RegistryClient(transport, WORKER_SECRET), source)
         worker = Worker(QueueClient(transport, WORKER_SECRET), 'main', projection.handlers())

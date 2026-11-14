@@ -102,7 +102,11 @@ def configured_handlers(
     gateway_url, gateway_secret = environ.get("T6_GATEWAY_URL"), environ.get("T6_GATEWAY_SECRET")
     operator = OperatorClient(transport, settings.secret)
     if gateway_url and gateway_secret:
-        handlers.update(CardDelivery(operator, GatewayClient(HttpTransport(gateway_url), gateway_secret)).handlers())
+        gateway = GatewayClient(HttpTransport(gateway_url), gateway_secret)
+        handlers.update(CardDelivery(operator, gateway).handlers())
+        from t6.domain.studio_people import operator_ids
+        from t6.worker.operator import StateEditNotification
+        handlers['notion.state_flagged'] = StateEditNotification(gateway, operator_ids(environ)).deliver
     token, projects = environ.get("T6_NOTION_TOKEN"), environ.get("T6_NOTION_PROJECTS_DATA_SOURCE")
     if token and projects:
         from t6.notion import NotionClient

@@ -52,6 +52,11 @@ class ProjectWrites:
             if row is None:
                 return Refused(rule='project', reason='Project not found')
             project_id, revision = row
+            snapshot = json.dumps([project_id, revision])
+            if nonce is not None:
+                observed = db.execute('SELECT state FROM jo_state_previews WHERE nonce = ?', (nonce,)).fetchone()
+                if not observed or observed[0] != snapshot:
+                    return Refused(rule='project_changed', reason='Project changed since preview; preview again')
             state = db.execute('SELECT held, reason FROM project_hold_state WHERE project_id = ?', (project_id,)).fetchone()
             held, old_reason = (bool(state[0]), state[1]) if state else (False, None)
             desired = verb == 'hold'
@@ -61,7 +66,11 @@ class ProjectWrites:
             plan: dict[str, Any] = {'project_id': project_id, 'action': verb, 'reason': reason,
                                     'idempotency_key': key, 'status': 'held' if desired else 'resumed'}
             if nonce is None:
-                return self.tokens.create(f'project {verb}', actor, inputs, plan)
+                preview = self.tokens.create(f'project {verb}', actor, inputs, plan)
+                preview_nonce = self.tokens.verify(preview.token, f'project {verb}', actor, inputs)
+                assert isinstance(preview_nonce, str)
+                db.execute('INSERT INTO jo_state_previews VALUES (?, ?)', (preview_nonce, snapshot))
+                return preview
             now = self.registry._clock()
             result = dict(plan)
             db.execute('INSERT INTO project_hold_state VALUES (?, ?, ?) ON CONFLICT(project_id) DO UPDATE SET held=excluded.held, reason=excluded.reason',

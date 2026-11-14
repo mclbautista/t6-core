@@ -23,6 +23,7 @@ from t6.notion import codec
 from t6.notion.errors import NotionError
 from t6.notion.editor import editor as notion_editor
 from t6.notion.models import ProjectsProperties
+from t6.notion.generated import ProjectsRow
 from t6.notion.sync import NotionClient
 from t6.registry import normalize_page_id
 from t6.worker.client import WorkerJob
@@ -62,12 +63,12 @@ class ProjectProjection:
             return {'skipped': 'completed or missing intent'}
         page = state['page_id']
         if page and state['held'] == state['current_held']:
-            before = codec.select((self._notion.retrieve_page(page).get('properties') or {}).get('Status'))
+            before = ProjectsRow.from_page(self._notion.retrieve_page(page)).status
             allowed = self._registry.projection(page, {'project_status': before}).get('allowed', {})
             if not allowed.get('project_status'):
                 raise ValueError('Project Status changed in Notion; reconcile before projecting')
             status = 'Standby' if state['held'] else 'In-Progress'
-            self._notion.update_page(page, {'properties': {ProjectsProperties.STATUS: {'select': {'name': status}}}})
+            self._notion.update_page(page, {'properties': {ProjectsRow.notion_id('status'): {'select': {'name': status}}}})
             self._registry.projection(page, {'project_status': status}, record=True)
         self._registry.report_status_sync(intent_id)
         return {'project_id': state['project_id']}
@@ -102,9 +103,9 @@ class ProjectProjection:
             self._registry.report_sync(project_id, revision, ok=False, detail=error.code, attempt=job.attempt)
             raise
         self._registry.projection(page, {'t6_id': str(project['id']), 'code': project['code'], 'rotation': project['rotation']}, record=True)
-        status = codec.select((before.get('properties') or {}).get('Status'))
+        status = ProjectsRow.from_page(before).status
         # Initialize the status baseline only if none has been observed yet.
-        health = codec.select((before.get('properties') or {}).get('Health'))
+        health = ProjectsRow.from_page(before).health
         self._registry.projection(page, {'project_status': status, 'project_health': health}, initialize=True)
         self._registry.report_sync(project_id, revision, ok=True)
         return {"synced": revision, "page": page}
@@ -135,9 +136,10 @@ class ProjectProjection:
             changed = [key for key, name in (("t6_id", T6_ID), ("code", ProjectsProperties.PROJECT_CODE), ("rotation", ROTATION))
                        if any(unquote(str(item)) in (name, unquote(str((properties.get(name) or {}).get("id", "")))) for item in updated)]
         outcome = self._registry.observed(page_id, available=True, shown=shown, editor=editor, changed=changed, editor_id=editor_id)
-        for field, label in (('status', 'Status'), ('health', 'Health')):
-            prop = properties.get(label) or {}
-            if outcome != 'unbound' and isinstance(updated, list) and updated and any(unquote(str(item)) in (label, unquote(str(prop.get('id', '')))) for item in updated) and prop:
+        for field in ('status', 'health'):
+            prop_id = ProjectsRow.notion_id(field)
+            prop: JSON = next((p for p in properties.values() if unquote(str(p.get('id', ''))) == unquote(str(prop_id))), {})
+            if outcome != 'unbound' and isinstance(updated, list) and updated and any(unquote(str(item)) == unquote(str(prop_id)) for item in updated) and prop:
                 self._registry.observe_project_status(page_id, codec.select(prop), editor, str(job.payload.get('event_id') or job.dedupe_key), editor_id, field)
         if outcome == "unbound" and self._offer is not None:
             heading = next((p for p in properties.values() if p.get("type") == "title"), None)

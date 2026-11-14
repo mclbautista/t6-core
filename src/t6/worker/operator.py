@@ -78,3 +78,27 @@ class CardDelivery:
         if first:
             self._operator.delivered(token, ref, message_id)
         return {"delivered": card["version"], "message_ref": ref}
+
+
+class StateEditNotification:
+    """Deliver a durable flagged-edit notice to configured operators."""
+
+    def __init__(self, gateway: GatewayClient, operators: tuple[int, ...]) -> None:
+        self.gateway = gateway
+        self.operators = operators
+
+    def deliver(self, job: WorkerJob) -> JsonValue:
+        from html import escape
+        if not self.operators:
+            raise RuntimeError('No operator IDs configured for flagged Notion edits')
+        payload = job.payload
+        message = 'Notion edit needs review\n' + '\n'.join(
+            f"{escape(label)}: {escape(str(payload.get(key) or ''))}"
+            for key, label in (('page_id', 'Page'), ('property', 'Property'), ('value', 'Value'), ('editor', 'Editor'), ('reason', 'Reason'))
+        )
+        for operator in self.operators:
+            ref = self.gateway.notify(operator, message, [], f'notion-state:{job.dedupe_key}:{operator}')
+            state, _ = self.gateway.state(ref)
+            if state != 'sent':
+                raise RuntimeError(f'gateway message {ref} is {state}')
+        return {'delivered': len(self.operators)}

@@ -222,17 +222,23 @@ class JobOrderStore:
             plan = {'action': verb, **values, 'project_id': project[0], 'idempotency_key': key}
             if verb in TRANSITIONS:
                 plan.update(before=state, after=new_state)
+            if verb in ('assign', 'reassign'):
+                plan['before_assignee'] = old_assignee
             if nonce is None:
                 preview = self.tokens.create(f'jo {verb}', actor, inputs, plan)
-                if verb in TRANSITIONS:
+                if verb in TRANSITIONS or verb in ('assign', 'reassign'):
                     preview_nonce = self.tokens.verify(preview.token, f'jo {verb}', actor, inputs)
                     assert isinstance(preview_nonce, str)
-                    db.execute('INSERT INTO jo_state_previews VALUES (?, ?)', (preview_nonce, json.dumps(state, sort_keys=True)))
+                    db.execute('INSERT INTO jo_state_previews VALUES (?, ?)', (preview_nonce, json.dumps(state if verb in TRANSITIONS else [jo_id, old_assignee], sort_keys=True)))
                 return preview
             if verb in TRANSITIONS:
                 observed = db.execute('SELECT state FROM jo_state_previews WHERE nonce = ?', (nonce,)).fetchone()
                 if not observed or observed[0] != json.dumps(state, sort_keys=True):
                     return Refused(rule='jo_state_changed', reason='JO state changed since preview; preview again')
+            if verb in ('assign', 'reassign'):
+                observed = db.execute('SELECT state FROM jo_state_previews WHERE nonce = ?', (nonce,)).fetchone()
+                if not observed or observed[0] != json.dumps([jo_id, old_assignee], sort_keys=True):
+                    return Refused(rule='assignee_changed', reason='Assignee changed since preview; preview again')
             now = self.registry._clock()
             if verb == 'raise':
                 jo_id = str(T6Id.mint(EntityKind.JOB_ORDER))
@@ -246,6 +252,7 @@ class JobOrderStore:
             assert jo_id is not None
             revision = db.execute('SELECT COALESCE(MAX(revision), 0) + 1 FROM sync_intents WHERE project_id = ?', (jo_id,)).fetchone()[0]
             _intend_sync(db, jo_id, revision, now)
+            intent_id = db.execute('SELECT last_insert_rowid()').fetchone()[0]
             db.execute('INSERT INTO jo_sync_intents (intent_id, operation, payload) VALUES (last_insert_rowid(), ?, ?)', ('create' if verb == 'raise' else 'update', json.dumps({'status': new_state['status']} if verb in TRANSITIONS else values)))
             cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)', (jo_id, 'jo_' + verb, actor, now, None if verb == 'raise' else json.dumps(state if verb in TRANSITIONS else {'assignee_id': old_assignee}), json.dumps({'state': new_state, 'inputs': values} if verb in TRANSITIONS else values)))
             summary = {'raise': 'JO raised', 'assign': f"JO assigned to {values.get('person')}",
@@ -257,6 +264,7 @@ class JobOrderStore:
             result = {**plan, 'jo_id': jo_id}
             if verb == 'raise':
                 result['page_id'] = None
+                result['sync_intent_id'] = intent_id
             db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
             db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(result)))
             return Done(result=result)

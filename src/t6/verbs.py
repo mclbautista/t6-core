@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, get_args, get_origin
 from types import UnionType
 
-from pydantic import BaseModel, Field, RootModel, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict
 from t6.domain import Project, JobOrder, Deliverable, MeetingNote, Contact, Camera, ExternalRef
 
 if TYPE_CHECKING:
@@ -331,10 +331,39 @@ class Verb:
     local_only: bool = False
 
 
-# Legacy CLI verbs retain their established arguments and JSON output while
-# participating in discovery. Their handlers live in the CLI modules.
-class LegacyOutput(RootModel[Any]):
-    """The legacy commands retain their existing, command-specific JSON shapes."""
+class PersonWriteOutput(BaseModel):
+    action: str
+    person_id: str
+    idempotency_key: str
+    page_id: str | None = None
+    kind: str | None = None
+    departments: list[str] | None = None
+    roles: list[str] | None = None
+    telegram_id: int | None = None
+    master_brief: bool | None = None
+    active: bool | None = None
+    pattern: str | None = None
+    start: str | None = None
+    end: str | None = None
+    permission: str | None = None
+
+
+class FormatFinding(BaseModel):
+    code: str
+    params: dict[str, Any]
+
+
+class JoFormatOutput(BaseModel):
+    text: str
+    findings: list[FormatFinding]
+
+
+class CameraEnrichOutput(BaseModel):
+    id: str
+    name: str | None
+    related_to_projects_cameras: list[str]
+    tags: list[str]
+    wiki: list[str]
 
 
 class LegacyJoGetInput(BaseModel):
@@ -355,6 +384,7 @@ class JoWriteOutput(BaseModel):
     action: str
     idempotency_key: str
     page_id: str | None = None
+    sync_intent_id: int | None = None
 
 
 class JoAssignInput(BaseModel):
@@ -713,13 +743,13 @@ VERBS = (
     Verb("meeting-notes", "list", "List Project Meeting Notes", (), MeetingNotesListInput, MeetingNotesListOutput, "reader", "Read from Notion.", api_read),
     Verb("project", "list", "List Projects", (), ProjectListInput, ProjectListOutput, "reader", "Read Projects.", api_read),
     Verb("llm", "run", "Run an LLM task on the API", (), LLMRunInput, LLMRunOutput, "llm", "Server policy and masking apply.", llm_api_only),
-    Verb("person", "add", "Register a Person", (), PersonAddInput, LegacyOutput, "operator", "A page belongs to one Person.", person_write),
-    Verb("person", "rebind", "Bind a replacement Contacts page", (), PersonRebindInput, LegacyOutput, "operator", "A page belongs to one Person.", person_write),
-    Verb("person", "set-telegram", "Set a Person Telegram ID", (), PersonTelegramInput, LegacyOutput, "operator", "An active Person uniquely holds a Telegram ID.", person_write),
-    Verb("person", "shift", "Set a Person shift", (), PersonShiftInput, LegacyOutput, "operator", "Set a day or night shift.", person_write),
-    Verb("person", "classify", "Classify a Person", (), PersonClassifyInput, LegacyOutput, "operator", "Set the reviewed Person kind.", person_write),
-    Verb("person", "grant", "Grant a permission", (), PersonPermissionInput, LegacyOutput, "operator", "Only an operator or admin may grant permissions.", person_write),
-    Verb("person", "revoke", "Revoke a permission", (), PersonPermissionInput, LegacyOutput, "operator", "Only an operator or admin may revoke permissions.", person_write),
+    Verb("person", "add", "Register a Person", (), PersonAddInput, PersonWriteOutput, "operator", "A page belongs to one Person.", person_write),
+    Verb("person", "rebind", "Bind a replacement Contacts page", (), PersonRebindInput, PersonWriteOutput, "operator", "A page belongs to one Person.", person_write),
+    Verb("person", "set-telegram", "Set a Person Telegram ID", (), PersonTelegramInput, PersonWriteOutput, "operator", "An active Person uniquely holds a Telegram ID.", person_write),
+    Verb("person", "shift", "Set a Person shift", (), PersonShiftInput, PersonWriteOutput, "operator", "Set a day or night shift.", person_write),
+    Verb("person", "classify", "Classify a Person", (), PersonClassifyInput, PersonWriteOutput, "operator", "Set the reviewed Person kind.", person_write),
+    Verb("person", "grant", "Grant a permission", (), PersonPermissionInput, PersonWriteOutput, "operator", "Only an operator or admin may grant permissions.", person_write),
+    Verb("person", "revoke", "Revoke a permission", (), PersonPermissionInput, PersonWriteOutput, "operator", "Only an operator or admin may revoke permissions.", person_write),
     Verb("person", "get", "Get a Person", (), PersonGetInput, PersonGetOutput, "reader", "Read a Person.", person_get),
     Verb("project", "hold", "Hold a Project", (), ProjectHoldInput, ProjectWriteOutput,
          "operator", "A held Project cannot be held again.", project_hold),
@@ -738,11 +768,11 @@ VERBS = (
     Verb("jo", "unblock", "Unblock a Job Order", (), JoUnblockInput, JoWriteOutput, "coordinator", "Apply the JO transition rules.", jo_write),
     Verb("jo", "delay", "Delay a Job Order", (), JoDelayInput, JoWriteOutput, "coordinator", "Apply the JO transition rules.", jo_write),
     Verb("jo", "cancel", "Cancel a Job Order", (), JoCancelInput, JoWriteOutput, "coordinator", "Apply the JO transition rules.", jo_write),
-    Verb("jo", "format", "Format a Job Order", (), JoFormatInput, LegacyOutput, "reader", "Format a draft.", None),
+    Verb("jo", "format", "Format a Job Order", (), JoFormatInput, JoFormatOutput, "reader", "Format a draft.", None),
     Verb("person", "find", "Find a Person", ("contacts find",), PersonFindInput, PersonFindOutput, "reader", "Find a Contact.", None),
     Verb("project", "resolve", "Resolve a Project", ("projects resolve",), ProjectResolveInput, ProjectResolveOutput, "reader", "Resolve a Project.", None),
     Verb("camera", "get", "Get Cameras", ("cameras get",), CameraGetInput, CameraGetOutput, "reader", "Read Cameras.", None),
-    Verb("camera", "enrich", "Enrich a Camera", ("cameras update",), CameraEnrichInput, LegacyOutput, "operator", "Update a Camera.", None),
+    Verb("camera", "enrich", "Enrich a Camera", ("cameras update",), CameraEnrichInput, CameraEnrichOutput, "operator", "Update a Camera.", None),
     Verb("departments", "", "Print the studio Departments, read live, in display order, with option IDs", (),
          DepartmentsInput, DepartmentsOutput, "reader", "Notion Department options are the truth; use studio display order.", departments),
 )

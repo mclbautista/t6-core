@@ -11,7 +11,7 @@ from cli_api_fake import client_patch
 from t6.cli import main
 from t6.preview import PreviewTokens, finish_preview_job, submit_preview_job
 from t6.project_writes import ProjectWrites
-from t6.registry import Registered, SqliteProjectRegistry
+from t6.registry import Registered, Rotation, SqliteProjectRegistry
 from t6.verbs import Done, Outcome, Preview, Refused
 from t6.worker.internal_queue import InternalJobQueue
 
@@ -83,6 +83,27 @@ class ProjectWritesTests(unittest.TestCase):
         expired = self.call('hold', 'key', preview.token)
         assert isinstance(expired, Refused)
         self.assertEqual(expired.rule, 'token_expired')
+
+    def test_reused_code_cannot_retarget_a_preview(self) -> None:
+        self.registry.set_rotation(self.project, Rotation.IN, actor='setup', idempotency_key='in', expected_revision=1)
+        preview = self.writes.run('hold', 'SHOW', 'pause', actor='alice', idempotency_key='code')
+        assert isinstance(preview, Preview)
+        self.registry.set_rotation(self.project, Rotation.OUT, actor='setup', idempotency_key='out', expected_revision=2)
+        other = self.registry.register(actor='setup', idempotency_key='other', code='SHOW')
+        assert isinstance(other, Registered)
+        self.registry.set_rotation(other.project.id, Rotation.IN, actor='setup', idempotency_key='other-in', expected_revision=1)
+        result = self.writes.run('hold', 'SHOW', 'pause', actor='alice', idempotency_key='code', confirm=preview.token)
+        assert isinstance(result, Refused)
+        self.assertEqual(result.rule, 'project_changed')
+
+    def test_project_revision_change_invalidates_preview(self) -> None:
+        preview = self.call('hold', 'stale')
+        assert isinstance(preview, Preview)
+        with self.registry._transaction() as db:
+            db.execute('UPDATE projects SET revision = revision + 1 WHERE id = ?', (self.project,))
+        result = self.call('hold', 'stale', preview.token)
+        assert isinstance(result, Refused)
+        self.assertEqual(result.rule, 'project_changed')
 
     def test_cli_preview_and_confirm(self) -> None:
         with patch.dict(os.environ, {'T6_PERSON_ID': 'test-actor', 'T6_REGISTRY_DB': str(self.path), 'T6_PREVIEW_SIGNING_KEY': 'secret'}):

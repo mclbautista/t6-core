@@ -53,6 +53,8 @@ class NotionEdits:
         result: Any = Refused(rule='jo_transition', reason='No matching JO status verb')
         if verb:
             values = {'jo': jo['id']}
+            if verb == 'cancel':
+                values['reason'] = f'set in Notion by {editor}'
             key = 'notion:' + event + ':jo-status'
             result = People(self.registry, self.orders.tokens).authorize(actor, 'coordinator') if person else Refused(rule='permission', reason='Notion editor is not bound to a Person')
             if result is None:
@@ -70,6 +72,7 @@ class NotionEdits:
                 if project:
                     cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)', (jo['id'], 'notion_state_flagged', actor, now, json.dumps({'status': old}), json.dumps({'status': status, 'reason': reason})))
                     db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (project, jo['id'], now, actor, 'notion_state_flagged', f'JO Status edited in Notion by {editor}, flagged: {reason}', cursor.lastrowid))
+                _notify(db, page, event, property_name='Status', value=status, editor=editor, reason=reason, now=now)
                 outcome = 'flagged'
             db.execute('INSERT INTO notion_last_seen VALUES (?, ?, ?) ON CONFLICT(page_id, property) DO UPDATE SET value=excluded.value', (page, 'jo_status', json.dumps(status)))
         return {'outcome': outcome, 'restore': restore}
@@ -111,10 +114,11 @@ class NotionEdits:
             writes = ProjectWrites(self.registry, PreviewTokens('internal-notion-reconciliation'))
             key = 'notion:' + event + ':project-status'
             result = People(self.registry, writes.tokens).authorize(actor, 'operator') if person else Refused(rule='permission', reason='Notion editor is not bound to a Person')
+            reason = f'set in Notion by {editor}' if verb == 'hold' else None
             if result is None:
-                result = writes.run(verb, project.id, None, actor=actor, idempotency_key=key, notion_editor=editor)
+                result = writes.run(verb, project.id, reason, actor=actor, idempotency_key=key, notion_editor=editor)
             if isinstance(result, Preview):
-                result = writes.run(verb, project.id, None, actor=actor, idempotency_key=key, confirm=result.token, notion_editor=editor)
+                result = writes.run(verb, project.id, reason, actor=actor, idempotency_key=key, confirm=result.token, notion_editor=editor)
         with self.registry._transaction() as db:
             if isinstance(result, Done):
                 _close_review(db, review_kind, page, now)
@@ -125,6 +129,12 @@ class NotionEdits:
                 _open_review(db, review_kind, page, project.id, {'property': property_name, 'value': status, 'editor': editor, 'reason': reason}, now)
                 cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)', (project.id, 'notion_state_flagged', actor, now, json.dumps({'status': old}), json.dumps({'status': status, 'reason': reason})))
                 db.execute('INSERT INTO activity (project_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?)', (project.id, now, actor, 'notion_state_flagged', f'Project {property_name} edited in Notion by {editor}, flagged: {reason}', cursor.lastrowid))
+                _notify(db, page, event, property_name=property_name, value=status, editor=editor, reason=reason, now=now)
                 outcome = 'flagged'
             db.execute('INSERT INTO notion_last_seen VALUES (?, ?, ?) ON CONFLICT(page_id, property) DO UPDATE SET value=excluded.value', (page, cache_key, json.dumps(status)))
         return {'outcome': outcome}
+
+
+def _notify(db: Any, page: str, event: str, *, property_name: str, value: Any, editor: str, reason: str, now: float) -> None:
+    payload = {'page_id': page, 'property': property_name, 'value': value, 'editor': editor, 'reason': reason}
+    db.execute("INSERT INTO internal_jobs (queue, kind, dedupe_key, payload, run_at, state, created_at) VALUES ('main', 'notion.state_flagged', ?, ?, ?, 'queued', ?) ON CONFLICT (kind, dedupe_key) DO NOTHING", (event + ':' + page + ':' + property_name, json.dumps(payload), now, now))

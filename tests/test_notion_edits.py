@@ -188,6 +188,44 @@ class NotionEditTests(SyncTestCase):
         self.assertEqual(resume.rule, 'project_not_held')
         self.assertTrue(any('Status set in Notion by Ada' in entry.summary for entry in self.registry.activity(project['id'])))
 
+    def test_notion_hold_and_cancellation_record_editor_reason(self) -> None:
+        from t6.ids import EntityKind, T6Id
+        from t6.job_order import JobOrderStore
+        from t6.notion_edits import NotionEdits
+        from t6.preview import PreviewTokens
+        from t6.verbs import Done, Preview
+        page = self.page()
+        project = self.new('SHOW', page=page)
+        person = str(T6Id.mint(EntityKind.PERSON))
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', NULL, 0, 1)", (person,))
+            db.executemany('INSERT INTO person_permissions VALUES (?, ?)', [(person, 'operator'), (person, 'coordinator')])
+        self.registry.bind_entity('notion_user', 'user-1', T6Id.parse(person, EntityKind.PERSON), actor='setup')
+        edits = NotionEdits(self.registry)
+        self.assertEqual(edits.project_status(page, 'Standby', 'Ada', 'hold', 'user-1')['outcome'], 'accepted')
+        store = JobOrderStore(self.registry, PreviewTokens('secret'))
+        values = {'fields': {'project_id': page, 'name': 'JO'}}
+        preview = store.write('raise', values, actor='setup', idempotency_key='raise')
+        assert isinstance(preview, Preview)
+        done = store.write('raise', values, actor='setup', idempotency_key='raise', confirm=preview.token)
+        assert isinstance(done, Done)
+        jo = done.result['jo_id']
+        self.registry.bind_entity('notion', 'jo-page', T6Id.parse(jo, EntityKind.JOB_ORDER), actor='setup')
+        self.assertEqual(edits.job_order('jo-page', {'status': 'Cancelled'}, ['status'], 'Ada', 'cancel', editor_id='user-1')['outcome'], 'accepted')
+        self.assertIn('set in Notion by Ada', str(self.registry.audit(jo)[-1].after))
+
+    def test_flag_notification_is_delivered_to_operators(self) -> None:
+        from unittest.mock import MagicMock
+        from t6.worker.client import WorkerJob
+        from t6.worker.operator import StateEditNotification
+        gateway = MagicMock()
+        gateway.notify.return_value = 42
+        gateway.state.return_value = ('sent', 7)
+        job = WorkerJob(job_id=1, queue='main', token='token', kind='notion.state_flagged', dedupe_key='event', payload={'page_id': 'page', 'property': 'Status', 'value': 'Done', 'editor': 'Ada', 'reason': 'not permitted'}, attempt=1)
+        StateEditNotification(gateway, (123,)).deliver(job)
+        self.assertEqual(gateway.notify.call_args.args[0], 123)
+        self.assertIn('not permitted', gateway.notify.call_args.args[1])
+
     def test_health_without_a_matching_verb_is_flagged(self) -> None:
         from datetime import datetime, timezone
         from test_server_app import notion_request
@@ -203,6 +241,11 @@ class NotionEditTests(SyncTestCase):
         self.drain()
         self.assertEqual(codec.select(self.notion.page(page)['properties']['Health']), 'At Risk')
         self.assertTrue(any(item.kind == 'notion_project_health' for item in self.registry.review_items()))
+        from t6.worker.internal_queue import InternalJobQueue
+        notice = InternalJobQueue(self.registry._path, clock=self.clock).claim('main')
+        assert notice is not None
+        self.assertEqual(notice.kind, 'notion.state_flagged')
+        self.assertEqual(notice.payload['page_id'], page)
         self.assertTrue(any('Health' in entry.summary and 'Ada' in entry.summary for entry in self.registry.activity(project['id'])))
 
     def test_old_jo_projection_does_not_overwrite_newer_status(self) -> None:
