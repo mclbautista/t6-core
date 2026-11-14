@@ -12,7 +12,9 @@ more than one account needs `account_id`.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime, timezone
+import time
 from typing import Any, Protocol
 import urllib.parse
 
@@ -29,7 +31,10 @@ from t6.frameio.model import (
     ResolvedComment,
     ShareLink,
     Version,
+    _number,
+    _text,
     _time,
+    clip_remaining_seconds,
 )
 from t6.frameio.requests import (
     Approvals,
@@ -47,6 +52,15 @@ SYSTEM = "frameio"
 PROJECT_KIND = "project"
 SHARE_LINK_KIND = "share_link"
 APPROVAL_FIELD = "Status"
+SHARE_CACHE_SECONDS = 3600.0
+"""How long a share list or a share's asset list is kept in memory (`T6_FRAMEIO_SHARE_CACHE_SECONDS`; 0 is off)."""
+SHARE_SCAN_LIMIT = 30
+"""How many of a project's newest live shares have their assets read (`T6_FRAMEIO_SHARE_SCAN_LIMIT`)."""
+_OLDEST = datetime.min.replace(tzinfo=timezone.utc)
+DURATION_FIELD = "duration"
+"""Frame.io's file metadata field for the clip length in seconds (compared case-folded)."""
+FRAME_RATE_FIELD = "frame rate"
+"""Frame.io's file metadata field for frames per second (compared case-folded)."""
 """The metadata field Frame.io V4 keeps a file's approval in."""
 
 
@@ -75,6 +89,12 @@ class Links(Protocol):
     def touch(self, page_id: str, when: datetime) -> Any: ...
 
 
+def _head_version_id(item: Any) -> str | None:
+    """The id of the file at the top of a version stack, or None for anything else."""
+    head = item.get("head_version") if isinstance(item, dict) else None
+    return _text(head.get("id")) if isinstance(head, dict) else None
+
+
 def _id(value: str) -> str:
     """An ID as one path segment, so a caller's text cannot name another route."""
     return urllib.parse.quote(value, safe="")
@@ -91,11 +111,19 @@ class FrameioReads:
         links: Links | None = None,
         account_id: str | None = None,
         now: Callable[[], datetime] = _now,
+        *,
+        share_cache_seconds: float = SHARE_CACHE_SECONDS,
+        share_scan_limit: int = SHARE_SCAN_LIMIT,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._api = api
         self._links = links
         self._account_id = account_id
         self._now = now
+        self._share_cache_seconds = share_cache_seconds
+        self._share_scan_limit = share_scan_limit
+        self._clock = clock
+        self._cache: dict[tuple[str, str, str], tuple[float, Any]] = {}
 
     def __call__(self, request: FrameioRequest) -> JsonValue:
         if isinstance(request, FrameioProjects):
@@ -129,9 +157,67 @@ class FrameioReads:
     def projects(self) -> tuple[FrameioProject, ...]:
         return tuple(FrameioProject.from_api(raw) for raw in self._api.pages(f"{self._account()}/projects"))
 
-    def share_links(self, frameio_project_id: str) -> tuple[ShareLink, ...]:
-        rows = self._api.pages(f"{self._account()}/projects/{_id(frameio_project_id)}/shares")
-        return tuple(ShareLink.from_api(raw, frameio_project_id) for raw in rows)
+    def share_links(self, frameio_project_id: str, *, with_files: bool = True) -> tuple[ShareLink, ...]:
+        """The project's share links. With `with_files`, the newest live ones also carry what they hold.
+
+        Frame.io cannot go from a file to its shares, so the assets of each live
+        share are read, newest share first, for at most `share_scan_limit`
+        shares. A live share past that limit has `files_known=False`. Share
+        lists and asset lists are cached (`share_cache_seconds`); a read that
+        fails is never cached.
+        """
+        shares: tuple[ShareLink, ...] = self._cached(
+            "shares",
+            frameio_project_id,
+            lambda: tuple(
+                ShareLink.from_api(raw, frameio_project_id)
+                for raw in self._api.pages(f"{self._account()}/projects/{_id(frameio_project_id)}/shares")
+            ),
+        )
+        if not with_files:
+            return shares
+        now = self._now()
+        newest = sorted((s for s in shares if s.live(now)), key=lambda s: s.created_at or _OLDEST, reverse=True)
+        scanned = {s.id for s in newest[: self._share_scan_limit]}
+        return tuple(
+            replace(s, file_ids=self._share_file_ids(s.id))
+            if s.id in scanned
+            else replace(s, files_known=False)
+            if s.live(now)
+            else s
+            for s in shares
+        )
+
+    def _share_file_ids(self, share_id: str) -> tuple[str, ...]:
+        """What one share holds: each asset's id, and a version stack's head version too. A share that is gone holds nothing."""
+
+        def read() -> tuple[str, ...]:
+            ids: list[str] = []
+            for item in self._api.pages(f"{self._account()}/shares/{_id(share_id)}/assets"):
+                ids.extend(found for found in (_text(item.get("id")), _head_version_id(item)) if found)
+            return tuple(ids)
+
+        try:
+            ids: tuple[str, ...] = self._cached("assets", share_id, read)
+            return ids
+        except FrameioError as error:
+            if error.status == 404:
+                return ()
+            raise
+
+    def _cached(self, kind: str, key: str, load: Callable[[], Any]) -> Any:
+        """`load()`, remembered for `share_cache_seconds`. Nothing is remembered when `load` raises."""
+        if self._share_cache_seconds <= 0:
+            return load()
+        slot, now = (self._account(), kind, key), self._clock()
+        hit = self._cache.get(slot)
+        if hit is not None and hit[0] > now:
+            return hit[1]
+        value = load()
+        if len(self._cache) >= 2000:
+            self._cache = {k: v for k, v in self._cache.items() if v[0] > now}
+        self._cache[slot] = (now + self._share_cache_seconds, value)
+        return value
 
     def comments(self, file_id: str) -> tuple[Comment, ...]:
         rows = self._api.pages(f"{self._account()}/files/{_id(file_id)}/comments", {"include": "owner"})
@@ -149,7 +235,33 @@ class FrameioReads:
         data = self._api.get(path, {"include": "owner"}).get("data")
         if not isinstance(data, dict):
             raise ValueError(f"Frame.io gave no comment {request.comment_id}")
-        return ResolvedComment.from_api(data, request.frameio_project_id)
+        comment = ResolvedComment.from_api(data, request.frameio_project_id)
+        remaining = self._remaining_seconds(request.account_id, comment)
+        return comment if remaining is None else replace(comment, remaining_seconds=remaining)
+
+    def _remaining_seconds(self, account_id: str, comment: ResolvedComment) -> float | None:
+        """Clip seconds left after the comment, from the file's `Duration` and `Frame Rate`; None when unknown.
+
+        The comment is never refused for this: a clip with no length, a missing
+        field or a failed read leaves it None, and the server's fixed wait applies.
+        """
+        if comment.frame is None:
+            return None
+        path = f"/v4/accounts/{_id(account_id)}/files/{_id(comment.file_id)}/metadata"
+        try:
+            data = self._api.get(path).get("data")
+        except FrameioError:
+            return None
+        found: dict[str, float] = {}
+        for entry in (data.get("metadata") if isinstance(data, dict) else None) or ():
+            name = entry.get("field_definition_name") if isinstance(entry, dict) else None
+            number = _number(entry.get("value")) if isinstance(entry, dict) else None
+            if isinstance(name, str) and number is not None:
+                found.setdefault(name.strip().casefold(), number)
+        duration, frame_rate = found.get(DURATION_FIELD), found.get(FRAME_RATE_FIELD)
+        if duration is None or frame_rate is None:
+            return None
+        return clip_remaining_seconds(duration, frame_rate, comment.frame)
 
     def versions(self, file_id: str) -> tuple[Version, ...]:
         """Every file in the version stack `file_id` is in, or the file alone when it is in none."""
@@ -196,7 +308,7 @@ class FrameioReads:
             project_row = project_rows.get(project.id)
             pages: tuple[str, ...] = project_row.project_ids if project_row is not None else ()
             found = []
-            for share in self.share_links(project.id):
+            for share in self.share_links(project.id, with_files=False):
                 if not share.live(now):
                     continue
                 row: Link | None = share_rows.get(share.id)

@@ -42,6 +42,7 @@ class FakeFrameio:
         self.accounts: list[JSON] = [{"id": ACCOUNT, "display_name": "Example Post"}]
         self.projects: dict[str, JSON] = {}
         self.shares: dict[str, list[JSON]] = {}
+        self.share_assets: dict[str, list[str]] = {}
         self.activities: dict[str, list[JSON]] = {}
         self.files: dict[str, JSON] = {}
         self.comments: dict[str, list[JSON]] = {}
@@ -80,7 +81,6 @@ class FakeFrameio:
         self.shares[project_id].append(
             {
                 "inserted_at": created_at,
-                "asset_ids": list(file_ids),
                 "id": share_id,
                 "name": name,
                 "short_url": f"https://f.io/{share_id}",
@@ -90,6 +90,7 @@ class FakeFrameio:
             }
         )
         self.activities.setdefault(share_id, [])
+        self.share_assets[share_id] = list(file_ids)  # files, folders or version stacks, as `/shares/{id}/assets` lists them
 
     def add_activity(self, share_id: str, inserted_at: str, kind: str = "share_viewed") -> None:
         entries = self.activities[share_id]
@@ -119,8 +120,9 @@ class FakeFrameio:
         *,
         author_id: str | None = "u1",
         created_at: str = "2026-11-02T09:00:00Z",
+        timestamp: int | None = None,
     ) -> None:
-        """`author_id=None` is a guest: Frame.io gives the comment no owner."""
+        """`author_id=None` is a guest: Frame.io gives the comment no owner. `timestamp` is its frame in the clip."""
         self.comments.setdefault(file_id, []).append(
             {
                 "id": comment_id,
@@ -129,7 +131,17 @@ class FakeFrameio:
                 "owner": None if author_id is None else {"id": author_id, "name": author},
                 "created_at": created_at,
                 "completed_at": None,
+                "timestamp": timestamp,
             }
+        )
+
+    def set_clip(self, file_id: str, duration: float, frame_rate: float) -> None:
+        """Give a file Frame.io's `Duration` (seconds) and `Frame Rate` metadata fields."""
+        self.metadata.setdefault(file_id, []).extend(
+            [
+                {"field_type": "float", "field_definition_name": "Duration", "value": duration},
+                {"field_type": "float", "field_definition_name": "Frame Rate", "value": frame_rate},
+            ]
         )
 
     def set_status(self, file_id: str, *values: str) -> None:
@@ -168,6 +180,7 @@ class FakeFrameio:
             (r"/projects", lambda: list(self.projects.values())),
             (r"/projects/([^/]+)/shares", lambda key: self.shares.get(key)),
             (r"/shares/([^/]+)/activities", lambda key: self.activities.get(key)),
+            (r"/shares/([^/]+)/assets", self._assets_of_share),
             (r"/files/([^/]+)/comments", lambda key: self.comments.get(key, []) if key in self.files else None),
             (
                 r"/version_stacks/([^/]+)/children",
@@ -189,6 +202,21 @@ class FakeFrameio:
                 return 200, {}, {"data": {"file_id": file_id, "metadata": self.metadata.get(file_id, [])}}
             return 200, {}, {"data": self.files[file_id]}
         return 404, {}, {}
+
+    def _assets_of_share(self, share_id: str) -> list[JSON] | None:
+        """What a share holds, in Frame.io's shape: `type` is file, folder or version_stack; a stack has a `head_version`."""
+        if share_id not in self.share_assets:
+            return None
+        items: list[JSON] = []
+        for asset_id in self.share_assets[share_id]:
+            if asset_id in self.files:
+                items.append({**self.files[asset_id], "type": "file"})
+            elif asset_id in self.stacks:
+                head = self.files[self.stacks[asset_id][-1]]
+                items.append({"id": asset_id, "type": "version_stack", "name": asset_id, "head_version": {**head, "type": "file"}})
+            else:
+                items.append({"id": asset_id, "type": "folder", "name": asset_id})
+        return items
 
     def _page(self, path: str, query: Mapping[str, list[str]], rows: list[JSON]) -> tuple[int, Mapping[str, str], JSON]:
         start = int(query.get("after", ["0"])[0])
