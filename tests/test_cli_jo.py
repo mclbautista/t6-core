@@ -71,6 +71,13 @@ class JoCommandTests(unittest.TestCase):
         self.assertTrue(saved["deadline"].startswith("2026-11-14T17:00:00+08:00"))
         self.assertEqual(self.fake.page_count(), 1)
 
+    def test_a_dry_run_rejects_an_unknown_field_and_a_date_only_deadline_means_2359(self) -> None:
+        status, out, err = self.create({**FIELDS, "bogus": 1})
+        self.assertEqual((status, out), (2, ""))
+        self.assertIn("bogus", json.loads(err)["error"])
+        _, out, _ = self.create({**FIELDS, "deadline": "2026-11-14"})
+        self.assertEqual(json.loads(out)["fields"]["deadline"], "2026-11-14T23:59:00+08:00")
+
     def test_apply_needs_an_actor(self) -> None:
         status, out, err = self.create(FIELDS, "--apply")
         self.assertEqual((status, out), (2, ""))

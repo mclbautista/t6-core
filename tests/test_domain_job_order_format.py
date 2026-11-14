@@ -84,6 +84,15 @@ Login: user / pass
         for label in ("Title:", "Task:", "Purpose:", "Assigned:", "Deadline:", "Subtitle:"):
             self.assertNotIn(label, text)
 
+    def test_a_label_looking_line_inside_the_notes_stays_in_the_notes(self) -> None:
+        text = format_job_order("A - OE - JO #1\nNotes: see below\nDeadline: ignore me\nSource: http://x\nAssigned: a", DAY).text
+        self.assertEqual(text.splitlines()[-5:], ["Notes: see below", "Deadline: ignore me", "Source: http://x", "", "Assigned: a"])
+
+    def test_a_different_date_line_is_a_finding(self) -> None:
+        result = format_job_order("A - OE - JO #1\nJuly 23 / Thursday", date(2026, 6, 22))
+        self.assertEqual([f.code for f in result.findings if f.code == "date_line_changed"], ["date_line_changed"])
+        self.assertEqual(codes("A - OE - JO #1\nJune 22 / Monday"), [c for c in codes("A - OE - JO #1") if c != "date_line_changed"])
+
     def test_findings(self) -> None:
         cases = [
             ("not a header\nTitle: X FTR\nTask: t\nPurpose: p\nAssigned: a", ["header_unparsed"]),
@@ -91,8 +100,9 @@ Login: user / pass
             ("A - OE - JO #1\nTitle: Some Show\nTask: t\nPurpose: p\nAssigned: a", ["no_deliverable_code"]),
             ("A - OE - JO #1\nTitle: Show Ep07-08\nTask: t\nPurpose: p\nAssigned: a", []),
             ("A - OE - JO #1\nTitle: S TLR\nTask: t\nPurpose: p\nMode of Transfer: Fromsmash\nAssigned: a", ["link_settings_missing"]),
-            ("A - OE - JO #1\nTitle: S FTR\nTask: t\nPurpose: p\nSource Drive: MFG Shuttle 05\nAssigned: a", ["mfg_shuttle_out_of_range"]),
-            ("A - OE - JO #1\nTitle: S FTR\nTask: t\nPurpose: p\nSource Drive: MFG Shuttle 03\nAssigned: a", []),
+            ("MFG - OE - JO #1\nTitle: S FTR\nTask: t\nPurpose: p\nSource Drive: MFG Shuttle 05\nAssigned: a", ["mfg_shuttle_out_of_range"]),
+            ("MFG - OE - JO #1\nTitle: S FTR\nTask: t\nPurpose: p\nSource Drive: MFG Shuttle 03\nAssigned: a", []),
+            ("A - OE - JO #1\nTitle: S FTR\nTask: t\nPurpose: p\nSource Drive: MFG Shuttle 05\nAssigned: a", []),
             ("", ["empty_draft"]),
         ]
         for draft, expected in cases:

@@ -15,7 +15,8 @@ lines, then free text) and returns it in the studio layout:
 - what the formatter cannot settle is a finding, never a guess: an unparsed
   header, a missing Title, Task, Purpose or Assigned, a Title with no
   deliverable code, Mode of Transfer with no Link Settings, and an MFG shuttle
-  drive outside 01 to 04.
+  drive outside 01 to 04 (in an MFG Job Order), and a date line that differs
+  from the date given.
 
 Deadlines are left as written; `t6.domain.deadlines` resolves them.
 """
@@ -79,6 +80,7 @@ def format_job_order(draft: str, day: date) -> Formatted:
         return Formatted("", (Finding("empty_draft"),))
     header_raw = lines[nonblank[0]].strip()
     rest = lines[nonblank[0] + 1 :]
+    old_date = next((line.strip() for line in rest if line.strip()), "")
     while rest and (not rest[0].strip() or _DATE_LINE.match(rest[0].strip())):
         rest = rest[1:]  # the date line is rewritten from `day`
     header = parse_header(header_raw)
@@ -89,10 +91,14 @@ def format_job_order(draft: str, day: date) -> Formatted:
     values: dict[str, list[str]] = {}
     body: list[str] = []
     current: str | None = None
+    order = [k for k, _, _ in FIELDS]
     for line in rest:
         match = _LABEL.match(line)
-        key = next((k for k, _, _ in FIELDS if match and match.group(k)), None) if match else None
-        if match and key and key not in values:
+        key = next((k for k in order if match and match.group(k)), None) if match else None
+        # Once Notes has started, only the fields after it (Assigned, cc) start a field: a line inside the
+        # notes that looks like a label, such as `Source: ...`, stays part of the notes.
+        late = current is None or order.index(key or "") > order.index(current) if key else False
+        if match and key and key not in values and late:
             labels[key] = line.strip().split(":", 1)[0].strip()
             values[key] = [match.group("value").strip()]
             current = None if key in SINGLE_LINE else key
@@ -112,14 +118,18 @@ def format_job_order(draft: str, day: date) -> Formatted:
     link = " ".join(values.get("link_settings", [""]))
     if needs_link_settings(mode, link):
         findings.append(Finding("link_settings_missing"))
-    for number in _SHUTTLE.findall(draft):
-        if f"MFG Shuttle {int(number):02d}" not in MFG_SHUTTLES or len(number) > 2:
-            findings.append(Finding("mfg_shuttle_out_of_range", {"drive": f"MFG Shuttle {number}"}))
+    if header is not None and header.project.upper() == "MFG":
+        for number in dict.fromkeys(_SHUTTLE.findall(draft)):
+            if f"MFG Shuttle {int(number):02d}" not in MFG_SHUTTLES or len(number) > 2:
+                findings.append(Finding("mfg_shuttle_out_of_range", {"drive": f"MFG Shuttle {number}"}))
 
     values.setdefault("watermark", [WATERMARK_DEFAULT])
     if not "".join(values["watermark"]).strip():
         values["watermark"] = [WATERMARK_DEFAULT]
-    out = [canonical_name(header, header_raw), formatter_date(day), ""]
+    date_line = formatter_date(day)
+    if _DATE_LINE.match(old_date) and old_date != date_line:
+        findings.append(Finding("date_line_changed", {"was": old_date, "now": date_line}))
+    out = [canonical_name(header, header_raw), date_line, ""]
     for key, default_label, _ in FIELDS:
         if key == "assigned" and key in values:
             out.append("")

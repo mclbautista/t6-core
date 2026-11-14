@@ -89,6 +89,8 @@ def run(args: argparse.Namespace, open_notion: Callable[[str], NotionClient]) ->
         return _fail(str(error))
     except ImportError:
         return _fail(f"{args.command} needs the notion extra: pip install 't6[notion]'")
+    if args.command == "jo" and args.jo_command == "create" and args.apply and not (args.actor or "").strip():
+        return _fail("--apply needs --actor NAME")
     token = os.environ.get(TOKEN_VARIABLE)
     if not token:
         return _fail(f"set {TOKEN_VARIABLE} to a Notion integration token")
@@ -175,20 +177,25 @@ def _get(client: NotionClient, data_source_id: str, ref: str) -> JSON:
 
 def _create(client: NotionClient, data_source_id: str, args: argparse.Namespace) -> int:
     from t6.domain.studio_people import with_standing_cc
-    from t6.domain.studio_time import MANILA
+    from t6.domain.studio_time import END_OF_DAY, MANILA
     from t6.notion.departments import UnknownDepartment, get_departments, resolve_department
     from t6.notion.job_orders import JobOrders
     from t6.notion.writes import Ambiguous, Rejected
 
-    if args.apply and not (args.actor or "").strip():
-        return _fail("--apply needs --actor NAME")
     fields: Any = json.loads(args.file.read_text(encoding="utf-8"))
     if not isinstance(fields, dict):
         return _fail("the Job Order file must be a JSON object of fields")
+    from t6.notion.job_orders import FIELDS, RELATIONS
+
+    unknown = sorted(set(fields) - {*FIELDS, *RELATIONS, "project_id", "source_text"})
+    if unknown:
+        return _fail(f"not Job Order fields that can be written: {', '.join(unknown)}")
     for name in ("date", "deadline"):
         if isinstance(fields.get(name), str):
             text = fields[name]
             moment = datetime.fromisoformat(text) if "T" in text or " " in text else date.fromisoformat(text)
+            if name == "deadline" and not isinstance(moment, datetime):
+                moment = datetime.combine(moment, END_OF_DAY)  # a date with no time means 23:59
             fields[name] = moment.replace(tzinfo=MANILA) if isinstance(moment, datetime) and moment.tzinfo is None else moment
     if fields.get("department"):
         department = resolve_department(get_departments(client, data_source_id), str(fields["department"]))
