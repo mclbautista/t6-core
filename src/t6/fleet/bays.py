@@ -26,7 +26,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from t6.domain import Machine, Ring
-from t6.fleet.rules import MAX_OBSERVATION_AGE, RINGS, is_stale, match_key
+from t6.fleet.rules import RINGS, is_stale, match_key
 from t6.notion import named
 from t6.notion.errors import NotionError
 from t6.notion.generated import BaysRow
@@ -54,7 +54,7 @@ OBSERVED: frozenset[str] = frozenset({"munki_client_version", "last_check_in", "
 class MachineFacts:
     """What is known about one machine. `names` are the names it goes by (hostname, computer name).
 
-    A fact left None is unknown and is never written. `observed_at` is when the
+    A fact left None or blank is unknown and is never written. `observed_at` is when the
     observed facts were read; without it they count as stale.
     `last_check_in` needs a timezone.
     """
@@ -73,8 +73,11 @@ class MachineFacts:
             raise ValueError("a machine needs at least one name")
         if self.ring is not None and self.ring not in RINGS:
             raise ValueError(f"ring must be one of {', '.join(r.value for r in RINGS)}, not {self.ring!r}")
-        if self.last_check_in is not None and self.last_check_in.tzinfo is None:
-            raise ValueError("last_check_in needs a timezone")
+        if self.last_check_in is not None:
+            if self.last_check_in.tzinfo is None:
+                raise ValueError("last_check_in needs a timezone")
+            # Notion keeps minutes, so compare and write minutes.
+            object.__setattr__(self, "last_check_in", self.last_check_in.replace(second=0, microsecond=0))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -88,14 +91,15 @@ class FactChange:
 class SyncResult:
     """What `Fleet.sync` did for one machine.
 
-    `status` is `matched`, `unmatched` or `ambiguous`. A matched machine has the
+    `status` is `matched`, `unmatched`, `ambiguous` or `changed` (the row was
+    edited, moved or archived after it was read, so nothing was written). A matched machine has the
     Bays `page_id`, the `changes` it needs, and the `skipped` facts that were
     unknown or stale. `written` is None on a dry run or when nothing changed,
     else the saved Machine, `Rejected` or `Ambiguous`.
     """
 
     name: str
-    status: Literal["matched", "unmatched", "ambiguous"]
+    status: Literal["matched", "unmatched", "ambiguous", "changed"]
     page_id: str | None = None
     changes: tuple[FactChange, ...] = ()
     skipped: tuple[str, ...] = ()
@@ -103,8 +107,6 @@ class SyncResult:
 
 
 def _same(old: Any, new: Any) -> bool:
-    if isinstance(new, datetime) and isinstance(old, datetime) and old.tzinfo:
-        return old == new.replace(second=0, microsecond=0)  # Notion drops seconds
     return bool(old == new)
 
 
@@ -155,12 +157,12 @@ class Fleet:
     ) -> SyncResult:
         page, row = found
         current = self._machine(page)
-        stale = is_stale(machine.observed_at, now, MAX_OBSERVATION_AGE)
+        stale = is_stale(machine.observed_at, now)
         changes: list[FactChange] = []
         skipped: list[str] = []
         for fact in FACTS:
             new = getattr(machine, fact)
-            if new is None or (stale and fact in OBSERVED):
+            if new is None or new == "" or (stale and fact in OBSERVED):
                 skipped.append(fact)
             elif not _same(getattr(current, fact), new):
                 changes.append(FactChange(fact=fact, old=getattr(current, fact), new=new))
@@ -169,8 +171,8 @@ class Fleet:
             values: JSON = {change.fact: change.new for change in changes}
             if "ring" in values:
                 values["ring"] = named.to_option(self._snapshot, DATABASE, "ring", values["ring"])
-            if isinstance(values.get("last_check_in"), datetime):
-                values["last_check_in"] = values["last_check_in"].replace(second=0, microsecond=0)
+            if self._moved(page, row):
+                return SyncResult(name=name, status="changed", page_id=row.page_id, changes=tuple(changes), skipped=tuple(skipped))
             written = self._write(row.page_id, values)
         return SyncResult(
             name=name,
@@ -180,6 +182,16 @@ class Fleet:
             skipped=tuple(skipped),
             written=written,
         )
+
+    def _moved(self, queried: JSON, row: BaysRow) -> bool:
+        """Whether the row was archived, or its identity or fleet facts edited, since it was queried."""
+        try:
+            page = self._client.retrieve_page(row.page_id)
+        except NotionError:
+            return True
+        if page.get("archived") or page.get("in_trash") or page.get("parent") != queried.get("parent"):
+            return True
+        return BaysRow.from_page(page) != row
 
     def _write(self, page_id: str, values: JSON) -> Machine | Rejected | Ambiguous:
         saved = update_row(self._client, BaysRow, page_id, values)

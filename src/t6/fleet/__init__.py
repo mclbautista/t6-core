@@ -5,7 +5,7 @@
 - `Fleet`: read Bays as `t6.domain.Machine` and write the fleet facts (dry run
   by default; never creates a row).
 
-munki-repo keeps catalogs and manifests and calls this through the `t6` CLI.
+munki-repo keeps catalogs and manifests and will call this through a thin `t6` CLI.
 """
 
 from t6.fleet.bays import FactChange, Fleet, MachineFacts, SyncResult

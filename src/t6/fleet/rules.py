@@ -24,7 +24,7 @@ __all__ = [
     "role_group",
 ]
 
-RINGS: tuple[Ring, ...] = (Ring.TESTING, Ring.PILOT, Ring.PRODUCTION)
+RINGS: tuple[Ring, ...] = tuple(Ring)
 """Software is imported into testing, verified on the pilot machines, then promoted to production."""
 
 ROLE_GROUPS: tuple[str, ...] = (

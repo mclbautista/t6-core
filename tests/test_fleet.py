@@ -68,7 +68,8 @@ def patches(fake: FakeNotion) -> int:
 class MatchKeyTests(unittest.TestCase):
     def test_case_spaces_and_ard_suffix_are_not_identity(self) -> None:
         for name in ("201-Bay-01-Mac-Pro-111", "201 Bay 01 Mac Pro", "201-BAY-01-MAC-PRO", " 201_bay_01_mac_pro "):
-            self.assertEqual(match_key(name), "201-bay-01-mac-pro", name)
+            with self.subTest(name=name):
+                self.assertEqual(match_key(name), "201-bay-01-mac-pro")
 
     def test_only_a_trailing_two_to_four_digit_suffix_is_dropped(self) -> None:
         self.assertEqual(match_key("Mac-mini-M4"), "mac-mini-m4")
@@ -100,10 +101,18 @@ class RuleTests(unittest.TestCase):
             manifest_chain("m", {"m": ["a"], "a": ["m"]})
 
     def test_staleness(self) -> None:
-        self.assertFalse(is_stale(NOW - timedelta(seconds=3600), NOW))
-        self.assertTrue(is_stale(NOW - timedelta(seconds=3601), NOW))
-        self.assertTrue(is_stale(None, NOW))
-        self.assertFalse(is_stale(NOW - timedelta(seconds=90), NOW, max_age=100))
+        cases = [
+            (NOW, False, 3600),
+            (NOW - timedelta(seconds=3600), False, 3600),
+            (NOW - timedelta(seconds=3601), True, 3600),
+            (None, True, 3600),
+            (NOW - timedelta(seconds=90), False, 100),
+            (NOW - timedelta(seconds=101), True, 100),
+            (NOW + timedelta(seconds=60), False, 100),
+        ]
+        for observed, stale, max_age in cases:
+            with self.subTest(observed=observed, max_age=max_age):
+                self.assertEqual(is_stale(observed, NOW, max_age), stale)
 
     def test_facts_are_checked(self) -> None:
         with self.assertRaises(ValueError):
@@ -199,6 +208,51 @@ class SyncTests(unittest.TestCase):
         self.assertIn("serial_number", result.skipped)
         self.assertEqual((machine.serial_number, machine.munki_manifest), ("S1", "keep"))
 
+    def test_a_blank_fact_is_unknown_and_never_clears_a_value(self) -> None:
+        fake = live_bays()
+        add_bay(fake, serial="S1", manifest="keep")
+        with fake.client() as client:
+            (result,) = Fleet(client, BAYS).sync([facts("Bay-1", serial_number="", munki_manifest="")], apply=True, now=NOW)
+            (machine,) = Fleet(client, BAYS).machines()
+        self.assertEqual(result.changes, ())
+        self.assertEqual((machine.serial_number, machine.munki_manifest), ("S1", "keep"))
+
+    def test_a_row_edited_after_it_was_read_is_not_written(self) -> None:
+        import httpx
+
+        fake = live_bays()
+        page_id = add_bay(fake)
+        original = fake._handle
+
+        def edited_after_query(request: httpx.Request) -> httpx.Response:
+            response = original(request)
+            if request.url.path.endswith("/query"):
+                fake._pages[page_id]["properties"]["Name"] = title("Renamed")
+            return response
+
+        fake.transport = httpx.MockTransport(edited_after_query)
+        with fake.client() as client:
+            (result,) = Fleet(client, BAYS).sync([facts("Bay-1", serial_number="S1")], apply=True, now=NOW)
+        self.assertEqual(result.status, "changed")
+        self.assertEqual(patches(fake), 0)
+
+    def test_a_ring_with_no_recorded_option_id_is_written_by_label(self) -> None:
+        fake = live_bays()
+        add_bay(fake)
+        with fake.client() as client:
+            (result,) = Fleet(client, BAYS).sync([facts("Bay-1", ring=Ring.PILOT)], apply=True, now=NOW)
+        assert isinstance(result.written, Machine)
+        self.assertEqual(result.written.ring, Ring.PILOT)
+
+    def test_dry_run_shows_the_minute_that_would_be_written(self) -> None:
+        fake = live_bays()
+        add_bay(fake)
+        with fake.client() as client:
+            (result,) = Fleet(client, BAYS).sync(
+                [facts("Bay-1", last_check_in=datetime(2026, 11, 14, 3, 30, 42, tzinfo=UTC))], now=NOW
+            )
+        self.assertEqual(result.changes[0].new, datetime(2026, 11, 14, 3, 30, tzinfo=UTC))
+
     def test_observed_facts_from_a_stale_observation_are_not_written(self) -> None:
         fake = live_bays()
         add_bay(fake)
@@ -280,7 +334,7 @@ class SyncTests(unittest.TestCase):
     def test_a_refused_write_is_a_typed_failure(self) -> None:
         fake = live_bays()
         add_bay(fake)
-        fake.fail_next(400, code="validation_error", after=1)
+        fake.fail_next(400, code="validation_error", after=2)
         with fake.client() as client:
             (result,) = Fleet(client, BAYS).sync([facts("Bay-1", serial_number="S1")], apply=True, now=NOW)
         assert isinstance(result, SyncResult)
