@@ -161,6 +161,8 @@ class JobOrderStore:
                     project = db.execute("SELECT p.id FROM projects p JOIN bindings b ON b.project_id = p.id WHERE b.system = 'notion' AND b.page_id = ?", (normalize_page_id(project_ref),)).fetchone()
                 if not project:
                     return Refused(rule='project', reason='Project not found')
+                if db.execute('SELECT 1 FROM project_archives WHERE project_id = ?', (project[0],)).fetchone():
+                    return Refused(rule='project_archived', reason='Project is archived')
                 telegram_key = fields.get('telegram_key') or None
                 if not previous and telegram_key and db.execute('SELECT 1 FROM job_orders WHERE telegram_key = ?', (telegram_key,)).fetchone():
                     return Refused(rule='telegram_key', reason='Telegram Key is already held')

@@ -36,6 +36,14 @@ class DeliverableTests(unittest.TestCase):
         self.assertEqual(len([i for i in self.registry.pending_sync() if i.project_id == identifier]), 1)
         self.assertEqual(self.registry.activity(self.project)[0].subject_id, identifier)
 
+    def test_archived_project_refuses_new_deliverable(self) -> None:
+        from t6.verbs import Refused
+        with self.registry._transaction() as db:
+            db.execute('INSERT INTO project_archives VALUES (?)', (self.project,))
+        result = self.store.define({'project': self.project, 'code': 'Ep02'}, actor='alice', idempotency_key='archived')
+        assert isinstance(result, Refused)
+        self.assertEqual(result.rule, 'project_archived')
+
     def test_migration_never_matches_names_and_rebinds_explicit_identity(self) -> None:
         rows = [{'page_id': 'one', 'project_page': 'project-page', 'code': 'Ep01'},
                 {'page_id': 'two', 'project_page': 'project-page', 'code': 'Ep01'},

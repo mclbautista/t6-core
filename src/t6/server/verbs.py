@@ -259,7 +259,9 @@ class VerbAPI:
             project = refs.identified(project)
             def ids(pages: tuple[str, ...]) -> tuple[str, ...]:
                 return tuple(identity(page) for page in pages)
-            return replace(project, editor_ids=ids(project.editor_ids),
+            with self.people.registry._transaction() as db:
+                roles = tuple(dict(person_id=r[0], role=r[1]) for r in db.execute('SELECT person_id, role FROM project_person_roles WHERE project_id = ? ORDER BY person_id, role', (project.t6_id,)))
+            return replace(project, project_roles=roles, editor_ids=ids(project.editor_ids),
                            assistant_editor_ids=ids(project.assistant_editor_ids),
                            online_editor_ids=ids(project.online_editor_ids), colorist_ids=ids(project.colorist_ids),
                            sound_tech_ids=ids(project.sound_tech_ids), post_coordinator_ids=ids(project.post_coordinator_ids),
@@ -297,7 +299,7 @@ class VerbAPI:
                         return Refused(rule='person', reason='Contact not found')
                     item = contact(contact_reader.get(page))
                     if person:
-                        item.update({key: person[key] for key in ('kind', 'departments', 'roles', 'shift', 'permissions', 'master_brief', 'active')})
+                        item.update({key: person[key] for key in ('kind', 'departments', 'roles', 'project_roles', 'shift', 'permissions', 'master_brief', 'active')})
                     return Done(result={'person': item})
                 if noun == 'external-link':
                     from t6.domain import ExternalRef
