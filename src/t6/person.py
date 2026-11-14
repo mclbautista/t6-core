@@ -66,16 +66,17 @@ class People:
             person = db.execute('SELECT id FROM persons WHERE active = 1 AND telegram_id = ?', (telegram_id,)).fetchone()
             if person is None:
                 return False
-            def allows(candidate: Any) -> bool:
-                if isinstance(candidate, str):
-                    if candidate.startswith('person:'):
-                        return bool(person[0] == candidate[7:])
-                    if candidate.startswith('permission:'):
-                        return self._authorize(db, person[0], candidate[11:]) is None
-                if isinstance(candidate, dict) and isinstance(candidate.get('any_of'), list):
-                    return any(allows(child) for child in candidate['any_of'])
-                return False
-            return allows(rule)
+            return self._allows(db, person[0], rule)
+
+    def _allows(self, db: Any, person_id: str, candidate: Any) -> bool:
+        if isinstance(candidate, str):
+            if candidate.startswith('person:'):
+                return bool(person_id == candidate[7:])
+            if candidate.startswith('permission:'):
+                return self._authorize(db, person_id, candidate[11:]) is None
+        if isinstance(candidate, dict) and isinstance(candidate.get('any_of'), list):
+            return any(self._allows(db, person_id, child) for child in candidate['any_of'])
+        return False
 
     def seed_operators(self, telegram_ids: Iterable[int]) -> dict[str, Any]:
         """Seed once after Persons have been imported; retain the first report."""

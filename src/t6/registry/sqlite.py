@@ -216,6 +216,10 @@ _MIGRATIONS = (
     )"""),
     (14, False, """CREATE TABLE project_archives (project_id TEXT PRIMARY KEY REFERENCES projects(id));
         CREATE TABLE project_person_roles (project_id TEXT NOT NULL REFERENCES projects(id), person_id TEXT NOT NULL REFERENCES persons(id), role TEXT NOT NULL, PRIMARY KEY (project_id, person_id, role))"""),
+    (15, False, """CREATE TABLE approvals (
+        id TEXT PRIMARY KEY, gate TEXT NOT NULL, target TEXT NOT NULL, requester TEXT NOT NULL,
+        tapper_rule TEXT NOT NULL, state TEXT NOT NULL, decided_by TEXT, decided_at REAL, reason TEXT
+    )"""),
 )
 
 

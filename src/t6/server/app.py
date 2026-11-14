@@ -473,6 +473,8 @@ class WebhookApp:
         if self._operator is None:
             return
         try:
+            for action in self._operator.recover_approvals():
+                self._deliver(action.token, action.version)
             for action in self._operator.undelivered():
                 self._deliver(action.token, action.version)
         except RegistryUnavailable:
