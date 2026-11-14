@@ -7,9 +7,9 @@ from t6.domain.job_order_format import format_job_order
 
 DAY = date(2026, 6, 22)
 
-DRAFT = """JAG - toc - JO No. 062
+DRAFT = """ORC - toc - JO No. 062
 June 1 / Someday
-Title: Jaguar FTR
+Title: Orchid FTR
 Task: Download VFX Renders from Frameio
 Purpose: For post grade
 Source: @url:`https://f.io/x`
@@ -17,10 +17,10 @@ Mode of Transfer: Frameio transfer
 Link Settings: view only
 Deadline: June 22 / Monday 5PM
 Note: Should be the following shots
-JAG_048_0156
-JAG_048_0160
-Assigned: @raedsss Piolo
-cc: @larabauts
+ORC_048_0156
+ORC_048_0160
+Assigned: @asha Mika
+cc: @lena
 
 Login: user / pass
 """
@@ -36,10 +36,10 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(result.findings, ())
         self.assertEqual(
             result.text,
-            """JAG - TOC - JO #062
+            """ORC - TOC - JO #062
 June 22 / Monday
 
-Title: Jaguar FTR
+Title: Orchid FTR
 Task: Download VFX Renders from Frameio
 Purpose: For post grade
 Source: @url:`https://f.io/x`
@@ -50,20 +50,20 @@ Deadline: June 22 / Monday 5PM
 Status:
 Pending:
 Note: Should be the following shots
-JAG_048_0156
-JAG_048_0160
+ORC_048_0156
+ORC_048_0160
 
-Assigned: @raedsss Piolo
-cc: @larabauts
+Assigned: @asha Mika
+cc: @lena
 
 Login: user / pass
 """,
         )
 
     def test_header_number_forms_are_rewritten(self) -> None:
-        for header in ("JAG - TOC - JO #62", "JAG - TO - JO 62", "JAG - toc - JOB ORDER - 62", "JO CODE: JAG - TOC - #62"):
+        for header in ("ORC - TOC - JO #62", "ORC - TO - JO 62", "ORC - toc - JOB ORDER - 62", "JO CODE: ORC - TOC - #62"):
             with self.subTest(header=header):
-                self.assertEqual(format_job_order(header, DAY).text.splitlines()[0], "JAG - TOC - JO #62")
+                self.assertEqual(format_job_order(header, DAY).text.splitlines()[0], "ORC - TOC - JO #62")
 
     def test_the_date_line_is_computed_never_typed(self) -> None:
         self.assertEqual(format_job_order("A - TOC - JO #1\nJuly 23 / Monday", date(2026, 7, 23)).text.splitlines()[1], "July 23 / Thursday")

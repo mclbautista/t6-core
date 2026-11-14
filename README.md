@@ -1367,7 +1367,7 @@ every field in studio terms (the `job_orders` source). A Telegram Key is
 
 ```console
 $ t6 jo get --data-sources sources.json -- -100123:456
-{"id": "<page id>", "name": "JAG - TOC - JO #62", "department": "TOC", "number": "62", "deadline": "2026-11-14T17:00:00+08:00", ...}
+{"id": "<page id>", "name": "ORC - TOC - JO #62", "department": "TOC", "number": "62", "deadline": "2026-11-14T17:00:00+08:00", ...}
 ```
 
 `t6 jo create --file jo.json --data-sources FILE` is a dry run: it prints the
@@ -1381,7 +1381,7 @@ the write may have happened, so check before you retry.
 
 ```console
 $ t6 jo create --file jo.json --data-sources sources.json
-{"dry_run": true, "fields": {"name": "JAG - TOC - JO #62", "department": "TOC", "cc_ids": ["<standing cc>"], ...}}
+{"dry_run": true, "fields": {"name": "ORC - TOC - JO #62", "department": "TOC", "cc_ids": ["<standing cc>"], ...}}
 $ t6 jo create --file jo.json --data-sources sources.json --apply --actor cyril
 {"result": "saved", "actor": "cyril", "job_order": {"id": "<page id>", ...}}
 ```
@@ -1398,7 +1398,7 @@ Manila), the fields in order with your labels kept, Watermark defaulted to
 
 ```console
 $ t6 jo format --file notes.txt --date 2026-06-22
-{"text": "JAG - TOC - JO #62\nJune 22 / Monday\n\nTask: ...", "findings": [{"code": "missing_title", "params": {}}]}
+{"text": "ORC - TOC - JO #62\nJune 22 / Monday\n\nTask: ...", "findings": [{"code": "missing_title", "params": {}}]}
 ```
 
 `t6 deadline <phrase> [--assignees CONTACT_ID ...] [--posted ISO]` resolves a

@@ -15,12 +15,12 @@ from t6.notion.testing import FakeNotion, rich_text, select, title
 
 JOB_ORDERS, CONTACTS = "ds-jo", "ds-contacts"
 FIELDS: dict[str, object] = {
-    "name": "JAG - TOC - JO #62",
+    "name": "ORC - TOC - JO #62",
     "number": "62",
     "department": "TO",
     "date": "2026-11-14",
     "deadline": "2026-11-14T17:00:00",
-    "title": "Jaguar FTR",
+    "title": "Orchid FTR",
     "task": "Conform",
     "telegram_key": "-100123:456",
     "cc_ids": ["cc-1"],
@@ -67,7 +67,7 @@ class JoCommandTests(unittest.TestCase):
         result = json.loads(out)
         self.assertEqual((status, err, result["result"], result["actor"]), (0, "", "saved", "cyril"))
         saved = result["job_order"]
-        self.assertEqual((saved["name"], saved["department"], saved["telegram_key"], saved["number"]), ("JAG - TOC - JO #62", "TOC", "-100123:456", "62"))
+        self.assertEqual((saved["name"], saved["department"], saved["telegram_key"], saved["number"]), ("ORC - TOC - JO #62", "TOC", "-100123:456", "62"))
         self.assertTrue(saved["deadline"].startswith("2026-11-14T17:00:00+08:00"))
         self.assertEqual(self.fake.page_count(), 1)
 
@@ -96,7 +96,7 @@ class JoCommandTests(unittest.TestCase):
         for argv in (["jo", "get", page_id], ["jo", "get", "--", "-100123:456"]):
             with self.subTest(argv=argv):
                 status, out, _ = self.run_command(argv)
-                self.assertEqual((status, json.loads(out)["id"], json.loads(out)["title"]), (0, page_id, "Jaguar FTR"))
+                self.assertEqual((status, json.loads(out)["id"], json.loads(out)["title"]), (0, page_id, "Orchid FTR"))
 
     def test_get_an_unknown_telegram_key_is_an_error(self) -> None:
         status, _, err = self.run_command(["jo", "get", "--", "-1:2"])
@@ -104,11 +104,11 @@ class JoCommandTests(unittest.TestCase):
         self.assertIn("Telegram Key", json.loads(err)["error"])
 
     def test_format_needs_no_notion_and_lists_findings(self) -> None:
-        draft = self.write("notes.txt", "JAG - TO - JO 62\nTitle: Jaguar\nTask: t\nPurpose: p\nAssigned: a\n")
+        draft = self.write("notes.txt", "ORC - TO - JO 62\nTitle: Orchid\nTask: t\nPurpose: p\nAssigned: a\n")
         status, out, err = self.run_command(["jo", "format", "--file", draft, "--date", "2026-06-22"], environment={"T6_NOTION_TOKEN": ""}, sources=False)
         result = json.loads(out)
         self.assertEqual((status, err), (0, ""))
-        self.assertTrue(result["text"].startswith("JAG - TOC - JO #62\nJune 22 / Monday\n"))
+        self.assertTrue(result["text"].startswith("ORC - TOC - JO #62\nJune 22 / Monday\n"))
         self.assertEqual([f["code"] for f in result["findings"]], ["no_deliverable_code"])
 
     def test_deadline_without_assignees_needs_no_notion(self) -> None:
