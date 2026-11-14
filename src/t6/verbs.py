@@ -364,7 +364,30 @@ class CameraEnrichInput(BaseModel):
     json_file: Path | None = Field(default=None, alias="json")
 
 
+class LLMRunInput(BaseModel):
+    task_name: str = Field(min_length=1, max_length=200)
+    prompt_template: str
+    output_schema: dict[str, Any]
+    input_text: str
+    masking_preset: Literal['names', 'strict']
+    model_hint: str | None = None
+
+
+class LLMRunOutput(BaseModel):
+    output: Any
+    model: str
+    provider: str
+    prompt_hash: str
+    schema_hash: str
+    tokens: dict[str, int]
+
+
+def llm_api_only(inputs: LLMRunInput, open_notion: Callable[..., Any]) -> Outcome:
+    return Refused(rule="api", reason="LLM tasks run on the t6 API")
+
+
 VERBS = (
+    Verb("llm", "run", "Run an LLM task on the API", (), LLMRunInput, LLMRunOutput, "llm", "Server policy and masking apply.", llm_api_only),
     Verb("person", "add", "Register a Person", (), PersonAddInput, LegacyOutput, "operator", "A page belongs to one Person.", person_write),
     Verb("person", "rebind", "Bind a replacement Contacts page", (), PersonRebindInput, LegacyOutput, "operator", "A page belongs to one Person.", person_write),
     Verb("person", "set-telegram", "Set a Person Telegram ID", (), PersonTelegramInput, LegacyOutput, "operator", "An active Person uniquely holds a Telegram ID.", person_write),
@@ -462,6 +485,12 @@ def add_parsers(commands: Any) -> None:
         parser = nouns[entry.noun]
         if entry.verb:
             parser = parser.add_parser(entry.verb, help="[verb] " + entry.description)
+        if entry.handler is llm_api_only:
+            for name, field in entry.input_model.model_fields.items():
+                parser.add_argument("--" + name.replace("_", "-"), type=json.loads if name == "output_schema" else str,
+                                    required=field.is_required(), default=field.get_default())
+            parser.set_defaults(registered_verb=entry)
+            continue
         if entry.handler in (project_hold, project_resume):
             parser.add_argument("project")
             if entry.handler is project_hold:

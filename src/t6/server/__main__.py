@@ -14,6 +14,7 @@ from t6.server.app import Request, Response, ServerConfig, WebhookApp
 from t6.server.http import serve
 from t6.server.queue import JobQueue
 from t6.server.routes import load_routes
+from t6.server.llm import service_from_env
 from t6.server.verbs import VerbAPI, secrets_from_env, service_permissions_from_env
 from t6.person import People
 from t6.preview import PreviewTokens
@@ -54,7 +55,7 @@ def main() -> int:
     if registry is not None:
         api = VerbAPI(People(registry, PreviewTokens(environ.get("T6_PREVIEW_SIGNING_KEY", "read-only")),
                              service_permissions_from_env(environ)),
-                      queue, secrets_from_env(environ), _open_notion)
+                      queue, secrets_from_env(environ), _open_notion, service_from_env(environ))
         def tailnet(request: Request) -> Response:
             if request.path.split("?", 1)[0].startswith("/v1/") or request.path.split("?", 1)[0] == "/health":
                 return api(request)

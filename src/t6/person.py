@@ -17,7 +17,7 @@ from t6.verbs import Done, Outcome, Refused
 
 SERVICES = frozenset({'gateway', 'worker', 'reports', 'watchdog', 'munki', 'hermes'})
 
-PERMISSIONS = frozenset({"operator", "coordinator", "bookings", "drives", "admin"})
+PERMISSIONS = frozenset({"operator", "coordinator", "bookings", "drives", "admin", "llm"})
 
 
 class People:

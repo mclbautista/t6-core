@@ -1659,3 +1659,26 @@ Person's permissions instead of the gateway's grants. The legacy `jo raise`
 and `camera enrich` endpoints return `refused` because those writes do not yet
 support signed preview and confirmation; issue #194 replaces `jo raise`. `GET /health` reports the
 package version, database schema version and job counts by state.
+
+### LLM tasks on the API
+
+Grant the `llm` permission explicitly through `T6_API_SERVICE_PERMISSIONS` (or
+Person permissions). Set `T6_LLM_CONFIG` to a JSON file on the API host. It
+contains `llm` in the format accepted by `t6.llm.LLMConfig`, including a
+`default` provider, and a `privacy_registry` object with `people` (objects with
+`name`, optional `aliases` and `handles`), `projects` (objects with `name` and
+optional `code`) and `ids`. Keep this registry current: masking can only
+recognize registered names. Provider keys are read from the provider's named
+environment variable, never from the file. The configured providers and their
+models are the allowlist. `require_zdr` defaults to true; `max_bytes` defaults
+to 100000 for the combined UTF-8 template, input and canonical schema.
+Install the `server` extra for JSON Schema validation.
+
+POST `/v1/llm/run` with `task_name`, `prompt_template`, `output_schema`,
+`input_text`, `masking_preset` (`names` or `strict`), and optional `model_hint`.
+The template must contain exactly one literal `{input}` marker. The response
+contains the restored output, provider, model, token counts and SHA-256 hashes:
+the template's UTF-8 bytes, and the schema serialized as UTF-8 JSON with sorted
+keys, no extra whitespace and non-ASCII characters preserved. Only local JSON
+Schema references are supported. Audit records contain the actor and outcome,
+not the task text or output.
