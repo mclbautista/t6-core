@@ -13,7 +13,7 @@ from urllib.request import Request, urlopen
 from pydantic import BaseModel, TypeAdapter
 from t6.verbs import (
     Ambiguous, Done, NeedsPerson, Outcome, Preview, Refused,
-    ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
+    ConcernForMessageInput, ConcernRecordMessageInput, ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
     JoListInput, JoFindInput, DeliverableListInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
     JoSubmitInput, JoCloseInput, JoBlockInput, JoUnblockInput, JoDelayInput, JoCancelInput,
@@ -184,6 +184,12 @@ class Client:
 
     def project_activity(self, inputs: ActivityInput) -> Result:
         return self.call('project', 'activity', inputs)
+
+    def concern_for_message(self, inputs: ConcernForMessageInput) -> Result:
+        return self.call('concern', 'for-message', inputs)
+
+    def concern_record_message(self, inputs: ConcernRecordMessageInput) -> Result:
+        return self.call('concern', 'record-message', inputs)
 
     def concern_get(self, inputs: ConcernGetInput) -> Result:
         return self.call("concern", "get", inputs)

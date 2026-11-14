@@ -25,11 +25,15 @@ class ConcernStore:
                 return None
             record = dict(zip(('id', 'project_id', 'owner_id', 'waiting_on', 'anchor', 'as_of', 'opened_at', 'evidence_at', 'state', 'settles_id'), row))
             record['age_seconds'] = max(0, self.registry._clock() - record['opened_at'])
-            record['notes'] = [dict(zip(('text', 'actor', 'at'), n)) for n in db.execute('SELECT text, actor, at FROM concern_notes WHERE concern_id = ? ORDER BY id', (concern,))]
+            record['notes'] = [dict(zip(('text', 'actor', 'at', 'message_id'), n)) for n in db.execute('SELECT text, actor, at, message_id FROM concern_notes WHERE concern_id = ? ORDER BY id', (concern,))]
             return record
 
+    def for_message(self, chat: str, message_id: str) -> list[str]:
+        with self.registry._transaction() as db:
+            return [row[0] for row in db.execute('SELECT concern_id FROM concern_brief_messages WHERE chat = ? AND message_id = ? ORDER BY concern_id', (chat, message_id))]
+
     def write(self, verb: str, values: dict[str, Any], *, actor: str, idempotency_key: str | None = None, confirm: str | None = None) -> Outcome:
-        if verb not in ('raise', 'note', 'resolve', 'reopen') or not actor.strip():
+        if verb not in ('raise', 'note', 'resolve', 'reopen', 'record-message') or not actor.strip():
             return Refused(rule='input', reason='A valid verb and actor are required')
         if (idempotency_key is not None and not idempotency_key.strip()) or (confirm and not idempotency_key):
             return Refused(rule='idempotency_key', reason='A nonblank idempotency key is required')
@@ -40,6 +44,17 @@ class ConcernStore:
         if isinstance(nonce, Refused):
             return nonce
         with self.registry._transaction() as db:
+            if verb == 'note' and values.get('from_reply') is not None:
+                reference = values['from_reply']
+                chat, separator, message = reference.rpartition(':') if isinstance(reference, str) else ('', '', '')
+                if not separator or not chat or not message or not isinstance(values.get('message_id'), str) or not values['message_id'].strip():
+                    return Refused(rule='input', reason='A brief reference and reply message ID are required')
+                if not db.execute('SELECT 1 FROM concern_brief_messages WHERE chat = ? AND message_id = ? AND concern_id = ?', (chat, message, values.get('concern'))).fetchone():
+                    return Done(result={'ignored': True})
+            elif verb == 'note' and values.get('message_id') is not None:
+                return Refused(rule='input', reason='A reply message ID requires a brief reference')
+            if verb == 'record-message' and any(not isinstance(values.get(k), str) or not values[k].strip() for k in ('chat', 'message_id')):
+                return Refused(rule='input', reason='Chat and message ID are required')
             if nonce and db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce = ?', (nonce,)).fetchone():
                 return Refused(rule='token_used', reason='Preview token has already been used')
             previous = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key = ?', (key,)).fetchone()
@@ -95,9 +110,11 @@ class ConcernStore:
                 concern = str(T6Id.mint(EntityKind.CONCERN))
                 db.execute('INSERT INTO concerns (id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state, settles_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (concern, project, values['owner'], values['waiting_on'], values['anchor'], values['as_of'], now, now, 'open', settles))
                 self._schedule(db, concern, now, 1)
+            elif verb == 'record-message':
+                db.execute('INSERT OR IGNORE INTO concern_brief_messages (chat, message_id, concern_id) VALUES (?, ?, ?)', (values['chat'], values['message_id'], concern))
             elif verb == 'note':
                 assert isinstance(concern, str) and revision is not None
-                db.execute('INSERT INTO concern_notes (concern_id, text, actor, at) VALUES (?, ?, ?, ?)', (concern, values['text'], actor, now))
+                db.execute('INSERT INTO concern_notes (concern_id, text, actor, at, message_id) VALUES (?, ?, ?, ?, ?)', (concern, values['text'], actor, now, values.get('message_id')))
                 db.execute("UPDATE concerns SET evidence_at = ?, state = CASE WHEN state = 'quiet' THEN 'open' ELSE state END, revision = revision + 1 WHERE id = ?", (now, concern))
                 self._schedule(db, concern, now, revision + 1)
             else:
