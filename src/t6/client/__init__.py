@@ -12,7 +12,7 @@ from urllib.request import Request, urlopen
 from pydantic import BaseModel, TypeAdapter
 from t6.verbs import (
     Ambiguous, Done, NeedsPerson, Outcome, Preview, Refused,
-    ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
+    JoListInput, JoFindInput, DeliverableListInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
     LLMRunInput, PersonAddInput, PersonFindInput,
     PersonGetInput, PersonPermissionInput, PersonRebindInput, PersonShiftInput,
@@ -80,6 +80,11 @@ class Client:
             return Unavailable(str(error), key)
 
     def call(self, noun: str, verb: str, inputs: BaseModel) -> Result:
+        if (noun, verb) in {('person', 'get'), ('person', 'find'), ('project', 'resolve'),
+                            ('jo', 'get'), ('camera', 'get'), ('departments', '')}:
+            from t6.verbs import VERBS
+            model = next(v.input_model for v in VERBS if (v.noun, v.verb) == (noun, verb))
+            inputs = model.model_validate(inputs.model_dump(exclude={'data_sources', 'registry_db'}))
         value = self._request('/v1/' + noun + ('/' + verb if verb else ''), inputs)
         return value if isinstance(value, Unavailable) else _outcome.validate_python(value)
 
@@ -113,6 +118,36 @@ class Client:
 
     def person_get(self, inputs: PersonGetInput) -> Result:
         return self.call('person', 'get', inputs)
+
+    def studio_notices(self, inputs: StudioNoticesInput) -> Result:
+        return self.call('studio', 'notices', inputs)
+
+    def external_link_find(self, inputs: ExternalLinkFindInput) -> Result:
+        return self.call('external-link', 'find', inputs)
+
+    def project_get(self, inputs: ProjectGetInput) -> Result:
+        return self.call('project', 'get', inputs)
+
+    def person_list(self, inputs: PersonListInput) -> Result:
+        return self.call('person', 'list', inputs)
+
+    def standing_cc(self, inputs: StandingCcInput) -> Result:
+        return self.call('standing-cc', '', inputs)
+
+    def jo_list(self, inputs: JoListInput) -> Result:
+        return self.call('jo', 'list', inputs)
+
+    def jo_find(self, inputs: JoFindInput) -> Result:
+        return self.call('jo', 'find', inputs)
+
+    def deliverable_list(self, inputs: DeliverableListInput) -> Result:
+        return self.call('deliverable', 'list', inputs)
+
+    def meeting_notes_list(self, inputs: MeetingNotesListInput) -> Result:
+        return self.call('meeting-notes', 'list', inputs)
+
+    def project_list(self, inputs: ProjectListInput) -> Result:
+        return self.call('project', 'list', inputs)
 
     def project_hold(self, inputs: ProjectHoldInput) -> Result:
         return self.call('project', 'hold', inputs)

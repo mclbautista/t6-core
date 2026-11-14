@@ -25,7 +25,7 @@ JSON = dict[str, Any]
 
 def add_parsers(commands: Any) -> None:
     def data_sources(parser: argparse.ArgumentParser) -> None:
-        parser.add_argument("--data-sources", type=Path, required=True, metavar="FILE", help="JSON of database key to data source ID")
+        parser.add_argument("--data-sources", type=Path, metavar="FILE", help="JSON of database key to data source ID")
 
     contacts = commands.add_parser("contacts", help="Contact commands")
     contacts_commands = contacts.add_subparsers(dest="contacts_command", required=True)
