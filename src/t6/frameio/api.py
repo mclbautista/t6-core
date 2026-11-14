@@ -16,6 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from t6.frameio.tokens import USER_AGENT
 from t6.frameio.worker import SignInRequired
 
 BASE_URL = "https://api.frame.io"
@@ -67,7 +68,7 @@ def error_summary(headers: Mapping[str, str], body: Mapping[str, Any]) -> str:
 
 
 def http_fetch(url: str, headers: Mapping[str, str]) -> tuple[int, Mapping[str, str], dict[str, Any]]:
-    request = urllib.request.Request(url, headers=dict(headers), method="GET")
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **headers}, method="GET")
     try:
         with urllib.request.urlopen(request, timeout=30.0) as response:
             status, answered, raw = response.status, dict(response.headers), response.read()
