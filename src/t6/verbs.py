@@ -207,6 +207,44 @@ def project_hold(inputs: ProjectHoldInput, open_notion: Callable[..., Any]) -> O
 def project_resume(inputs: ProjectResumeInput, open_notion: Callable[..., Any]) -> Outcome:
     return _project_write(inputs, "resume")
 
+
+class ProjectChatInput(BaseModel):
+    project: str
+    chat: int
+    topic: int | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class ProjectChatOutput(BaseModel):
+    project_id: str
+    action: str
+    chat: int
+    topic: int | None
+    state: str
+    chat_link_id: str | None
+    idempotency_key: str
+    approval_id: str | None = None
+
+
+def _project_chat(inputs: ProjectChatInput, verb: str) -> Outcome:
+    from t6.chat_link import ChatLinks
+    from t6.preview import PreviewTokens
+    key = os.environ.get('T6_PREVIEW_SIGNING_KEY', '')
+    if not key:
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    return ChatLinks(_people().registry, PreviewTokens(key)).write(
+        verb, inputs.model_dump(exclude={'confirm', 'idempotency_key'}), actor=_actor.get(),
+        idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
+def project_link_chat(inputs: ProjectChatInput, open_notion: Callable[..., Any]) -> Outcome:
+    return _project_chat(inputs, 'link-chat')
+
+
+def project_unlink_chat(inputs: ProjectChatInput, open_notion: Callable[..., Any]) -> Outcome:
+    return _project_chat(inputs, 'unlink-chat')
+
 class PersonAddInput(BaseModel):
     page_id: str
     kind: str
@@ -865,6 +903,8 @@ VERBS = (
     Verb("person", "assign", "Assign a Project role", (), PersonProjectRoleInput, PersonWriteOutput, "coordinator", "Assign a Person to a Project role.", person_assign),
     Verb("person", "unassign", "Remove a Project role", (), PersonProjectRoleInput, PersonWriteOutput, "coordinator", "Remove a Person from a Project role.", person_unassign),
     Verb("person", "get", "Get a Person", (), PersonGetInput, PersonGetOutput, "reader", "Read a Person.", person_get),
+    Verb("project", "link-chat", "Link a Telegram chat to a Project", (), ProjectChatInput, ProjectChatOutput, "coordinator", "Approval is required.", project_link_chat),
+    Verb("project", "unlink-chat", "Unlink a Telegram chat from a Project", (), ProjectChatInput, ProjectChatOutput, "coordinator", "Approval is required.", project_unlink_chat),
     Verb("project", "archive", "Archive a Project", (), ProjectResumeInput, ProjectWriteOutput, "coordinator", "An archived Project cannot accept new work.", project_archive),
     Verb("project", "hold", "Hold a Project", (), ProjectHoldInput, ProjectWriteOutput,
          "operator", "A held Project cannot be held again.", project_hold),
@@ -1019,6 +1059,14 @@ def add_parsers(commands: Any) -> None:
             for name, field in entry.input_model.model_fields.items():
                 parser.add_argument("--" + name.replace("_", "-"), type=json.loads if name == "output_schema" else str,
                                     required=field.is_required(), default=field.get_default())
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.handler in (project_link_chat, project_unlink_chat):
+            parser.add_argument('project')
+            parser.add_argument('--chat', type=int, required=True)
+            parser.add_argument('--topic', type=int)
+            parser.add_argument('--idempotency-key')
+            parser.add_argument('--confirm')
             parser.set_defaults(registered_verb=entry)
             continue
         if entry.handler in (project_hold, project_resume, project_archive):
