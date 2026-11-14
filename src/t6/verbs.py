@@ -420,8 +420,10 @@ def jo_write(inputs: JoRaiseInput | JoAssignInput | JoReassignInput | JoNoteInpu
             verb, values = "reassign", {"jo": inputs.jo, "person": inputs.person, "reason": inputs.reason}
         elif isinstance(inputs, JoAssignInput):
             verb, values = "assign", {"jo": inputs.jo, "person": inputs.person}
-        else:
+        elif isinstance(inputs, JoNoteInput):
             verb, values = "note", {"jo": inputs.jo, "text": inputs.text}
+        else:
+            raise ValueError('Unknown Job Order input')
         return JobOrderStore(registry, PreviewTokens(key)).write(verb, values, actor=_actor.get(),
             idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
     except (ValueError, OSError, KeyError, TypeError, NotionError) as error:

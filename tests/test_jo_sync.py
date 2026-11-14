@@ -41,6 +41,7 @@ class JoSyncTests(SyncTestCase):
             self.start()
             self.assertTrue(worker.run_once())
             record = store.get(jo)
+            assert record is not None
             page = self.notion.page(record['bindings'][0]['page_id'])
             self.assertEqual(JobOrdersRow.from_page(page).status, expected)
         status_writes = [r for r in self.notion.requests if r.method == 'PATCH' and 'v%3Fln' in json.loads(r.content).get('properties', {})]
