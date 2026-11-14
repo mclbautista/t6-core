@@ -18,7 +18,7 @@ from t6.person import PERMISSIONS, SERVICES, People
 from t6.privacy import Registry as PrivacyRegistry, Session
 from t6.server.app import Request, Response, WebhookApp
 from t6.registry.sqlite import _audit
-from t6.verbs import VERBS, Done, Refused, catalogue, invoke
+from t6.verbs import VERBS, Done, Preview, Refused, catalogue, invoke
 
 
 class VerbAPI:
@@ -172,6 +172,13 @@ class VerbAPI:
             outcome = refusal or self._legacy_read(entry.noun, entry.verb, inputs)
         else:
             outcome = invoke(entry, inputs, actor=actor, people=self.people, open_notion=self.open_notion)
+        if entry.noun == 'project' and entry.verb in ('link-chat', 'unlink-chat') and isinstance(outcome, Preview):
+            if self.tap_app and self.tap_app._operator and outcome.plan.get('approval_id'):
+                from t6.approval import Approvals
+                approval = Approvals(self.people.registry, self.people.tokens).get(outcome.plan['approval_id'])
+                if approval:
+                    action, _ = self.tap_app._operator.offer_approval(approval)
+                    self.tap_app._deliver(action.token, action.version)
         return Response(200, outcome.model_dump(mode='json'))
 
     def _camera_enrich(self, inputs: Any, actor: str) -> Any:
@@ -493,6 +500,17 @@ class VerbAPI:
                 _audit(db, f'telegram:{telegram_id}', 'tap_rejected', 'gateway', self.people.registry._clock(), None,
                        {'reason': 'no_person'})
             return Response(200, {'outcome': 'rejected'})
+        if body.get('kind') == 'command' and body.get('command') in ('link', 'unlink'):
+            if self.people.authorize(person[0], 'coordinator'):
+                return Response(200, {'outcome': 'rejected'})
+            args = body.get('args')
+            chat, topic = body.get('chat'), body.get('topic')
+            key = request.header('idempotency-key') or body.get('idempotency_key')
+            if not isinstance(args, str) or len(args.split()) != 1 or type(chat) is not int or (topic is not None and type(topic) is not int) or not isinstance(key, str) or not key:
+                return Response(200, {'outcome': 'rejected'})
+            entry = self.routes['/v1/project/' + ('link-chat' if body['command'] == 'link' else 'unlink-chat')]
+            response = self._dispatch(entry, {'project': args.strip(), 'chat': chat, 'topic': topic, 'idempotency_key': key}, person[0])
+            return Response(200, {'outcome': 'accepted' if response.body.get('outcome') in ('preview', 'done') else 'rejected'})
         data = body.get('data')
         if body.get('kind') != 'command' and (not isinstance(data, str) or not data.startswith('op:')):
             action, separator, target = data.partition(':') if isinstance(data, str) else ('', '', '')
@@ -500,8 +518,19 @@ class VerbAPI:
                 with self.people.registry._transaction() as db:
                     _audit(db, person[0], 'tap_rejected', person[0], self.people.registry._clock(), None, {'reason': 'not_allowed', 'data': data})
                 return Response(200, {'outcome': 'rejected'})
+        card_action = None
+        if isinstance(data, str) and data.startswith('op:') and self.tap_app._operator:
+            card_action = self.tap_app._operator.store.get(data[3:].partition(':')[0])
         response = self.tap_app._tap(request, authenticated=True)
         outcome = response.body.get('outcome')
+        if response.status == 200 and outcome == 'granted' and card_action and card_action.kind == 'approval':
+            from t6.chat_link import ChatLinks
+            with self.people.registry._transaction() as db:
+                rows = db.execute("SELECT p.request FROM chat_link_previews p JOIN approvals a ON a.id = p.approval_id WHERE a.state = 'granted' AND a.id = ? AND p.nonce NOT IN (SELECT nonce FROM used_preview_tokens)", (card_action.params['approval_id'],)).fetchall()
+            for row in rows:
+                pending = json.loads(row[0])
+                if not self.people.authorize(pending['actor'], 'coordinator'):
+                    ChatLinks(self.people.registry, self.people.tokens).write(**pending)
         if response.status == 200 and outcome is not None and outcome not in {'rejected', 'ignored', 'already_handled', 'busy', 'expired'}:
             key = request.header('idempotency-key') or body.get('idempotency_key')
             with self.people.registry._transaction() as db:
