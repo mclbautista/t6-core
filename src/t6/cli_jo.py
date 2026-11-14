@@ -75,6 +75,7 @@ def add_parsers(commands: Any) -> None:
     )
     deadline.add_argument("phrase", help="the deadline as posted, for example 'Nov 13 5pm' or 'end of shift'")
     deadline.add_argument("--assignees", nargs="*", default=[], metavar="CONTACT_ID", help="the assignee Contact page IDs")
+    deadline.add_argument("--person", help="Person T6 ID")
     deadline.add_argument("--posted", type=datetime.fromisoformat, metavar="ISO", help="when it was posted (default: now); no zone means Manila")
 
 
@@ -82,10 +83,17 @@ def run(args: argparse.Namespace, open_notion: Callable[[str], NotionClient]) ->
     try:
         if args.command == "jo" and args.jo_command == "format":
             return _print(_format(args.file.read_text(encoding="utf-8"), args.date))
+        if args.command == "deadline" and args.person:
+            from t6.verbs import _people
+            person = _people().get(args.person)
+            if person is None:
+                return _fail("Person not found")
+            if not args.assignees:
+                return _print(_deadline(args.phrase, args.posted, (), person))
         if args.command == "deadline" and not args.assignees:
             return _print(_deadline(args.phrase, args.posted, ()))
         from t6.notion import NotionError
-    except OSError as error:
+    except (OSError, ValueError) as error:
         return _fail(str(error))
     except ImportError:
         return _fail(f"{args.command} needs the notion extra: pip install 't6[notion]'")
@@ -100,7 +108,7 @@ def run(args: argparse.Namespace, open_notion: Callable[[str], NotionClient]) ->
                 from t6.notion.reads import ContactReader
 
                 reader = ContactReader(client, "")
-                return _print(_deadline(args.phrase, args.posted, tuple(reader.get(ref) for ref in args.assignees)))
+                return _print(_deadline(args.phrase, args.posted, tuple(reader.get(ref) for ref in args.assignees), person if args.person else None))
             sources = _read_data_sources(args.data_sources)
             if "job_orders" not in sources:
                 return _fail("--data-sources has no 'job_orders' entry")
@@ -145,7 +153,7 @@ def _format(draft: str, day: date | None) -> JSON:
     return {"text": result.text, "findings": _jsonable(result.findings)}
 
 
-def _deadline(phrase: str, posted: datetime | None, assignees: tuple[Any, ...]) -> JSON:
+def _deadline(phrase: str, posted: datetime | None, assignees: tuple[Any, ...], person: dict[str, Any] | None = None) -> JSON:
     from t6.domain import dateformats
     from t6.domain.deadlines import deadline
     from t6.domain.studio_time import MANILA
@@ -153,7 +161,7 @@ def _deadline(phrase: str, posted: datetime | None, assignees: tuple[Any, ...]) 
     posted = posted or datetime.now(MANILA)
     if posted.tzinfo is None:
         posted = posted.replace(tzinfo=MANILA)
-    result = deadline(phrase, posted, assignees)
+    result = deadline(phrase, posted, assignees, person=person)
     return {
         "deadline": result.deadline.isoformat() if result.deadline else None,
         "display": dateformats.deadline(result.deadline) if result.deadline else None,

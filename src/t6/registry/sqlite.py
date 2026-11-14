@@ -166,6 +166,10 @@ _MIGRATIONS = (
         CREATE UNIQUE INDEX one_active_person_per_telegram ON persons (telegram_id)
             WHERE active = 1 AND telegram_id IS NOT NULL
     """),
+    (8, False, """CREATE TABLE person_shifts (
+        person_id TEXT PRIMARY KEY REFERENCES persons(id), pattern TEXT NOT NULL,
+        start TEXT NOT NULL, end TEXT NOT NULL
+    )"""),
 )
 
 

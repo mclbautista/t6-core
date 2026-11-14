@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+import re
+from datetime import time
 from typing import Any, Iterable
 
 from t6.ids import EntityKind, T6Id
@@ -23,7 +25,8 @@ class People:
             if not row:
                 return None
             bindings = db.execute("SELECT page_id, active FROM bindings WHERE system = 'notion' AND project_id = ? ORDER BY bound_at", (person_id,)).fetchall()
-        return dict(id=row[0], kind=row[1], departments=json.loads(row[2]), roles=json.loads(row[3]), telegram_id=row[4], master_brief=bool(row[5]), active=bool(row[6]), bindings=[dict(page_id=b[0], active=bool(b[1])) for b in bindings])
+            shift = db.execute('SELECT pattern, start, end FROM person_shifts WHERE person_id = ?', (person_id,)).fetchone()
+        return dict(shift=dict(pattern=shift[0], start=shift[1], end=shift[2]) if shift else None, id=row[0], kind=row[1], departments=json.loads(row[2]), roles=json.loads(row[3]), telegram_id=row[4], master_brief=bool(row[5]), active=bool(row[6]), bindings=[dict(page_id=b[0], active=bool(b[1])) for b in bindings])
 
     def migrate(self, contacts: Iterable[Any], *, actor: str, apply: bool = False, digest: str | None = None) -> dict[str, Any]:
         contacts = tuple(contacts)
@@ -105,13 +108,24 @@ class People:
                 if db.execute("SELECT 1 FROM bindings WHERE system = 'notion' AND page_id = ?", (page,)).fetchone():
                     return Refused(rule='binding', reason='Page is already bound')
                 person_id = None
-            elif verb in ('set-telegram', 'rebind'):
+            elif verb in ('set-telegram', 'rebind', 'shift'):
                 person_id = values.get('person_id')
                 target = db.execute('SELECT active FROM persons WHERE id = ?', (person_id,)).fetchone()
                 if not target:
                     return Refused(rule='person', reason='Person not found')
             else:
                 return Refused(rule='input', reason='Unknown verb')
+            if verb == 'shift':
+                start, end = values.get('start', ''), values.get('end', '')
+                try:
+                    if not all(isinstance(v, str) and re.fullmatch(r'\d{2}:\d{2}', v) for v in (start, end)):
+                        raise ValueError
+                    time.fromisoformat(start)
+                    time.fromisoformat(end)
+                    if values.get('pattern') not in ('day', 'night'):
+                        raise ValueError
+                except ValueError:
+                    return Refused(rule='shift', reason='Use day or night with valid HH:MM times')
             if verb == 'rebind':
                 page = normalize_page_id(values.get('page_id', ''))
                 if not page:
@@ -138,6 +152,10 @@ class People:
                 before = {'page_id': current[0] if current else None}
                 db.execute("UPDATE bindings SET active = 0 WHERE system = 'notion' AND project_id = ?", (person_id,))
                 db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, ?, 1) ON CONFLICT(system, page_id) DO UPDATE SET active = 1", (page, person_id, now))
+            elif verb == 'shift':
+                current = db.execute('SELECT pattern, start, end FROM person_shifts WHERE person_id = ?', (person_id,)).fetchone()
+                before = dict(zip(('pattern', 'start', 'end'), current)) if current else None
+                db.execute('INSERT INTO person_shifts VALUES (?, ?, ?, ?) ON CONFLICT(person_id) DO UPDATE SET pattern=excluded.pattern, start=excluded.start, end=excluded.end', (person_id, values['pattern'], values['start'], values['end']))
             else:
                 before = {'telegram_id': db.execute('SELECT telegram_id FROM persons WHERE id = ?', (person_id,)).fetchone()[0]}
                 db.execute('UPDATE persons SET telegram_id = ? WHERE id = ?', (telegram, person_id))
