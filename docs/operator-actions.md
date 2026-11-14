@@ -54,8 +54,13 @@ The gateway pushes `{"data": "op:<token>:<choice>", "from": {"id"}, "chat",
 | 200 `{"outcome": ...}` | decided: `registered`, `bound`, `classified`, `choose_project`, `skipped`, `no_candidates`, `page_taken`, `code_held`, `stale`, `expired`, `already_handled`, `busy` or `rejected`. The gateway stops retrying |
 | 503 | not decided (card not confirmed yet, registry unavailable, operator actions off). The gateway retries |
 
-`rejected` covers a user not on `T6_OPERATOR_IDS`, a wrong chat or message, an
-unknown token and an unknown choice; each is recorded and changes nothing.
+Each action stores an allowed-tapper rule. The default is `permission:operator`;
+other rules are `person:<t6n_ID>`, `permission:<name>`, or
+`{"any_of": [<rule>, ...]}`. At tap time core resolves the Telegram ID to an
+active Person and checks their current permissions. A refused tap records the
+rule in `rejections`. A wrong chat or message, unknown token, or unknown choice
+is also rejected and recorded; none changes the action. `T6_OPERATOR_IDS` still
+selects the destination for existing operator cards and authorizes `/project`.
 Other `/tap` payloads still queue the generic `tap` job.
 
 ## Project Codes and rotation (`/project`)

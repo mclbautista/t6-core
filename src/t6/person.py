@@ -48,6 +48,23 @@ class People:
             return Refused(rule='permission', reason=f'needs {role}')
         return None
 
+    def allows_telegram(self, telegram_id: int | None, rule: Any) -> bool:
+        """Resolve an active Telegram user and evaluate an action's allowed-tapper rule."""
+        with self.registry._transaction() as db:
+            person = db.execute('SELECT id FROM persons WHERE active = 1 AND telegram_id = ?', (telegram_id,)).fetchone()
+            if person is None:
+                return False
+            def allows(candidate: Any) -> bool:
+                if isinstance(candidate, str):
+                    if candidate.startswith('person:'):
+                        return person[0] == candidate[7:]
+                    if candidate.startswith('permission:'):
+                        return self._authorize(db, person[0], candidate[11:]) is None
+                if isinstance(candidate, dict) and isinstance(candidate.get('any_of'), list):
+                    return any(allows(child) for child in candidate['any_of'])
+                return False
+            return allows(rule)
+
     def seed_operators(self, telegram_ids: Iterable[int]) -> dict[str, Any]:
         """Seed once after Persons have been imported; retain the first report."""
         with self.registry._transaction() as db:
