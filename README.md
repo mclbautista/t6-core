@@ -1616,3 +1616,23 @@ The old commands remain available until 0.5.0 and print a deprecation notice on 
 | `check-consumer` | `admin consumer-check` |
 | `drives-import-dry-run` | `admin drive import` |
 | `version`, `commands --json`, `health` | unchanged |
+
+## Transcription
+
+Install `t6[transcribe]` for the ElevenLabs adapter. Construct an ElevenLabs
+client with the caller's API key and pass it to
+`transcribe(wav_path, client)` from `t6.transcribe.adapter`. The result is the
+SDK's word-level JSON as a dictionary. `language="en"` overrides the default
+Filipino language hint; English remains the secondary hint.
+
+`render_srt(transcript, offset=0, fps=24)` from `t6.transcribe` needs no SDK.
+Offsets are seconds or non-drop-frame `HH:MM:SS:FF` timecodes; set `fps` to
+the timeline's frame rate. Words with missing timestamps are skipped.
+
+`parse_speaker_map(csv_text)` reads `source,speaker,name` CSV text. A blank
+source applies to every clip; an exact clip-relative source overrides it.
+Pass the resulting map and clip path as `speaker_map` and `source` to
+`render_srt` or `render_docx`. Unmapped speakers keep their labels. SRT retains
+its original unlabeled output when no map is supplied. `render_docx` returns
+validated DOCX bytes, with one paragraph per speaker turn and the same offset
+and frame-rate options as SRT. Neither renderer calls ElevenLabs.

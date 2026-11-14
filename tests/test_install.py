@@ -36,6 +36,16 @@ class InstallationTests(unittest.TestCase):
                     python = environment / "bin" / "python"
                     self.run_command(python, "-m", "pip", "install", f"{wheel}{extra}")
                     self.run_command(python, "-c", "import t6.domain; import t6.lookup; import t6.drives, t6.drives.testing")
+                    if not extra:
+                        self.run_command(python, "-c", "import t6.transcribe; from t6.transcribe import render_srt")
+                        self.run_command(python, "-c", """
+try:
+    import t6.transcribe.adapter
+except ImportError as error:
+    assert 't6[transcribe]' in str(error)
+else:
+    raise AssertionError('adapter unexpectedly imported without its extra')
+""")
                     installed = json.loads(self.run_command(python, "-c", self.distribution_probe()))
                     # Adapter libraries sit behind their own extra only.
                     self.assertEqual(
@@ -46,6 +56,8 @@ class InstallationTests(unittest.TestCase):
                             "jsonschema<5,>=4.23",
                             "referencing<1,>=0.35",
                             "pyyaml<7,>=6; extra == 'server'",
+                            "httpx<1,>=0.27; extra == 'transcribe'",
+                            "elevenlabs<3,>=2.78.0; extra == 'transcribe'",
                             "psycopg[binary]<4,>=3.2; extra == 'resolve'",
                             "openpyxl<4,>=3.1; extra == 'drives'",
                             "rapidfuzz<4,>=3.9; extra == 'lookup'",
@@ -53,7 +65,7 @@ class InstallationTests(unittest.TestCase):
                     )
                     self.assertEqual(
                         set(installed["extras"]),
-                        {"notion", "privacy", "llm", "frameio", "resolve", "instagantt", "lookup", "drives", "server", "worker"},
+                        {"notion", "privacy", "llm", "frameio", "resolve", "instagantt", "lookup", "drives", "server", "worker", "transcribe"},
                     )
                     # A fresh environment may include setuptools on Python 3.11.
                     allowed = {"t6", "pip", "setuptools"} | BASE_PACKAGES
