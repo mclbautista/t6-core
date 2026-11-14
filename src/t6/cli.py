@@ -413,12 +413,15 @@ def main(
         ),
     )
     consumer.add_argument("path", type=Path, help="the app's directory (or one .py file)")
-    from t6 import cli_studio
+    from t6 import cli_jo, cli_studio
 
     cli_studio.add_parsers(commands)
+    cli_jo.add_parsers(commands)
     args = parser.parse_args(argv)
     if args.command in {"departments", "contacts", "projects", "standing-cc"}:
         return cli_studio.run(args, open_notion)
+    if args.command in {"jo", "deadline"}:
+        return cli_jo.run(args, open_notion)
     if args.command == "check-consumer":
         return _check_consumer(args)
     if args.command == "drives-import-dry-run":

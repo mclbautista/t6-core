@@ -109,6 +109,11 @@ ADMIN, then any other Department A to Z, then none) and the alias `TO` for
   (short), EpXX and EpXX-XX (episodes).
 - **Formatter defaults**: Watermark is "none"; Link Settings travels with Mode
   of Transfer; MFG shuttle drives are `MFG Shuttle 01` to `04`, never 05.
+- **Formatter layout** (`t6.domain.job_order_format`): canonical header, a date
+  line computed from the date, core fields in order with the writer's labels,
+  Watermark "none" by default, Status and Pending blank, free text last. What
+  cannot be settled (header, Title, Task, Purpose, Assigned, deliverable code,
+  Link Settings, MFG shuttle range) is a finding.
 - **Status groups**: not started (Needs Intake Review, Pending), started (In
   progress, Needs Completion Review, Done), cancelled. Active means not Done
   and not Cancelled.
