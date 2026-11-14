@@ -249,6 +249,18 @@ _MIGRATIONS = (
         recipient TEXT NOT NULL REFERENCES persons(id), note TEXT, spec TEXT NOT NULL,
         checklist TEXT NOT NULL, state TEXT NOT NULL, reason TEXT, revision INTEGER NOT NULL DEFAULT 1
     )"""),
+    (21, True, """ALTER TABLE packages RENAME TO packages_old;
+    CREATE TABLE packages (
+        id TEXT PRIMARY KEY, deliverable_id TEXT NOT NULL REFERENCES deliverables(id),
+        kind TEXT NOT NULL, from_person TEXT NOT NULL, destination TEXT NOT NULL,
+        recipient TEXT NOT NULL, note TEXT, spec TEXT NOT NULL,
+        checklist TEXT NOT NULL, state TEXT NOT NULL, reason TEXT, revision INTEGER NOT NULL DEFAULT 1
+    );
+    INSERT INTO packages SELECT * FROM packages_old;
+    DROP TABLE packages_old;
+    CREATE TABLE delivery_carriers (
+        package_id TEXT PRIMARY KEY REFERENCES packages(id), kind TEXT NOT NULL, ref TEXT
+    )"""),
 )
 
 
