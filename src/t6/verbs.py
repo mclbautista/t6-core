@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, RootModel
 
 
 class Done(BaseModel):
@@ -158,12 +158,64 @@ class Verb:
     output_model: type[BaseModel]
     role: str
     rule: str
-    handler: Callable[..., Outcome]
+    handler: Callable[..., Outcome] | None
+
+
+# Legacy CLI verbs retain their established arguments and JSON output while
+# participating in discovery. Their handlers live in the CLI modules.
+class LegacyOutput(RootModel[Any]):
+    """The legacy commands retain their existing, command-specific JSON shapes."""
+
+
+class JoGetInput(BaseModel):
+    ref: str
+    data_sources: Path
+
+
+class JoRaiseInput(BaseModel):
+    file: Path
+    data_sources: Path
+    apply: bool = False
+    actor: str | None = None
+
+
+class JoFormatInput(BaseModel):
+    file: Path
+    date: str | None = None
+
+
+class PersonFindInput(BaseModel):
+    mention: str
+    data_sources: Path
+
+
+class ProjectResolveInput(BaseModel):
+    text: str
+    data_sources: Path
+    registry_db: Path | None = None
+
+
+class CameraGetInput(BaseModel):
+    data_sources: Path
+    page_id: str | None = None
+
+
+class CameraEnrichInput(BaseModel):
+    page_id: str
+    data_sources: Path
+    json_file: Path | None = Field(default=None, alias="json")
 
 
 VERBS = (
     Verb("project", "activity", "Show Project activity, newest first", (),
          ActivityInput, ActivityOutput, "reader", "Activity is append-only.", project_activity),
+    Verb("jo", "get", "Get a Job Order", (), JoGetInput, LegacyOutput, "reader", "Read a Job Order.", None),
+    Verb("jo", "raise", "Raise a Job Order", ("jo create",), JoRaiseInput, LegacyOutput, "writer", "Create a Job Order.", None),
+    Verb("jo", "format", "Format a Job Order", (), JoFormatInput, LegacyOutput, "reader", "Format a draft.", None),
+    Verb("person", "find", "Find a Person", ("contacts find",), PersonFindInput, LegacyOutput, "reader", "Find a Contact.", None),
+    Verb("project", "resolve", "Resolve a Project", ("projects resolve",), ProjectResolveInput, LegacyOutput, "reader", "Resolve a Project.", None),
+    Verb("camera", "get", "Get Cameras", ("cameras get",), CameraGetInput, LegacyOutput, "reader", "Read Cameras.", None),
+    Verb("camera", "enrich", "Enrich a Camera", ("cameras update",), CameraEnrichInput, LegacyOutput, "writer", "Update a Camera.", None),
     Verb("departments", "", "Print the studio Departments, read live, in display order, with option IDs", (),
          DepartmentsInput, DepartmentsOutput, "reader", "Notion Department options are the truth; use studio display order.", departments),
 )
@@ -178,6 +230,8 @@ def catalogue() -> list[dict[str, Any]]:
 def add_parsers(commands: Any) -> None:
     nouns: dict[str, Any] = {}
     for entry in VERBS:
+        if entry.handler is None:
+            continue
         if entry.noun not in nouns:
             parser = commands.add_parser(entry.noun, help=("[verb] " if not entry.verb else "") + entry.description)
             nouns[entry.noun] = parser.add_subparsers(dest=f"{entry.noun}_verb", required=True) if entry.verb else parser

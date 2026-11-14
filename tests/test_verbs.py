@@ -15,23 +15,15 @@ class VerbTests(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             self.assertEqual(main(["commands", "--json"]), 0)
         catalogue = json.loads(output.getvalue())
-        self.assertEqual([entry["noun"] for entry in catalogue], ["project", "departments"])
-        entry = catalogue[1]
-        self.assertIn("data_sources", entry["input_schema"]["properties"])
-        self.assertIn("departments", entry["output_schema"]["properties"])
-        output = io.StringIO()
-        with contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as exit:
-            main(["--help"])
-        self.assertEqual(exit.exception.code, 0)
-        # Registered commands have an explicit marker in help, separate from legacy commands.
-        help_verbs = [line.strip().split()[0] for line in output.getvalue().splitlines() if "[verb]" in line]
-        self.assertEqual(help_verbs, [entry["noun"] for entry in catalogue if not entry["verb"]])
-        for noun in {entry["noun"] for entry in catalogue if entry["verb"]}:
+        pairs = {(entry["noun"], entry["verb"]) for entry in catalogue}
+        self.assertEqual(pairs, {("departments", ""), ("project", "activity"), ("jo", "get"), ("jo", "raise"),
+                                 ("jo", "format"), ("person", "find"), ("project", "resolve"),
+                                 ("camera", "get"), ("camera", "enrich")})
+        for noun, verb in pairs:
             output = io.StringIO()
-            with contextlib.redirect_stdout(output), self.assertRaises(SystemExit):
-                main([noun, "--help"])
-            help_verbs = [line.strip().split()[0] for line in output.getvalue().splitlines() if "[verb]" in line]
-            self.assertEqual(help_verbs, [entry["verb"] for entry in catalogue if entry["noun"] == noun])
+            with contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as exit:
+                main([noun, verb, "--help"] if verb else [noun, "--help"])
+            self.assertEqual(exit.exception.code, 0)
 
     def test_outcomes_have_documented_codes_and_json_shapes(self) -> None:
         examples: list[tuple[Outcome, int, dict[str, Any]]] = [

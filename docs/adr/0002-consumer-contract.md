@@ -39,7 +39,7 @@ Every app follows these ten rules. Each has its reason.
    work started inside T6 uses the t6 database job table (ADR 0006). Apps
    retry API writes from their own outboxes with the same idempotency key.
    *Why:* app retry and retention choices stay local, while t6 tracks its jobs.
-6. **Enforced in CI.** `t6 check-consumer` runs in every app and fails on
+6. **Enforced in CI.** `t6 admin consumer-check` runs in every app and fails on
    direct calls to Notion, LLM providers or Frame.io and follows the API
    boundary; a bare mention of Frame.io in a string is not a call. *Why:*
    the contract must hold without relying on review.
