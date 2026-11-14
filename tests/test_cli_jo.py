@@ -29,6 +29,13 @@ FIELDS: dict[str, object] = {
 
 class JoCommandTests(unittest.TestCase):
     def setUp(self) -> None:
+        from unittest.mock import MagicMock, patch
+        people = MagicMock()
+        people.authorize.return_value = None
+        people.registry.bound_entity.return_value = None
+        patcher = patch('t6.verbs._people', return_value=people)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.fake = FakeNotion()
         self.fake.add_snapshot_data_source(JOB_ORDERS, "job_orders")
         self.fake.add_snapshot_data_source(CONTACTS, "contacts")

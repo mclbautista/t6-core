@@ -41,6 +41,9 @@ class PersonTests(unittest.TestCase):
     def setUp(self) -> None:
         self.registry = MemoryRegistry()
         self.addCleanup(self.registry.db.close)
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES ('test-actor', 'staff', '[]', '[]', NULL, 0, 1)")
+            db.execute("INSERT INTO person_permissions VALUES ('test-actor', 'operator')")
         self.fake = FakeNotion()
         self.fake.add_snapshot_data_source('contacts', 'contacts')
         row = ContactsRow
@@ -54,7 +57,7 @@ class PersonTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.sources = Path(self.tmp.name) / 'sources.json'
         self.sources.write_text(json.dumps({'contacts': 'contacts'}))
-        self.env = {'T6_NOTION_TOKEN': 'fake', 'T6_PREVIEW_SIGNING_KEY': 'test'}
+        self.env = {'T6_NOTION_TOKEN': 'fake', 'T6_PREVIEW_SIGNING_KEY': 'test', 'T6_PERSON_ID': 'test-actor'}
 
     def command(self, *args: str) -> dict:  # type: ignore[type-arg]
         out, err = io.StringIO(), io.StringIO()
@@ -132,6 +135,28 @@ class PersonTests(unittest.TestCase):
         self.confirmed('shift', person_id, '--pattern', 'day', '--start', '10:00', '--end', '19:00')
         result = self.command('deadline', 'end of shift', '--person', person_id, '--posted', '2026-09-01T10:00:00+08:00')
         self.assertEqual(result['deadline'], '2026-09-01T19:00:00+08:00')
+
+    def test_cli_grant_revoke_and_get_permissions(self) -> None:
+        applied = self.apply(self.migrate())
+        person = applied['entries'][0]['t6_id']
+        for action in ('grant', 'revoke'):
+            preview = self.command('person', action, person, 'bookings')
+            self.assertEqual(preview['outcome'], 'preview')
+            result = self.command('person', action, person, 'bookings', '--idempotency-key',
+                                  preview['plan']['idempotency_key'], '--confirm', preview['token'])
+            self.assertEqual(result['outcome'], 'done')
+            shown = self.command('person', 'get', '--person-id', person, '--data-sources', str(self.sources))
+            self.assertEqual('bookings' in shown['result']['permissions'], action == 'grant')
+
+    def test_cli_refuses_missing_and_unprivileged_identity(self) -> None:
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES ('ordinary', 'staff', '[]', '[]', NULL, 0, 1)")
+        self.env['T6_PERSON_ID'] = 'ordinary'
+        result = self.command('person', 'grant', 'test-actor', 'bookings')
+        self.assertEqual(result['reason'], 'needs operator')
+        self.env.pop('T6_PERSON_ID')
+        result = self.command('person', 'grant', 'test-actor', 'bookings')
+        self.assertEqual(result['rule'], 'permission')
 
     def test_telegram_refusal_names_holder(self) -> None:
         applied = self.apply(self.migrate())

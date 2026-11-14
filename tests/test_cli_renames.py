@@ -9,6 +9,15 @@ from t6.cli import main
 
 
 class RenameTests(unittest.TestCase):
+    def setUp(self) -> None:
+        from unittest.mock import MagicMock, patch
+        people = MagicMock()
+        people.authorize.return_value = None
+        people.registry.bound_entity.return_value = None
+        patcher = patch('t6.verbs._people', return_value=people)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_renamed_commands_share_handlers_and_output(self) -> None:
         rows = [
             ("jo create", "jo raise", "--file x --data-sources x", "t6.cli_jo.run"),

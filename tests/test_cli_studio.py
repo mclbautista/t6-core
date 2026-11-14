@@ -19,6 +19,13 @@ JOB_ORDERS, CONTACTS, PROJECTS = "ds-jo", "ds-contacts", "ds-projects"
 
 class StudioCommandTests(unittest.TestCase):
     def setUp(self) -> None:
+        from unittest.mock import MagicMock, patch
+        people = MagicMock()
+        people.authorize.return_value = None
+        people.registry.bound_entity.return_value = None
+        patcher = patch('t6.verbs._people', return_value=people)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.fake = FakeNotion()
         for source, database in ((JOB_ORDERS, "job_orders"), (CONTACTS, "contacts"), (PROJECTS, "projects")):
             self.fake.add_snapshot_data_source(source, database)

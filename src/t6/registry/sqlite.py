@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 import json
+import sys
 from pathlib import Path
 import sqlite3
 import time
@@ -170,6 +171,13 @@ _MIGRATIONS = (
         person_id TEXT PRIMARY KEY REFERENCES persons(id), pattern TEXT NOT NULL,
         start TEXT NOT NULL, end TEXT NOT NULL
     )"""),
+    (9, False, """
+        CREATE TABLE person_permissions (
+            person_id TEXT NOT NULL REFERENCES persons(id), permission TEXT NOT NULL,
+            PRIMARY KEY (person_id, permission)
+        );
+        CREATE TABLE permission_seed (id INTEGER PRIMARY KEY, unmatched TEXT NOT NULL)
+    """),
 )
 
 
@@ -227,6 +235,19 @@ class SqliteProjectRegistry:
             setup.close()
         with self._transaction() as db:
             _migrate(db)
+            if not db.execute('SELECT 1 FROM permission_seed WHERE id = 1').fetchone():
+                from t6.domain.studio_people import operator_ids
+                unmatched = []
+                for telegram_id in dict.fromkeys(operator_ids()):
+                    people = db.execute('SELECT id FROM persons WHERE telegram_id = ?', (telegram_id,)).fetchall()
+                    if not people:
+                        unmatched.append(telegram_id)
+                    for (person_id,) in people:
+                        db.execute("INSERT OR IGNORE INTO person_permissions VALUES (?, 'operator')", (person_id,))
+                        _audit(db, person_id, 'person_grant', 'operator seed', self._clock(), None, {'permission': 'operator'})
+                db.execute('INSERT INTO permission_seed VALUES (1, ?)', (json.dumps(unmatched),))
+                if unmatched:
+                    print('Unmatched T6_OPERATOR_IDS: ' + ', '.join(map(str, unmatched)), file=sys.stderr)
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:

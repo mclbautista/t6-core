@@ -15,6 +15,9 @@ from t6.registry.sqlite import SqliteProjectRegistry, _audit
 from t6.verbs import Done, Outcome, Refused
 
 
+PERMISSIONS = frozenset({"operator", "coordinator", "bookings", "drives", "admin"})
+
+
 class People:
     def __init__(self, registry: SqliteProjectRegistry, tokens: PreviewTokens) -> None:
         self.registry, self.tokens = registry, tokens
@@ -26,7 +29,41 @@ class People:
                 return None
             bindings = db.execute("SELECT page_id, active FROM bindings WHERE system = 'notion' AND project_id = ? ORDER BY bound_at", (person_id,)).fetchall()
             shift = db.execute('SELECT pattern, start, end FROM person_shifts WHERE person_id = ?', (person_id,)).fetchone()
-        return dict(shift=dict(pattern=shift[0], start=shift[1], end=shift[2]) if shift else None, id=row[0], kind=row[1], departments=json.loads(row[2]), roles=json.loads(row[3]), telegram_id=row[4], master_brief=bool(row[5]), active=bool(row[6]), bindings=[dict(page_id=b[0], active=bool(b[1])) for b in bindings])
+            permissions = [r[0] for r in db.execute("SELECT permission FROM person_permissions WHERE person_id = ? ORDER BY permission", (person_id,))]
+        return dict(shift=dict(pattern=shift[0], start=shift[1], end=shift[2]) if shift else None, permissions=permissions, id=row[0], kind=row[1], departments=json.loads(row[2]), roles=json.loads(row[3]), telegram_id=row[4], master_brief=bool(row[5]), active=bool(row[6]), bindings=[dict(page_id=b[0], active=bool(b[1])) for b in bindings])
+
+    def authorize(self, actor: str, role: str) -> Refused | None:
+        with self.registry._transaction() as db:
+            return self._authorize(db, actor, role)
+
+    @staticmethod
+    def _authorize(db: Any, actor: str, role: str) -> Refused | None:
+        person = db.execute("SELECT kind, active FROM persons WHERE id = ?", (actor,)).fetchone()
+        if not person or not person[1]:
+            return Refused(rule='permission', reason='needs active Person')
+        if role == 'reader':
+            return None if person[0] == 'staff' else Refused(rule='permission', reason='needs active staff Person')
+        permissions = {row[0] for row in db.execute('SELECT permission FROM person_permissions WHERE person_id = ?', (actor,))}
+        if role not in permissions and not (role == 'operator' and 'admin' in permissions):
+            return Refused(rule='permission', reason=f'needs {role}')
+        return None
+
+    def seed_operators(self, telegram_ids: Iterable[int]) -> dict[str, Any]:
+        """Seed once after Persons have been imported; retain the first report."""
+        with self.registry._transaction() as db:
+            previous = db.execute('SELECT unmatched FROM permission_seed WHERE id = 1').fetchone()
+            if previous:
+                return {'unmatched': json.loads(previous[0]), 'seeded': False}
+            unmatched = []
+            for telegram_id in dict.fromkeys(telegram_ids):
+                people = db.execute('SELECT id FROM persons WHERE telegram_id = ?', (telegram_id,)).fetchall()
+                if not people:
+                    unmatched.append(telegram_id)
+                for (person_id,) in people:
+                    db.execute("INSERT OR IGNORE INTO person_permissions VALUES (?, 'operator')", (person_id,))
+                    _audit(db, person_id, 'person_grant', 'operator seed', self.registry._clock(), None, {'permission': 'operator'})
+            db.execute('INSERT INTO permission_seed VALUES (1, ?)', (json.dumps(unmatched),))
+            return {'unmatched': unmatched, 'seeded': True}
 
     def migrate(self, contacts: Iterable[Any], *, actor: str, apply: bool = False, digest: str | None = None) -> dict[str, Any]:
         contacts = tuple(contacts)
@@ -93,6 +130,10 @@ class People:
         if isinstance(nonce, Refused):
             return nonce
         with self.registry._transaction() as db:
+            if verb in ('grant', 'revoke'):
+                refusal = self._authorize(db, actor, 'operator')
+                if refusal:
+                    return refusal
             if nonce and db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce = ?', (nonce,)).fetchone():
                 return Refused(rule='token_used', reason='Preview token has already been used')
             previous = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key = ?', (key,)).fetchone()
@@ -108,7 +149,7 @@ class People:
                 if db.execute("SELECT 1 FROM bindings WHERE system = 'notion' AND page_id = ?", (page,)).fetchone():
                     return Refused(rule='binding', reason='Page is already bound')
                 person_id = None
-            elif verb in ('set-telegram', 'rebind', 'shift'):
+            elif verb in ('set-telegram', 'rebind', 'shift', 'grant', 'revoke'):
                 person_id = values.get('person_id')
                 target = db.execute('SELECT active FROM persons WHERE id = ?', (person_id,)).fetchone()
                 if not target:
@@ -126,6 +167,8 @@ class People:
                         raise ValueError
                 except ValueError:
                     return Refused(rule='shift', reason='Use day or night with valid HH:MM times')
+            if verb in ('grant', 'revoke') and values.get('permission') not in PERMISSIONS:
+                return Refused(rule='permission', reason='Unknown permission')
             if verb == 'rebind':
                 page = normalize_page_id(values.get('page_id', ''))
                 if not page:
@@ -156,6 +199,14 @@ class People:
                 current = db.execute('SELECT pattern, start, end FROM person_shifts WHERE person_id = ?', (person_id,)).fetchone()
                 before = dict(zip(('pattern', 'start', 'end'), current)) if current else None
                 db.execute('INSERT INTO person_shifts VALUES (?, ?, ?, ?) ON CONFLICT(person_id) DO UPDATE SET pattern=excluded.pattern, start=excluded.start, end=excluded.end', (person_id, values['pattern'], values['start'], values['end']))
+            elif verb in ('grant', 'revoke'):
+                permission = values['permission']
+                held = db.execute('SELECT 1 FROM person_permissions WHERE person_id = ? AND permission = ?', (person_id, permission)).fetchone() is not None
+                before = {'permission': permission, 'held': held}
+                if verb == 'grant':
+                    db.execute('INSERT OR IGNORE INTO person_permissions VALUES (?, ?)', (person_id, permission))
+                else:
+                    db.execute('DELETE FROM person_permissions WHERE person_id = ? AND permission = ?', (person_id, permission))
             else:
                 before = {'telegram_id': db.execute('SELECT telegram_id FROM persons WHERE id = ?', (person_id,)).fetchone()[0]}
                 db.execute('UPDATE persons SET telegram_id = ? WHERE id = ?', (telegram, person_id))
