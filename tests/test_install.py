@@ -8,8 +8,8 @@ import tempfile
 import unittest
 import venv
 
-# Base pydantic and its dependencies; adapter libraries remain optional.
-BASE_PACKAGES = {"pydantic", "pydantic-core", "pydantic_core", "annotated-types", "typing-extensions", "typing_extensions", "typing-inspection"}
+# Base validation libraries and their dependencies; adapter libraries remain optional.
+BASE_PACKAGES = {"pydantic", "pydantic-core", "pydantic_core", "annotated-types", "typing-extensions", "typing_extensions", "typing-inspection", "jsonschema", "jsonschema-specifications", "referencing", "rpds-py", "attrs"}
 
 # httpx and what it pulls in.
 NOTION_PACKAGES = {
@@ -53,6 +53,8 @@ else:
                         {
                             "httpx<1,>=0.27; extra == 'notion'",
                             "pydantic<3,>=2.7",
+                            "jsonschema<5,>=4.23",
+                            "referencing<1,>=0.35",
                             "pyyaml<7,>=6; extra == 'server'",
                             "jsonschema<5,>=4.23; extra == 'server'",
                             "referencing<1,>=0.35; extra == 'server'",

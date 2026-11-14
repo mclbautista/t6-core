@@ -11,7 +11,8 @@ Three checks run over tracked files only:
    token stores.
 2. Names: no tracked line may contain a name from the denylist. The denylist
    comes from the T6_NAMES_DENYLIST environment variable (one name per line)
-   or --names-file. Matches print the file and line, never the name.
+   or a file outside the repository via T6_NAMES_DENYLIST_FILE or --names-file.
+   Matches print the file and line, never the name.
 3. Secrets: gitleaks scans commits (the given --range, the commits not yet
    pushed, or --full-history). Set T6_GITLEAKS to use a specific binary.
 
@@ -23,6 +24,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Iterable, Sequence
 from fnmatch import fnmatch
+import json
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -94,7 +96,14 @@ def name_hits(root: Path, paths: Iterable[str], names: Sequence[str]) -> list[st
             continue
         text = content.decode("utf-8", errors="replace")
         for number, line in enumerate(text.splitlines(), start=1):
-            if pattern.search(line):
+            decoded = []
+            if path.endswith(".json"):
+                for match in re.finditer(r'"(?:[^"\\]|\\.)*"', line):
+                    try:
+                        decoded.append(json.loads(match.group()))
+                    except json.JSONDecodeError:
+                        continue
+            if pattern.search(line) or any(pattern.search(value) for value in decoded):
                 hits.append(f"{path}:{number}")
     return hits
 
@@ -145,7 +154,8 @@ def parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
     scope.add_argument("--range", help="git revision range for the secret scan, e.g. main..HEAD")
     scope.add_argument("--full-history", action="store_true", help="scan every commit for secrets")
     parser.add_argument("--skip-secrets", action="store_true", help="skip the gitleaks scan")
-    parser.add_argument("--names-file", help="read the names denylist from this file")
+    parser.add_argument("--names-file", default=os.environ.get("T6_NAMES_DENYLIST_FILE"),
+                        help="read the names denylist from a file outside the repository")
     parser.add_argument(
         "--require-names",
         action="store_true",
@@ -172,13 +182,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         print("ok   forbidden paths")
 
+    if arguments.names_file and Path(arguments.names_file).resolve().is_relative_to(root.resolve()):
+        print("FAIL names: the denylist file must be outside the repository")
+        return 1
     names = load_denylist(arguments.names_file)
     if not names:
         if arguments.require_names:
             print("FAIL names: no denylist. Set the T6_NAMES_DENYLIST secret.")
             passed = False
         else:
-            print("skip names check skipped: set T6_NAMES_DENYLIST or pass --names-file")
+            print("WARNING: names check skipped: set T6_NAMES_DENYLIST_FILE or pass --names-file")
     else:
         hits = name_hits(root, paths, names)
         for hit in hits:

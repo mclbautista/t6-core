@@ -8,6 +8,10 @@ For issues and specs, use GitHub Issues for `mclbautista/t6-core`. Read `docs/ag
 
 For triage, use the five canonical labels mapped in `docs/agents/triage-labels.md`.
 
+### LLM task specs
+
+For new or changed LLM tasks, follow `docs/agents/llm-task-specs.md` when writing specs and tickets.
+
 ### Domain docs
 
 This is a single-context repository. Before exploring the domain, read `docs/agents/domain.md` for discovery and vocabulary rules.
