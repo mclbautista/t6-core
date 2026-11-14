@@ -109,6 +109,30 @@ class PersonTests(unittest.TestCase):
         with self.registry._transaction() as db:
             self.assertEqual(db.execute("SELECT active FROM bindings WHERE page_id = ?", (normalize_page_id(self.first),)).fetchone()[0], 0)
 
+    def test_shift_preview_confirm_deadline_and_history(self) -> None:
+        applied = self.apply(self.migrate())
+        person_id = applied['entries'][0]['t6_id']
+        args = (person_id, '--pattern', 'night', '--start', '19:00', '--end', '04:00')
+        preview = self.command('person', 'shift', *args)
+        self.assertEqual(preview['outcome'], 'preview')
+        self.assertIsNone(self.registry.db.execute('SELECT * FROM person_shifts').fetchone())
+        result = self.command('person', 'shift', *args, '--idempotency-key', preview['plan']['idempotency_key'], '--confirm', preview['token'])
+        self.assertEqual(result['outcome'], 'done')
+        result = self.command('deadline', 'end of shift', '--person', person_id, '--posted', '2026-09-01T22:00:00+08:00')
+        self.assertEqual(result['deadline'], '2026-09-02T04:00:00+08:00')
+        self.assertEqual(self.registry.db.execute("SELECT count(*) FROM audit WHERE project_id = ? AND action = 'person_shift'", (person_id,)).fetchone()[0], 1)
+        self.assertEqual(self.registry.db.execute("SELECT count(*) FROM activity WHERE project_id = ? AND action = 'person_shift'", (person_id,)).fetchone()[0], 1)
+        self.assertEqual(self.command('person', 'shift', person_id, '--pattern', 'night', '--start', '25:00', '--end', '04:00')['outcome'], 'refused')
+
+    def test_day_shift_and_unset_shift(self) -> None:
+        applied = self.apply(self.migrate())
+        person_id = applied['entries'][0]['t6_id']
+        fallback = self.command('deadline', 'end of shift', '--person', person_id, '--posted', '2026-09-01T10:00:00+08:00')
+        self.assertEqual(fallback, self.command('deadline', 'end of shift', '--posted', '2026-09-01T10:00:00+08:00'))
+        self.confirmed('shift', person_id, '--pattern', 'day', '--start', '10:00', '--end', '19:00')
+        result = self.command('deadline', 'end of shift', '--person', person_id, '--posted', '2026-09-01T10:00:00+08:00')
+        self.assertEqual(result['deadline'], '2026-09-01T19:00:00+08:00')
+
     def test_telegram_refusal_names_holder(self) -> None:
         applied = self.apply(self.migrate())
         ids = {e['page_id']: e['t6_id'] for e in applied['entries']}

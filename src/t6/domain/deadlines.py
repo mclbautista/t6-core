@@ -171,6 +171,8 @@ def deadline(
     phrase: str | None,
     posted_at: datetime,
     assignees: Sequence[Contact] = (),
+    *,
+    person: dict[str, Any] | None = None,
 ) -> DeadlineResult:
     """Resolve a posted deadline phrase to an Asia/Manila datetime.
 
@@ -214,7 +216,20 @@ def deadline(
     if at is not None:
         when, source = _at(stated or posted_at.date(), at), "stated"
     elif shift_match:
-        when, source, shift_findings = _resolve_shift(posted_at, stated, assignees)
+        shift = person.get("shift") if person else None
+        if shift:
+            end = time.fromisoformat(shift["end"])
+            if stated is not None:
+                day = stated + timedelta(days=1) if shift["pattern"] == "night" else stated
+                when = _at(day, end)
+            else:
+                when = _at(posted_at.date(), end)
+                if when < posted_at or (shift["pattern"] == "night" and posted_at.time() >= time.fromisoformat(shift["start"])):
+                    when += timedelta(days=1)
+            source = "shift"
+            shift_findings: list[Finding] = []
+        else:
+            when, source, shift_findings = _resolve_shift(posted_at, stated, assignees)
         findings.extend(shift_findings)
     elif day_end or stated is not None:
         # A date followed by a no-clock phrase is still 23:59.

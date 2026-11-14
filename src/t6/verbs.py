@@ -228,6 +228,15 @@ class PersonRebindInput(BaseModel):
     confirm: str | None = None
 
 
+class PersonShiftInput(BaseModel):
+    person_id: str
+    pattern: str
+    start: str
+    end: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
 class PersonGetInput(BaseModel):
     person_id: str
     data_sources: Path
@@ -243,13 +252,13 @@ def _people() -> People:
     return People(registry, PreviewTokens(os.environ.get("T6_PREVIEW_SIGNING_KEY", "read-only")))
 
 
-def person_write(inputs: PersonAddInput | PersonTelegramInput | PersonRebindInput, open_notion: Callable[..., Any]) -> Outcome:
+def person_write(inputs: PersonAddInput | PersonTelegramInput | PersonRebindInput | PersonShiftInput, open_notion: Callable[..., Any]) -> Outcome:
     import pwd
     if not os.environ.get("T6_PREVIEW_SIGNING_KEY"):
         return Refused(rule="config", reason="Set T6_PREVIEW_SIGNING_KEY")
     try:
         values = inputs.model_dump(exclude={"confirm", "idempotency_key"})
-        return _people().write("add" if isinstance(inputs, PersonAddInput) else "rebind" if isinstance(inputs, PersonRebindInput) else "set-telegram", values,
+        return _people().write("add" if isinstance(inputs, PersonAddInput) else "rebind" if isinstance(inputs, PersonRebindInput) else "shift" if isinstance(inputs, PersonShiftInput) else "set-telegram", values,
                                actor=pwd.getpwuid(os.getuid()).pw_name,
                                idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
     except (ValueError, OSError) as error:
@@ -337,6 +346,7 @@ VERBS = (
     Verb("person", "add", "Register a Person", (), PersonAddInput, LegacyOutput, "writer", "A page belongs to one Person.", person_write),
     Verb("person", "rebind", "Bind a replacement Contacts page", (), PersonRebindInput, LegacyOutput, "writer", "A page belongs to one Person.", person_write),
     Verb("person", "set-telegram", "Set a Person Telegram ID", (), PersonTelegramInput, LegacyOutput, "writer", "An active Person uniquely holds a Telegram ID.", person_write),
+    Verb("person", "shift", "Set a Person shift", (), PersonShiftInput, LegacyOutput, "writer", "Set a day or night shift.", person_write),
     Verb("person", "get", "Get a Person", (), PersonGetInput, LegacyOutput, "reader", "Read a Person.", person_get),
     Verb("project", "hold", "Hold a Project", (), ProjectHoldInput, ProjectWriteOutput,
          "writer", "A held Project cannot be held again.", project_hold),
@@ -420,6 +430,14 @@ def add_parsers(commands: Any) -> None:
             parser.add_argument("--since", help="ISO 8601 date or timestamp (UTC if no offset)")
             parser.add_argument("--limit", type=int)
             parser.add_argument("--json", action="store_true", help="Print JSON")
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.input_model is PersonShiftInput:
+            parser.add_argument("person_id")
+            for name in ("pattern", "start", "end"):
+                parser.add_argument("--" + name, required=True)
+            parser.add_argument("--idempotency-key")
+            parser.add_argument("--confirm")
             parser.set_defaults(registered_verb=entry)
             continue
         for name, field in entry.input_model.model_fields.items():
