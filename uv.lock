@@ -749,7 +749,7 @@ wheels = [
 
 [[package]]
 name = "t6"
-version = "0.3.4"
+version = "0.3.5"
 source = { editable = "." }
 
 [package.optional-dependencies]
