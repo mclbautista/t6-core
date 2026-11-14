@@ -65,6 +65,7 @@ class FakeNotion:
     """In-memory pages and data sources behind a mock HTTP transport."""
 
     def __init__(self) -> None:
+        self._users: dict[str, JSON] = {}
         self._pages: dict[str, JSON] = {}
         self._data_sources: dict[str, JSON] = {}
         self._children: dict[str, list[JSON]] = {}
@@ -73,6 +74,9 @@ class FakeNotion:
         self.transport = httpx.MockTransport(self._handle)
 
     # Seeding and inspection
+
+    def add_user(self, user_id: str, name: str) -> None:
+        self._users[user_id] = {"object": "user", "id": user_id, "name": name, "type": "person"}
 
     def add_data_source(self, data_source_id: str, properties: JSON | None = None) -> JSON:
         source = {"object": "data_source", "id": data_source_id, "properties": properties or {}}
@@ -232,6 +236,8 @@ class FakeNotion:
 
         path = request.url.path
         body: JSON = json.loads(request.content) if request.content else {}
+        if request.method == "GET" and path.startswith("/v1/users/"):
+            return self._get(self._users, path.removeprefix("/v1/users/"))
         if request.method == "GET" and (match := _PAGE.match(path)):
             return self._get(self._pages, self._page_key(match["id"]))
         if request.method == "PATCH" and (match := _PAGE.match(path)):

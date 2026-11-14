@@ -123,7 +123,8 @@ class JobOrderStore:
 
 
     def write(self, verb: str, values: dict[str, Any], *, actor: str,
-              idempotency_key: str | None = None, confirm: str | None = None) -> Outcome:
+              idempotency_key: str | None = None, confirm: str | None = None,
+              notion_editor: str | None = None) -> Outcome:
         if verb not in ('raise', 'assign', 'reassign', 'note', *TRANSITIONS) or not actor.strip():
             return Refused(rule='input', reason='A valid verb and actor are required')
         if (idempotency_key is not None and not idempotency_key.strip()) or (confirm and not idempotency_key):
@@ -250,6 +251,8 @@ class JobOrderStore:
             summary = {'raise': 'JO raised', 'assign': f"JO assigned to {values.get('person')}",
                        'reassign': f"JO reassigned to {values.get('person')}: {values.get('reason')}",
                        'note': f"JO note: {values.get('text')}", **{name: f"JO {name}: {values.get('reason') or ''}" for name in TRANSITIONS}}[verb]
+            if notion_editor is not None:
+                summary = f'JO Status set in Notion by {notion_editor}'
             db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (project[0], jo_id, now, actor, 'jo_' + verb, summary, cursor.lastrowid))
             result = {**plan, 'jo_id': jo_id}
             if verb == 'raise':

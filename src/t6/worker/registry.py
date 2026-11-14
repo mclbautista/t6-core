@@ -50,12 +50,13 @@ class RegistryClient:
             {"revision": revision, "ok": ok, "detail": detail, "attempt": attempt, "final": final},
         )
 
-    def observed(self, page_id: str, *, available: bool, shown: Mapping[str, str | None] | None = None) -> str:
+    def observed(self, page_id: str, *, available: bool, shown: Mapping[str, str | None] | None = None,
+                 editor: str | None = None, changed: list[str] | None = None, editor_id: str | None = None) -> str:
         """Report a page's current Notion state. Returns the registry's outcome."""
         answer = self._call(
             "POST",
             f"/registry/pages/{page_id}/observed",
-            {"available": available, "shown": None if shown is None else dict(shown)},
+            {"available": available, "shown": None if shown is None else dict(shown), "editor": editor, "changed": changed, "editor_id": editor_id},
         )
         return "" if answer is None else str(answer["outcome"])
 
@@ -69,3 +70,12 @@ class RegistryClient:
 
     def report_jo_sync(self, intent_id: int, *, page_id: str | None = None, error: str | None = None) -> None:
         self._call("POST", f"/registry/jo-sync/{intent_id}", {"page_id": page_id, "error": error})
+
+    def observe_job_order(self, page_id: str, shown: Mapping[str, str | None], changed: list[str], editor: str, event: str, *, editor_id: str | None = None) -> dict[str, Any]:
+        return self._call("POST", f"/registry/notion-jo/{page_id}", {"shown": dict(shown), "changed": changed, "editor": editor, "event": event, "editor_id": editor_id}) or {}
+
+    def projection(self, page_id: str, values: Mapping[str, str | None], *, record: bool = False, initialize: bool = False) -> dict[str, Any]:
+        return self._call("POST", f"/registry/notion-projection/{page_id}", {"values": dict(values), "record": record, "initialize": initialize}) or {}
+
+    def observe_project_status(self, page_id: str, status: str | None, editor: str, event: str, editor_id: str | None, field: str = "status") -> dict[str, Any]:
+        return self._call("POST", f"/registry/notion-project-status/{page_id}", {"status": status, "editor": editor, "event": event, "editor_id": editor_id, "field": field}) or {}

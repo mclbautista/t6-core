@@ -200,6 +200,10 @@ _MIGRATIONS = (
         );
         CREATE TABLE jo_state_previews (nonce TEXT PRIMARY KEY, state TEXT NOT NULL)
     """),
+    (12, False, """CREATE TABLE notion_last_seen (
+        page_id TEXT NOT NULL, property TEXT NOT NULL, value TEXT NOT NULL,
+        PRIMARY KEY (page_id, property)
+    )"""),
 )
 
 
@@ -300,7 +304,7 @@ class SqliteProjectRegistry:
             raise ValueError("bind non-Project entities with a T6Id; use the registry for Projects")
         if not system.strip() or not page_id.strip() or not actor.strip():
             raise ValueError("system, page_id and actor must not be blank")
-        page_id = _page(page_id) if system == NOTION else page_id
+        page_id = _page(page_id) if system in (NOTION, "notion_user") else page_id
         with self._transaction() as db:
             row = db.execute(
                 "SELECT project_id FROM bindings WHERE system = ? AND page_id = ?", (system, page_id)
@@ -323,7 +327,7 @@ class SqliteProjectRegistry:
 
     def bound_entity(self, system: str, page_id: str) -> str | None:
         """Resolve active and legacy external pages to their entity ID."""
-        page_id = _page(page_id) if system == NOTION else page_id
+        page_id = _page(page_id) if system in (NOTION, "notion_user") else page_id
         with self._transaction() as db:
             row = db.execute("SELECT project_id FROM bindings WHERE system = ? AND page_id = ?", (system, page_id)).fetchone()
             return None if row is None else str(row[0])
@@ -548,7 +552,9 @@ class SqliteProjectRegistry:
                 found = db.execute("SELECT page_id FROM bindings WHERE system = 'notion' AND project_id = ? AND active = 1", (entity_id,)).fetchone()
                 return str(found[0]) if found else None
             notes = [n[0] for n in db.execute('SELECT text FROM job_order_notes WHERE job_order_id = ? ORDER BY id', (row[0],)).fetchall()]
-            return {'jo_id': row[0], 'revision': row[1], 'done': row[2] is not None, 'operation': row[3],
+            current = db.execute('SELECT status FROM jo_state WHERE job_order_id = ?', (row[0],)).fetchone()
+            current_status = current[0] if current else json.loads(row[7]).get('status') or 'Needs Intake Review'
+            return {'current_status': current_status, 'jo_id': row[0], 'revision': row[1], 'done': row[2] is not None, 'operation': row[3],
                     'started': bool(row[4]), 'page_id': page(row[0]), 'project_page': page(row[5]),
                     'assignee_id': row[6], 'assignee_page': page(row[6]), 'fields': json.loads(row[7]), 'notes': notes, 'payload': json.loads(row[8])}
 
@@ -599,7 +605,8 @@ class SqliteProjectRegistry:
             return _read(db, project_id)
 
     def observe_page(
-        self, notion_page_id: str, *, actor: str, available: bool, shown: Shown | None = None
+        self, notion_page_id: str, *, actor: str, available: bool, shown: Shown | None = None,
+        editor: str | None = None, changed: tuple[str, ...] | None = None, editor_id: str | None = None
     ) -> Observed:
         page = _page(notion_page_id)
         now = self._clock()
@@ -629,6 +636,24 @@ class SqliteProjectRegistry:
             if not binding.active:
                 return Observed("restored" if restored else "legacy", _must_read(db, holder))
             expected = Shown(project.id, project.code, project.rotation.value)
+            if shown is not None and editor is not None:
+                person = db.execute("SELECT p.id FROM persons p JOIN bindings b ON b.project_id = p.id WHERE b.system = 'notion_user' AND b.page_id = ?", (normalize_page_id(editor_id),)).fetchone() if editor_id else None
+                edit_actor = str(person[0]) if person else editor
+                for name, value, wanted in zip(('t6_id', 'code', 'rotation'),
+                                               (shown.t6_id, shown.code, shown.rotation),
+                                               (expected.t6_id, expected.code, expected.rotation)):
+                    if changed is not None and name not in changed:
+                        continue
+                    previous = db.execute('SELECT value FROM notion_last_seen WHERE page_id = ? AND property = ?', (page, name)).fetchone()
+                    old = json.loads(previous[0]) if previous else wanted
+                    if value != old and value != wanted:
+                        label = {'t6_id': 'T6 ID', 'code': 'Project Code', 'rotation': 'Rotation'}[name]
+                        cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)',
+                                            (holder, 'notion_identity_edit', edit_actor, now, json.dumps({name: old}), json.dumps({name: value})))
+                        db.execute('INSERT INTO activity (project_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?)',
+                                   (holder, now, edit_actor, 'notion_identity_edit', f'{label} edited in Notion by {editor}, put back', cursor.lastrowid))
+                    db.execute('INSERT INTO notion_last_seen VALUES (?, ?, ?) ON CONFLICT(page_id, property) DO UPDATE SET value=excluded.value',
+                               (page, name, json.dumps(value)))
             if shown == expected:
                 _close_review(db, "projection_conflict", page, now)
                 outcome = "restored" if restored else "in_sync"
@@ -721,7 +746,7 @@ def _code_held(db: sqlite3.Connection, code: str, form: str, project_id: str) ->
 
 
 def _audit(
-    db: sqlite3.Connection, project_id: str, action: str, actor: str, at: float, before: _Values | None, after: _Values
+    db: sqlite3.Connection, project_id: str, action: str, actor: str, at: float, before: _Values | None, after: _Values, *, summary: str | None = None
 ) -> None:
     cursor = db.execute(
         "INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)",
@@ -729,7 +754,7 @@ def _audit(
     )
     db.execute(
         "INSERT INTO activity (project_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?)",
-        (project_id, at, actor, action, action.replace("_", " "), cursor.lastrowid),
+        (project_id, at, actor, action, summary or action.replace("_", " "), cursor.lastrowid),
     )
 
 

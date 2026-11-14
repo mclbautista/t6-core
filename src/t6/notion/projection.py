@@ -16,10 +16,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any, Final
+from urllib.parse import unquote
 
 from t6.domain.events import JobKind, JsonValue
 from t6.notion import codec
 from t6.notion.errors import NotionError
+from t6.notion.editor import editor as notion_editor
 from t6.notion.models import ProjectsProperties
 from t6.notion.sync import NotionClient
 from t6.registry import normalize_page_id
@@ -71,7 +73,8 @@ class ProjectProjection:
             }
         }
         try:
-            if _gone(self._notion.retrieve_page(page)):
+            before = self._notion.retrieve_page(page)
+            if _gone(before):
                 raise NotionError(404, "object_not_found", "the page is in the trash")
             self._notion.update_page(page, body)
         except NotionError as error:
@@ -81,6 +84,11 @@ class ProjectProjection:
                 return {"unavailable": page}
             self._registry.report_sync(project_id, revision, ok=False, detail=error.code, attempt=job.attempt)
             raise
+        self._registry.projection(page, {'t6_id': str(project['id']), 'code': project['code'], 'rotation': project['rotation']}, record=True)
+        status = codec.select((before.get('properties') or {}).get('Status'))
+        # Initialize the status baseline only if none has been observed yet.
+        health = codec.select((before.get('properties') or {}).get('Health'))
+        self._registry.projection(page, {'project_status': status, 'project_health': health}, initialize=True)
         self._registry.report_sync(project_id, revision, ok=True)
         return {"synced": revision, "page": page}
 
@@ -103,7 +111,17 @@ class ProjectProjection:
             "code": codec.select(properties.get(ProjectsProperties.PROJECT_CODE)),
             "rotation": codec.select(properties.get(ROTATION)),
         }
-        outcome = self._registry.observed(page_id, available=True, shown=shown)
+        editor, editor_id = notion_editor(self._notion, job)
+        updated = job.payload.get("updated_properties")
+        changed = None
+        if isinstance(updated, list) and updated:
+            changed = [key for key, name in (("t6_id", T6_ID), ("code", ProjectsProperties.PROJECT_CODE), ("rotation", ROTATION))
+                       if any(unquote(str(item)) in (name, unquote(str((properties.get(name) or {}).get("id", "")))) for item in updated)]
+        outcome = self._registry.observed(page_id, available=True, shown=shown, editor=editor, changed=changed, editor_id=editor_id)
+        for field, label in (('status', 'Status'), ('health', 'Health')):
+            prop = properties.get(label) or {}
+            if outcome != 'unbound' and isinstance(updated, list) and updated and any(unquote(str(item)) in (label, unquote(str(prop.get('id', '')))) for item in updated) and prop:
+                self._registry.observe_project_status(page_id, codec.select(prop), editor, str(job.payload.get('event_id') or job.dedupe_key), editor_id, field)
         if outcome == "unbound" and self._offer is not None:
             heading = next((p for p in properties.values() if p.get("type") == "title"), None)
             self._offer(page_id, codec.title(heading) or "")
