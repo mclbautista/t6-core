@@ -204,6 +204,45 @@ def _migrate_job_orders(args: argparse.Namespace, open_notion: Callable[..., Any
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
 
+def _migrate_deliverables(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
+    import pwd
+    from t6.deliverable import DeliverableStore
+    from t6.notion import NotionError, codec
+    from t6.notion.generated import DeliverablesRow
+    from t6.notion.deliverable_projection import projection_id
+    from t6.worker.runner import Refused as ProjectionRefused
+    from urllib.parse import unquote
+    from t6.notion.reads import is_live
+    from t6.preview import PreviewTokens
+    from t6.registry import SqliteProjectRegistry
+    token = os.environ.get(TOKEN_VARIABLE)
+    if not token:
+        return _fail(f"set {TOKEN_VARIABLE} to a Notion integration token")
+    if args.apply and not args.preview:
+        return _fail("--apply needs --preview FILE")
+    try:
+        property_id = projection_id()
+        with open_notion(token) as client:
+            pages = client.query_data_source(_read_data_sources(args.data_sources)['deliverables'])
+            rows = []
+            for page in pages:
+                if not is_live(page):
+                    continue
+                row = DeliverablesRow.from_page(page)
+                props = page.get('properties') or {}
+                rows.append({'page_id': row.page_id, 'project_page': row.projects[0] if len(row.projects) == 1 else None,
+                             'code': row.name, 'due': row.deadline.isoformat() if row.deadline else None,
+                             'air': row.playdate.isoformat() if row.playdate else None,
+                             't6_id': codec.rich_text(next((prop for prop in props.values() if unquote(str(prop.get('id', ''))) == unquote(property_id)), None))})
+        store = DeliverableStore(SqliteProjectRegistry(args.registry_db), PreviewTokens('migration'))
+        digest = json.loads(args.preview.read_text(encoding='utf-8'))['digest'] if args.apply else None
+        report = store.migrate(rows, actor=pwd.getpwuid(os.getuid()).pw_name, apply=args.apply, digest=digest)
+    except (OSError, ValueError, KeyError, NotionError, ProjectionRefused) as error:
+        return _fail(str(error))
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
 def _migrate_projects(
     args: argparse.Namespace, open_notion: Callable[[str], NotionClient]
 ) -> int:
@@ -502,6 +541,13 @@ def main(
     jo_migrate.add_argument("--registry-db", type=Path, default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)))
     jo_migrate.add_argument("--apply", action="store_true")
     jo_migrate.add_argument("--preview", type=Path)
+    deliverable_admin = admin_commands.add_parser("deliverable", help="Deliverable administration")
+    deliverable_commands = deliverable_admin.add_subparsers(dest="deliverable_admin_command", required=True)
+    deliverable_migrate = deliverable_commands.add_parser("migrate", help="Preview or apply Deliverable migration")
+    deliverable_migrate.add_argument("--data-sources", type=Path, required=True)
+    deliverable_migrate.add_argument("--registry-db", type=Path, default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)))
+    deliverable_migrate.add_argument("--apply", action="store_true")
+    deliverable_migrate.add_argument("--preview", type=Path)
     drive = admin_commands.add_parser("drive", help="Drive administration")
     drive_commands = drive.add_subparsers(dest="drive_command", required=True)
 
@@ -559,6 +605,8 @@ def main(
                             {"snapshot": "schema-snapshot", "consumer-check": "check-consumer"}.get(args.admin_command, args.admin_command))
     if getattr(args, "admin_command", None) == "person":
         return _migrate_people(args, open_notion)
+    if getattr(args, "admin_command", None) == "deliverable":
+        return _migrate_deliverables(args, open_notion)
     if getattr(args, "admin_command", None) == "jo":
         return _migrate_job_orders(args, open_notion)
     args.person_lookup = args.command == "person"

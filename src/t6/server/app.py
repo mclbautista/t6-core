@@ -458,13 +458,16 @@ class WebhookApp:
                     f"registry.sync:{intent.id}",
                     {"project_id": intent.project_id, "revision": intent.revision},
                 )
+            deliverable_intents = self._registry.undispatched_deliverable_sync()
+            for intent in deliverable_intents:
+                self._queue.submit(MAIN_QUEUE, 'deliverable.sync', f'deliverable.sync:{intent.id}', {'intent_id': intent.id})
             jo_intents = self._registry.undispatched_jo_sync()
             for intent in jo_intents:
                 self._queue.submit(MAIN_QUEUE, JobKind.JO_SYNC.value, f"jo.sync:{intent.id}", {"intent_id": intent.id})
             status_intents = self._registry.undispatched_status_sync()
             for intent in status_intents:
                 self._queue.submit(MAIN_QUEUE, 'project.status_sync', f'project.status_sync:{intent.id}', {'intent_id': intent.id})
-            self._registry.mark_dispatched(intent.id for intent in (*intents, *jo_intents, *status_intents))
+            self._registry.mark_dispatched(intent.id for intent in (*intents, *jo_intents, *status_intents, *deliverable_intents))
         except RegistryUnavailable:
             return
 
@@ -752,6 +755,21 @@ class WebhookApp:
             if not isinstance(registry, SqliteProjectRegistry):
                 return Response(503, {"error": "Notion edits unavailable"})
             return Response(200, NotionEdits(registry).projection(steps[1], values, record=notion_body.get("record") is True, initialize=notion_body.get("initialize") is True))
+        if len(steps) == 2 and steps[0] == 'notion-deliverable':
+            if not any(g.registry_sync for g in grants):
+                return Response(403, {'error': 'registry sync not allowed'})
+            if request.method != 'POST':
+                return Response(405)
+            observation = _json_object(request.body) or {}
+            shown, changed, editor, event = observation.get('shown'), observation.get('changed'), observation.get('editor'), observation.get('event')
+            if not isinstance(shown, dict) or not isinstance(changed, list) or not all(isinstance(v, str) for v in changed) or not isinstance(editor, str) or not isinstance(event, str):
+                return Response(400, {'error': 'invalid Notion observation'})
+            from t6.notion_edits import NotionEdits
+            from t6.registry.sqlite import SqliteProjectRegistry
+            if not isinstance(registry, SqliteProjectRegistry):
+                return Response(503, {'error': 'Notion edits unavailable'})
+            editor_id = observation.get('editor_id')
+            return Response(200, NotionEdits(registry).deliverable(steps[1], shown, changed, editor, event, editor_id=editor_id if isinstance(editor_id, str) else None))
         if len(steps) == 2 and steps[0] == "notion-jo":
             if not any(g.registry_sync for g in grants):
                 return Response(403, {"error": "registry sync not allowed"})
@@ -766,6 +784,22 @@ class WebhookApp:
             if not isinstance(registry, SqliteProjectRegistry):
                 return Response(503, {"error": "Notion edits unavailable"})
             return Response(200, NotionEdits(registry).job_order(steps[1], shown, changed, editor, event, editor_id=notion_body.get("editor_id") if isinstance(notion_body.get("editor_id"), str) else None))
+        if len(steps) == 2 and steps[0] == 'deliverable-sync':
+            if not any(g.registry_sync for g in grants):
+                return Response(403, {'error': 'registry sync not allowed'})
+            try:
+                intent_id = int(steps[1])
+            except ValueError:
+                return Response(400, {'error': 'invalid intent'})
+            if request.method == 'GET':
+                state = registry.deliverable_sync_state(intent_id)
+                return Response(200, {'state': state}) if state else Response(404)
+            if request.method != 'POST':
+                return Response(405)
+            deliverable_body = _json_object(request.body) or {}
+            if deliverable_body.get('begin'):
+                return Response(200, {'started': registry.begin_deliverable_create(intent_id)})
+            return Response(200 if registry.report_deliverable_sync(intent_id, page_id=deliverable_body.get('page_id'), error=deliverable_body.get('error')) else 404, {})
         if len(steps) == 2 and steps[0] == "jo-sync":
             if not any(g.registry_sync for g in grants):
                 return Response(403, {"error": "registry sync not allowed"})

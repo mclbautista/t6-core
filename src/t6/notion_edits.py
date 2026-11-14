@@ -77,6 +77,27 @@ class NotionEdits:
             db.execute('INSERT INTO notion_last_seen VALUES (?, ?, ?) ON CONFLICT(page_id, property) DO UPDATE SET value=excluded.value', (page, 'jo_status', json.dumps(status)))
         return {'outcome': outcome, 'restore': restore}
 
+    def deliverable(self, page: str, shown: dict[str, Any], changed: list[str], editor: str, event: str, *, editor_id: str | None = None) -> dict[str, Any]:
+        page = normalize_page_id(page)
+        now = self.registry._clock()
+        with self.registry._transaction() as db:
+            row = db.execute("SELECT d.id, d.project_id FROM deliverables d JOIN bindings b ON b.project_id=d.id WHERE b.system='notion' AND b.page_id=?", (page,)).fetchone()
+            if not row:
+                return {'outcome': 'unbound'}
+            if 't6_id' not in changed:
+                return {'outcome': 'ignored', 'restore': {}}
+            person = db.execute("SELECT p.id FROM persons p JOIN bindings b ON b.project_id=p.id WHERE b.system='notion_user' AND b.page_id=?", (normalize_page_id(editor_id),)).fetchone() if editor_id else None
+            actor = str(person[0]) if person else editor
+            value = shown.get('t6_id')
+            seen = db.execute("SELECT value FROM notion_last_seen WHERE page_id=? AND property='t6_id'", (page,)).fetchone()
+            previous = json.loads(seen[0]) if seen else row[0]
+            restore = {'t6_id': row[0]} if value != row[0] else {}
+            if restore and value != previous:
+                cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)', (row[0], 'notion_identity_edit', actor, now, json.dumps({'t6_id': previous}), json.dumps({'t6_id': value})))
+                db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (row[1], row[0], now, actor, 'notion_identity_edit', f'T6 ID edited in Notion by {editor}, put back', cursor.lastrowid))
+            db.execute("INSERT INTO notion_last_seen VALUES (?, 't6_id', ?) ON CONFLICT(page_id, property) DO UPDATE SET value=excluded.value", (page, json.dumps(value)))
+            return {'outcome': 'ignored', 'restore': restore}
+
     def projection(self, page: str, values: dict[str, Any], *, record: bool, initialize: bool = False) -> dict[str, Any]:
         page = normalize_page_id(page)
         allowed: dict[str, bool] = {}

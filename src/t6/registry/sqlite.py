@@ -220,6 +220,9 @@ _MIGRATIONS = (
         id TEXT PRIMARY KEY, gate TEXT NOT NULL, target TEXT NOT NULL, requester TEXT NOT NULL,
         tapper_rule TEXT NOT NULL, state TEXT NOT NULL, decided_by TEXT, decided_at REAL, reason TEXT
     )"""),
+    (16, False, """CREATE TABLE deliverables (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), code TEXT NOT NULL, episode TEXT, due TEXT, air TEXT);
+        CREATE TABLE deliverable_sync_intents (intent_id INTEGER PRIMARY KEY REFERENCES sync_intents(id), started INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE deliverable_migration_receipts (digest TEXT PRIMARY KEY, snapshot TEXT NOT NULL, entries TEXT NOT NULL)"""),
 )
 
 
@@ -251,6 +254,7 @@ def _migrate(db: sqlite3.Connection) -> None:
 
     jo_filter = ("NOT EXISTS (SELECT 1 FROM job_orders WHERE job_orders.id = audit.project_id) AND "
                  if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'job_orders'").fetchone() else "")
+    jo_filter += "NOT EXISTS (SELECT 1 FROM deliverables WHERE deliverables.id = audit.project_id) AND " if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'deliverables'").fetchone() else ""
     db.execute("INSERT INTO activity (project_id, at, actor, action, summary, audit_id) "
                "SELECT project_id, at, actor, action, REPLACE(action, '_', ' '), id FROM audit "
                f"WHERE {jo_filter}NOT EXISTS (SELECT 1 FROM activity WHERE activity.audit_id = audit.id)")
@@ -536,7 +540,7 @@ class SqliteProjectRegistry:
     # -- sync and reconciliation ---------------------------------------------
 
     def undispatched_sync(self) -> tuple[SyncIntent, ...]:
-        return self._intents("done_at IS NULL AND dispatched_at IS NULL AND id NOT IN (SELECT intent_id FROM status_sync_intents) AND id NOT IN (SELECT intent_id FROM jo_sync_intents)")
+        return self._intents("done_at IS NULL AND dispatched_at IS NULL AND id NOT IN (SELECT intent_id FROM status_sync_intents) AND id NOT IN (SELECT intent_id FROM jo_sync_intents) AND id NOT IN (SELECT intent_id FROM deliverable_sync_intents)")
 
     def _intents(self, where: str) -> tuple[SyncIntent, ...]:
         with self._transaction() as db:
@@ -546,6 +550,42 @@ class SqliteProjectRegistry:
                 f"FROM sync_intents WHERE {where} ORDER BY id"
             ).fetchall()
         return tuple(SyncIntent(row[0], row[1], row[2], row[3], None if row[4] is None else bool(row[4])) for row in rows)
+
+    def undispatched_deliverable_sync(self) -> tuple[SyncIntent, ...]:
+        return self._intents("done_at IS NULL AND dispatched_at IS NULL AND id IN (SELECT intent_id FROM deliverable_sync_intents)")
+
+    def deliverable_sync_state(self, intent_id: int) -> dict[str, Any] | None:
+        with self._transaction() as db:
+            row = db.execute("SELECT d.id, d.project_id, d.code, d.episode, d.due, d.air, s.done_at, i.started FROM sync_intents s JOIN deliverable_sync_intents i ON i.intent_id=s.id JOIN deliverables d ON d.id=s.project_id WHERE s.id=?", (intent_id,)).fetchone()
+            if not row:
+                return None
+            def page(identifier: str) -> str | None:
+                found = db.execute("SELECT page_id FROM bindings WHERE system='notion' AND project_id=? AND active=1", (identifier,)).fetchone()
+                return found[0] if found else None
+            return {'id': row[0], 'project_id': row[1], 'code': row[2], 'episode': row[3], 'due': row[4], 'air': row[5], 'done': row[6] is not None, 'started': bool(row[7]), 'page_id': page(row[0]), 'project_page': page(row[1])}
+
+    def begin_deliverable_create(self, intent_id: int) -> bool:
+        with self._transaction() as db:
+            return db.execute('UPDATE deliverable_sync_intents SET started=1 WHERE intent_id=? AND started=0', (intent_id,)).rowcount == 1
+
+    def report_deliverable_sync(self, intent_id: int, *, page_id: str | None = None, error: str | None = None) -> bool:
+        with self._transaction() as db:
+            row = db.execute('SELECT s.project_id FROM sync_intents s JOIN deliverable_sync_intents i ON i.intent_id=s.id WHERE s.id=?', (intent_id,)).fetchone()
+            if not row:
+                return False
+            if page_id:
+                page_id = normalize_page_id(page_id)
+                bound = db.execute("SELECT project_id FROM bindings WHERE system='notion' AND page_id=?", (page_id,)).fetchone()
+                active = db.execute("SELECT page_id FROM bindings WHERE system='notion' AND project_id=? AND active=1", (row[0],)).fetchone()
+                if (bound and bound[0] != row[0]) or (active and active[0] != page_id):
+                    raise RegistryError('Notion page binding conflicts with another entity')
+                if not bound:
+                    db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, ?, 1)", (page_id, row[0], self._clock()))
+            if error is not None:
+                db.execute('UPDATE sync_intents SET error=?, error_final=1 WHERE id=?', (error, intent_id))
+            else:
+                db.execute('UPDATE sync_intents SET done_at=?, error=NULL WHERE id=? AND done_at IS NULL', (self._clock(), intent_id))
+            return True
 
     def undispatched_jo_sync(self) -> tuple[SyncIntent, ...]:
         return self._intents("done_at IS NULL AND dispatched_at IS NULL AND id IN (SELECT intent_id FROM jo_sync_intents)")
@@ -613,7 +653,7 @@ class SqliteProjectRegistry:
     ) -> RegisteredProject | None:
         now = self._clock()
         with self._transaction() as db:
-            covered = "project_id = ? AND done_at IS NULL AND revision <= ? AND id NOT IN (SELECT intent_id FROM status_sync_intents) AND id NOT IN (SELECT intent_id FROM jo_sync_intents)"
+            covered = "project_id = ? AND done_at IS NULL AND revision <= ? AND id NOT IN (SELECT intent_id FROM status_sync_intents) AND id NOT IN (SELECT intent_id FROM jo_sync_intents) AND id NOT IN (SELECT intent_id FROM deliverable_sync_intents)"
             if ok:
                 db.execute(f"UPDATE sync_intents SET done_at = ? WHERE {covered}", (now, project_id, revision))
             else:

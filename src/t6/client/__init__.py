@@ -15,7 +15,7 @@ from t6.verbs import (
     Ambiguous, Done, NeedsPerson, Outcome, Preview, Refused,
     ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
-    JoListInput, JoFindInput, DeliverableListInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
+    JoListInput, JoFindInput, DeliverableListInput, DeliverableGetInput, DeliverableDefineInput, DeliverableRebindInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
     JoSubmitInput, JoCloseInput, JoBlockInput, JoUnblockInput, JoDelayInput, JoCancelInput,
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
     LLMRunInput, PersonAddInput, PersonFindInput,
@@ -163,6 +163,15 @@ class Client:
 
     def jo_find(self, inputs: JoFindInput) -> Result:
         return self.call('jo', 'find', inputs)
+
+    def deliverable_define(self, inputs: DeliverableDefineInput) -> Result:
+        return self.call('deliverable', 'define', inputs)
+
+    def deliverable_rebind(self, inputs: DeliverableRebindInput) -> Result:
+        return self.call('deliverable', 'rebind', inputs)
+
+    def deliverable_get(self, inputs: DeliverableGetInput) -> Result:
+        return self.call('deliverable', 'get', inputs)
 
     def deliverable_list(self, inputs: DeliverableListInput) -> Result:
         return self.call('deliverable', 'list', inputs)

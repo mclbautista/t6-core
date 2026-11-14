@@ -60,6 +60,17 @@ class RegistryClient:
         )
         return "" if answer is None else str(answer["outcome"])
 
+    def deliverable_sync_state(self, intent_id: int) -> dict[str, Any] | None:
+        answer = self._call('GET', f'/registry/deliverable-sync/{intent_id}')
+        return answer['state'] if answer else None
+
+    def begin_deliverable_create(self, intent_id: int) -> bool:
+        answer = self._call('POST', f'/registry/deliverable-sync/{intent_id}', {'begin': True})
+        return bool(answer and answer['started'])
+
+    def report_deliverable_sync(self, intent_id: int, *, page_id: str | None = None, error: str | None = None) -> None:
+        self._call('POST', f'/registry/deliverable-sync/{intent_id}', {'page_id': page_id, 'error': error})
+
     def jo_sync_state(self, intent_id: int) -> dict[str, Any] | None:
         answer = self._call("GET", f"/registry/jo-sync/{intent_id}")
         return None if answer is None else answer["state"]
@@ -77,6 +88,9 @@ class RegistryClient:
 
     def report_jo_sync(self, intent_id: int, *, page_id: str | None = None, error: str | None = None) -> None:
         self._call("POST", f"/registry/jo-sync/{intent_id}", {"page_id": page_id, "error": error})
+
+    def observe_deliverable(self, page_id: str, shown: Mapping[str, str | None], changed: list[str], editor: str, event: str, *, editor_id: str | None = None) -> dict[str, Any]:
+        return self._call('POST', f'/registry/notion-deliverable/{page_id}', {'shown': dict(shown), 'changed': changed, 'editor': editor, 'event': event, 'editor_id': editor_id}) or {}
 
     def observe_job_order(self, page_id: str, shown: Mapping[str, str | None], changed: list[str], editor: str, event: str, *, editor_id: str | None = None) -> dict[str, Any]:
         return self._call("POST", f"/registry/notion-jo/{page_id}", {"shown": dict(shown), "changed": changed, "editor": editor, "event": event, "editor_id": editor_id}) or {}

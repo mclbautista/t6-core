@@ -713,6 +713,82 @@ class JoFindInput(ReadInput):
     telegram_key: str
 
 
+class DeliverableDefineInput(BaseModel):
+    project: str
+    code: str
+    episode: str | None = None
+    due: str | None = None
+    air: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class DeliverableRebindInput(BaseModel):
+    deliverable_id: str
+    page_id: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+def deliverable_rebind(inputs: DeliverableRebindInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.deliverable import DeliverableStore
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    people = _people()
+    return DeliverableStore(people.registry, people.tokens).rebind(
+        inputs.model_dump(exclude={'idempotency_key', 'confirm'}), actor=_actor.get(),
+        idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
+class DeliverableMigrateInput(BaseModel):
+    data_sources: Path
+    registry_db: Path | None = None
+    apply: bool = False
+    preview: Path | None = None
+
+
+class DeliverableMigrateOutput(BaseModel):
+    digest: str
+    entries: list[dict[str, Any]]
+    review: list[dict[str, Any]]
+
+
+class DeliverableGetInput(BaseModel):
+    ref: str
+
+
+class DeliverableRecord(BaseModel):
+    id: str
+    t6_id: str
+    project_id: str
+    code: str
+    episode: str | None
+    due: str | None
+    air: str | None
+    bindings: list[dict[str, Any]]
+
+
+class DeliverableGetOutput(BaseModel):
+    deliverable: DeliverableRecord
+
+
+class DeliverableDefineOutput(BaseModel):
+    deliverable_id: str
+    project_id: str
+    action: str
+    idempotency_key: str
+    page_id: str | None = None
+
+
+def deliverable_define(inputs: DeliverableDefineInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.deliverable import DeliverableStore
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    return DeliverableStore(_people().registry, _people().tokens).define(
+        inputs.model_dump(exclude={'idempotency_key', 'confirm'}), actor=_actor.get(),
+        idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
 class DeliverableListInput(ReadInput):
     project: str
 
@@ -806,7 +882,7 @@ class JoListOutput(BaseModel):
 
 
 class DeliverableListOutput(BaseModel):
-    deliverables: list[ReadDeliverable]
+    deliverables: list[DeliverableRecord]
 
 
 class NoteSpan(BaseModel):
@@ -851,7 +927,10 @@ VERBS = (
     Verb("standing-cc", "", "Get standing cc", (), StandingCcInput, StandingCcOutput, "reader", "Read configured standing cc.", None),
     Verb("jo", "list", "List Job Orders", (), JoListInput, JoListOutput, "reader", "Filter by Project, assignee or status group.", api_read),
     Verb("jo", "find", "Find Job Orders by Telegram Key", (), JoFindInput, JoListOutput, "reader", "Return all matching orders.", api_read),
-    Verb("deliverable", "list", "List Project Deliverables", (), DeliverableListInput, DeliverableListOutput, "reader", "Read from Notion.", api_read),
+    Verb("deliverable", "define", "Define a Deliverable", (), DeliverableDefineInput, DeliverableDefineOutput, "operator", "Preview and confirm a Deliverable.", deliverable_define),
+    Verb("deliverable", "rebind", "Bind a replacement Deliverables page", (), DeliverableRebindInput, DeliverableDefineOutput, "operator", "Retain the old page as a legacy binding.", deliverable_rebind),
+    Verb("deliverable", "get", "Get a Deliverable", (), DeliverableGetInput, DeliverableGetOutput, "reader", "Read from t6.", api_read),
+    Verb("deliverable", "list", "List Project Deliverables", (), DeliverableListInput, DeliverableListOutput, "reader", "Read from t6.", api_read),
     Verb("meeting-notes", "list", "List Project Meeting Notes", (), MeetingNotesListInput, MeetingNotesListOutput, "reader", "Read from Notion.", api_read),
     Verb("project", "list", "List Projects", (), ProjectListInput, ProjectListOutput, "reader", "Read Projects.", api_read),
     Verb("llm", "run", "Run an LLM task on the API", (), LLMRunInput, LLMRunOutput, "llm", "Server policy and masking apply.", llm_api_only),
@@ -922,9 +1001,14 @@ def invoke(entry: Verb, inputs: BaseModel, *, actor: str, people: People,
 
 
 def catalogue() -> list[dict[str, Any]]:
-    return [{"noun": v.noun, "verb": v.verb, "description": v.description, "aliases": list(v.aliases),
-             "role": v.role, "rule": v.rule, "local_only": v.local_only, "input_schema": v.input_model.model_json_schema(),
-             "output_schema": v.output_model.model_json_schema()} for v in VERBS]
+    entries = [{"noun": v.noun, "verb": v.verb, "description": v.description, "aliases": list(v.aliases),
+                "role": v.role, "rule": v.rule, "local_only": v.local_only, "input_schema": v.input_model.model_json_schema(),
+                "output_schema": v.output_model.model_json_schema()} for v in VERBS]
+    entries.append({'noun': 'admin deliverable', 'verb': 'migrate', 'description': 'Migrate Notion Deliverables',
+                    'aliases': [], 'role': 'admin', 'rule': 'Preview before applying.', 'local_only': True,
+                    'input_schema': DeliverableMigrateInput.model_json_schema(), 'output_schema': DeliverableMigrateOutput.model_json_schema()})
+    return entries
+
 
 
 def _boolean(value: str) -> bool:
@@ -999,6 +1083,20 @@ def add_parsers(commands: Any) -> None:
                     parser.add_argument('--reason', required=True)
             parser.add_argument('--idempotency-key')
             parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.handler is deliverable_rebind:
+            parser.add_argument('deliverable_id')
+            parser.add_argument('page_id')
+            parser.add_argument('--idempotency-key')
+            parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.handler is deliverable_define:
+            parser.add_argument('project')
+            parser.add_argument('code')
+            for name in ('episode', 'due', 'air', 'idempotency-key', 'confirm'):
+                parser.add_argument('--' + name)
             parser.set_defaults(registered_verb=entry)
             continue
         if entry.handler is jo_write and entry.verb != "raise":
