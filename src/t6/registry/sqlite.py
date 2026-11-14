@@ -269,6 +269,17 @@ _MIGRATIONS = (
     CREATE TABLE delivery_carriers (
         package_id TEXT PRIMARY KEY REFERENCES packages(id), kind TEXT NOT NULL, ref TEXT
     )"""),
+    (23, False, """CREATE TABLE linked_chat_cursor (id INTEGER PRIMARY KEY CHECK (id = 1), seq INTEGER NOT NULL);
+    INSERT INTO linked_chat_cursor VALUES (1, 0);
+    CREATE TABLE linked_chat_messages (
+        chat_id INTEGER NOT NULL, topic_id INTEGER, message_id INTEGER NOT NULL,
+        sender_id INTEGER, person_id TEXT REFERENCES persons(id), has_file INTEGER NOT NULL,
+        has_link INTEGER NOT NULL, PRIMARY KEY (chat_id, message_id)
+    );
+    CREATE TABLE linked_chat_members (
+        chat_id INTEGER NOT NULL, telegram_id INTEGER NOT NULL, person_id TEXT REFERENCES persons(id),
+        present INTEGER NOT NULL, PRIMARY KEY (chat_id, telegram_id)
+    )"""),
 )
 
 
