@@ -158,6 +158,11 @@ class FrameioFile(_Json):
         return cls(**raw)
 
 
+GUEST_ID = "guest"
+"""The author id of a comment that has no owner. Frame.io user ids are UUIDs, so it never matches a person."""
+GUEST_NAME = "A guest"
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ResolvedComment(_Json):
     """One comment read by its own ID: which file it is on and who wrote it."""
@@ -171,20 +176,25 @@ class ResolvedComment(_Json):
 
     @classmethod
     def from_api(cls, raw: Mapping[str, Any], frameio_project_id: str) -> ResolvedComment:
-        """Raises ValueError when the comment has no file, no author or no time."""
+        """Raises ValueError when the comment has no file or no time.
+
+        A comment with no owner (a guest who commented through a share link) is
+        not refused: it is by `GUEST_ID`, named `GUEST_NAME`. All guests on one
+        file therefore share one review timer.
+        """
         owner = raw.get("owner")
         owner = owner if isinstance(owner, Mapping) else {}
         file_id = _text(raw.get("file_id")) or _text(raw.get("resource_id"))
-        author_id = _text(owner.get("id"))
         created_at = _time(raw.get("created_at"))
-        if file_id is None or author_id is None or created_at is None:
-            raise ValueError(f"comment {raw.get('id')} has no file, author or time")
+        if file_id is None or created_at is None:
+            raise ValueError(f"comment {raw.get('id')} has no file or time")
+        author_id = _text(owner.get("id"))
         return cls(
             id=str(raw["id"]),
             file_id=file_id,
             frameio_project_id=frameio_project_id,
-            author_id=author_id,
-            author_name=_text(owner.get("name")),
+            author_id=author_id or GUEST_ID,
+            author_name=_text(owner.get("name")) if author_id else GUEST_NAME,
             created_at=created_at,
         )
 

@@ -69,7 +69,7 @@ class ReviewMessageTests(ServerTestCase):
 
         return ask(self.queue_client, request, timeout=3, clock=iter(range(100)).__next__, sleep=serve)
 
-    def comment(self, comment_id: str, author: str, author_id: str, at: str, file_id: str = "f1") -> None:
+    def comment(self, comment_id: str, author: str, author_id: str | None, at: str, file_id: str = "f1") -> None:
         """Frame.io has the comment; its webhook arrives and the Frame.io worker handles it."""
         self.fake.add_comment(file_id, comment_id, "text", author, author_id=author_id, created_at=at)
         self.webhook(comment_id)
@@ -100,6 +100,32 @@ class ReviewMessageTests(ServerTestCase):
         self.assertIn("2 comments", ana)
         self.assertIn("<b>Ben Cruz</b>", ben)
         self.assertIn("1 comment ", ben)
+
+    def test_guest_comments_on_one_file_send_one_message_from_a_guest(self) -> None:
+        self.comment("c1", "", None, "2026-11-12T10:00:00Z")
+        self.clock.advance(5 * MINUTE)
+        self.comment("c2", "", None, "2026-11-12T10:05:00Z")
+        self.clock.advance(15 * MINUTE - 1)
+        self.run_worker()
+        self.assertEqual(self.gateway.texts(), [])
+        self.clock.advance(1)
+        self.run_worker()
+        (guest,) = self.gateway.texts()
+        self.assertIn("<b>A guest</b>", guest)
+        self.assertIn("Started: 12 Nov 2026, 18:00 (Manila)", guest)
+        self.assertIn("Stopped: 12 Nov 2026, 18:05 (Manila)", guest)
+        self.assertIn("2 comments", guest)
+
+    def test_a_guest_and_a_person_on_the_same_file_have_separate_messages(self) -> None:
+        self.comment("c1", "Ana Reyes", "u-a", "2026-11-12T10:00:00Z")
+        self.comment("c2", "", None, "2026-11-12T10:01:00Z")
+        self.clock.advance(15 * MINUTE)
+        self.run_worker()
+        ana, guest = self.gateway.texts()
+        self.assertIn("<b>Ana Reyes</b>", ana)
+        self.assertIn("1 comment ", ana)
+        self.assertIn("<b>A guest</b>", guest)
+        self.assertIn("1 comment ", guest)
 
     def test_a_new_comment_before_the_quiet_time_restarts_only_that_persons_timer(self) -> None:
         self.comment("c1", "Ana Reyes", "u-a", "2026-11-12T10:00:00Z")
