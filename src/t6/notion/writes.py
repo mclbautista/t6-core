@@ -58,10 +58,10 @@ class Ambiguous:
 
 
 @overload
-def create_row(client: NotionClient, model: type[M], data_source_id: str, values: JSON) -> M | Rejected | Ambiguous: ...
+def create_row(client: NotionClient, model: type[M], data_source_id: str, values: JSON, *, extra_properties: JSON | None = None) -> M | Rejected | Ambiguous: ...
 @overload
 def create_row(
-    client: NotionClient, model: type[M], data_source_id: str, values: JSON, *, to_domain: Callable[[M], T]
+    client: NotionClient, model: type[M], data_source_id: str, values: JSON, *, to_domain: Callable[[M], T], extra_properties: JSON | None = None
 ) -> T | Rejected | Ambiguous: ...
 def create_row(
     client: NotionClient,
@@ -70,9 +70,10 @@ def create_row(
     values: JSON,
     *,
     to_domain: Callable[[M], Any] | None = None,
+    extra_properties: JSON | None = None,
 ) -> Any:
     """Create a page in `data_source_id` from `values` (Python attribute names) and check it."""
-    body = {"parent": {"data_source_id": data_source_id}, "properties": model.to_properties(**values)}
+    body = {"parent": {"data_source_id": data_source_id}, "properties": {**model.to_properties(**values), **(extra_properties or {})}}
     return _write(client, model, values, lambda: client.create_page(body), None, to_domain)
 
 

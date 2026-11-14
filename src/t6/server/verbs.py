@@ -88,7 +88,7 @@ class VerbAPI:
 
     def _legacy_read(self, noun: str, verb: str, inputs: Any) -> Any:
         # The legacy write commands do not have signed previews yet.
-        if (noun, verb) in {('jo', 'raise'), ('camera', 'enrich')}:
+        if (noun, verb) == ('camera', 'enrich'):
             return Refused(rule='verb', reason='This legacy write does not support preview and confirm')
         try:
             from t6.cli import TOKEN_VARIABLE, _read_data_sources

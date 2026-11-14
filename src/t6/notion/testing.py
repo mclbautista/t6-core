@@ -161,7 +161,15 @@ class FakeNotion:
         return properties
 
     def page(self, page_id: str) -> JSON:
-        return copy.deepcopy(self._pages[page_id])
+        return copy.deepcopy(self._pages[self._page_key(page_id)])
+
+    def _page_key(self, page_id: str) -> str:
+        if page_id in self._pages:
+            return page_id
+        plain = _plain_id(page_id)
+        if not re.fullmatch(r"[0-9a-f]{32}", plain):
+            return page_id
+        return next((key for key in self._pages if _plain_id(key) == plain), page_id)
 
     def page_count(self) -> int:
         return len(self._pages)
@@ -225,15 +233,15 @@ class FakeNotion:
         path = request.url.path
         body: JSON = json.loads(request.content) if request.content else {}
         if request.method == "GET" and (match := _PAGE.match(path)):
-            return self._get(self._pages, match["id"])
+            return self._get(self._pages, self._page_key(match["id"]))
         if request.method == "PATCH" and (match := _PAGE.match(path)):
-            return self._update_page(match["id"], body)
+            return self._update_page(self._page_key(match["id"]), body)
         if request.method == "POST" and path == "/v1/pages":
             return self._create_page(body)
         if request.method == "GET" and (match := _CHILDREN.match(path)):
-            return self._list_children(match["id"], request.url.params)
+            return self._list_children(self._page_key(match["id"]), request.url.params)
         if request.method == "PATCH" and (match := _CHILDREN.match(path)):
-            return self._append_children(match["id"], body)
+            return self._append_children(self._page_key(match["id"]), body)
         if request.method == "GET" and (match := _DATA_SOURCE.match(path)):
             return self._get(self._data_sources, match["id"])
         if request.method == "POST" and (match := _QUERY.match(path)):

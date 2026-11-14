@@ -108,6 +108,33 @@ class VerbAPITests(unittest.TestCase):
                               headers={'X-Telegram-User-Id': '43'})[1]
         self.assertEqual((denied['outcome'], denied['rule']), ('refused', 'permission'))
 
+    def test_job_order_raise_preview_confirm_and_permissions(self) -> None:
+        from contextlib import nullcontext
+
+        project = self.registry.register(actor='setup', idempotency_key='jo-setup')
+        assert isinstance(project, Registered)
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO person_permissions VALUES (?, 'coordinator')", (self.actor,))
+        self.api.open_notion = lambda _: nullcontext(None)
+        data = {'file': 'jo.json', 'data_sources': 'sources.json'}
+        for verb, inputs in (
+            ('raise', data), ('assign', {'jo': 'x', 'person': 'x'}),
+            ('reassign', {'jo': 'x', 'person': 'x', 'reason': 'r'}),
+            ('note', {'jo': 'x', 'text': 'note'}),
+        ):
+            denied = self.request('/v1/jo/' + verb, inputs, secret='staff-secret')[1]
+            self.assertEqual((denied['outcome'], denied['rule']), ('refused', 'permission'))
+        with patch.dict(os.environ, {'T6_NOTION_TOKEN': 'secret'}), \
+             patch('t6.cli._read_data_sources', return_value={'job_orders': 'jo'}), \
+             patch('t6.cli_jo.prepare_fields', return_value={'project_id': project.project.id}):
+            preview = self.request('/v1/jo/raise', data)[1]
+            self.assertEqual(preview['outcome'], 'preview')
+            self.assertRegex(preview['plan']['idempotency_key'], r'^[0-9a-f]+$')
+            result = self.request('/v1/jo/raise', {**data, 'confirm': preview['token'],
+                                  'idempotency_key': preview['plan']['idempotency_key']})[1]
+        self.assertEqual(result['outcome'], 'done')
+        self.assertEqual(self.registry.audit(result['result']['jo_id'])[0].actor, self.actor)
+
     def test_service_grant_configuration_validation(self) -> None:
         self.assertEqual(service_permissions_from_env({'T6_API_SERVICE_PERMISSIONS': '{"worker": ["operator"]}'}),
                          {'worker': frozenset({'operator'})})

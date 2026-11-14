@@ -10,7 +10,8 @@ from pathlib import Path
 from unittest import mock
 
 from t6.cli import main
-from t6.notion.generated import ContactsRow
+from t6.notion.generated import ContactsRow, JobOrdersRow
+from t6.registry import Registered, SqliteProjectRegistry
 from t6.notion.testing import FakeNotion, rich_text, select, title
 
 JOB_ORDERS, CONTACTS = "ds-jo", "ds-contacts"
@@ -42,6 +43,10 @@ class JoCommandTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
+        self.registry = SqliteProjectRegistry(self.root / 'registry.sqlite')
+        people.registry = self.registry
+        project = self.registry.register(actor='setup', idempotency_key='setup', notion_page_id='project-page')
+        assert isinstance(project, Registered)
 
     def write(self, name: str, text: str) -> str:
         path = self.root / name
@@ -50,7 +55,7 @@ class JoCommandTests(unittest.TestCase):
 
     def run_command(self, argv: list[str], *, environment: dict[str, str] | None = None, sources: bool = True) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
-        env = {"T6_NOTION_TOKEN": "secret", **(environment or {})}
+        env = {"T6_NOTION_TOKEN": "secret", "T6_PREVIEW_SIGNING_KEY": "secret", "T6_REGISTRY_DB": str(self.root / "registry.sqlite"), "T6_PERSON_ID": "test-actor", **(environment or {})}
         extra = ["--data-sources", self.write("sources.json", json.dumps({"job_orders": JOB_ORDERS}))] if sources else []
         split = argv.index("--") if "--" in argv else len(argv)
         command = [*argv[:split], *extra, *argv[split:]]
@@ -59,58 +64,43 @@ class JoCommandTests(unittest.TestCase):
         return status, out.getvalue(), err.getvalue()
 
     def create(self, fields: dict[str, object], *extra: str, environment: dict[str, str] | None = None) -> tuple[int, str, str]:
-        return self.run_command(["jo", "raise", "--file", self.write("jo.json", json.dumps(fields)), *extra], environment=environment)
+        return self.run_command(["jo", "raise", "--file", self.write("jo.json", json.dumps({"project_id": "project-page", **fields})), *extra], environment=environment)
 
-    def test_create_is_a_dry_run_by_default(self) -> None:
+    def test_raise_previews_normalized_fields_without_writing(self) -> None:
         status, out, err = self.create(FIELDS, environment={"T6_STANDING_CC": "standing"})
         result = json.loads(out)
-        self.assertEqual((status, err, result["dry_run"]), (0, "", True))
-        self.assertEqual(result["fields"]["department"], "TOC")
-        self.assertEqual(result["fields"]["cc_ids"], ["cc-1", "standing"])
+        self.assertEqual((status, err, result["outcome"]), (0, "", "preview"))
+        self.assertEqual(result["plan"]["fields"]["department"], "TOC")
+        self.assertEqual(result["plan"]["fields"]["cc_ids"], ["cc-1", "standing"])
+        self.assertEqual(result["plan"]["fields"]["watermark"], "none")
         self.assertEqual(self.fake.page_count(), 0)
 
-    def test_apply_writes_and_returns_the_saved_job_order(self) -> None:
-        status, out, err = self.create(FIELDS, "--apply", "--actor", "cyril")
+    def test_confirm_queues_a_job_order_without_writing_notion(self) -> None:
+        _, out, _ = self.create(FIELDS, "--idempotency-key", "one")
+        preview = json.loads(out)
+        status, out, _ = self.create(FIELDS, "--idempotency-key", "one", "--confirm", preview["token"])
         result = json.loads(out)
-        self.assertEqual((status, err, result["result"], result["actor"]), (0, "", "saved", "cyril"))
-        saved = result["job_order"]
-        self.assertEqual((saved["name"], saved["department"], saved["telegram_key"], saved["number"]), ("ORC - TOC - JO #62", "TOC", "-100123:456", "62"))
-        self.assertTrue(saved["deadline"].startswith("2026-11-14T17:00:00+08:00"))
-        self.assertEqual(self.fake.page_count(), 1)
-
-    def test_a_dry_run_rejects_an_unknown_field_and_a_date_only_deadline_means_2359(self) -> None:
-        status, out, err = self.create({**FIELDS, "bogus": 1})
-        self.assertEqual((status, out), (2, ""))
-        self.assertIn("bogus", json.loads(err)["error"])
-        _, out, _ = self.create({**FIELDS, "deadline": "2026-11-14"})
-        self.assertEqual(json.loads(out)["fields"]["deadline"], "2026-11-14T23:59:00+08:00")
-
-    def test_apply_needs_an_actor(self) -> None:
-        status, out, err = self.create(FIELDS, "--apply")
-        self.assertEqual((status, out), (2, ""))
-        self.assertIn("--actor", json.loads(err)["error"])
+        self.assertEqual((status, result["outcome"]), (0, "done"))
+        self.assertTrue(result["result"]["jo_id"].startswith("t6j_"))
         self.assertEqual(self.fake.page_count(), 0)
 
-    def test_a_refused_write_exits_1_with_the_typed_result(self) -> None:
-        self.fake.fail_next(400, code="validation_error", after=1)
-        status, out, _ = self.create(FIELDS, "--apply", "--actor", "cyril")
-        self.assertEqual((status, json.loads(out)["result"]), (1, "rejected"))
-
-    def test_an_unknown_department_or_field_is_an_error(self) -> None:
+    def test_preview_validates_fields_and_date_only_deadline(self) -> None:
         for fields in ({**FIELDS, "department": "NOPE"}, {**FIELDS, "bogus": 1}):
-            with self.subTest(fields=fields):
-                status, out, err = self.create(fields, "--apply", "--actor", "cyril")
-                self.assertEqual((status, out), (2, ""))
-                self.assertIn("error", json.loads(err))
-        self.assertEqual(self.fake.page_count(), 0)
+            status, out, _ = self.create(fields)
+            self.assertEqual((status, json.loads(out)["outcome"]), (2, "refused"))
+        _, out, _ = self.create({**FIELDS, "deadline": "2026-11-14"})
+        self.assertEqual(json.loads(out)["plan"]["fields"]["deadline"], "2026-11-14T23:59:00+08:00")
 
     def test_get_by_page_id_and_by_telegram_key(self) -> None:
-        _, out, _ = self.create(FIELDS, "--apply", "--actor", "cyril")
-        page_id = json.loads(out)["job_order"]["id"]
-        for argv in (["jo", "get", page_id], ["jo", "get", "--", "-100123:456"]):
+        page = self.fake.add_page(JOB_ORDERS, {
+            JobOrdersRow.notion_name('name'): title('ORC - TOC - JO #62'),
+            JobOrdersRow.notion_name('title'): rich_text('Orchid FTR'),
+            JobOrdersRow.notion_name('telegram_key'): rich_text('-100123:456'),
+        })['id']
+        for argv in (["jo", "get", page], ["jo", "get", "--", "-100123:456"]):
             with self.subTest(argv=argv):
                 status, out, _ = self.run_command(argv)
-                self.assertEqual((status, json.loads(out)["id"], json.loads(out)["title"]), (0, page_id, "Orchid FTR"))
+                self.assertEqual((status, json.loads(out)["id"], json.loads(out)["title"]), (0, page, "Orchid FTR"))
 
     def test_get_an_unknown_telegram_key_is_an_error(self) -> None:
         status, _, err = self.run_command(["jo", "get", "--", "-1:2"])

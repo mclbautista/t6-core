@@ -58,3 +58,14 @@ class RegistryClient:
             {"available": available, "shown": None if shown is None else dict(shown)},
         )
         return "" if answer is None else str(answer["outcome"])
+
+    def jo_sync_state(self, intent_id: int) -> dict[str, Any] | None:
+        answer = self._call("GET", f"/registry/jo-sync/{intent_id}")
+        return None if answer is None else answer["state"]
+
+    def begin_jo_create(self, intent_id: int) -> bool:
+        answer = self._call("POST", f"/registry/jo-sync/{intent_id}", {"begin": True})
+        return bool(answer and answer["started"])
+
+    def report_jo_sync(self, intent_id: int, *, page_id: str | None = None, error: str | None = None) -> None:
+        self._call("POST", f"/registry/jo-sync/{intent_id}", {"page_id": page_id, "error": error})

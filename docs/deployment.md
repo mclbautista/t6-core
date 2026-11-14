@@ -26,7 +26,7 @@ Server: `T6_FRAMEIO_WEBHOOK_SECRET`, `T6_NOTION_WEBHOOK_TOKEN`, `T6_TAP_SECRET`
 `T6_REGISTRY_SECRET`, `T6_REGISTRY_READ_SECRET`), `T6_OPERATOR_IDS` (Telegram user
 IDs; the first receives cards), the `*_DB` paths and the two binds. Worker:
 `T6_SERVER_URL` (the tailnet address), `T6_WORKER_SECRET`, `T6_WORKER_QUEUE=main`,
-`T6_NOTION_TOKEN`, `T6_NOTION_PROJECTS_DATA_SOURCE`, `T6_GATEWAY_URL`,
+`T6_NOTION_TOKEN`, `T6_NOTION_PROJECTS_DATA_SOURCE`, `T6_NOTION_JOB_ORDERS_DATA_SOURCE`, `T6_GATEWAY_URL`,
 `T6_GATEWAY_SECRET`. Keep secrets in the host's secret store or a root-only env
 file, never in the image or this repository. Prefer separate secrets per grant so
 one leak is one capability. An unset secret turns its route off (503).
@@ -37,6 +37,7 @@ one leak is one capability. An unset secret turns its route off (503).
    Tailscale on the VPS, worker host and gateway host; the public webhook URL
    reaches the VPS; Notion integration with access to the Projects data source;
    the Projects data source has `T6 ID` (text) and `Rotation` (select) properties;
+   for JO sync, the Job Orders data source has `T6 ID` and `T6 Notes` (rich text) and is accessible to the integration;
    gateway module `t6core` configured with push delivery to `/tap` on the tailnet
    address; gateway change for t6-sixto-gateway#72 deployed if you want code and
    rotation workflows (the cards in #73 work without it).
