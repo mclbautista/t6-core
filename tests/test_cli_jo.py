@@ -14,7 +14,7 @@ from t6.notion.generated import ContactsRow
 from t6.notion.testing import FakeNotion, rich_text, select, title
 
 JOB_ORDERS, CONTACTS = "ds-jo", "ds-contacts"
-FIELDS = {
+FIELDS: dict[str, object] = {
     "name": "JAG - TOC - JO #62",
     "number": "62",
     "department": "TO",
