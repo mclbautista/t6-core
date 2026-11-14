@@ -115,3 +115,25 @@ repeat it on the VPS and record it.
 | Backup and restore with semantic counts | yes | not yet |
 | Real Notion webhook verification and subscription | no | not yet |
 | Sixto cards in Telegram through the gateway | no | not yet |
+
+### Edge webhook intake
+
+Set `T6_SERVER_MODE=edge` and `T6_ROUTES_FILE` to a YAML file like
+[edge-routes.example.yaml](edge-routes.example.yaml), and set every named
+secret environment variable before starting `python -m t6.server` (install the
+`server` extra). The server validates the file before opening its databases or
+listeners. Configure each provider subscription to send only the events meant
+for its route; the route selects the job kind and queue, not the payload's type.
+
+The public listener serves configured paths, `GET /health`, and the existing
+Frame.io OAuth callback. The tailnet listener serves `GET /health` and the
+authenticated `/queue/*` routes. Configure the existing worker secrets for the
+queues workers need to claim. The callback still requires a Frame.io worker
+claim grant. Edge mode does not open the registry or operator databases.
+
+Frame.io and Notion jobs contain the verified JSON object. Google jobs contain
+`headers` with the `x-goog-*` notification headers except the channel token.
+Jobs are deduplicated by route and provider event ID (or body hash when absent);
+Google uses channel ID and message number. The Notion verification-token
+handshake is acknowledged without queuing, as in full mode. Full mode remains
+the default.

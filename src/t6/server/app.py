@@ -62,6 +62,7 @@ from t6.registry import (
     Rotation,
     Shown,
 )
+from t6.server.routes import Route
 from t6.server.queue import DIAGNOSTIC_QUEUE, FRAMEIO_QUEUE, MAIN_QUEUE, JobQueue
 from t6.server.signatures import WebhookRejected, verify_frameio, verify_notion
 
@@ -122,6 +123,7 @@ class Grant:
 class ServerConfig:
     """Secrets, from the environment. An empty secret turns that route off (503)."""
 
+    edge_routes: tuple[Route, ...] | None = None
     frameio_webhook_secret: str = ""
     notion_webhook_token: str = ""
     tap_secret: str = ""
@@ -221,6 +223,13 @@ class WebhookApp:
 
     def public(self, request: Request) -> Response:
         path = urlsplit(request.path).path
+        if self._config.edge_routes is not None:
+            if path == "/health":
+                return Response(200) if request.method == "GET" else Response(405)
+            if path == "/frameio/callback":
+                return self._frameio_callback(request)
+            route = next((r for r in self._config.edge_routes if r.path == path), None)
+            return self._edge_webhook(request, route) if route else Response(404)
         if path == "/frameio/callback":
             return self._frameio_callback(request)
         if path != "/webhook" and not path.startswith("/webhook/"):
@@ -235,6 +244,41 @@ class WebhookApp:
         except WebhookRejected as rejection:
             return Response(401, {"error": rejection.reason})
         return Response(401, {"error": "unknown sender"})
+
+    def _edge_webhook(self, request: Request, route: Route) -> Response:
+        if request.method != "POST":
+            return Response(405)
+        headers = request.headers_lower()
+        body = _json_object(request.body)
+        if route.verifier == "notion" and not headers.get("x-notion-signature") and body and "verification_token" in body:
+            self._on_notion_verification(str(body["verification_token"]))
+            return Response(200)
+        try:
+            if route.verifier == "frameio_v0":
+                verify_frameio(route.secret, headers, request.body, self._clock())
+            elif route.verifier == "notion":
+                verify_notion(route.secret, headers, request.body, self._clock())
+            elif not _same(route.secret, headers.get("x-goog-channel-token", "")):
+                raise WebhookRejected("bad channel token")
+        except WebhookRejected as rejection:
+            return Response(401, {"error": rejection.reason})
+        if route.verifier != "google_channel" and body is None:
+            return Response(400, {"error": "body is not a JSON object"})
+        payload: dict[str, JsonValue]
+        if route.verifier == "google_channel":
+            channel, number = headers.get("x-goog-channel-id", ""), headers.get("x-goog-message-number", "")
+            if not channel or not number:
+                return Response(400, {"error": "missing channel id or message number"})
+            metadata: dict[str, JsonValue] = {key: value for key, value in headers.items() if key.startswith("x-goog-") and key != "x-goog-channel-token"}
+            payload = {"headers": metadata}
+            identity = channel + ":" + number
+        else:
+            payload = body or {}
+            event_id = payload.get("id")
+            identity = str(event_id) if isinstance(event_id, str) and event_id else hashlib.sha256(request.body).hexdigest()
+        key = f"edge:{route.path}:{identity}"
+        made = self._queue.submit(route.queue, route.job_kind, key, payload)
+        return Response(200, {"job_id": made.job_id, "created": made.created})
 
     def _frameio_callback(self, request: Request) -> Response:
         """Adobe sends the browser here after sign-in. The authorization code goes
@@ -316,6 +360,12 @@ class WebhookApp:
 
     def tailnet(self, request: Request) -> Response:
         parts = urlsplit(request.path)
+        if self._config.edge_routes is not None:
+            if parts.path == "/health":
+                return Response(200) if request.method == "GET" else Response(405)
+            if parts.path.startswith("/queue/"):
+                return self._queue_route(parts.path[len("/queue/") :], parts.query, request)
+            return Response(404)
         if parts.path == "/tap":
             return self._tap(request)
         if parts.path.startswith("/queue/"):

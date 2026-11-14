@@ -43,6 +43,7 @@ class InstallationTests(unittest.TestCase):
                         {
                             "httpx<1,>=0.27; extra == 'notion'",
                             "pydantic<3,>=2.7",
+                            "pyyaml<7,>=6; extra == 'server'",
                             "psycopg[binary]<4,>=3.2; extra == 'resolve'",
                             "openpyxl<4,>=3.1; extra == 'drives'",
                             "rapidfuzz<4,>=3.9; extra == 'lookup'",
