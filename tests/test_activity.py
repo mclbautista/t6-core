@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from cli_api_fake import client_patch
 from t6.cli import main
 from t6.registry import Registered, Rotation, SqliteProjectRegistry
 
@@ -19,6 +20,9 @@ class ActivityTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.path = Path(self.directory.name) / 'registry.sqlite'
         self.now = 1000.0
+        patcher = client_patch(lambda _token: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.registry = SqliteProjectRegistry(self.path, lambda: self.now)
         with self.registry._transaction() as db:
             db.execute("INSERT INTO persons VALUES ('test-actor', 'staff', '[]', '[]', NULL, 0, 1)")

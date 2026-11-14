@@ -10,6 +10,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+from cli_api_fake import client_patch
 from t6.cli import main
 from t6.notion.generated import ContactsRow, ProjectsRow
 from t6.notion.testing import FakeNotion, rich_text, select, title
@@ -27,6 +28,9 @@ class StudioCommandTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.fake = FakeNotion()
+        patcher = client_patch(lambda _token: self.fake.client())
+        patcher.start()
+        self.addCleanup(patcher.stop)
         for source, database in ((JOB_ORDERS, "job_orders"), (CONTACTS, "contacts"), (PROJECTS, "projects")):
             self.fake.add_snapshot_data_source(source, database)
         self.ids = {name: self.fake.add_option(JOB_ORDERS, "Department", name) for name in ("VFX", "TOC", "MISC", "AE")}

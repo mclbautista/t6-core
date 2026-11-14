@@ -317,6 +317,7 @@ class Verb:
     role: str
     rule: str
     handler: Callable[..., Outcome] | None
+    local_only: bool = False
 
 
 # Legacy CLI verbs retain their established arguments and JSON output while
@@ -379,12 +380,12 @@ VERBS = (
     Verb("project", "activity", "Show Project activity, newest first", (),
          ActivityInput, ActivityOutput, "reader", "Activity is append-only.", project_activity),
     Verb("jo", "get", "Get a Job Order", (), JoGetInput, LegacyOutput, "reader", "Read a Job Order.", None),
-    Verb("jo", "raise", "Raise a Job Order", ("jo create",), JoRaiseInput, LegacyOutput, "coordinator", "Create a Job Order.", None),
+    Verb("jo", "raise", "Raise a Job Order", ("jo create",), JoRaiseInput, LegacyOutput, "coordinator", "Create a Job Order.", None, local_only=True),
     Verb("jo", "format", "Format a Job Order", (), JoFormatInput, LegacyOutput, "reader", "Format a draft.", None),
     Verb("person", "find", "Find a Person", ("contacts find",), PersonFindInput, LegacyOutput, "reader", "Find a Contact.", None),
     Verb("project", "resolve", "Resolve a Project", ("projects resolve",), ProjectResolveInput, LegacyOutput, "reader", "Resolve a Project.", None),
     Verb("camera", "get", "Get Cameras", ("cameras get",), CameraGetInput, LegacyOutput, "reader", "Read Cameras.", None),
-    Verb("camera", "enrich", "Enrich a Camera", ("cameras update",), CameraEnrichInput, LegacyOutput, "operator", "Update a Camera.", None),
+    Verb("camera", "enrich", "Enrich a Camera", ("cameras update",), CameraEnrichInput, LegacyOutput, "operator", "Update a Camera.", None, local_only=True),
     Verb("departments", "", "Print the studio Departments, read live, in display order, with option IDs", (),
          DepartmentsInput, DepartmentsOutput, "reader", "Notion Department options are the truth; use studio display order.", departments),
 )
@@ -413,7 +414,7 @@ def invoke(entry: Verb, inputs: BaseModel, *, actor: str, people: People,
 
 def catalogue() -> list[dict[str, Any]]:
     return [{"noun": v.noun, "verb": v.verb, "description": v.description, "aliases": list(v.aliases),
-             "role": v.role, "rule": v.rule, "input_schema": v.input_model.model_json_schema(),
+             "role": v.role, "rule": v.rule, "local_only": v.local_only, "input_schema": v.input_model.model_json_schema(),
              "output_schema": v.output_model.model_json_schema()} for v in VERBS]
 
 

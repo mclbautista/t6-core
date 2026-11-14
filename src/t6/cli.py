@@ -529,6 +529,8 @@ def main(
     pair = legacy_verbs.get((args.command, subcommand))
     if pair is not None:
         entry = next(v for v in verbs.VERBS if (v.noun, v.verb) == pair)
+        if entry.local_only:
+            return cli_jo.run(args, open_notion) if entry.noun == "jo" else _cameras(args, open_notion)
         from t6.client import APIError, Client, Unavailable
         values = {name: getattr(args, name, None) for name in entry.input_model.model_fields}
         if values.get("date") is not None:
@@ -544,6 +546,8 @@ def main(
             print(json.dumps({"outcome": "unavailable", "reason": outcome.reason,
                               "idempotency_key": outcome.idempotency_key}, indent=2))
             return 1
+        if isinstance(outcome, verbs.Refused):
+            return _fail(outcome.reason)
         code, payload = verbs.outcome_json(outcome)
         if isinstance(outcome, verbs.Done):
             payload = outcome.result

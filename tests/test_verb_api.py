@@ -128,18 +128,35 @@ class ClientTests(VerbAPITests):
         offline = Client('http://127.0.0.1:1', 'operator-secret', timeout=1)
         self.assertIsInstance(offline.project_activity(ActivityInput(project=project.project.id)), Unavailable)
         failed = offline.project_hold(inputs)
-        self.assertIsInstance(failed, Unavailable)
+        assert isinstance(failed, Unavailable)
         self.assertEqual(failed.idempotency_key, 'retry-key')
         preview = client.project_hold(inputs)
-        self.assertIsInstance(preview, Preview)
+        assert isinstance(preview, Preview)
         inputs.confirm = preview.token
         self.assertIsInstance(client.project_hold(inputs), Done)
         inputs.confirm = None
         replay = client.project_hold(inputs)
-        self.assertIsInstance(replay, Preview)
+        assert isinstance(replay, Preview)
         inputs.confirm = replay.token
         self.assertIsInstance(client.project_hold(inputs), Done)
         self.assertEqual(len([a for a in self.registry.activity(project.project.id) if a.action == 'project_hold']), 1)
+
+    def test_file_contents_and_missing_configuration(self) -> None:
+        from pathlib import Path
+        from t6.client import Client, Unavailable
+        from t6.verbs import ActivityInput, JoFormatInput, Done
+        with patch.dict(os.environ, {}, clear=True):
+            result = Client().project_activity(ActivityInput(project='x'))
+            assert isinstance(result, Unavailable)
+            self.assertIn('T6_API_URL', result.reason)
+            self.assertIn('T6_API_SECRET', result.reason)
+        path = Path(self.tmp.name) / 'draft.txt'
+        path.write_text('SHOW - TOC - JO #1\nTitle: Test', encoding='utf-8')
+        client = Client('http://127.0.0.1:%s' % self.server.server_port, 'operator-secret')
+        result = client.jo_format(JoFormatInput(file=path))
+        self.assertIsInstance(result, Done)
+        status, _ = self.request('/v1/jo/format', {'file': str(path)})
+        self.assertEqual(status, 422)
 
     def test_cli_and_health_use_http(self) -> None:
         import io

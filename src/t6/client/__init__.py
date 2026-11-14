@@ -5,6 +5,7 @@ import json
 import os
 from dataclasses import dataclass
 from typing import Any, cast
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -36,12 +37,15 @@ _outcome: TypeAdapter[Outcome] = TypeAdapter(Outcome)
 class Client:
     def __init__(self, base_url: str | None = None, secret: str | None = None, *, timeout: float = 10,
                  telegram_user_id: int | None = None) -> None:
-        self.base_url = (base_url or os.environ.get('T6_API_URL', 'http://127.0.0.1:8080')).rstrip('/')
+        self.base_url = (base_url or os.environ.get('T6_API_URL', '')).rstrip('/')
         self.secret = secret if secret is not None else os.environ.get('T6_API_SECRET', '')
         self.timeout = timeout
         self.telegram_user_id = telegram_user_id
 
     def _request(self, path: str, inputs: BaseModel | None = None) -> Any:
+        if not self.base_url:
+            return Unavailable('Set T6_API_URL and T6_API_SECRET to use the t6 API',
+                               getattr(inputs, 'idempotency_key', None))
         headers = {'Authorization': 'Bearer ' + self.secret}
         if self.telegram_user_id is not None:
             headers['X-Telegram-User-Id'] = str(self.telegram_user_id)
@@ -49,6 +53,16 @@ class Client:
         key = None
         if inputs is not None:
             payload = inputs.model_dump(mode='json', exclude_none=True, by_alias=True)
+            for name in ('data_sources', 'file'):
+                value = getattr(inputs, name, None)
+                if isinstance(value, Path):
+                    try:
+                        payload[name + '_contents'] = value.read_text(encoding='utf-8')
+                    except OSError as error:
+                        raise APIError(f'Cannot read {value}: {error}') from error
+                    payload.pop(name, None)
+            # Registry state belongs to the API host, not the caller.
+            payload.pop('registry_db', None)
             key = payload.get('idempotency_key')
             if key:
                 headers['Idempotency-Key'] = key

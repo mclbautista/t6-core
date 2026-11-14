@@ -1687,3 +1687,9 @@ already completed write is returned without applying it twice. `Unavailable`
 contains the key sent with the request. HTTP errors such as authentication or
 invalid input raise `APIError`. Only the gateway may set `telegram_user_id` on
 the client to act on behalf of a Telegram user.
+
+`jo raise` and `camera enrich` are temporarily local-only: their legacy writes
+lack the API's signed preview and confirmation contract. They use the admin's
+own credentials until those verbs gain that contract. The client sends the
+contents of data-source configuration and draft files to the API. Project
+resolution uses the server's registry, not a caller-supplied database file.

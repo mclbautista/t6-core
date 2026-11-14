@@ -36,11 +36,17 @@ class RenameTests(unittest.TestCase):
             ("drives-import-dry-run", "admin drive import", "x", "t6.cli._drives_import_dry_run"),
         ]
         for old, new, options, handler in rows:
-            with self.subTest(old=old), patch(handler) as run:
+            remote = old in ("contacts find", "projects resolve", "cameras get")
+            target = "t6.client.Client.call" if remote else handler
+            with self.subTest(old=old), patch(target) as run:
                 def result(*args: Any) -> int:
                     print('{"result": "same"}')
                     return 0
-                run.side_effect = result
+                if remote:
+                    from t6.verbs import Done
+                    run.return_value = Done(result={"result": "same"})
+                else:
+                    run.side_effect = result
                 outputs = []
                 for command in (old, new):
                     out, err = io.StringIO(), io.StringIO()
@@ -51,8 +57,11 @@ class RenameTests(unittest.TestCase):
                 self.assertEqual(outputs[1][2], "")
                 self.assertEqual(outputs[0][2], f"Deprecated: t6 {old}; use t6 {new} until 0.5.0\n")
                 self.assertEqual(run.call_count, 2)
-                first, second = (call.args[0] for call in run.call_args_list)
-                self.assertEqual(first.command, second.command)
+                first, second = (call.args for call in run.call_args_list)
+                if remote:
+                    self.assertEqual(first, second)
+                else:
+                    self.assertEqual(first[0].command, second[0].command)
 
     def test_admin_help_lists_commands(self) -> None:
         out = io.StringIO()

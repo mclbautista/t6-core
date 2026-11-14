@@ -5,10 +5,12 @@ import json
 import os
 import tempfile
 import unittest
+import warnings
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+from cli_api_fake import client_patch
 from t6.cli import main
 from t6.notion.generated import ContactsRow
 from t6.notion.testing import FakeNotion, rich_text, select, title
@@ -37,6 +39,9 @@ class JoCommandTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.fake = FakeNotion()
+        patcher = client_patch(lambda _token: self.fake.client())
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.fake.add_snapshot_data_source(JOB_ORDERS, "job_orders")
         self.fake.add_snapshot_data_source(CONTACTS, "contacts")
         self.directory = tempfile.TemporaryDirectory()
@@ -54,7 +59,8 @@ class JoCommandTests(unittest.TestCase):
         extra = ["--data-sources", self.write("sources.json", json.dumps({"job_orders": JOB_ORDERS}))] if sources else []
         split = argv.index("--") if "--" in argv else len(argv)
         command = [*argv[:split], *extra, *argv[split:]]
-        with mock.patch.dict(os.environ, env, clear=True), redirect_stdout(out), redirect_stderr(err):
+        with warnings.catch_warnings(), mock.patch.dict(os.environ, env, clear=True), redirect_stdout(out), redirect_stderr(err):
+            warnings.simplefilter("ignore", ResourceWarning)
             status = main(command, open_notion=lambda _token: self.fake.client())
         return status, out.getvalue(), err.getvalue()
 
