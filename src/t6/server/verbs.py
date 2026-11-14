@@ -13,17 +13,19 @@ from urllib.parse import urlsplit
 from pydantic import ValidationError
 
 from t6.person import PERMISSIONS, SERVICES, People
-from t6.server.app import Request, Response
+from t6.server.app import Request, Response, WebhookApp
+from t6.registry.sqlite import _audit
 from t6.verbs import VERBS, Done, Refused, catalogue, invoke
 
 
 class VerbAPI:
     def __init__(self, people: People, queue: Any, secrets: Mapping[str, str],
-                 open_notion: Callable[..., Any]) -> None:
+                 open_notion: Callable[..., Any], tap_app: WebhookApp | None = None) -> None:
         if any(not secret or not (identity.startswith('t6n_') or identity in SERVICES)
                for secret, identity in secrets.items()):
             raise ValueError('Each API secret must bind to a Person or named service')
         self.people, self.queue, self.secrets, self.open_notion = people, queue, dict(secrets), open_notion
+        self.tap_app = tap_app
         self.routes = {f'/v1/{v.noun}' + (f'/{v.verb}' if v.verb else ''): v for v in VERBS}
 
     def __call__(self, request: Request) -> Response:
@@ -42,6 +44,8 @@ class VerbAPI:
                       if supplied and hmac.compare_digest(secret, supplied)), None)
         if actor is None:
             return Response(401, {'error': 'unauthorized'})
+        if path == '/tap':
+            return self._tap(request, actor)
         behalf = request.header('x-telegram-user-id')
         if 'x-telegram-user-id' in request.headers_lower():
             if actor != 'gateway':
@@ -125,6 +129,41 @@ class VerbAPI:
     @staticmethod
     def refused(rule: str, reason: str) -> Response:
         return Response(200, Refused(rule=rule, reason=reason).model_dump())
+
+    def _tap(self, request: Request, actor: str) -> Response:
+        if actor != 'gateway':
+            return Response(403, {'error': 'only the gateway may push taps'})
+        if request.method != 'POST':
+            return Response(405)
+        if self.tap_app is None:
+            return Response(503, {'error': 'tap service not configured'})
+        try:
+            telegram_id = int(request.header('x-telegram-user-id'))
+            body = json.loads(request.body)
+            sender = body.get('from') if isinstance(body, dict) else None
+            if not isinstance(sender, dict) or type(sender.get('id')) is not int or sender['id'] != telegram_id:
+                raise ValueError('Telegram identity does not match payload')
+        except (ValueError, UnicodeDecodeError):
+            return Response(400, {'error': 'invalid Telegram identity or body'})
+        with self.people.registry._transaction() as db:
+            person = db.execute('SELECT id FROM persons WHERE telegram_id = ? AND active = 1', (telegram_id,)).fetchone()
+        if person is None:
+            if self.tap_app._operator is not None:
+                self.tap_app._operator.store.reject('no_person', operator=telegram_id, token=None)
+            with self.people.registry._transaction() as db:
+                _audit(db, f'telegram:{telegram_id}', 'tap_rejected', 'gateway', self.people.registry._clock(), None,
+                       {'reason': 'no_person'})
+            return Response(200, {'outcome': 'rejected'})
+        response = self.tap_app._tap(request, authenticated=True)
+        outcome = response.body.get('outcome')
+        if response.status == 200 and outcome not in {'rejected', 'ignored', 'already_handled', 'busy', 'expired'}:
+            key = request.header('idempotency-key') or body.get('idempotency_key')
+            with self.people.registry._transaction() as db:
+                recorded = db.execute("SELECT 1 FROM audit WHERE action = 'tap_accepted' AND json_extract(after, '$.key') = ?", (key,)).fetchone()
+                if not recorded:
+                    _audit(db, person[0], 'tap_accepted', person[0], self.people.registry._clock(), None,
+                           {'key': key, 'data': body.get('data'), 'outcome': outcome})
+        return response
 
 
 def secrets_from_env(environ: Mapping[str, str]) -> dict[str, str]:

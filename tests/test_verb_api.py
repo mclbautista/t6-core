@@ -14,6 +14,8 @@ from t6.registry import Registered
 from t6.server.http import make_server
 from t6.server.queue import JobQueue
 from t6.server.verbs import VerbAPI, service_permissions_from_env
+from t6.server.app import Request, ServerConfig, WebhookApp
+from t6.operator import ActionStore, OperatorService
 from t6.verbs import catalogue
 
 
@@ -114,3 +116,38 @@ class VerbAPITests(unittest.TestCase):
         for value in ('{"unknown": ["operator"]}', '{"worker": ["bogus"]}', '{"worker": "operator"}'):
             with self.assertRaises(ValueError):
                 service_permissions_from_env({'T6_API_SERVICE_PERMISSIONS': value})
+
+    def test_gateway_taps_identity_rules_and_audit(self) -> None:
+        people = self.api.people
+        store = ActionStore(self.tmp.name + '/actions')
+        operator = OperatorService(self.registry, store, [42], people=people)
+        app = WebhookApp(self.queue, ServerConfig(operator_ids=(42,)), registry=self.registry, operator=operator)
+        api = VerbAPI(people, self.queue, {'gateway-secret': 'gateway', 'other-secret': 'worker'}, lambda _: None, app)
+        action, _ = operator.offer_unbound_page('page', 'Show')
+        operator.delivered(action.token, 1, 123)
+
+        def tap(who: int, secret: str = 'gateway-secret', key: str = 'tap-1', header: str | None = None) -> Any:
+            body = {'data': f'op:{action.token}:skip', 'from': {'id': who}, 'chat': 42, 'message_id': 123}
+            headers = {'Authorization': 'Bearer ' + secret, 'X-Telegram-User-Id': header or str(who), 'Idempotency-Key': key}
+            return api(Request('POST', '/tap', headers, json.dumps(body).encode()))
+
+        self.assertEqual(tap(42, 'other-secret').status, 403)
+        self.assertEqual(tap(42, header='43').status, 400)
+        self.assertEqual(tap(99).body['outcome'], 'rejected')
+        self.assertEqual(store.rejections()[-1][0], 'no_person')
+        self.assertEqual(tap(43).body['outcome'], 'rejected')
+        self.assertEqual(tap(42).body['outcome'], 'skipped')
+        self.assertEqual(tap(42).body['outcome'], 'already_handled')
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM audit WHERE action = 'tap_accepted' AND actor = ?", (self.actor,)).fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM activity WHERE action = 'tap_accepted' AND actor = ?", (self.actor,)).fetchone()[0], 1)
+
+        headers = {'Authorization': 'Bearer gateway-secret', 'X-Telegram-User-Id': '42', 'Idempotency-Key': 'generic'}
+        generic = Request('POST', '/tap', headers, json.dumps({'data': 'approve:page', 'from': {'id': 42}}).encode())
+        self.assertTrue(api(generic).body['created'])
+        self.assertFalse(api(generic).body['created'])
+        headers['Idempotency-Key'] = 'command'
+        command = Request('POST', '/tap', headers, json.dumps({'kind': 'command', 'command': 'project',
+                          'from': {'id': 42}, 'chat': 42}).encode())
+        self.assertEqual(api(command).body['outcome'], 'opened')
+        self.assertEqual(api(command).body['outcome'], 'already_handled')

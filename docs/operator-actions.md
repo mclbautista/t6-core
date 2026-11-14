@@ -47,7 +47,10 @@ stays within Telegram's 64.
 ## The tap
 
 The gateway pushes `{"data": "op:<token>:<choice>", "from": {"id"}, "chat",
-"message_id", ...}` to `POST /tap` with `Idempotency-Key: tap-<update_id>`.
+"message_id", ...}` to the API's `POST /tap` with `Idempotency-Key: tap-<update_id>`,
+`Authorization: Bearer <gateway secret>` and `X-Telegram-User-Id` matching
+`from.id`. Bind that secret to `gateway` in `T6_API_SECRETS`. Only an active
+Person can tap; a missing Person is refused and recorded.
 
 | Answer | Meaning |
 | --- | --- |
@@ -122,7 +125,11 @@ its `/project` pushes queued as empty `tap` jobs.
    `T6_TAP_SECRET`, `T6_GATEWAY_URL` and `T6_GATEWAY_SECRET` stay as they are.
 2. Deploy the gateway with pushed commands (#72), add the `project` command to
    its `config.yaml` with the same people as `T6_OPERATOR_IDS`, and restart it.
-   The push uses the tailnet-only tap URL the taps already use (#57).
+   Set `t6core.push_url` in the gateway configuration to the API's LAN address,
+   for example `http://<t6-api-lan-address>:8081/tap`, and configure the gateway
+   to send its API secret and `X-Telegram-User-Id` for each push. The API listener
+   must be reachable on that LAN address. The gateway no longer needs a Tailscale
+   sidecar for tap delivery. The VPS `/tap` is unavailable in edge mode (#184).
 3. Send `/project` as an operator: the list arrives. Send it from another
    account: the gateway refuses it.
 

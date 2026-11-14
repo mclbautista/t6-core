@@ -140,7 +140,8 @@ class OperatorService:
 
     def command(self, args: str, *, operator: int | None, chat: object, key: str) -> TapResult:
         """`/project` opens a card to pick a Project. `/project NEWCODE` answers a card that asked for a code."""
-        if operator is None or operator not in self._operators or chat != operator:
+        if (operator is None or operator not in self._operators or chat != operator
+                or (self._people is not None and not self._people.allows_telegram(operator, 'permission:operator'))):
             reason = "wrong_chat" if operator in self._operators else "not_allowed"
             self._store.reject(reason, operator=operator, token=None, detail="command")
             return TapResult(True, "rejected")
@@ -149,6 +150,9 @@ class OperatorService:
                 return TapResult(True, "already_handled")
             text = args.strip()
             waiting = self._store.waiting_for_code(operator, operator, key) if text else None
+            if waiting is not None and self._people is not None and not self._people.allows_telegram(operator, waiting.allowed_tapper):
+                self._store.reject('not_allowed', operator=operator, token=waiting.token, rule=waiting.allowed_tapper)
+                return TapResult(True, 'rejected')
             if waiting is None:
                 params = self._listing("in", 0)
                 if text:

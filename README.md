@@ -119,7 +119,7 @@ Mac mini. Both use only the standard library.
 | --- | --- |
 | `T6_FRAMEIO_WEBHOOK_SECRET` | Frame.io signing secret |
 | `T6_NOTION_WEBHOOK_TOKEN` | Notion `verification_token` |
-| `T6_TAP_SECRET` | the gateway's `T6CORE_SECRET` |
+| `T6_TAP_SECRET` | legacy full-server tap secret; API taps use the gateway identity in `T6_API_SECRETS` |
 | `T6_WORKER_SECRET` | main worker: claims `main`, may submit to `main` and `frameio`, reads Projects and reports Notion sync results |
 | `T6_FRAMEIO_WORKER_SECRET` | Frame.io worker: claims `frameio`, may start review timers (`POST /review/timers`); also turns on `/frameio/callback` |
 | `T6_FRAMEIO_CALLER_SECRET` | a caller outside the main worker (t6-notion-reports): may submit to `frameio` and read its results, nothing else |
@@ -1659,3 +1659,9 @@ Person's permissions instead of the gateway's grants. The legacy `jo raise`
 and `camera enrich` endpoints return `refused` because those writes do not yet
 support signed preview and confirmation; issue #194 replaces `jo raise`. `GET /health` reports the
 package version, database schema version and job counts by state.
+
+For gateway tap delivery, bind its secret to `gateway` in `T6_API_SECRETS` and
+set the gateway's `t6core.push_url` to `http://<t6-api-lan-address>:8081/tap`.
+Each push must include `X-Telegram-User-Id` matching the payload's `from.id`.
+The API listener must bind to a reachable LAN address; edge mode does not serve
+`/tap` on the VPS. See [operator actions](docs/operator-actions.md#rollout).
