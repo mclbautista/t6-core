@@ -33,7 +33,7 @@ def codes(text: str, day: date = DAY) -> list[str]:
 class FormatTests(unittest.TestCase):
     def test_a_complete_draft_gets_the_studio_layout(self) -> None:
         result = format_job_order(DRAFT, DAY)
-        self.assertEqual(result.findings, ())
+        self.assertEqual([f.code for f in result.findings], ["date_line_changed"])  # the draft said June 1 / Someday
         self.assertEqual(
             result.text,
             """ORC - TOC - JO #062
