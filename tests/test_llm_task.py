@@ -173,6 +173,8 @@ class FailureTests(unittest.TestCase):
         failed = self.run_scripted(FakeProvider().reply(reply("[person 2] moved [project 1]")))
         self.assertEqual(failed.reason, "unresolved_placeholder")
         self.assertIn("person 2", failed.detail)
+        self.assertFalse(hasattr(failed, "value"))
+        self.assertNotIn("Other Show", repr(failed))
 
     def test_leak(self) -> None:
         failed = self.run_scripted(FakeProvider().reply(reply("ok", who="Marco")))

@@ -46,9 +46,10 @@ class PseudonymizeTests(unittest.TestCase):
         self.assertNotIsInstance(masked, str)
 
     def test_every_registered_form_is_masked(self) -> None:
-        masked, _ = pseudonymize("Marco Rossi, @marcor and OS1 on Other Show", registry())
-        for raw in ("Marco", "Rossi", "marcor", "OS1", "Other Show"):
-            self.assertNotIn(raw, masked.text)
+        masked, session = pseudonymize("Marco Rossi, Marco, Rossi, @marcor, OS1, Other Show and 123456789", registry())
+        self.assertEqual(session.leaks(masked.text), [])
+        for raw in ("Marco Rossi", "Marco", "Rossi", "@marcor", "OS1", "Other Show", "123456789"):
+            self.assertNotIn(raw.casefold(), masked.text.casefold())
 
     def test_matching_is_by_whole_word(self) -> None:
         masked, _ = pseudonymize("Marcos and 1234567890 and BOS1", registry())
