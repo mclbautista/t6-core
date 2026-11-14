@@ -86,7 +86,7 @@ class People:
             return Refused(rule='input', reason='Actor and a nonblank idempotency key are required')
         if confirm and not idempotency_key:
             return Refused(rule='idempotency_key', reason='Supply the key from the preview')
-        key = idempotency_key or secrets.token_urlsafe(24)
+        key = idempotency_key or secrets.token_hex(16)  # hex: a leading "-" would read as a CLI option
         inputs = {**values, 'idempotency_key': key}
         fingerprint = json.dumps({'verb': verb, 'actor': actor, **inputs}, sort_keys=True, separators=(',', ':'))
         nonce = self.tokens.verify(confirm, f'person {verb}', actor, inputs) if confirm else None

@@ -25,7 +25,7 @@ class ProjectWrites:
             return Refused(rule='idempotency_key', reason='Idempotency key must not be blank')
         if confirm and idempotency_key is None:
             return Refused(rule='idempotency_key', reason='Supply the key from the preview')
-        key = idempotency_key or secrets.token_urlsafe(24)
+        key = idempotency_key or secrets.token_hex(16)  # hex: a leading "-" would read as a CLI option
         inputs = {'project': project, 'reason': reason, 'idempotency_key': key}
         fingerprint = json.dumps({'verb': verb, 'actor': actor, **inputs}, sort_keys=True, separators=(',', ':'))
         nonce: str | Refused | None = None
