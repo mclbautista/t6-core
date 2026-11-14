@@ -43,7 +43,7 @@ one leak is one capability. An unset secret turns its route off (503).
 2. **Start the server** with registry only, then the worker. `t6 health` exits 0.
 3. **Notion subscription.** Create the webhook in Notion pointing at
    `/webhook/notion`; Notion sends a `verification_token` once, which the server
-   hands to `on_notion_verification`. Store it as `T6_NOTION_WEBHOOK_TOKEN` and
+   prints to standard error (`Notion verification token: ...`; since 0.3.5). Store it as `T6_NOTION_WEBHOOK_TOKEN` and
    restart. Subscribe to `page.created`, `page.properties_updated`, `page.deleted`
    and `page.undeleted`. Then change, delete and restore one test page and check
    the registry (`GET /registry/pages/{id}`): the binding turns unavailable on
