@@ -119,6 +119,21 @@ class NamesTests(SafetyCheckTestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("a.txt:1", result.stdout)
 
+    def test_case_file_with_denied_name_is_rejected(self) -> None:
+        self.write("evaluations/cases/example.json", '{"input": "Jane Example"}\n')
+        names = Path(self._directory.name) / "names.txt"
+        names.write_text("Jane Example\n")
+        result = self.check("--skip-secrets", "--require-names", env={"T6_NAMES_DENYLIST_FILE": str(names)})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("evaluations/cases/example.json:1", result.stdout)
+        self.assertNotIn("Jane Example", result.stdout + result.stderr)
+
+    def test_denylist_file_inside_repository_is_rejected(self) -> None:
+        self.write("names.txt", "Jane Example\n")
+        result = self.check("--skip-secrets", "--names-file", str(self.repo / "names.txt"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("outside the repository", result.stdout)
+
     def test_missing_denylist_is_skipped_locally(self) -> None:
         result = self.check("--skip-secrets")
         self.assertEqual(result.returncode, 0)

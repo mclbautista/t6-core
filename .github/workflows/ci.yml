@@ -8,6 +8,28 @@ permissions:
   contents: read
 
 jobs:
+  privacy-contract:
+    name: Privacy contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+      - run: uv sync --locked
+      - name: Run privacy contract tests
+        run: |
+          uv run --locked python -m unittest discover -s tests -p 'test_privacy_*.py' -v
+          uv run --locked python -m unittest discover -s tests -p 'test_llm_task.py' -v
+          uv run --locked python -m unittest discover -s tests -p 'test_public_repo_safety.py' -v
+      - name: Check tracked cases and files for denied names
+        env:
+          NAMES: ${{ secrets.T6_NAMES_DENYLIST }}
+          T6_NAMES_DENYLIST_FILE: ${{ runner.temp }}/t6-names-denylist
+        run: |
+          printf '%s\n' "$NAMES" > "$T6_NAMES_DENYLIST_FILE"
+          python scripts/public_repo_safety.py --skip-secrets --require-names
+
   test:
     runs-on: ubuntu-latest
     strategy:
