@@ -14,7 +14,7 @@ import threading
 
 from t6.domain.events import JsonValue
 from t6.frameio.readapi import ReadApi
-from t6.frameio.requests import ask
+from t6.frameio.requests import FrameioRequest, ShareLinks, ask
 from t6.frameio.worker import ArmReviewTimer, FrameioWorker, Run, Tokens
 from t6.server.http import make_server
 from t6.server.queue import DIAGNOSTIC_QUEUE, FRAMEIO_QUEUE
@@ -67,7 +67,18 @@ class WorkerSettings:
 
 
 REVIEW_ASK_SECONDS = 15.0
-"""How long the review message waits for each Frame.io answer: three asks stay inside one 60-second lease."""
+"""How long the review message waits for the Frame.io answer to the file and comments reads."""
+SHARE_ASK_SECONDS = 60.0
+"""How long it waits for the share links: a cold lookup reads a project's share list and up to 30 asset lists (#301)."""
+MAIN_LEASE_SECONDS = 150.0
+"""The main queue's lease: the review message's two short asks and the share ask (15 + 15 + 60) fit inside it."""
+FRAMEIO_LEASE_SECONDS = 120.0
+"""The Frame.io queue's lease: a cold share lookup, with a rate-limit wait or two, fits inside it."""
+
+
+def review_ask_seconds(request: FrameioRequest) -> float:
+    """How long the review message waits for the answer to `request`."""
+    return SHARE_ASK_SECONDS if isinstance(request, ShareLinks) else REVIEW_ASK_SECONDS
 
 
 def _whole_number(environ: Mapping[str, str], name: str, *, required: bool) -> int | None:
@@ -123,7 +134,7 @@ def configured_handlers(
             GatewayClient(HttpTransport(gateway_url), gateway_secret),
             chat,
             topic,
-            lambda request: ask(queue, request, timeout=REVIEW_ASK_SECONDS),
+            lambda request: ask(queue, request, timeout=review_ask_seconds(request)),
         )
         handlers.update(review.handlers())
     return {"main": handlers} if handlers else {}
@@ -278,7 +289,8 @@ def main(
     if read_api is not None:
         threading.Thread(target=read_api.serve_forever, daemon=True).start()
     try:
-        serve(Worker(client, settings.queue, queue_handlers), stop, settings.poll_seconds, tick)
+        lease = {"main": MAIN_LEASE_SECONDS, "frameio": FRAMEIO_LEASE_SECONDS}.get(settings.queue, 60.0)
+        serve(Worker(client, settings.queue, queue_handlers, lease_seconds=lease), stop, settings.poll_seconds, tick)
     finally:
         if read_api is not None:
             read_api.shutdown()
