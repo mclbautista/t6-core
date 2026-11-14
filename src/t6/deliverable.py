@@ -175,6 +175,78 @@ class DeliverableStore:
             db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(result)))
             return Done(result=result)
 
+    def schedule_write(self, action: str, values: dict[str, Any], *, actor: str,
+                       idempotency_key: str | None = None, confirm: str | None = None) -> Outcome:
+        reason = values.get('reason')
+        if not actor.strip() or not values.get('deliverable') or not isinstance(reason, str) or not reason.strip():
+            return Refused(rule='input', reason='Deliverable, reason and actor are required')
+        if (idempotency_key is not None and not idempotency_key.strip()) or (confirm and not idempotency_key):
+            return Refused(rule='idempotency_key', reason='A nonblank idempotency key is required')
+        field = values.get('field')
+        if action == 'delay':
+            if field not in ('due', 'air'):
+                return Refused(rule='field', reason='Choose due or air')
+            try:
+                date.fromisoformat(values.get('date') or '')
+            except (TypeError, ValueError):
+                return Refused(rule='date', reason='An ISO date is required')
+        key = idempotency_key or secrets.token_hex(16)
+        inputs = {**values, 'idempotency_key': key}
+        verb = 'deliverable ' + action
+        fingerprint = json.dumps({'verb': verb, 'actor': actor, **inputs}, sort_keys=True, separators=(',', ':'))
+        nonce = self.tokens.verify(confirm, verb, actor, inputs) if confirm else None
+        if isinstance(nonce, Refused):
+            return nonce
+        with self.registry._transaction() as db:
+            if nonce and db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce=?', (nonce,)).fetchone():
+                return Refused(rule='token_used', reason='Preview token has already been used')
+            previous = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key=?', (key,)).fetchone()
+            if previous and previous[0] != fingerprint:
+                return Refused(rule='idempotency_key', reason='Idempotency key was used for a different request')
+            if previous:
+                if nonce:
+                    db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
+                    return Done(result=json.loads(previous[1]))
+                return self.tokens.create(verb, actor, inputs, json.loads(previous[1]))
+            ref = values['deliverable']
+            row = db.execute("SELECT id, project_id, due, air FROM deliverables WHERE id=? OR id=(SELECT project_id FROM bindings WHERE system='notion' AND page_id=?)", (ref, normalize_page_id(ref))).fetchone()
+            if not row:
+                return Refused(rule='deliverable', reason='Deliverable not found')
+            today = datetime.fromtimestamp(self.registry._clock(), MANILA).date().isoformat()
+            delivered = bool(db.execute("SELECT 1 FROM milestones WHERE deliverable_id=? AND milestone='delivered'", (row[0],)).fetchone())
+            if action == 'miss' and delivered:
+                return Refused(rule='delivered', reason='Deliverable has been delivered')
+            old = row[2 if field == 'due' else 3] if action == 'delay' else None
+            if action == 'delay' and (not old or old < today or values['date'] == old):
+                return Refused(rule='date', reason='Move an existing date before it has passed')
+            if action == 'miss' and not any(d and d < today for d in row[2:]):
+                return Refused(rule='date', reason='No due or air date has passed')
+            snapshot = json.dumps([row[0], row[2], row[3]])
+            plan = {'action': action, 'deliverable_id': row[0], 'project_id': row[1], **{k: v for k, v in values.items() if k != 'deliverable'}, 'idempotency_key': key}
+            if action == 'delay':
+                plan['old_date'] = old
+            if nonce is None:
+                preview = self.tokens.create(verb, actor, inputs, plan)
+                preview_nonce = self.tokens.verify(preview.token, verb, actor, inputs)
+                assert isinstance(preview_nonce, str)
+                db.execute('INSERT INTO jo_state_previews VALUES (?, ?)', (preview_nonce, snapshot))
+                return preview
+            observed = db.execute('SELECT state FROM jo_state_previews WHERE nonce=?', (nonce,)).fetchone()
+            if not observed or observed[0] != snapshot:
+                return Refused(rule='deliverable_changed', reason='Deliverable dates changed since preview; preview again')
+            now = self.registry._clock()
+            if action == 'delay':
+                assert field in ('due', 'air')
+                db.execute('INSERT INTO deliverable_date_moves VALUES (?, ?, ?, ?, ?, ?, ?)', (row[0], field, old, values['date'], reason, actor, now))
+                db.execute('UPDATE deliverables SET ' + field + '=? WHERE id=?', (values['date'], row[0]))
+            else:
+                db.execute('INSERT INTO deliverable_misses VALUES (?, ?, ?, ?)', (row[0], reason, actor, now))
+            cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)', (row[0], 'deliverable_' + action, actor, now, snapshot, json.dumps(plan)))
+            db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (row[1], row[0], now, actor, 'deliverable_' + action, 'deliverable ' + ('delayed' if action == 'delay' else 'missed'), cursor.lastrowid))
+            db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
+            db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(plan)))
+            return Done(result=plan)
+
     def rebind(self, values: dict[str, Any], *, actor: str, idempotency_key: str | None = None,
                confirm: str | None = None) -> Outcome:
         identifier, raw_page = values.get('deliverable_id'), values.get('page_id')
