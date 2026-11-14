@@ -364,7 +364,33 @@ class JoNoteInput(BaseModel):
     confirm: str | None = None
 
 
-def jo_write(inputs: JoRaiseInput | JoAssignInput | JoReassignInput | JoNoteInput, open_notion: Callable[..., Any]) -> Outcome:
+class JoSubmitInput(BaseModel):
+    jo: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class JoCloseInput(JoSubmitInput):
+    pass
+
+
+class JoUnblockInput(JoSubmitInput):
+    pass
+
+
+class JoBlockInput(JoSubmitInput):
+    reason: str
+
+
+class JoCancelInput(JoBlockInput):
+    pass
+
+
+class JoDelayInput(JoBlockInput):
+    until: str
+
+
+def jo_write(inputs: JoRaiseInput | JoAssignInput | JoReassignInput | JoNoteInput | JoSubmitInput, open_notion: Callable[..., Any]) -> Outcome:
     from t6.cli import TOKEN_VARIABLE, _read_data_sources
     from t6.cli_jo import prepare_fields
     from t6.job_order import JobOrderStore
@@ -377,7 +403,12 @@ def jo_write(inputs: JoRaiseInput | JoAssignInput | JoReassignInput | JoNoteInpu
     try:
         registry = _people().registry
         values: dict[str, Any]
-        if isinstance(inputs, JoRaiseInput):
+        state_verbs = {JoSubmitInput: 'submit', JoCloseInput: 'close', JoUnblockInput: 'unblock',
+                       JoBlockInput: 'block', JoCancelInput: 'cancel', JoDelayInput: 'delay'}
+        if type(inputs) in state_verbs:
+            verb = state_verbs[type(inputs)]
+            values = inputs.model_dump(exclude={'idempotency_key', 'confirm'})
+        elif isinstance(inputs, JoRaiseInput):
             token = os.environ.get(TOKEN_VARIABLE)
             if not token:
                 return Refused(rule="credentials", reason=f"set {TOKEN_VARIABLE}")
@@ -465,6 +496,12 @@ VERBS = (
     Verb("jo", "assign", "Assign a Job Order", (), JoAssignInput, JoWriteOutput, "coordinator", "The Person must differ from the current assignee.", jo_write),
     Verb("jo", "reassign", "Reassign a Job Order", (), JoReassignInput, JoWriteOutput, "coordinator", "A reason is required.", jo_write),
     Verb("jo", "note", "Add a Job Order note", (), JoNoteInput, JoWriteOutput, "coordinator", "Notes are append-only.", jo_write),
+    Verb("jo", "submit", "Submit a Job Order", (), JoSubmitInput, JoWriteOutput, "coordinator", "Apply the JO transition rules.", jo_write),
+    Verb("jo", "close", "Close a Job Order", (), JoCloseInput, JoWriteOutput, "coordinator", "Apply the JO transition rules.", jo_write),
+    Verb("jo", "block", "Block a Job Order", (), JoBlockInput, JoWriteOutput, "coordinator", "Apply the JO transition rules.", jo_write),
+    Verb("jo", "unblock", "Unblock a Job Order", (), JoUnblockInput, JoWriteOutput, "coordinator", "Apply the JO transition rules.", jo_write),
+    Verb("jo", "delay", "Delay a Job Order", (), JoDelayInput, JoWriteOutput, "coordinator", "Apply the JO transition rules.", jo_write),
+    Verb("jo", "cancel", "Cancel a Job Order", (), JoCancelInput, JoWriteOutput, "coordinator", "Apply the JO transition rules.", jo_write),
     Verb("jo", "format", "Format a Job Order", (), JoFormatInput, LegacyOutput, "reader", "Format a draft.", None),
     Verb("person", "find", "Find a Person", ("contacts find",), PersonFindInput, LegacyOutput, "reader", "Find a Contact.", None),
     Verb("project", "resolve", "Resolve a Project", ("projects resolve",), ProjectResolveInput, LegacyOutput, "reader", "Resolve a Project.", None),
@@ -552,9 +589,14 @@ def add_parsers(commands: Any) -> None:
             parser = parser.add_parser(entry.verb, help="[verb] " + entry.description)
         if entry.handler is jo_write and entry.verb != "raise":
             parser.add_argument("jo")
-            parser.add_argument("text" if entry.verb == "note" else "person")
-            if entry.verb == "reassign":
+            if entry.verb == "note":
+                parser.add_argument("text")
+            elif entry.verb in ("assign", "reassign"):
+                parser.add_argument("person")
+            if entry.verb in ("reassign", "block", "delay", "cancel"):
                 parser.add_argument("--reason", required=True)
+            if entry.verb == "delay":
+                parser.add_argument("--until", required=True)
             parser.add_argument("--idempotency-key")
             parser.add_argument("--confirm")
             parser.set_defaults(registered_verb=entry)

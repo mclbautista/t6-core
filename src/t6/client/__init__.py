@@ -13,6 +13,7 @@ from pydantic import BaseModel, TypeAdapter
 from t6.verbs import (
     Ambiguous, Done, NeedsPerson, Outcome, Preview, Refused,
     ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
+    JoSubmitInput, JoCloseInput, JoBlockInput, JoUnblockInput, JoDelayInput, JoCancelInput,
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
     LLMRunInput, PersonAddInput, PersonFindInput,
     PersonGetInput, PersonPermissionInput, PersonRebindInput, PersonShiftInput,
@@ -137,6 +138,24 @@ class Client:
 
     def jo_note(self, inputs: JoNoteInput) -> Result:
         return self.call('jo', 'note', inputs)
+
+    def jo_submit(self, inputs: JoSubmitInput) -> Result:
+        return self.call('jo', 'submit', inputs)
+
+    def jo_close(self, inputs: JoCloseInput) -> Result:
+        return self.call('jo', 'close', inputs)
+
+    def jo_block(self, inputs: JoBlockInput) -> Result:
+        return self.call('jo', 'block', inputs)
+
+    def jo_unblock(self, inputs: JoUnblockInput) -> Result:
+        return self.call('jo', 'unblock', inputs)
+
+    def jo_delay(self, inputs: JoDelayInput) -> Result:
+        return self.call('jo', 'delay', inputs)
+
+    def jo_cancel(self, inputs: JoCancelInput) -> Result:
+        return self.call('jo', 'cancel', inputs)
 
     def jo_format(self, inputs: JoFormatInput) -> Result:
         return self.call('jo', 'format', inputs)
