@@ -22,6 +22,9 @@ class ProjectWritesTests(unittest.TestCase):
         self.path = Path(self.tmp.name) / 'db'
         self.now = 1000.0
         self.registry = SqliteProjectRegistry(self.path, clock=lambda: self.now)
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES ('test-actor', 'staff', '[]', '[]', NULL, 0, 1)")
+            db.execute("INSERT INTO person_permissions VALUES ('test-actor', 'operator')")
         registered = self.registry.register(actor='setup', idempotency_key='setup', code='SHOW')
         assert isinstance(registered, Registered)
         self.project = registered.project.id
@@ -78,7 +81,7 @@ class ProjectWritesTests(unittest.TestCase):
         self.assertEqual(expired.rule, 'token_expired')
 
     def test_cli_preview_and_confirm(self) -> None:
-        with patch.dict(os.environ, {'T6_REGISTRY_DB': str(self.path), 'T6_PREVIEW_SIGNING_KEY': 'secret'}):
+        with patch.dict(os.environ, {'T6_PERSON_ID': 'test-actor', 'T6_REGISTRY_DB': str(self.path), 'T6_PREVIEW_SIGNING_KEY': 'secret'}):
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 self.assertEqual(main(['project', 'hold', self.project, '--reason', 'pause']), 0)

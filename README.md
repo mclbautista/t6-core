@@ -134,6 +134,10 @@ Mac mini. Both use only the standard library.
 | `T6_REVIEW_QUIET_SECONDS` | server: how long one person must make no new comment on one Frame.io file before the review message is sent, default 900 (15 minutes); must be a positive number |
 | `T6_GATEWAY_URL`, `T6_GATEWAY_SECRET` | main worker: the Sixto gateway and this module's secret there; turn on delivery of operator cards |
 
+On first open of a t6 database, `T6_OPERATOR_IDS` seeds the `operator` permission for matching Persons; unmatched IDs are reported on stderr. The seed is recorded even when the variable is empty, and later changes to it do not change Person permissions. Set it before the first open of an existing database containing Persons. Legacy operator cards still use the variable independently until their authorization is migrated.
+
+Until the CLI becomes an API client (#200), set `T6_PERSON_ID` to the local caller’s Person ID. Registered verbs use that Person’s stored permissions; it is configuration, not a command-line actor flag. API authentication will supply the actor in #197 and #200.
+
 Tests use `t6.server.testing.FakeClock`; no test opens a connection to a
 provider.
 

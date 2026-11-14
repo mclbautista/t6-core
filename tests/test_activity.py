@@ -20,6 +20,9 @@ class ActivityTests(unittest.TestCase):
         self.path = Path(self.directory.name) / 'registry.sqlite'
         self.now = 1000.0
         self.registry = SqliteProjectRegistry(self.path, lambda: self.now)
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES ('test-actor', 'staff', '[]', '[]', NULL, 0, 1)")
+            db.execute("INSERT INTO person_permissions VALUES ('test-actor', 'operator')")
         result = self.registry.register(actor='person', idempotency_key='register', code='ABC')
         assert isinstance(result, Registered)
         self.project = result.project
@@ -56,7 +59,7 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(len(self.registry.activity(self.project.id)), 1)
 
     def test_cli_json_and_text(self) -> None:
-        with patch.dict(os.environ, {'T6_REGISTRY_DB': str(self.path)}):
+        with patch.dict(os.environ, {'T6_PERSON_ID': 'test-actor', 'T6_REGISTRY_DB': str(self.path)}):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 self.assertEqual(main(['project', 'activity', self.project.id, '--json', '--limit', '1']), 0)

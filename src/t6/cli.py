@@ -508,6 +508,36 @@ def main(
         return 0
     if hasattr(args, "registered_verb"):
         return verbs.run(args, open_notion)
+    legacy_verbs = {
+        ("contacts", "find"): ("person", "find"),
+        ("projects", "resolve"): ("project", "resolve"),
+        ("jo", "get"): ("jo", "get"),
+        ("jo", "create"): ("jo", "raise"),
+        ("jo", "format"): ("jo", "format"),
+        ("cameras", "get"): ("camera", "get"),
+        ("cameras", "update"): ("camera", "enrich"),
+    }
+    subcommand = getattr(args, f"{args.command}_command", "")
+    pair = legacy_verbs.get((args.command, subcommand))
+    if pair is not None:
+        entry = next(v for v in verbs.VERBS if (v.noun, v.verb) == pair)
+        def legacy_call() -> int:
+            if args.command in {"contacts", "projects"}:
+                return cli_studio.run(args, open_notion)
+            if args.command == "jo":
+                return cli_jo.run(args, open_notion)
+            return _cameras(args, open_notion)
+        try:
+            outcome = verbs.invoke(entry, entry.input_model.model_construct(),
+                                   actor=os.environ.get("T6_PERSON_ID", ""), people=verbs._people(),
+                                   open_notion=open_notion, legacy=legacy_call)
+        except (ValueError, OSError) as error:
+            outcome = verbs.Refused(rule="identity", reason=str(error))
+        if isinstance(outcome, verbs.Done):
+            return int(outcome.result)
+        code, payload = verbs.outcome_json(outcome)
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return code
     if args.command in {"contacts", "projects", "standing-cc"}:
         return cli_studio.run(args, open_notion)
     if args.command in {"jo", "deadline"}:

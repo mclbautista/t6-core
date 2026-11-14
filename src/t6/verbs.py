@@ -14,6 +14,7 @@ CLI retains its original result and error JSON for backwards compatibility.
 from __future__ import annotations
 
 import argparse
+from contextvars import ContextVar
 import json
 import os
 from dataclasses import asdict, dataclass
@@ -26,6 +27,9 @@ from pydantic import BaseModel, Field, RootModel
 
 if TYPE_CHECKING:
     from t6.person import People
+
+
+_actor: ContextVar[str] = ContextVar("verb_actor", default="")
 
 
 class Done(BaseModel):
@@ -175,7 +179,6 @@ class ProjectWriteOutput(BaseModel):
 
 
 def _project_write(inputs: ProjectHoldInput | ProjectResumeInput, verb: str) -> Outcome:
-    import pwd
     from t6.cli import DEFAULT_REGISTRY_DB, REGISTRY_DB_VARIABLE, _open_registry
     from t6.preview import PreviewTokens
     from t6.project_writes import ProjectWrites
@@ -190,7 +193,7 @@ def _project_write(inputs: ProjectHoldInput | ProjectResumeInput, verb: str) -> 
     try:
         return ProjectWrites(registry, PreviewTokens(key)).run(
             verb, inputs.project, inputs.reason if isinstance(inputs, ProjectHoldInput) else None,
-            actor=pwd.getpwuid(os.getuid()).pw_name, idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+            actor=_actor.get(), idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
     except (RegistryError, OSError) as error:
         return Refused(rule="registry", reason=str(error))
 
@@ -228,6 +231,13 @@ class PersonRebindInput(BaseModel):
     confirm: str | None = None
 
 
+class PersonPermissionInput(BaseModel):
+    person_id: str
+    permission: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
 class PersonGetInput(BaseModel):
     person_id: str
     data_sources: Path
@@ -243,22 +253,28 @@ def _people() -> People:
     return People(registry, PreviewTokens(os.environ.get("T6_PREVIEW_SIGNING_KEY", "read-only")))
 
 
-def person_write(inputs: PersonAddInput | PersonTelegramInput | PersonRebindInput, open_notion: Callable[..., Any]) -> Outcome:
-    import pwd
+def person_write(inputs: PersonAddInput | PersonTelegramInput | PersonRebindInput | PersonPermissionInput, open_notion: Callable[..., Any]) -> Outcome:
     if not os.environ.get("T6_PREVIEW_SIGNING_KEY"):
         return Refused(rule="config", reason="Set T6_PREVIEW_SIGNING_KEY")
     try:
         values = inputs.model_dump(exclude={"confirm", "idempotency_key"})
         return _people().write("add" if isinstance(inputs, PersonAddInput) else "rebind" if isinstance(inputs, PersonRebindInput) else "set-telegram", values,
-                               actor=pwd.getpwuid(os.getuid()).pw_name,
+                               actor=_actor.get(),
                                idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
     except (ValueError, OSError) as error:
         return Refused(rule="input", reason=str(error))
 
 
+def person_permission(people: People, verb: str, inputs: PersonPermissionInput, *, actor: str) -> Outcome:
+    """Run a permission write as the authenticated Person."""
+    return people.write(verb, inputs.model_dump(exclude={'confirm', 'idempotency_key'}),
+                        actor=actor, idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
 def person_get(inputs: PersonGetInput, open_notion: Callable[..., Any]) -> Outcome:
     from t6.cli import TOKEN_VARIABLE
     from t6.notion.contacts import Contacts
+    from uuid import UUID
     try:
         person = _people().get(inputs.person_id)
         if person is None:
@@ -269,6 +285,11 @@ def person_get(inputs: PersonGetInput, open_notion: Callable[..., Any]) -> Outco
         from t6.cli import _read_data_sources
         with open_notion(token) as client:
             page = next(b["page_id"] for b in person["bindings"] if b["active"])
+            if len(page) == 32:
+                try:
+                    page = str(UUID(page))
+                except ValueError:
+                    pass
             person["display_name"] = Contacts(client, _read_data_sources(inputs.data_sources)["contacts"]).get(page).name
         return Done(result=person)
     except (ValueError, OSError, KeyError, StopIteration) as error:
@@ -334,26 +355,47 @@ class CameraEnrichInput(BaseModel):
 
 
 VERBS = (
-    Verb("person", "add", "Register a Person", (), PersonAddInput, LegacyOutput, "writer", "A page belongs to one Person.", person_write),
-    Verb("person", "rebind", "Bind a replacement Contacts page", (), PersonRebindInput, LegacyOutput, "writer", "A page belongs to one Person.", person_write),
-    Verb("person", "set-telegram", "Set a Person Telegram ID", (), PersonTelegramInput, LegacyOutput, "writer", "An active Person uniquely holds a Telegram ID.", person_write),
+    Verb("person", "add", "Register a Person", (), PersonAddInput, LegacyOutput, "operator", "A page belongs to one Person.", person_write),
+    Verb("person", "rebind", "Bind a replacement Contacts page", (), PersonRebindInput, LegacyOutput, "operator", "A page belongs to one Person.", person_write),
+    Verb("person", "set-telegram", "Set a Person Telegram ID", (), PersonTelegramInput, LegacyOutput, "operator", "An active Person uniquely holds a Telegram ID.", person_write),
+    Verb("person", "grant", "Grant a permission", (), PersonPermissionInput, LegacyOutput, "operator", "Only an operator or admin may grant permissions.", person_write),
+    Verb("person", "revoke", "Revoke a permission", (), PersonPermissionInput, LegacyOutput, "operator", "Only an operator or admin may revoke permissions.", person_write),
     Verb("person", "get", "Get a Person", (), PersonGetInput, LegacyOutput, "reader", "Read a Person.", person_get),
     Verb("project", "hold", "Hold a Project", (), ProjectHoldInput, ProjectWriteOutput,
-         "writer", "A held Project cannot be held again.", project_hold),
+         "operator", "A held Project cannot be held again.", project_hold),
     Verb("project", "resume", "Resume a held Project", (), ProjectResumeInput, ProjectWriteOutput,
-         "writer", "Only a held Project can be resumed.", project_resume),
+         "operator", "Only a held Project can be resumed.", project_resume),
     Verb("project", "activity", "Show Project activity, newest first", (),
          ActivityInput, ActivityOutput, "reader", "Activity is append-only.", project_activity),
     Verb("jo", "get", "Get a Job Order", (), JoGetInput, LegacyOutput, "reader", "Read a Job Order.", None),
-    Verb("jo", "raise", "Raise a Job Order", ("jo create",), JoRaiseInput, LegacyOutput, "writer", "Create a Job Order.", None),
+    Verb("jo", "raise", "Raise a Job Order", ("jo create",), JoRaiseInput, LegacyOutput, "coordinator", "Create a Job Order.", None),
     Verb("jo", "format", "Format a Job Order", (), JoFormatInput, LegacyOutput, "reader", "Format a draft.", None),
     Verb("person", "find", "Find a Person", ("contacts find",), PersonFindInput, LegacyOutput, "reader", "Find a Contact.", None),
     Verb("project", "resolve", "Resolve a Project", ("projects resolve",), ProjectResolveInput, LegacyOutput, "reader", "Resolve a Project.", None),
     Verb("camera", "get", "Get Cameras", ("cameras get",), CameraGetInput, LegacyOutput, "reader", "Read Cameras.", None),
-    Verb("camera", "enrich", "Enrich a Camera", ("cameras update",), CameraEnrichInput, LegacyOutput, "writer", "Update a Camera.", None),
+    Verb("camera", "enrich", "Enrich a Camera", ("cameras update",), CameraEnrichInput, LegacyOutput, "operator", "Update a Camera.", None),
     Verb("departments", "", "Print the studio Departments, read live, in display order, with option IDs", (),
          DepartmentsInput, DepartmentsOutput, "reader", "Notion Department options are the truth; use studio display order.", departments),
 )
+
+
+def invoke(entry: Verb, inputs: BaseModel, *, actor: str, people: People,
+           open_notion: Callable[..., Any],
+           legacy: Callable[[], int] | None = None) -> Outcome:
+    """Authorize an authenticated Person before invoking a registered verb."""
+    refusal = people.authorize(actor, entry.role)
+    if refusal:
+        return refusal
+    if entry.noun == 'person' and entry.verb in ('grant', 'revoke'):
+        assert isinstance(inputs, PersonPermissionInput)
+        return person_permission(people, entry.verb, inputs, actor=actor)
+    if entry.handler is None:
+        return Done(result=legacy()) if legacy is not None else Refused(rule='verb', reason='Verb has no registered handler')
+    token = _actor.set(actor)
+    try:
+        return entry.handler(inputs, open_notion)
+    finally:
+        _actor.reset(token)
 
 
 def catalogue() -> list[dict[str, Any]]:
@@ -422,6 +464,13 @@ def add_parsers(commands: Any) -> None:
             parser.add_argument("--json", action="store_true", help="Print JSON")
             parser.set_defaults(registered_verb=entry)
             continue
+        if entry.verb in ('grant', 'revoke') and entry.noun == 'person':
+            parser.add_argument('person_id')
+            parser.add_argument('permission')
+            parser.add_argument('--idempotency-key')
+            parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
         for name, field in entry.input_model.model_fields.items():
             arg_type, is_list = _argument_type(field.annotation)
             options: dict[str, Any] = {"type": arg_type, "required": field.is_required(),
@@ -438,7 +487,14 @@ def run(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
     entry: Verb = args.registered_verb
     inputs = entry.input_model.model_validate({name: getattr(args, name) for name in entry.input_model.model_fields})
     assert entry.handler is not None
-    outcome = entry.handler(inputs, open_notion)
+    outcome: Outcome
+    try:
+        if entry.noun == 'person' and entry.verb in ('grant', 'revoke') and not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+            outcome = Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+        else:
+            outcome = invoke(entry, inputs, actor=os.environ.get('T6_PERSON_ID', ''), people=_people(), open_notion=open_notion)
+    except (OSError, ValueError) as error:
+        outcome = Refused(rule='identity', reason=str(error))
     code, payload = outcome_json(outcome)
     if entry.noun == "departments" and not entry.verb:
         if isinstance(outcome, Done):
