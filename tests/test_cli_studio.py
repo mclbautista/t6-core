@@ -30,7 +30,7 @@ class StudioCommandTests(unittest.TestCase):
                 c.notion_name("name"): title("Maria Santos"),
                 c.notion_name("telegram_handle"): rich_text("@msantos"),
                 c.notion_name("aliases"): rich_text("Ria"),
-                c.notion_name("end_of_shift"): select("10:00 PM"),
+                c.notion_name("telegram_user_id"): rich_text("4242"),
             },
         )
         self.fake.add_page(CONTACTS, {c.notion_name("name"): title("Ben Cruz")})
@@ -55,7 +55,7 @@ class StudioCommandTests(unittest.TestCase):
             command = [*argv]
             if argv[0] != "standing-cc":
                 command += ["--data-sources", str(path)]
-            if argv[0] == "projects":
+            if argv[0] == "projects" and "--registry-db" not in argv:
                 command += ["--registry-db", str(Path(directory) / "none.sqlite")]
             with mock.patch.dict(os.environ, env, clear=True), redirect_stdout(out), redirect_stderr(err):
                 status = main(command, open_notion=lambda _token: self.fake.client())
@@ -75,13 +75,19 @@ class StudioCommandTests(unittest.TestCase):
         result = json.loads(out)
         self.assertEqual(result["match"]["id"], self.maria["id"])
         self.assertEqual(
-            (result["match"]["name"], result["match"]["aliases"], result["match"]["end_of_shift"], result["needs_review"]),
-            ("Maria Santos", ["Ria"], "22:00", False),
+            (result["match"]["name"], result["match"]["telegram_user_id"], result["needs_review"]),
+            ("Maria Santos", 4242, False),
         )
 
     def test_contacts_find_by_alias(self) -> None:
         _, out, _ = self.run_command(["contacts", "find", "Ria"])
         self.assertEqual(json.loads(out)["match"]["id"], self.maria["id"])
+
+    def test_contacts_find_by_telegram_user_id_and_with_an_honorific(self) -> None:
+        for mention in ("4242", "Ms. Maria Santos", "maria santos"):
+            with self.subTest(mention=mention):
+                _, out, _ = self.run_command(["contacts", "find", mention])
+                self.assertEqual(json.loads(out)["match"]["id"], self.maria["id"])
 
     def test_contacts_find_gives_candidates_when_it_cannot_decide(self) -> None:
         status, out, _ = self.run_command(["contacts", "find", "Maria Santoz Cruz"])
@@ -110,6 +116,31 @@ class StudioCommandTests(unittest.TestCase):
         self.assertTrue(result["needs_review"])
         self.assertEqual(result["candidates"][0]["id"], self.alpha["id"])
 
+    def test_a_reused_code_is_settled_by_the_registry_rotation(self) -> None:
+        from t6.registry import Rotation, SqliteProjectRegistry
+
+        old = self.fake.add_page(PROJECTS, {ProjectsRow.notion_name("name"): title("Old ALP"), ProjectsRow.notion_name("project_code"): select("ALP")})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "registry.sqlite3"
+            registry = SqliteProjectRegistry(path)
+            for key, page, rotation in (("a", self.alpha["id"], Rotation.IN), ("b", old["id"], Rotation.OUT)):
+                registry.register(actor="test", idempotency_key=key, notion_page_id=str(page), code="ALP", rotation=rotation)
+            status, out, _ = self.run_command(["projects", "resolve", "ALP", "--registry-db", str(path)])
+            self.assertEqual(status, 0)
+            result = json.loads(out)
+            self.assertEqual((result["match"]["id"], result["match"]["rotation"]), (self.alpha["id"], "in"))
+            # without the registry the reused code needs review
+            _, out, _ = self.run_command(["projects", "resolve", "ALP"])
+            self.assertTrue(json.loads(out)["needs_review"])
+
+    def test_an_unreadable_registry_is_an_error_not_a_guess(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "registry.sqlite3"
+            path.write_bytes(b"not a database" * 100)
+            status, out, err = self.run_command(["projects", "resolve", "ALP", "--registry-db", str(path)])
+        self.assertEqual((status, out), (2, ""))
+        self.assertIn("registry", json.loads(err)["error"])
+
     def test_standing_cc_prints_the_contact_page_id(self) -> None:
         status, out, _ = self.run_command(["standing-cc"], environment={"T6_STANDING_CC": self.maria["id"]})
         self.assertEqual((status, json.loads(out)), (0, {"standing_cc": self.maria["id"]}))
@@ -122,6 +153,7 @@ class StudioCommandTests(unittest.TestCase):
             (["departments"], {"environment": {"T6_NOTION_TOKEN": ""}}),
             (["departments"], {"sources": {"contacts": CONTACTS}}),
             (["contacts", "find", "x"], {"sources": {"job_orders": JOB_ORDERS}}),
+            (["projects", "resolve", "x"], {"sources": {"job_orders": JOB_ORDERS}}),
         ]
         for argv, kw in cases:
             with self.subTest(argv=argv, kw=kw):

@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import argparse
 import os
+import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from t6.cli import DEFAULT_REGISTRY_DB, REGISTRY_DB_VARIABLE, TOKEN_VARIABLE, _fail, _open_registry, _read_data_sources
+from t6.cli import DEFAULT_REGISTRY_DB, REGISTRY_DB_VARIABLE, TOKEN_VARIABLE, _fail, _read_data_sources
 
 if TYPE_CHECKING:
     from t6.domain import Contact, Project
@@ -61,7 +62,7 @@ def add_parsers(commands: Any) -> None:
         type=Path,
         default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)),
         metavar="FILE",
-        help="the Project registry file; a missing file means every Project counts as in rotation",
+        help="the Project registry file; with no such file every Project counts as in rotation; an unreadable file is an error",
     )
     commands.add_parser(
         "standing-cc",
@@ -84,16 +85,16 @@ def run(args: argparse.Namespace, open_notion: Callable[[str], NotionClient]) ->
         return _fail(f"set {TOKEN_VARIABLE} to a Notion integration token")
     try:
         sources = _read_data_sources(args.data_sources)
-        key = {"departments": "job_orders", "contacts": "contacts", "projects": "projects"}[args.command]
-        if key not in sources:
-            return _fail(f"--data-sources has no '{key}' entry")
+        source_key = {"departments": "job_orders", "contacts": "contacts", "projects": "projects"}[args.command]
+        if source_key not in sources:
+            return _fail(f"--data-sources has no '{source_key}' entry")
         with open_notion(token) as client:
             if args.command == "departments":
-                result = _departments(client, sources[key])
+                result = _departments(client, sources[source_key])
             elif args.command == "contacts":
-                result = _contacts_find(client, sources[key], args.mention)
+                result = _contacts_find(client, sources[source_key], args.mention)
             else:
-                result = _projects_resolve(client, sources[key], args.text, args.registry_db)
+                result = _projects_resolve(client, sources[source_key], args.text, args.registry_db)
     except (OSError, ValueError, ImportError, NotionError) as error:
         return _fail(str(error))
     return _print(result)
@@ -118,9 +119,6 @@ def _contact(contact: Contact) -> JSON:
         "name": contact.name,
         "telegram_handle": contact.telegram_handle,
         "telegram_user_id": contact.telegram_user_id,
-        "email": contact.email,
-        "aliases": list(contact.aliases),
-        "end_of_shift": contact.end_of_shift.strftime("%H:%M") if contact.end_of_shift else None,
     }
 
 
@@ -162,12 +160,14 @@ def _projects_resolve(client: NotionClient, data_source_id: str, text: str, regi
     from t6.notion.reads import ProjectReader
 
     projects = ProjectReader(client, data_source_id).list()
-    registry = _open_registry(registry_db)
-    if registry is not None:
-        from t6.registry import ProjectRefs
+    if registry_db.is_file():
+        from t6.registry import ProjectRefs, RegistryUnavailable, SqliteProjectRegistry
 
-        refs = ProjectRefs(registry)
-        projects = tuple(refs.identified(project) for project in projects)
+        try:
+            refs = ProjectRefs(SqliteProjectRegistry(registry_db))
+            projects = tuple(refs.identified(project) for project in projects)
+        except (RegistryUnavailable, sqlite3.Error) as error:
+            raise ValueError(f"the registry at {registry_db} cannot be read: {error}") from error
     lookup = Lookup(Index(projects=projects))
     found = lookup.project(text)
     if found.entity is None and not found.candidates:

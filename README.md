@@ -1303,7 +1303,7 @@ variables and are described in `docs/deployment.md`.
 
 These read the Notion token from `$T6_NOTION_TOKEN` and the data source IDs
 from `--data-sources FILE` (a JSON object of database key to data source ID,
-as for `schema-check`). They print JSON with Notion IDs and never write.
+as for `schema-check`). They print JSON (indented) with Notion IDs and never write.
 Errors are JSON on stderr with exit status 2.
 
 `t6 departments --data-sources FILE` lists the live Departments (the
@@ -1311,7 +1311,7 @@ Errors are JSON on stderr with exit status 2.
 
 ```console
 $ t6 departments --data-sources sources.json
-{"departments": [{"id": "cU=L", "name": "TOC"}, {"id": "FeJa", "name": "AE"}]}
+{"departments": [{"id": "cU=L", "name": "TOC"}, {"id": "FeJa", "name": "AE"}, ...]}
 ```
 
 `t6 contacts find <name|@handle|alias|telegram id> --data-sources FILE` (the
@@ -1321,19 +1321,43 @@ choose. Fuzzy matching needs `t6[lookup]`.
 
 ```console
 $ t6 contacts find @msantos --data-sources sources.json
-{"match": {"id": "<page id>", "name": "Maria Santos", "telegram_handle": "@msantos", ...},
- "method": "normalized", "score": 1.0, "needs_review": false, "reason": null, "candidates": [...]}
+{
+  "match": {"id": "<page id>", "name": "Maria Santos", "telegram_handle": "@msantos", "telegram_user_id": 4242},
+  "method": "normalized",
+  "score": 1.0,
+  "needs_review": false,
+  "reason": null,
+  "candidates": [{"id": "<page id>", "name": "Maria Santos", "telegram_handle": "@msantos", "telegram_user_id": 4242, "score": 1.0}]
+}
 ```
 
 `t6 projects resolve <code|name> --data-sources FILE [--registry-db FILE]` (the
 `projects` source) resolves a Project Code. A reused code is settled by rotation
 when the registry file knows the Projects (`--registry-db`, default
-`$T6_REGISTRY_DB`); otherwise every Project counts as a holder. Text that is not
-a known code is tried as a name and always needs review. The result has the same
-`match`, `method`, `needs_review`, `reason` and `candidates` fields.
+`$T6_REGISTRY_DB`); with no registry file every Project counts as a holder, and
+an unreadable file is an error. Text that is not a known code is tried as a name
+and always needs review. The result has the same `match`, `method`,
+`needs_review`, `reason` and `candidates` fields.
+
+```console
+$ t6 projects resolve ALP --data-sources sources.json --registry-db t6-registry.sqlite
+{
+  "match": {"id": "<page id>", "t6_id": "<T6 Project ID>", "name": "Alpha Show", "project_code": "ALP", "status": "In Progress", "rotation": "in"},
+  "method": "exact_id",
+  "score": 1.0,
+  "needs_review": false,
+  "reason": null,
+  "candidates": [{"id": "<page id>", "t6_id": "<T6 Project ID>", "name": "Alpha Show", "project_code": "ALP", "status": "In Progress", "rotation": "in", "score": 1.0}]
+}
+```
 
 `t6 standing-cc` prints `{"standing_cc": "<Contact page ID>"}` from
 `$T6_STANDING_CC` (`null` when unset). It needs no Notion access.
+
+```console
+$ T6_STANDING_CC=<Contact page ID> t6 standing-cc
+{"standing_cc": "<Contact page ID>"}
+```
 
 ### Check an app follows the consumer contract
 
