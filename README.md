@@ -925,8 +925,9 @@ link settings, watermark, mode of transfer, blocker, pending, notes, watchdog
 notes, telegram key, status, health (read only), the `project_id`,
 `assigned_ids`, `cc_ids`, `coordinator_ids` and `deliverable_ids` relations,
 and `source_text`, the page body. Notion property names stay in
-`t6.notion.generated`. `get(page_id)`, `find_by_telegram_key(key)` and `list()`
-read; `create({...})` writes through the typed write and returns the saved
+`t6.notion.generated`. `get(page_id)`, `find_by_telegram_key(key)`, `find_all_by_telegram_key(key)`
+(every match, oldest first, for an app recovering from an uncertain create) and
+`list()` read; `create({...})` writes through the typed write and returns the saved
 `JobOrder`, `Rejected` or `Ambiguous` (a body that could not be saved leaves a
 page, so it is `Ambiguous` with that page ID). The only Job Orders property
 no field carries is `place`.

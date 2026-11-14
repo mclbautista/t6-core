@@ -103,6 +103,16 @@ class CreateAndReadTests(unittest.TestCase):
         self.assertIsNone(self.orders.find_by_telegram_key("nope"))
         self.assertEqual([o.name for o in self.orders.list()], ["A", "B"])
 
+    def test_find_all_by_telegram_key_returns_every_match_without_bodies(self) -> None:
+        first = self.orders.create({"name": "A", "telegram_key": "k", "source_text": "hello"})
+        self.orders.create({"name": "B", "telegram_key": "other"})
+        second = self.orders.create({"name": "C", "telegram_key": "k"})
+        assert isinstance(first, JobOrder) and isinstance(second, JobOrder)
+        found = self.orders.find_all_by_telegram_key("k")
+        self.assertEqual([o.page_id for o in found], [first.page_id, second.page_id])
+        self.assertEqual([o.source_text for o in found], [None, None])
+        self.assertEqual(self.orders.find_all_by_telegram_key("nope"), ())
+
     def test_a_credential_in_the_body_or_a_field_is_withheld(self) -> None:
         order = self.orders.create({"name": "A", "notes": "pin=1", "source_text": "password: x"})
         assert isinstance(order, JobOrder)
