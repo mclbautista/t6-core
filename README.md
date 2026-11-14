@@ -113,7 +113,7 @@ Mac mini. Both use only the standard library.
 | `T6_FRAMEIO_REDIRECT_URI` | Frame.io worker: required, the `https://` address of the server's `/frameio/callback`, exactly as set on the Adobe credential |
 | `T6_FRAMEIO_TOKEN_FILE` | Frame.io worker: required, where the token is kept, on a volume only this worker mounts |
 | `T6_FRAMEIO_ACCOUNT_ID` | Frame.io worker: optional, the Frame.io account ID; needed only when the sign-in sees more than one account |
-| `T6_NOTION_TOKEN`, `T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE` | Frame.io worker: optional, turn on the briefing feed and the External Links rows for live share links |
+| `T6_NOTION_TOKEN`, `T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE` | Frame.io worker: optional, turn on the briefing feed and External Links rows; main worker: resolve review messages to Project Chat links |
 | `T6_FRAMEIO_READ_BIND`, `T6_FRAMEIO_READ_SECRET` | Frame.io worker: optional, turn on the [read API](#frameio): `host:port` on the LAN or tailnet address (never a public one) and the bearer secret callers send. Both are needed together |
 
 | Variable | Use |
@@ -768,7 +768,9 @@ if isinstance(result, Ok):
   never brings the message forward: the timer keeps the longest wait. When a timer runs out, the
   main worker runs `frameio.review_done` (`t6.worker.review.ReviewMessage`)
   and sends one Telegram message through the gateway's `/notify` to
-  `T6_REVIEW_CHAT` (and `T6_REVIEW_TOPIC` if set) with the file's title, who
+  the first active Project Chat link, or `T6_REVIEW_CHAT` (and `T6_REVIEW_TOPIC`
+  if set) when no link is found. The main worker needs the Notion External Links
+  data source configured to resolve the Frame.io project. The message has the file's title, who
   commented, when they started and stopped (Manila time), how many comments they
   made and how many the file has in total, and two links: the newest share
   that is on, not expired and made from the file (its short URL, or "no share

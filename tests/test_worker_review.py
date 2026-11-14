@@ -4,6 +4,8 @@ Fake clock, fake Frame.io V4, fake gateway.
 """
 
 from collections.abc import Mapping
+from types import SimpleNamespace
+from pathlib import Path
 import json
 from typing import Any
 
@@ -16,6 +18,10 @@ from t6.worker.__main__ import ConfigError, WorkerSettings, configured_handlers
 from t6.worker.gateway import GatewayClient
 from t6.worker.review import ReviewMessage
 from t6.worker.review_timer import ReviewTimerClient
+from t6.worker.review_target import ReviewTarget
+from t6.worker.registry import RegistryClient
+from t6.registry.sqlite import SqliteProjectRegistry
+from t6.server.app import Grant, ServerConfig, WebhookApp
 from test_frameio_worker import FakeTokens
 from test_server_app import (
     FRAMEIO_WORKER_SECRET,
@@ -254,6 +260,38 @@ class ReviewMessageTests(ServerTestCase):
             pass
         (message,) = gateway.sent.values()
         self.assertEqual(message["topic"], 7)
+
+    def test_linked_topic_and_general_and_inactive_fallback(self) -> None:
+        registry = SqliteProjectRegistry(Path(self.directory.name) / "registry.sqlite3")
+        project = registry.register(actor="test", idempotency_key="register", notion_page_id="page-1", code="SHOW").project
+        config = ServerConfig(grants=(Grant(WORKER_SECRET, registry_read=True),))
+        app = WebhookApp(self.queue, config, self.clock, registry=registry)
+        registry_client = RegistryClient(InProcess(app), WORKER_SECRET)
+        class Links:
+            def find(self, ref: Any) -> Any:
+                return SimpleNamespace(project_ids=("page-1",)) if ref.external_id == "fp1" else None
+        target = ReviewTarget(Links(), registry_client)
+        self.review = ReviewMessage(GatewayClient(self.gateway, "secret"), CHAT, None, self.ask, target=target)
+        self.worker = Worker(self.queue_client, "main", self.review.handlers())
+        with registry._transaction() as db:
+            db.execute("INSERT INTO chat_links VALUES (?, ?, ?, ?, ?)", ("link", project.id, -200, 9, "active"))
+        self.comment("c1", "Ana", "u-a", "2026-11-12T10:00:00Z")
+        self.clock.advance(15 * MINUTE)
+        self.run_worker()
+        self.assertEqual([(m["to"], m.get("topic")) for m in self.gateway.sent.values()], [(-200, 9)])
+        with registry._transaction() as db:
+            db.execute("UPDATE chat_links SET topic_id = NULL")
+        self.comment("c2", "Ben", "u-b", "2026-11-12T10:01:00Z")
+        self.clock.advance(15 * MINUTE)
+        self.run_worker()
+        self.assertEqual([(m["to"], m.get("topic")) for m in self.gateway.sent.values()][-1], (-200, None))
+        with registry._transaction() as db:
+            db.execute("UPDATE chat_links SET state = 'inactive'")
+        self.comment("c3", "Cam", "u-c", "2026-11-12T10:02:00Z")
+        self.clock.advance(15 * MINUTE)
+        self.run_worker()
+        self.assertEqual([(m["to"], m.get("topic")) for m in self.gateway.sent.values()][-1], (CHAT, None))
+        self.assertIsNone(target("unknown"))
 
     def test_names_are_escaped_for_telegram_html(self) -> None:
         self.comment("c1", "<b>Tom & Jerry", "u-a", "2026-11-12T10:00:00Z")

@@ -712,6 +712,20 @@ class WebhookApp:
     def _registry_answer(
         self, registry: ProjectRegistry, grants: list[Grant], steps: list[str], request: Request
     ) -> Response:
+        if len(steps) == 2 and steps[0] == "review-chat":
+            if request.method != "GET":
+                return Response(405)
+            if not any(g.registry_read for g in grants):
+                return Response(403, {"error": "registry read not allowed"})
+            from t6.registry.sqlite import SqliteProjectRegistry
+            if not isinstance(registry, SqliteProjectRegistry):
+                return Response(503, {"error": "chat links unavailable"})
+            project = registry.get_by_page(steps[1])
+            if project is None:
+                return Response(404)
+            with registry._transaction() as db:
+                rows = db.execute("SELECT chat_id, topic_id FROM chat_links WHERE project_id = ? AND state = 'active' ORDER BY rowid", (project.id,)).fetchall()
+            return Response(200, {"links": [{"chat": row[0], "topic": row[1]} for row in rows]})
         if len(steps) == 2 and steps[0] == 'status-sync':
             if not any(g.registry_sync for g in grants):
                 return Response(403)
