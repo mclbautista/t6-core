@@ -1220,6 +1220,10 @@
           ]
         },
         {
+          "name": "T6 ID",
+          "type": "rich_text"
+        },
+        {
           "name": "Tasks",
           "type": "relation",
           "id": "awZv"
