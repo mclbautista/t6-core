@@ -163,7 +163,30 @@ def frameio_backend(environ: Mapping[str, str]) -> tuple[Tokens, Run]:
     from t6.frameio.api import FrameioApi
     from t6.frameio.reads import FrameioReads
 
-    return tokens, FrameioReads(FrameioApi(tokens), links, environ.get("T6_FRAMEIO_ACCOUNT_ID") or None)
+    from t6.frameio.reads import SHARE_CACHE_SECONDS, SHARE_SCAN_LIMIT
+
+    reads = FrameioReads(
+        FrameioApi(tokens),
+        links,
+        environ.get("T6_FRAMEIO_ACCOUNT_ID") or None,
+        share_cache_seconds=_number_setting(environ, "T6_FRAMEIO_SHARE_CACHE_SECONDS", SHARE_CACHE_SECONDS, minimum=0),
+        share_scan_limit=int(_number_setting(environ, "T6_FRAMEIO_SHARE_SCAN_LIMIT", SHARE_SCAN_LIMIT, minimum=1)),
+    )
+    return tokens, reads
+
+
+def _number_setting(environ: Mapping[str, str], name: str, default: float, *, minimum: float) -> float:
+    """A number from the environment, `default` when it is unset or empty, an error when it is below `minimum`."""
+    raw = (environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ConfigError(f"{name} must be a number, got {raw!r}") from None
+    if not value >= minimum or value == float("inf"):
+        raise ConfigError(f"{name} must be a number of at least {minimum:g}, got {raw!r}")
+    return value
 
 
 def frameio_worker(

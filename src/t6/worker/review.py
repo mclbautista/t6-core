@@ -78,7 +78,7 @@ class ReviewMessage:
         comments = "1 comment" if count == 1 else f"{count} comments"
         text = (
             f"<b>{who}</b> finished commenting on <b>{html.escape(title, quote=False)}</b>\n"
-            f"Share link: {self._share_text(shares, file_id)}\n"
+            f"Share link: {self._share_text(shares, {file_id, *([file.parent_id] if file is not None and file.parent_id else [])})}\n"
             f"Frame.io link: {asset}\n"
             f"Started: {long_date(first)}\n"
             f"Stopped: {long_date(last)}\n"
@@ -108,14 +108,18 @@ class ReviewMessage:
         except ValueError:
             return None
 
-    def _share_text(self, shares: tuple[ShareLink, ...] | None, file_id: str) -> str:
-        """The newest share that is live and holds the file, as a link; "no share link" when none does."""
+    def _share_text(self, shares: tuple[ShareLink, ...] | None, held: set[str]) -> str:
+        """The newest live share that holds the file (or its folder or version stack), as a link.
+
+        "no share link" when every live share was checked and none holds it;
+        "unknown" when some live shares were not checked (past the scan limit).
+        """
         if shares is None:
             return UNKNOWN
         now = self._now()
-        found = [s for s in shares if s.url and s.live(now) and file_id in s.file_ids]
+        found = [s for s in shares if s.url and s.live(now) and held.intersection(s.file_ids)]
         if not found:
-            return "no share link"
+            return UNKNOWN if any(s.live(now) and not s.files_known for s in shares) else "no share link"
         newest = max(found, key=lambda s: s.created_at or datetime.min.replace(tzinfo=timezone.utc))
         assert newest.url is not None
         return link(newest.url, newest.url)

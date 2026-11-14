@@ -53,7 +53,8 @@ class ReviewMessageTests(ServerTestCase):
         self.fake.add_file("f1", "Cut 1")
         self.fake.add_share("fp1", "s1", "Cut 1 share", file_ids=("f1",), created_at="2026-11-01T00:00:00Z")
         self.gateway = FakeNotify()
-        reads = FrameioReads(FrameioApi(StaticTokens(), self.fake.fetch))
+        self.reads = FrameioReads(FrameioApi(StaticTokens(), self.fake.fetch))
+        reads = self.reads
         timers = ReviewTimerClient(InProcess(self.app), FRAMEIO_WORKER_SECRET)
         frameio = FrameioWorker(FakeTokens(), reads, lambda text, key: None, self.clock, arm_review_timer=timers.arm)
         self.frameio_worker = Worker(
@@ -126,6 +127,74 @@ class ReviewMessageTests(ServerTestCase):
         self.assertIn("1 comment ", ana)
         self.assertIn("<b>A guest</b>", guest)
         self.assertIn("1 comment ", guest)
+
+    def comment_at_frame(self, comment_id: str, author_id: str, frame: int, at: str = "2026-11-12T10:00:00Z") -> None:
+        self.fake.add_comment("f1", comment_id, "text", "Ana Reyes", author_id=author_id, created_at=at, timestamp=frame)
+        self.webhook(comment_id)
+
+    def test_the_wait_is_the_rest_of_the_clip_plus_eight_minutes(self) -> None:
+        self.fake.set_clip("f1", 166.792, 23.976)
+        self.comment_at_frame("c1", "u-a", 2108)  # 1:27.9 in: 78.87 s left, so 558.87 s
+        self.clock.advance(558)
+        self.run_worker()
+        self.assertEqual(self.gateway.texts(), [])
+        self.clock.advance(1)
+        self.run_worker()
+        (ana,) = self.gateway.texts()
+        self.assertIn("<b>Ana Reyes</b>", ana)
+
+    def test_a_comment_earlier_in_the_clip_does_not_bring_the_message_forward(self) -> None:
+        self.fake.set_clip("f1", 600.0, 25.0)
+        self.comment_at_frame("c1", "u-a", 25 * 60)  # 1:00 in: 540 s left, so 1020 s
+        self.clock.advance(60)
+        self.comment_at_frame("c2", "u-a", 25 * 500, at="2026-11-12T10:01:00Z")  # 8:20 in: 100 s left, so 580 s
+        self.clock.advance(1019 - 60)
+        self.run_worker()
+        self.assertEqual(self.gateway.texts(), [])
+        self.clock.advance(1)
+        self.run_worker()
+        (ana,) = self.gateway.texts()
+        self.assertIn("2 comments", ana)
+
+    def test_without_the_clip_length_the_fixed_fifteen_minutes_apply(self) -> None:
+        self.comment_at_frame("c1", "u-a", 2108)  # no Duration or Frame Rate on the file
+        self.clock.advance(15 * MINUTE - 1)
+        self.run_worker()
+        self.assertEqual(self.gateway.texts(), [])
+        self.clock.advance(1)
+        self.run_worker()
+        self.assertEqual(len(self.gateway.texts()), 1)
+
+    def sent_share_line(self) -> str:
+        self.comment("c1", "Ana Reyes", "u-a", "2026-11-12T10:00:00Z")
+        self.clock.advance(15 * MINUTE)
+        self.run_worker()
+        (text,) = self.gateway.texts()
+        return next(line for line in text.splitlines() if line.startswith("Share link:"))
+
+    def test_a_share_of_the_files_version_stack_gives_its_link(self) -> None:
+        self.fake.add_file("f1b", "Cut 1 v2")
+        self.fake.add_version_stack("vs1", ["f1", "f1b"])  # f1 sits in the stack, so its parent is the stack
+        self.fake.shares["fp1"].clear()
+        self.fake.add_share("fp1", "s-stack", "Stack share", file_ids=("vs1",), created_at="2026-11-01T00:00:00Z")
+        self.assertIn("https://f.io/s-stack", self.sent_share_line())
+
+    def test_a_share_of_the_files_folder_gives_its_link(self) -> None:
+        self.fake.shares["fp1"].clear()
+        self.fake.add_share("fp1", "s-folder", "Folder share", file_ids=("folder-1",), created_at="2026-11-01T00:00:00Z")
+        self.assertIn("https://f.io/s-folder", self.sent_share_line())
+
+    def test_no_live_share_holds_the_file_after_all_were_checked(self) -> None:
+        self.fake.shares["fp1"].clear()
+        self.fake.add_share("fp1", "s-other", "Other", file_ids=("f-other",), created_at="2026-11-01T00:00:00Z")
+        self.assertEqual(self.sent_share_line(), "Share link: no share link")
+
+    def test_shares_past_the_scan_limit_make_the_answer_unknown(self) -> None:
+        self.reads._share_scan_limit = 1  # the test reads are built in setUp
+        self.fake.shares["fp1"].clear()
+        self.fake.add_share("fp1", "s-new", "New", file_ids=("f-other",), created_at="2026-11-09T00:00:00Z")
+        self.fake.add_share("fp1", "s-old", "Old", file_ids=("f1",), created_at="2026-11-01T00:00:00Z")
+        self.assertEqual(self.sent_share_line(), "Share link: unknown")
 
     def test_a_new_comment_before_the_quiet_time_restarts_only_that_persons_timer(self) -> None:
         self.comment("c1", "Ana Reyes", "u-a", "2026-11-12T10:00:00Z")

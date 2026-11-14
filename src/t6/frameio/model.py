@@ -33,6 +33,25 @@ def _text(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _number(value: object, *, allow_zero: bool = False) -> float | None:
+    """A finite number from a number or a numeric string, positive (or zero when allowed), else None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        try:
+            value = float(value)
+        except ValueError:
+            return None
+    if not isinstance(value, (int, float)) or value != value or value in (float("inf"), float("-inf")):
+        return None
+    return float(value) if value > 0 or (allow_zero and value == 0) else None
+
+
+def clip_remaining_seconds(duration: float, frame_rate: float, frame: float) -> float:
+    """How many seconds of a clip of `duration` seconds at `frame_rate` are left after frame `frame`."""
+    return max(0.0, duration - frame / frame_rate)
+
+
 class _Json:
     """JSON codec for a flat dataclass of text, flags, times and tuples of text."""
 
@@ -88,7 +107,12 @@ class ShareLink(_Json):
     last_viewed_at: datetime | None = None
     created_at: datetime | None = None
     file_ids: tuple[str, ...] = ()
-    """The files the share was made from (Frame.io's `asset_ids`). A share of a folder lists the folder."""
+    """The ids of what the share holds: files, folders and version stacks (and a stack's head version file).
+
+    Read from `GET /shares/{id}/assets` for live shares: the Share object itself has no list of its assets.
+    """
+    files_known: bool = True
+    """False for a live share whose assets were not read (past the scan limit), so `file_ids` is not the full list."""
 
     def live(self, now: datetime) -> bool:
         """A client can open it now: it is turned on and has not expired."""
@@ -96,6 +120,7 @@ class ShareLink(_Json):
 
     @classmethod
     def from_api(cls, raw: Mapping[str, Any], frameio_project_id: str) -> ShareLink:
+        """The share as Frame.io lists it. `file_ids` is filled in by a separate read of the share's assets."""
         return cls(
             id=str(raw["id"]),
             frameio_project_id=frameio_project_id,
@@ -105,7 +130,6 @@ class ShareLink(_Json):
             expires_at=_time(raw.get("expiration")),
             last_viewed_at=_time(raw.get("last_viewed_at")),
             created_at=_time(raw.get("inserted_at") or raw.get("created_at")),
-            file_ids=tuple(str(item) for item in raw.get("asset_ids") or () if item),
         )
 
     @classmethod
@@ -148,10 +172,17 @@ class FrameioFile(_Json):
     id: str
     name: str
     url: str | None = None
+    parent_id: str | None = None
+    """The folder or version stack the file is in. A share of that folder or stack holds the file."""
 
     @classmethod
     def from_api(cls, raw: Mapping[str, Any]) -> FrameioFile:
-        return cls(id=str(raw["id"]), name=str(raw.get("name") or ""), url=_text(raw.get("view_url")))
+        return cls(
+            id=str(raw["id"]),
+            name=str(raw.get("name") or ""),
+            url=_text(raw.get("view_url")),
+            parent_id=_text(raw.get("parent_id")),
+        )
 
     @classmethod
     def from_json(cls, raw: Mapping[str, Any]) -> FrameioFile:
@@ -173,6 +204,10 @@ class ResolvedComment(_Json):
     author_id: str
     author_name: str | None
     created_at: datetime
+    frame: float | None = None
+    """Where in the clip the comment sits, in frames (Frame.io's `timestamp`), or None."""
+    remaining_seconds: float | None = None
+    """How much of the clip is left after the comment, or None when it is not known."""
 
     @classmethod
     def from_api(cls, raw: Mapping[str, Any], frameio_project_id: str) -> ResolvedComment:
@@ -196,6 +231,7 @@ class ResolvedComment(_Json):
             author_id=author_id or GUEST_ID,
             author_name=_text(owner.get("name")) if author_id else GUEST_NAME,
             created_at=created_at,
+            frame=_number(raw.get("timestamp"), allow_zero=True),
         )
 
     @classmethod

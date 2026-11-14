@@ -125,6 +125,16 @@ class TimerTests(unittest.TestCase):
         self.assertEqual(claim.kind, "frameio.review_done")
         self.assertEqual(dict(claim.payload), {"p": "p1", "count": 2})
 
+    def test_a_call_that_fires_earlier_keeps_the_later_time(self) -> None:
+        self.queue.arm_timer("main", "k", "x", 600)
+        self.queue.arm_timer("main", "k", "x", 100)  # would fire at 100; the first is due at 600
+        self.clock.advance(599)
+        self.assertIsNone(self.queue.claim("main", 60))
+        self.clock.advance(1)
+        claim = self.queue.claim("main", 60)
+        assert claim is not None
+        self.assertEqual(claim.payload["count"], 2)
+
     def test_timer_survives_a_server_restart(self) -> None:
         self.queue.arm_timer("main", "review:p1", "frameio.review_done", 900)
         self.clock.advance(500)
