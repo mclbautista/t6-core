@@ -50,7 +50,7 @@ class LLMAPITests(unittest.TestCase):
         self.api.people.service_permissions = {'reports': frozenset({'llm'})}
         self.fake = FakeProvider().reply('{"summary": 123}')
         self.api.llm_service = LLMService({'fake': self.fake}, 'fake', Registry())
-        self.assertEqual(self.call()['rule'], 'output')
+        self.assertFalse(self.call()['result']['output_valid'])
 
     def test_non_zdr_refused(self) -> None:
         fake = FakeProvider(retention='unknown')

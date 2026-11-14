@@ -6,7 +6,9 @@ through Hermes; do not put the API's provider key in the app or the runbook.
 The app's live entry point should use `t6.llm.evals.run_live_evals` and
 `Client.llm_run`, with a client timeout long enough for the API's LLM timeout.
 The API must support `require_zdr` and return its ZDR attestation; upgrade it
-before running this harness. A refusal or missing attestation stops the run.
+before running this harness. A refusal, missing attestation, or missing token
+usage stops the run. Invalid or schema-violating output is a failed attempt;
+its raw content is not retained, but its reported cost is included.
 
 1. Cyril initiates the run in Hermes on Sixto and selects the app's task and
    its app-owned prompt template and schema. The template must have one
@@ -29,7 +31,8 @@ before running this harness. A refusal or missing attestation stops the run.
    refusal before rerunning; do not bypass the retention requirement.
 4. Before release, review every case ID in `human_review`, including all failed
    and changed cases and up to five additional randomly sampled completed
-   cases. `review_outputs` contains the three outputs for each sampled case;
+   cases. `review_outputs` contains the valid outputs for each sampled case; invalid
+   attempts are identified in the result reason without retaining their raw output;
    compare them with the corresponding case and expected properties. Record
    the reviewer's name in `reviewer` and the review date in `review_date` in
    the run JSON after review, and retain the record with the release evidence.

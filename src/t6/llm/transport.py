@@ -209,7 +209,8 @@ def _completion(raw: bytes, requested_model: str) -> Completion:
         message = body["choices"][0]["message"]
         content = message.get("content")
         usage = body.get("usage") or {}
-        tokens = Tokens(int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0))
+        tokens = Tokens(*(int(value) if value is not None else None
+                          for value in (usage.get("prompt_tokens"), usage.get("completion_tokens"))))
         model = body.get("model") or requested_model
     except ProviderError:
         raise

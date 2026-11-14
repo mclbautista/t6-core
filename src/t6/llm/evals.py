@@ -11,10 +11,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date as Date
 import math
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, Protocol, cast
 
 from jsonschema.validators import validator_for
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints
@@ -38,7 +38,7 @@ class RealProvenance(BaseModel):
 
     kind: Literal["real"]
     reviewer: NonEmpty
-    date: date
+    date: Date
 
 
 Provenance = Annotated[SyntheticProvenance | RealProvenance, Field(discriminator="kind")]
@@ -121,7 +121,7 @@ class RunRecord(BaseModel):
     prompt_hash: NonEmpty
     schema_hash: NonEmpty
     t6_version: NonEmpty
-    date: date
+    date: Date
     results: list[CaseResult]
 
     # Optional fields preserve compatibility with records written before the runner.
@@ -134,7 +134,7 @@ class RunRecord(BaseModel):
     human_review: list[str] = Field(default_factory=list)
     review_outputs: dict[str, list[JsonValue]] = Field(default_factory=dict)
     reviewer: NonEmpty | None = None
-    review_date: date | None = None
+    review_date: Date | None = None
 
     def write(self, path: str | Path) -> None:
         """Write the run record to a JSON file."""
@@ -267,7 +267,7 @@ class LiveEvalConfig:
 
     task_name: str
     prompt_template: str
-    output_schema: dict
+    output_schema: dict[str, Any]
     masking_preset: Literal['names', 'strict']
     cost_cap: float
     prompt_token_price: float
@@ -276,12 +276,20 @@ class LiveEvalConfig:
     model_hint: str | None = None
 
 
+class LiveClient(Protocol):
+    def llm_run(self, inputs: Any) -> Any: ...
+
+
+class Sampler(Protocol):
+    def sample(self, population: Sequence[str], k: int) -> list[str]: ...
+
+
 def run_live_evals(
-    cases: Sequence[Case], *, config: LiveEvalConfig, client: object,
-    grade: Callable[[Case, JsonValue], CaseResult], t6_version: str, run_date: date,
+    cases: Sequence[Case], *, config: LiveEvalConfig, client: LiveClient,
+    grade: Callable[[Case, JsonValue], CaseResult], t6_version: str, run_date: Date,
     history: Sequence[RunRecord] = (), must_pass: set[str] | frozenset[str] = frozenset(),
     accept: Mapping[str, str] | None = None, path: str | Path | None = None,
-    rng: object | None = None,
+    rng: Sampler | None = None,
 ) -> RunRecord:
     """Run an app's task through the API, adding off-repo cases and a review sample.
 
@@ -291,7 +299,7 @@ def run_live_evals(
     """
     import json
     import random
-    from t6.verbs import Done, LLMRunInput, LLMRunOutput
+    from t6.llm.api import Done, LLMRunInput, LLMRunOutput
 
     for price in (config.prompt_token_price, config.completion_token_price):
         if not math.isfinite(price) or price < 0:
@@ -312,6 +320,7 @@ def run_live_evals(
 
     def evaluate(case: Case, _provider: Provider) -> Attempt:
         nonlocal metadata
+        assert isinstance(case.masked_input, str)
         result = client.llm_run(LLMRunInput(task_name=config.task_name, prompt_template=config.prompt_template,
             output_schema=config.output_schema, input_text=case.masked_input, masking_preset=config.masking_preset,
             model_hint=config.model_hint, require_zdr=True, temperature_zero=True))
@@ -325,20 +334,24 @@ def run_live_evals(
             raise RuntimeError('llm run metadata changed during the run')
         metadata = current
         tokens = output.tokens
-        if any(type(tokens.get(k)) is not int or tokens[k] < 0 for k in ('prompt', 'completion')):
+        prompt, completion = tokens.get('prompt'), tokens.get('completion')
+        if (type(prompt) is not int or type(completion) is not int
+                or prompt is None or completion is None or prompt < 0 or completion < 0):
             raise ValueError('llm run returned invalid token counts')
+        cost = prompt * config.prompt_token_price + completion * config.completion_token_price
+        if not output.output_valid:
+            return Attempt(False, 'output validation failed', cost, review=True)
         outputs.setdefault(case.id, []).append(output.output)
         graded = grade(case, output.output)
         if graded.case_id != case.id:
             raise ValueError('grader returned a different case ID')
-        return Attempt(graded.passed, graded.reason,
-            tokens['prompt'] * config.prompt_token_price + tokens['completion'] * config.completion_token_price)
+        return Attempt(graded.passed, graded.reason, cost)
 
     # Metadata is replaced with the API's values after the first call.
     record = RunRecord(model_id='pending', provider='pending', prompt_hash='pending', schema_hash='pending',
                        t6_version=t6_version, date=run_date, results=[])
-    result = run_evals(all_cases, record=record, evaluate=evaluate, provider=None, cost_cap=config.cost_cap,
-                       must_pass=must_pass, history=history, accept=accept)  # type: ignore[arg-type]
+    result = run_evals(all_cases, record=record, evaluate=evaluate, provider=cast(Provider, None), cost_cap=config.cost_cap,
+                       must_pass=must_pass, history=history, accept=accept)
     if metadata is None:
         raise RuntimeError('live run produced no API metadata')
     previous = next((r for r in reversed(history) if r.status != 'offline'), None)
@@ -351,7 +364,7 @@ def run_live_evals(
     selected = set(sampler.sample(remaining, min(5, len(remaining))))
     review = [r.case_id for r in result.results if r.case_id in required or r.case_id in selected]
     result = result.model_copy(update=dict(zip(('model_id', 'provider', 'prompt_hash', 'schema_hash'), metadata)) |
-                               {'human_review': review, 'review_outputs': {case_id: outputs[case_id] for case_id in review}})
+                               {'human_review': review, 'review_outputs': {case_id: outputs.get(case_id, []) for case_id in review}})
     if path is not None:
         result.write(path)
     return result

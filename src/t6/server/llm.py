@@ -72,6 +72,10 @@ class LLMService:
         try:
             completion = provider.complete([{'role': 'system', 'content': 'Return JSON matching this schema: ' + schema_bytes.decode()},
                                             {'role': 'user', 'content': prompt}], timeout=60, zdr=require_zdr)
+        except (ProviderError, ProviderTimeout):
+            return Refused(rule='provider', reason='LLM provider failed')
+        output_valid = True
+        try:
             data = json.loads(strip_fence(completion.content or ''))
             validator = Draft202012Validator(inputs.output_schema, registry=SchemaRegistry())
             validator.validate(data)
@@ -79,14 +83,13 @@ class LLMService:
                 return Refused(rule='masking', reason='Output contains unmasked registered names')
             data = session.restore(data)
             validator.validate(data)
-        except (ProviderError, ProviderTimeout):
-            return Refused(rule='provider', reason='LLM provider failed')
         except (ValueError, ValidationError, Unresolved, Unresolvable):
-            return Refused(rule='output', reason='LLM output could not be validated or restored')
+            data = None
+            output_valid = False
         return Done(result=LLMRunOutput(output=data, model=completion.model, provider=name,
                     prompt_hash=_hash(prompt_bytes), schema_hash=_hash(schema_bytes),
                     tokens={'prompt': completion.tokens.prompt, 'completion': completion.tokens.completion,
-                            'total': completion.tokens.total}, zdr=require_zdr))
+                            'total': completion.tokens.total}, zdr=require_zdr, output_valid=output_valid))
 
 
 def service_from_env(env: Mapping[str, str]) -> LLMService | None:

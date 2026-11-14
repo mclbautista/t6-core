@@ -25,6 +25,7 @@ from types import UnionType
 
 from pydantic import BaseModel, Field, ConfigDict
 from t6.domain import Project, JobOrder, Deliverable, MeetingNote, Contact, Camera, ExternalRef
+from t6.llm.api import Done as Done, LLMRunInput as LLMRunInput, LLMRunOutput as LLMRunOutput
 
 if TYPE_CHECKING:
     from t6.person import People
@@ -32,11 +33,6 @@ if TYPE_CHECKING:
 
 _actor: ContextVar[str] = ContextVar("verb_actor", default="")
 _registry: ContextVar[Any] = ContextVar("verb_registry", default=None)
-
-
-class Done(BaseModel):
-    outcome: Literal["done"] = "done"
-    result: Any
 
 
 class Preview(BaseModel):
@@ -496,27 +492,6 @@ class CameraEnrichInput(BaseModel):
     fields: dict[str, Any]
     idempotency_key: str | None = None
     confirm: str | None = None
-
-
-class LLMRunInput(BaseModel):
-    task_name: str = Field(min_length=1, max_length=200)
-    prompt_template: str
-    output_schema: dict[str, Any]
-    input_text: str
-    masking_preset: Literal['names', 'strict']
-    model_hint: str | None = None
-    require_zdr: bool = False
-    temperature_zero: bool = False
-
-
-class LLMRunOutput(BaseModel):
-    output: Any
-    model: str
-    provider: str
-    prompt_hash: str
-    schema_hash: str
-    tokens: dict[str, int]
-    zdr: bool = False
 
 
 def llm_api_only(inputs: LLMRunInput, open_notion: Callable[..., Any]) -> Outcome:
