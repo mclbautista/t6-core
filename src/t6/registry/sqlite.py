@@ -149,6 +149,10 @@ def _migrate(db: sqlite3.Connection) -> None:
                                    f"BEGIN SELECT RAISE(ABORT, '{table} is append-only'); END")
             db.execute("INSERT INTO schema_version VALUES (?, ?)", (version, int(forward_only)))
 
+    db.execute("INSERT INTO activity (project_id, at, actor, action, summary, audit_id) "
+               "SELECT project_id, at, actor, action, REPLACE(action, '_', ' '), id FROM audit "
+               "WHERE NOT EXISTS (SELECT 1 FROM activity WHERE activity.audit_id = audit.id)")
+
 
 _Values: TypeAlias = Mapping[str, JsonValue]
 _Step: TypeAlias = Callable[

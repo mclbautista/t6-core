@@ -5,7 +5,7 @@ from pathlib import Path
 
 from t6.server import Request, WebhookApp
 from t6.server.routes import load_routes
-from test_server_app import ServerTestCase, frameio_request, notion_event, notion_request
+from test_server_app import ServerTestCase, comment, frameio_request, notion_event, notion_request
 
 
 class EdgeTests(ServerTestCase):
@@ -46,12 +46,25 @@ class EdgeTests(ServerTestCase):
 
     def test_handshake_and_boundaries(self) -> None:
         response = self.app.public(Request("POST", "/events/notion", {}, json.dumps({"verification_token": "token"}).encode()))
-        self.assertEqual(response.status, 200)
-        self.assertEqual(self.tokens, ["token"])
+        self.assertEqual(response.status, 401)
+        self.assertEqual(self.tokens, [])
         for path in ("/tap", "/registry/projects", "/operator/offers", "/review/timers", "/unknown"):
             self.assertEqual(self.app.tailnet(Request("POST", path)).status, 404)
             self.assertEqual(self.app.public(Request("POST", path)).status, 404)
         self.assertEqual(self.app.public(Request("GET", "/health")).status, 200)
+
+    def test_example_routes_deliver_worker_payloads(self) -> None:
+        routes = load_routes("docs/edge-routes.example.yaml", {"FRAMEIO_WEBHOOK_SECRET": "frameio-secret", "NOTION_WEBHOOK_TOKEN": "notion-token"})
+        app = WebhookApp(self.queue, replace(self.app._config, edge_routes=routes), self.clock, self.tokens.append)
+        frame = replace(frameio_request(self.clock, comment("c1")), path="/events/frameio/comments")
+        notion = replace(notion_request(self.clock, notion_event(self.clock)), path="/events/notion/pages")
+        self.assertEqual(app.public(frame).status, 200)
+        self.assertEqual(app.public(notion).status, 200)
+        f = self.queue.claim("frameio", 60)
+        n = self.queue.claim("main", 60)
+        assert f is not None and n is not None
+        self.assertEqual((f.kind, dict(f.payload)), ("frameio.resolve_comment", {"comment_id": "c1", "account_id": "acc-1", "frameio_project_id": "fp1"}))
+        self.assertEqual((n.kind, n.payload["page_id"]), ("notion.page_changed", "page-1"))
 
     def test_invalid_config_stops_startup(self) -> None:
         with self.assertRaisesRegex(ValueError, "unknown verifier"):
@@ -68,6 +81,9 @@ class EdgeTests(ServerTestCase):
         self.assertEqual(app.public(Request("POST", "/x", {}, b'{"verification_token":"new"}')).status, 200)
         self.assertEqual(self.tokens[-1], "new")
         self.assertNotEqual(app.public(Request("POST", "/x", {}, b"{}")).status, 200)
+        self.file.write_text("- {path: /x, verifier: frameio_v0, secret_env: MISSING, job_kind: x, queue: main}")
+        with self.assertRaisesRegex(ValueError, "MISSING"):
+            load_routes(str(self.file), {"T6_NOTION_BOOTSTRAP": "1"})
         self.file.write_text("- {path: /x, verifier: notion, secret_env: NOTION, job_kind: x, queue: typo}")
         with self.assertRaisesRegex(ValueError, "queue"):
             load_routes(str(self.file), self.env)

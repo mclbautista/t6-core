@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from t6.ids import EntityKind, T6Id
+from t6.registry import Registered
 from t6.registry.sqlite import SqliteProjectRegistry
 
 
@@ -38,6 +39,21 @@ class MigrationTests(unittest.TestCase):
             with sqlite3.connect(path) as db:
                 self.assertEqual(db.execute('SELECT version, forward_only FROM schema_version ORDER BY version').fetchall(), [(1, 0), (2, 0), (3, 0), (4, 0)])
             SqliteProjectRegistry(path)
+
+    def test_previous_release_write_is_reconciled_on_reopen(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "db"
+            registry = SqliteProjectRegistry(path)
+            project = registry.register(actor="new", idempotency_key="new")
+            assert isinstance(project, Registered)
+            project_id = project.project.id
+            # The previous release writes only to the original audit table.
+            with sqlite3.connect(path) as old_release:
+                old_release.execute("INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, 'legacy_change', 'old', 42, NULL, '{}')", (project_id,))
+            reopened = SqliteProjectRegistry(path)
+            self.assertEqual(sum(item.actor == "old" for item in reopened.activity(project_id)), 1)
+            reopened = SqliteProjectRegistry(path)
+            self.assertEqual(sum(item.actor == "old" for item in reopened.activity(project_id)), 1)
 
     def test_version_one_upgrades(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

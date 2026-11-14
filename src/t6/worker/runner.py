@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from typing import Protocol
+from threading import Event, Thread
 from urllib.error import URLError
 
 from t6.domain.events import JsonValue
@@ -68,12 +69,27 @@ class Worker:
         if handler is None:
             client.fail(job, f"no handler for {job.kind}")
             return True
+        stop = Event()
+        def renew() -> None:
+            while not stop.wait(self._lease_seconds / 3):
+                try:
+                    client.extend(job, self._lease_seconds)
+                except Exception:  # noqa: BLE001 - a lost lease is rejected when finishing
+                    return
+        thread = Thread(target=renew, daemon=True)
+        thread.start()
         try:
             result = handler(job)
         except Refused as refusal:
+            stop.set()
+            thread.join()
             client.fail(job, str(refusal)[:300])
         except Exception as error:  # noqa: BLE001 - any handler failure is a failed attempt
+            stop.set()
+            thread.join()
             client.fail(job, f"{type(error).__name__}: {error}"[:300], retry_in=RETRY_SECONDS)
         else:
+            stop.set()
+            thread.join()
             client.ack(job, result)
         return True

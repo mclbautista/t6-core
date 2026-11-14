@@ -250,9 +250,13 @@ class WebhookApp:
             return Response(405)
         headers = request.headers_lower()
         body = _json_object(request.body)
-        if route.verifier == "notion" and not headers.get("x-notion-signature") and body and "verification_token" in body:
+        if route.verifier == "notion" and not route.secret and not headers.get("x-notion-signature") and body and isinstance(body.get("verification_token"), str) and body["verification_token"]:
             self._on_notion_verification(str(body["verification_token"]))
             return Response(200)
+        if route.verifier == "frameio_v0" and route.queue == "frameio" and route.job_kind == JobKind.FRAMEIO_RESOLVE_COMMENT.value:
+            return self._frameio(request, route.secret)
+        if route.verifier == "notion" and route.queue == "main" and route.job_kind == JobKind.NOTION_PAGE_CHANGED.value:
+            return self._notion(request, route.secret, handshake=False)
         try:
             if route.verifier == "frameio_v0":
                 verify_frameio(route.secret, headers, request.body, self._clock())
@@ -297,11 +301,12 @@ class WebhookApp:
         self._queue.submit(FRAMEIO_QUEUE, JobKind.FRAMEIO_SIGN_IN.value, key, {"code": code, "state": state})
         return Response(200, {"received": True, "message": "Sign-in received. You can close this page."})
 
-    def _frameio(self, request: Request) -> Response:
-        if not self._config.frameio_webhook_secret:
+    def _frameio(self, request: Request, secret: str | None = None) -> Response:
+        secret = self._config.frameio_webhook_secret if secret is None else secret
+        if not secret:
             return Response(503, {"error": "frameio webhook secret not configured"})
         now = self._clock()
-        verify_frameio(self._config.frameio_webhook_secret, request.headers_lower(), request.body, now)
+        verify_frameio(secret, request.headers_lower(), request.body, now)
         body = _json_object(request.body)
         if body is None:
             return Response(400, {"error": "body is not a JSON object"})
@@ -327,15 +332,16 @@ class WebhookApp:
         )
         return Response(200, {"created": made.created})
 
-    def _notion(self, request: Request) -> Response:
+    def _notion(self, request: Request, secret: str | None = None, *, handshake: bool = True) -> Response:
+        secret = self._config.notion_webhook_token if secret is None else secret
         body = _json_object(request.body)
-        if not request.header("x-notion-signature") and body and "verification_token" in body:
+        if handshake and not request.header("x-notion-signature") and body and "verification_token" in body:
             # Setup handshake: Notion sends its token once and the operator stores it as a secret.
             self._on_notion_verification(str(body["verification_token"]))
             return Response(200)
-        if not self._config.notion_webhook_token:
+        if not secret:
             return Response(503, {"error": "notion webhook token not configured"})
-        verify_notion(self._config.notion_webhook_token, request.headers_lower(), request.body, self._clock())
+        verify_notion(secret, request.headers_lower(), request.body, self._clock())
         if body is None:
             return Response(400, {"error": "body is not a JSON object"})
         if body.get("type") not in NOTION_PAGE_EVENTS:

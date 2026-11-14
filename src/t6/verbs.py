@@ -119,7 +119,7 @@ class ActivityOutput(BaseModel):
 
 def project_activity(inputs: ActivityInput, open_notion: Callable[..., Any]) -> Outcome:
     from t6.cli import DEFAULT_REGISTRY_DB, REGISTRY_DB_VARIABLE, _open_registry
-    from t6.registry import RegistryError, Rotation, normalize_code
+    from t6.registry import RegistryError, normalize_code
 
     try:
         since = None
@@ -136,7 +136,7 @@ def project_activity(inputs: ActivityInput, open_notion: Callable[..., Any]) -> 
         project = registry.get(inputs.project)
         if project is None:
             _, form = normalize_code(inputs.project)
-            matches = [p for p in registry.list_projects(Rotation.IN) if normalize_code(p.code)[1] == form]
+            matches = [p for p in registry.list_projects() if normalize_code(p.code)[1] == form]
             if len(matches) > 1:
                 return Ambiguous(candidates=[p.id for p in matches])
             project = matches[0] if matches else None

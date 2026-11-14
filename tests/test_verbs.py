@@ -3,6 +3,7 @@ import argparse
 import contextlib
 import io
 import json
+import re
 import unittest
 from typing import Any
 from unittest.mock import patch
@@ -19,14 +20,48 @@ class VerbTests(unittest.TestCase):
             self.assertEqual(main(["commands", "--json"]), 0)
         catalogue = json.loads(output.getvalue())
         pairs = {(entry["noun"], entry["verb"]) for entry in catalogue}
-        self.assertEqual(pairs, {("departments", ""), ("project", "activity"), ("jo", "get"), ("jo", "raise"),
-                                 ("jo", "format"), ("person", "find"), ("project", "resolve"),
-                                 ("camera", "get"), ("camera", "enrich")})
+        def help_text(args: list[str]) -> str:
+            text = io.StringIO()
+            with contextlib.redirect_stdout(text), self.assertRaises(SystemExit):
+                main([*args, "--help"])
+            return text.getvalue()
+
+        root = help_text([])
+        aliases = {alias.split()[-1] for entry in catalogue for alias in entry["aliases"]}
+        from_help: set[tuple[str, str]] = set()
+        for noun in {noun for noun, _ in pairs}:
+            self.assertRegex(root, rf"\b{re.escape(noun)}\b")
+            noun_pairs = {(n, verb) for n, verb in pairs if n == noun}
+            if (noun, "") in noun_pairs:
+                from_help.add((noun, ""))
+                continue
+            match = re.search(r"\{([^{}]+)\}", help_text([noun]))
+            self.assertIsNotNone(match)
+            assert match is not None
+            from_help.update((noun, verb) for verb in match.group(1).split(",") if verb not in aliases or (noun, verb) in pairs)
+        self.assertEqual(from_help, pairs)
+
         for noun, verb in pairs:
             output = io.StringIO()
             with contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as exit:
                 main([noun, verb, "--help"] if verb else [noun, "--help"])
             self.assertEqual(exit.exception.code, 0)
+
+    def test_activity_finds_all_rotations_and_reports_ambiguity(self) -> None:
+        import os
+        import tempfile
+        from pathlib import Path
+        from t6.registry import Rotation, SqliteProjectRegistry
+        from t6.verbs import ActivityInput, project_activity
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "registry"
+            registry = SqliteProjectRegistry(path)
+            registry.register(actor="test", idempotency_key="out", code="ABC", rotation=Rotation.OUT)
+            with patch.dict(os.environ, {"T6_REGISTRY_DB": str(path)}):
+                self.assertIsInstance(project_activity(ActivityInput(project="ABC"), lambda: None), Done)
+                registry.register(actor="test", idempotency_key="unclassified", code="ABC", rotation=Rotation.UNCLASSIFIED)
+                self.assertIsInstance(project_activity(ActivityInput(project="ABC"), lambda: None), Ambiguous)
 
     def test_optional_boolean_and_list_arguments(self) -> None:
         class Input(BaseModel):

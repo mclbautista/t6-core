@@ -29,7 +29,11 @@ def main() -> int:
         filename = environ.get("T6_ROUTES_FILE", "")
         if not filename:
             raise ValueError("T6_ROUTES_FILE is required in edge mode")
-        config = replace(config, edge_routes=load_routes(filename, environ))
+        routes = load_routes(filename, environ)
+        for route in routes:
+            if not route.secret:
+                print(f"Notion bootstrap: {route.path} serves verification handshakes only until its secret is configured", file=sys.stderr, flush=True)
+        config = replace(config, edge_routes=routes)
     queue = JobQueue(environ.get("T6_QUEUE_DB", "t6-queue.sqlite"))
     registry = None if mode == "edge" else SqliteProjectRegistry(environ.get("T6_REGISTRY_DB", "t6-registry.sqlite"))
     operator = None

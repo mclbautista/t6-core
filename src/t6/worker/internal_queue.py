@@ -69,12 +69,12 @@ class InternalJobQueue:
     def ack(self, job_id: int, token: str, value: JsonValue = None) -> bool:
         with self._db._transaction() as db:
             return db.execute("UPDATE internal_jobs SET state = 'done', lease_token = NULL, lease_until = NULL, result = ? "
-                              "WHERE id = ? AND state = 'claimed' AND lease_token = ?",
-                              (json.dumps({'status': 'ok', 'value': value}), job_id, token)).rowcount == 1
+                              "WHERE id = ? AND state = 'claimed' AND lease_token = ? AND lease_until > ?",
+                              (json.dumps({'status': 'ok', 'value': value}), job_id, token, self._clock())).rowcount == 1
 
     def fail(self, job_id: int, token: str, reason: str, retry_in: float | None = None) -> bool:
         with self._db._transaction() as db:
-            row = db.execute("SELECT attempts FROM internal_jobs WHERE id = ? AND state = 'claimed' AND lease_token = ?", (job_id, token)).fetchone()
+            row = db.execute("SELECT attempts FROM internal_jobs WHERE id = ? AND state = 'claimed' AND lease_token = ? AND lease_until > ?", (job_id, token, self._clock())).fetchone()
             if row is None:
                 return False
             state = 'failed' if retry_in is None else ('dead' if row[0] >= self._max_attempts else 'queued')
