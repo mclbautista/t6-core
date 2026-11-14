@@ -9,7 +9,7 @@
 - `t6.notion.external_links`: read External Links rows as ExternalRefs, create
   them idempotently, update Last Activity. Code never writes Active.
 - `t6.notion.generated`: one model per database, from the schema snapshot.
-- `t6.notion.schema`: the snapshot and the `t6 schema-check` logic.
+- `t6.notion.schema`: the snapshot and the `t6 admin schema-check` logic.
 - `t6.notion.cameras`: read and update Cameras in domain terms (`t6 cameras`).
 - `t6.notion.testing`: an in-memory fake Notion for tests.
 """

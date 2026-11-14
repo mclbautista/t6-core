@@ -135,7 +135,7 @@ class JobOrderStoreTests(unittest.TestCase):
         assert isinstance(result, Refused)
         self.assertEqual(result.rule, 'assignee_changed')
 
-    def test_cli_raise_create_alias_and_get(self) -> None:
+    def test_cli_raise_and_get(self) -> None:
         import contextlib
         import io
         import json
@@ -166,7 +166,7 @@ class JobOrderStoreTests(unittest.TestCase):
         args = ('--file', str(fields), '--data-sources', str(sources), '--idempotency-key', 'same')
         preview = command('jo', 'raise', *args)
         self.assertEqual(preview['outcome'], 'preview')
-        done = command('jo', 'create', *args, '--confirm', preview['token'])
+        done = command('jo', 'raise', *args, '--confirm', preview['token'])
         self.assertEqual(done['outcome'], 'done')
         got = command('jo', 'get', done['result']['jo_id'], '--data-sources', str(sources))
         self.assertEqual(got['id'], done['result']['jo_id'])

@@ -1433,7 +1433,7 @@ Telegram Key is `<chat_id>:<message_id>`; put a negative chat ID after `--`.
 For an unbound legacy page, get still returns its existing Notion fields.
 
 `t6 jo raise --file jo.json --data-sources FILE` previews a new Job Order;
-`jo create` is an alias. The JSON accepts the previous create fields, including
+The JSON accepts the Job Order fields, including
 `project_id` (a registered T6 Project ID or its Notion page), Contact page IDs
 in `assigned_ids`, and `source_text`. Dates without a time zone are Manila;
 the Department is checked against Notion's options, standing cc is added and
@@ -1639,7 +1639,7 @@ schema entries and fixtures. The versions in `SCHEMAS` (18, 19) are placeholders
 
 ### CLI rename table
 
-The old commands remain available until 0.5.0 and print a deprecation notice on stderr.
+Previous commands fail with a message naming their replacement.
 
 | Previous command | Current command |
 | --- | --- |

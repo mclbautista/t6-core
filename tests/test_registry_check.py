@@ -303,7 +303,7 @@ class CommandTests(WorldTestCase):
             redirect_stdout(out),
             redirect_stderr(err),
         ):
-            status = main(["schema-check", "--data-sources", str(sources), *extra], open_notion=lambda _t: self.notion.client())
+            status = main(["admin", "schema-check", "--data-sources", str(sources), *extra], open_notion=lambda _t: self.notion.client())
         text = out.getvalue()
         return status, json.loads(text) if text else None, err.getvalue()
 
@@ -335,7 +335,7 @@ class CommandTests(WorldTestCase):
             mock.patch.dict(os.environ, {"T6_NOTION_TOKEN": "token", "T6_REGISTRY_DB": str(self.path)}, clear=True),
             redirect_stdout(out),
         ):
-            status = main(["schema-check", "--data-sources", str(sources)], open_notion=lambda _t: self.notion.client())
+            status = main(["admin", "schema-check", "--data-sources", str(sources)], open_notion=lambda _t: self.notion.client())
         self.assertEqual((status, json.loads(out.getvalue())["project_codes"]["status"]), (0, "ok"))
 
 

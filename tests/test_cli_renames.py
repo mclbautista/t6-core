@@ -1,6 +1,8 @@
 """Compatibility of the documented command rename table."""
 import contextlib
 import io
+import re
+from pathlib import Path
 import unittest
 from typing import Any
 from unittest.mock import patch
@@ -18,7 +20,7 @@ class RenameTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_renamed_commands_share_handlers_and_output(self) -> None:
+    def test_renamed_commands_fail_and_replacements_work(self) -> None:
         rows = [
             ("jo create", "jo raise", "--file x --data-sources x", "t6.verbs.run"),
             ("contacts find", "person find", "name --data-sources x", "t6.cli_studio.run"),
@@ -35,6 +37,19 @@ class RenameTests(unittest.TestCase):
             ("check-consumer", "admin consumer-check", "x", "t6.cli._check_consumer"),
             ("drives-import-dry-run", "admin drive import", "x", "t6.cli._drives_import_dry_run"),
         ]
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+        table = readme.split("### CLI rename table", 1)[1].split("\n\n", 2)[2].split("\n\n", 1)[0]
+        documented: set[tuple[str, str]] = set()
+        for line in table.splitlines():
+            columns = line.split("|")
+            if len(columns) < 4 or "unchanged" in columns[2]:
+                continue
+            old_names = re.findall(r"`([^`]+)`", columns[1])
+            new_names = re.findall(r"`([^`]+)`", columns[2])
+            if len(new_names) == 1:
+                new_names *= len(old_names)
+            documented.update(zip(old_names, new_names))
+        self.assertEqual(documented, {(old, new) for old, new, _, _ in rows})
         for old, new, options, handler in rows:
             remote = old in ("contacts find", "projects resolve", "cameras get", "cameras update")
             target = "t6.client.Client.call" if remote else handler
@@ -53,15 +68,11 @@ class RenameTests(unittest.TestCase):
                     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), patch('sys.stdin', io.StringIO('{"name":"Camera"}')):
                         status = main((command + " " + options).split())
                     outputs.append((status, out.getvalue(), err.getvalue()))
-                self.assertEqual(outputs[0][:2], outputs[1][:2])
+                self.assertEqual(outputs[0][0], 2)
+                self.assertIn(f"renamed to t6 {new}", outputs[0][2])
+                self.assertEqual(outputs[1][0], 0)
                 self.assertEqual(outputs[1][2], "")
-                self.assertEqual(outputs[0][2], f"Deprecated: t6 {old}; use t6 {new} until 0.5.0\n")
-                self.assertEqual(run.call_count, 2)
-                first, second = (call.args for call in run.call_args_list)
-                if remote:
-                    self.assertEqual(first, second)
-                else:
-                    self.assertEqual(first[0].command, second[0].command)
+                self.assertEqual(run.call_count, 1)
 
     def test_admin_help_lists_commands(self) -> None:
         out = io.StringIO()

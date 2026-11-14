@@ -1,4 +1,4 @@
-"""Studio commands of the `t6` CLI: `contacts find`, `projects resolve`, `standing-cc`.
+"""Studio commands of the `t6` CLI: `person find`, `project resolve`, `standing-cc`.
 
 Each prints one JSON document with Notion page and option IDs. Errors are JSON
 on stderr with exit status 2 (see `t6.cli`). Nothing here writes to Notion.

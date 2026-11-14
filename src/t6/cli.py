@@ -507,6 +507,7 @@ def main(
 
     def route(group: Any, name: str, target: Any, help_text: str) -> None:
         group._name_parser_map[name] = target
+        target.prog = f"{group._prog_prefix} {name}"
         group._choices_actions.append(group._ChoicesPseudoAction(name, (), help_text))
 
     for name, old in (("schema-check", "schema-check"), ("snapshot", "schema-snapshot"),
@@ -517,11 +518,15 @@ def main(
     route(drive_commands, "import", commands.choices["drives-import-dry-run"], "Import legacy Drive workbooks")
     for new, old in (("person", "contacts"), ("project", "projects"), ("camera", "cameras")):
         route(commands, new, commands.choices[old], new.title() + " commands")
-    route(commands, "check", commands.choices["schema-check"], "Deprecated alias for admin schema-check")
     camera_commands = next(a for a in cameras._actions if isinstance(a, argparse._SubParsersAction))
     route(camera_commands, "enrich", camera_commands.choices["update"], "Enrich a Camera")
-    jo_commands = next(a for a in commands.choices["jo"]._actions if isinstance(a, argparse._SubParsersAction))
-    route(jo_commands, "create", jo_commands.choices["raise"], "Raise a Job Order")
+    # The reused subparsers retain their original program names unless updated.
+    for noun, group in (("person", commands.choices["person"]),
+                        ("project", commands.choices["project"]),
+                        ("camera", commands.choices["camera"])):
+        subparsers = next(a for a in group._actions if isinstance(a, argparse._SubParsersAction))
+        for name, target in subparsers.choices.items():
+            target.prog = f"{parser.prog} {noun} {name}"
 
     raw = list(sys.argv[1:] if argv is None else argv)
     renames = {
@@ -535,8 +540,17 @@ def main(
     }
     for old_parts, new_name in renames.items():
         if tuple(raw[:len(old_parts)]) == old_parts:
-            print(f"Deprecated: t6 {' '.join(old_parts)}; use t6 {new_name} until 0.5.0", file=sys.stderr)
-            break
+            return _fail(f"t6 {' '.join(old_parts)} renamed to t6 {new_name}")
+    # The old parser objects are reused under their new paths, but the old
+    # paths must not be discoverable or accepted by argparse.
+    removed = {"contacts", "projects", "cameras", "migrate-projects", "classify-projects",
+               "schema-check", "schema-snapshot", "backup", "restore", "check-consumer",
+               "drives-import-dry-run"}
+    for name in removed:
+        del commands._name_parser_map[name]
+    commands._choices_actions[:] = [action for action in commands._choices_actions if action.dest not in removed]
+    del camera_commands._name_parser_map["update"]
+    camera_commands._choices_actions[:] = [action for action in camera_commands._choices_actions if action.dest != "update"]
     args = parser.parse_args(raw)
     if args.command == "admin":
         args.command = {"registry": {"migrate": "migrate-projects", "classify": "classify-projects"},

@@ -23,7 +23,7 @@ def projection_ids() -> tuple[str, str]:
     t6_id = JobOrdersRow.notion_id('t6_id')
     notes = JobOrdersRow.notion_id('t6_notes')
     if not t6_id or not notes:
-        raise Refused('Job Order T6 ID and T6 Notes property IDs are missing; create the properties and run t6 admin schema-snapshot, then regenerate models')
+        raise Refused('Job Order T6 ID and T6 Notes property IDs are missing; create the properties and run t6 admin snapshot, then regenerate models')
     return t6_id, notes
 
 
