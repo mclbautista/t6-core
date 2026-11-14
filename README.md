@@ -648,7 +648,7 @@ Install only the adapters an application needs, for example
 | `server` | Webhook server and queue (stdlib only) |
 | `worker` | Job workers (stdlib only) |
 
-The `notion` extra installs `httpx`, the `llm` extra installs `pydantic`, the `lookup` extra installs `rapidfuzz`, the `resolve` extra installs `psycopg` and the `drives` extra installs `openpyxl`.
+The `notion` extra installs `httpx`, the `lookup` extra installs `rapidfuzz`, the `resolve` extra installs `psycopg` and the `drives` extra installs `openpyxl`.
 The `privacy`, `instagantt`, `server` and `worker` extras are implemented and
 need no third-party packages. The `frameio` extra holds the
 [Frame.io worker](#frameio) and needs none; its briefing feed also needs the `notion` extra. The `notion` extra does not install Frame.io, Adobe sign-in, or
@@ -1139,8 +1139,7 @@ placeholder it did not issue in both.
 
 ## LLM
 
-`t6.llm` runs typed LLM tasks. Install it with `pip install 't6[llm]'`
-(pydantic v2 is its only dependency). A `Task` has a prompt tag, an input
+`t6.llm` runs typed LLM tasks. Pydantic v2 is a base dependency. A `Task` has a prompt tag, an input
 model and a pydantic output model. Prompts stay in the app: the task's
 `render` function turns the input into chat messages.
 

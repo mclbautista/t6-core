@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 
 [[package]]
@@ -751,13 +751,13 @@ wheels = [
 name = "t6"
 version = "0.3.4"
 source = { editable = "." }
+dependencies = [
+    { name = "pydantic" },
+]
 
 [package.optional-dependencies]
 drives = [
     { name = "openpyxl" },
-]
-llm = [
-    { name = "pydantic" },
 ]
 lookup = [
     { name = "rapidfuzz" },
@@ -778,7 +778,6 @@ dev = [
     { name = "mypy" },
     { name = "openpyxl" },
     { name = "psycopg", extra = ["binary"] },
-    { name = "pydantic" },
     { name = "rapidfuzz" },
     { name = "types-openpyxl" },
 ]
@@ -788,7 +787,7 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'notion'", specifier = ">=0.27,<1" },
     { name = "openpyxl", marker = "extra == 'drives'", specifier = ">=3.1,<4" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'resolve'", specifier = ">=3.2,<4" },
-    { name = "pydantic", marker = "extra == 'llm'", specifier = ">=2.7,<3" },
+    { name = "pydantic", specifier = ">=2.7,<3" },
     { name = "rapidfuzz", marker = "extra == 'lookup'", specifier = ">=3.9,<4" },
 ]
 provides-extras = ["notion", "privacy", "llm", "frameio", "resolve", "instagantt", "lookup", "drives", "server", "worker"]
@@ -802,7 +801,6 @@ dev = [
     { name = "mypy", specifier = ">=1.13,<2" },
     { name = "openpyxl", specifier = ">=3.1,<4" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
-    { name = "pydantic", specifier = ">=2.7,<3" },
     { name = "rapidfuzz", specifier = ">=3.9,<4" },
     { name = "types-openpyxl", specifier = ">=3.1,<4" },
 ]

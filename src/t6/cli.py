@@ -413,12 +413,19 @@ def main(
         ),
     )
     consumer.add_argument("path", type=Path, help="the app's directory (or one .py file)")
-    from t6 import cli_jo, cli_studio
+    from t6 import cli_jo, cli_studio, verbs
+
+    verbs.add_parsers(commands)
 
     cli_studio.add_parsers(commands)
     cli_jo.add_parsers(commands)
     args = parser.parse_args(argv)
-    if args.command in {"departments", "contacts", "projects", "standing-cc"}:
+    if args.command == "commands":
+        print(json.dumps(verbs.catalogue(), ensure_ascii=False, indent=2))
+        return 0
+    if hasattr(args, "registered_verb"):
+        return verbs.run(args, open_notion)
+    if args.command in {"contacts", "projects", "standing-cc"}:
         return cli_studio.run(args, open_notion)
     if args.command in {"jo", "deadline"}:
         return cli_jo.run(args, open_notion)
