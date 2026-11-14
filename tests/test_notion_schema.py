@@ -292,7 +292,7 @@ class SchemaCheckCommandTests(unittest.TestCase):
                 redirect_stderr(err),
             ):
                 status = main(
-                    ["schema-check", "--data-sources", str(path)],
+                    ["admin", "schema-check", "--data-sources", str(path)],
                     open_notion=lambda _token: fake.client(),
                 )
         return status, out.getvalue(), err.getvalue()
@@ -320,7 +320,7 @@ class SchemaCheckCommandTests(unittest.TestCase):
 
     def test_the_command_runs_as_a_process(self) -> None:
         result = subprocess.run(
-            [sys.executable, "-m", "t6", "schema-check", "--data-sources", "missing.json"],
+            [sys.executable, "-m", "t6", "admin", "schema-check", "--data-sources", "missing.json"],
             capture_output=True,
             text=True,
             env={k: v for k, v in os.environ.items() if k != "T6_NOTION_TOKEN"},

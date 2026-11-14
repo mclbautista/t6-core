@@ -16,7 +16,7 @@ def run_check(files: dict[str, str]) -> tuple[int, dict[str, list[dict[str, obje
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding="utf-8")
         result = subprocess.run(
-            [sys.executable, "-m", "t6", "check-consumer", str(root)], capture_output=True, text=True, check=False
+            [sys.executable, "-m", "t6", "admin", "consumer-check", str(root)], capture_output=True, text=True, check=False
         )
     return result.returncode, json.loads(result.stdout)
 
@@ -81,7 +81,7 @@ class CheckConsumerTests(unittest.TestCase):
 
     def test_a_missing_path_cannot_run(self) -> None:
         result = subprocess.run(
-            [sys.executable, "-m", "t6", "check-consumer", "/no/such/dir"], capture_output=True, text=True, check=False
+            [sys.executable, "-m", "t6", "admin", "consumer-check", "/no/such/dir"], capture_output=True, text=True, check=False
         )
         self.assertEqual(result.returncode, 2)
 

@@ -419,7 +419,57 @@ def main(
 
     cli_studio.add_parsers(commands)
     cli_jo.add_parsers(commands)
-    args = parser.parse_args(argv)
+    # Share parsers so both names accept exactly the same arguments.
+    admin = commands.add_parser("admin", help="Administration commands")
+    admin_commands = admin.add_subparsers(dest="admin_command", required=True)
+    registry = admin_commands.add_parser("registry", help="Project registry administration")
+    registry_commands = registry.add_subparsers(dest="registry_command", required=True)
+    drive = admin_commands.add_parser("drive", help="Drive administration")
+    drive_commands = drive.add_subparsers(dest="drive_command", required=True)
+
+    def route(group: Any, name: str, target: Any, help_text: str) -> None:
+        group._name_parser_map[name] = target
+        group._choices_actions.append(group._ChoicesPseudoAction(name, (), help_text))
+
+    for name, old in (("schema-check", "schema-check"), ("snapshot", "schema-snapshot"),
+                      ("backup", "backup"), ("restore", "restore"), ("consumer-check", "check-consumer")):
+        route(admin_commands, name, commands.choices[old], commands.choices[old].description or name)
+    for name, old in (("migrate", "migrate-projects"), ("classify", "classify-projects")):
+        route(registry_commands, name, commands.choices[old], commands.choices[old].description or name)
+    route(drive_commands, "import", commands.choices["drives-import-dry-run"], "Import legacy Drive workbooks")
+    for new, old in (("person", "contacts"), ("project", "projects"), ("camera", "cameras")):
+        route(commands, new, commands.choices[old], new.title() + " commands")
+    route(commands, "check", commands.choices["schema-check"], "Deprecated alias for admin schema-check")
+    camera_commands = next(a for a in cameras._actions if isinstance(a, argparse._SubParsersAction))
+    route(camera_commands, "enrich", camera_commands.choices["update"], "Enrich a Camera")
+    jo_commands = next(a for a in commands.choices["jo"]._actions if isinstance(a, argparse._SubParsersAction))
+    route(jo_commands, "raise", jo_commands.choices["create"], "Raise a Job Order")
+
+    raw = list(sys.argv[1:] if argv is None else argv)
+    renames = {
+        ("jo", "create"): "jo raise", ("contacts", "find"): "person find",
+        ("projects", "resolve"): "project resolve", ("cameras", "get"): "camera get",
+        ("cameras", "update"): "camera enrich", ("camera", "update"): "camera enrich",
+        ("migrate-projects",): "admin registry migrate", ("classify-projects",): "admin registry classify",
+        ("schema-check",): "admin schema-check", ("check",): "admin schema-check", ("schema-snapshot",): "admin snapshot",
+        ("backup",): "admin backup", ("restore",): "admin restore",
+        ("check-consumer",): "admin consumer-check", ("drives-import-dry-run",): "admin drive import",
+    }
+    for old, new in renames.items():
+        if tuple(raw[:len(old)]) == old:
+            print(f"Deprecated: t6 {' '.join(old)}; use t6 {new} until 0.5.0", file=sys.stderr)
+            break
+    args = parser.parse_args(raw)
+    if args.command == "admin":
+        args.command = {"registry": {"migrate": "migrate-projects", "classify": "classify-projects"},
+                        "drive": {"import": "drives-import-dry-run"}}.get(args.admin_command, {}).get(
+                            getattr(args, "registry_command", getattr(args, "drive_command", None)),
+                            {"snapshot": "schema-snapshot", "consumer-check": "check-consumer"}.get(args.admin_command, args.admin_command))
+    args.command = {"check": "schema-check", "person": "contacts", "project": "projects", "camera": "cameras"}.get(args.command, args.command)
+    if getattr(args, "cameras_command", None) == "enrich":
+        args.cameras_command = "update"
+    if getattr(args, "jo_command", None) == "raise":
+        args.jo_command = "create"
     if args.command == "commands":
         print(json.dumps(verbs.catalogue(), ensure_ascii=False, indent=2))
         return 0

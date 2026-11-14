@@ -48,12 +48,12 @@ one leak is one capability. An unset secret turns its route off (503).
    and `page.undeleted`. Then change, delete and restore one test page and check
    the registry (`GET /registry/pages/{id}`): the binding turns unavailable on
    delete and available on restore, and its code stays reserved throughout.
-4. **Back up** (`t6 backup --into DIR`), then **migrate**: `t6 migrate-projects`
+4. **Back up** (`t6 admin backup --into DIR`), then **migrate**: `t6 admin registry migrate`
    without `--apply` to read the preview, review it, then with `--apply --preview`.
    All imported Projects are unclassified and block their codes.
-5. **Classify** with `t6 classify-projects` or the Sixto cards. Back up again.
+5. **Classify** with `t6 admin registry classify` or the Sixto cards. Back up again.
 6. Only now allow code and rotation writes by the callers you intend. Run
-   `t6 schema-check --registry-db ...` and confirm known callers and saved
+   `t6 admin schema-check --registry-db ...` and confirm known callers and saved
    references still resolve (they go through the registry's bindings, including
    legacy ones).
 7. **End-to-end exercise** (record the result): A in with code X, A out, B takes X,
@@ -76,9 +76,9 @@ one leak is one capability. An unset secret turns its route off (503).
 ## Backup and restore
 
 ```sh
-t6 backup --into /backups/2026-11-10          # safe while the server runs
+t6 admin backup --into /backups/2026-11-10          # safe while the server runs
 # disaster: stop the server and worker, start from empty /data
-t6 restore --from /backups/2026-11-10         # verifies checksums and counts, never overwrites
+t6 admin restore --from /backups/2026-11-10         # verifies checksums and counts, never overwrites
 python -m t6.server                           # start; unconfirmed syncs and unsent cards are queued again
 ```
 
