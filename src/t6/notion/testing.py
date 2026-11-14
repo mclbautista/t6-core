@@ -600,3 +600,22 @@ def external_link_properties(
         xl.STORAGE: relation(*(storage or [])),
         xl.CAMERAS: relation(*(cameras or [])),
     }
+
+
+def package_spec_properties(
+    *,
+    package_kind: str,
+    version: str,
+    client_spec: str | None = None,
+    advisory_items: tuple[str, ...] = (),
+    blocking_items: tuple[str, ...] = (),
+) -> JSON:
+    """Properties for a Package Specs row using the documented schema."""
+    return {
+        "Name": title(package_kind),
+        "Package kind": rich_text(package_kind),
+        "Client spec": rich_text(client_spec),
+        "Version": rich_text(version),
+        "Advisory items": rich_text("\n".join(advisory_items)),
+        "Blocking items": rich_text("\n".join(blocking_items)),
+    }
