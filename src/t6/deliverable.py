@@ -234,6 +234,7 @@ class DeliverableStore:
                 return Refused(rule='deliverable_changed', reason='Deliverable dates changed since preview; preview again')
             now = self.registry._clock()
             if action == 'delay':
+                assert isinstance(field, str)
                 db.execute('INSERT INTO deliverable_date_moves VALUES (?, ?, ?, ?, ?, ?, ?)', (row[0], field, old, values['date'], reason, actor, now))
                 db.execute('UPDATE deliverables SET ' + field + '=? WHERE id=?', (values['date'], row[0]))
             else:

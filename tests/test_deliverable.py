@@ -103,15 +103,21 @@ class DeliverableTests(unittest.TestCase):
         old = (today + timedelta(days=1)).isoformat()
         new = (today + timedelta(days=3)).isoformat()
         plan = self.store.define({'project': self.project, 'code': 'EP', 'due': old}, actor='alice', idempotency_key='define')
+        assert isinstance(plan, Preview)
         done = self.store.define({'project': self.project, 'code': 'EP', 'due': old}, actor='alice', idempotency_key='define', confirm=plan.token)
+        assert isinstance(done, Done)
         identifier = done.result['deliverable_id']
         values = {'deliverable': identifier, 'field': 'due', 'date': new, 'reason': 'client request'}
         preview = self.store.schedule_write('delay', values, actor='alice', idempotency_key='delay')
+        assert isinstance(preview, Preview)
         result = self.store.schedule_write('delay', values, actor='alice', idempotency_key='delay', confirm=preview.token)
         self.assertIsInstance(result, Done)
-        self.assertEqual(self.store.get(identifier)['due'], new)
+        record = self.store.get(identifier)
+        assert record is not None
+        self.assertEqual(record['due'], new)
         self.assertIsInstance(self.store.schedule_write('miss', {'deliverable': identifier, 'reason': 'late'}, actor='alice'), Refused)
         replay = self.store.schedule_write('delay', values, actor='alice', idempotency_key='delay')
+        assert isinstance(replay, Preview)
         self.assertEqual(result, self.store.schedule_write('delay', values, actor='alice', idempotency_key='delay', confirm=replay.token))
         with self.registry._transaction() as db:
             self.assertEqual(db.execute('SELECT old_date, new_date, reason FROM deliverable_date_moves').fetchall(), [(old, new, 'client request')])
@@ -122,15 +128,21 @@ class DeliverableTests(unittest.TestCase):
         from t6.verbs import Refused
         values = {'project': self.project, 'code': 'EP', 'due': '2000-01-01'}
         preview = self.store.define(values, actor='alice', idempotency_key='define')
-        identifier = self.store.define(values, actor='alice', idempotency_key='define', confirm=preview.token).result['deliverable_id']
+        assert isinstance(preview, Preview)
+        done = self.store.define(values, actor='alice', idempotency_key='define', confirm=preview.token)
+        assert isinstance(done, Done)
+        identifier = done.result['deliverable_id']
         miss = {'deliverable': identifier, 'reason': 'late'}
         preview = self.store.schedule_write('miss', miss, actor='alice', idempotency_key='miss')
+        assert isinstance(preview, Preview)
         result = self.store.schedule_write('miss', miss, actor='alice', idempotency_key='miss', confirm=preview.token)
         self.assertIsInstance(result, Done)
         self.assertEqual(self.registry.activity(self.project)[0].action, 'deliverable_miss')
         stale = self.store.schedule_write('miss', miss, actor='alice', idempotency_key='another')
+        assert isinstance(stale, Preview)
         milestone = {'deliverable': identifier, 'milestone': 'delivered'}
         mp = self.store.record_milestone(milestone, actor='alice', idempotency_key='milestone')
+        assert isinstance(mp, Preview)
         self.store.record_milestone(milestone, actor='alice', idempotency_key='milestone', confirm=mp.token)
         self.assertIsInstance(self.store.schedule_write('miss', miss, actor='alice', idempotency_key='another', confirm=stale.token), Refused)
         self.assertIsInstance(self.store.schedule_write('miss', miss, actor='alice'), Refused)
