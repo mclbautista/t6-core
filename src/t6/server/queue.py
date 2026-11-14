@@ -305,6 +305,10 @@ class JobQueue:
     ) -> bool:
         """Start or reset the timer `key`; it fires `quiet_seconds` after the last call.
 
+        A call that would fire the timer EARLIER than it is already set to keeps
+        the later time: the longest wait wins. With one `quiet_seconds` for every
+        call this never happens, because each call is later than the one before.
+
         When it fires it becomes one job whose payload is `payload` from the
         last call plus `count`, the number of calls since it started. Pass
         `at`, the caller's own time for this call (not the server clock), and
@@ -327,7 +331,7 @@ class JobQueue:
                 "INSERT INTO timers (queue, key, kind, payload, fire_at, count, first_at, last_at) "
                 "VALUES (?, ?, ?, ?, ?, 1, ?, ?) ON CONFLICT (queue, key) DO UPDATE SET "
                 "kind = excluded.kind, payload = excluded.payload, "
-                "fire_at = excluded.fire_at, count = count + 1, "
+                "fire_at = MAX(fire_at, excluded.fire_at), count = count + 1, "
                 "first_at = COALESCE(first_at, excluded.first_at), last_at = excluded.last_at",
                 (queue, key, kind, json.dumps(dict(payload or {})), now + quiet_seconds, at, at),
             )

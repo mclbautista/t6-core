@@ -2,6 +2,8 @@
 
 The Frame.io worker reads a comment, then tells the server to start or restart
 the quiet timer for the comment's (file, author). The server holds the timers.
+When the worker knows how much of the clip is left after the comment, it sends
+`remaining_seconds`, and the server waits that long plus its loop allowance.
 """
 
 from __future__ import annotations
@@ -28,6 +30,8 @@ class ReviewTimerClient:
             "user_name": comment.author_name,
             "created_at": comment.created_at.isoformat(),
         }
+        if comment.remaining_seconds is not None:
+            body["remaining_seconds"] = comment.remaining_seconds
         status, answer = self._transport.send("POST", "/review/timers", self._headers, json.dumps(body).encode())
         if status != 200:
             raise QueueRejected(status, str(answer.get("error", answer)))
