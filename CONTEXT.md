@@ -135,6 +135,26 @@ words, ignoring emoji, case and spaces.
 - **Code display**: the code in capitals, or "CODE (Name)" when several
   Projects share it; the name when there is no code.
 
+## Fleet
+
+A **Machine** is a computer in the fleet; the Bays row is its record. `t6.fleet`
+owns the Machine to Bays mapping and the fleet facts: Serial Number, Munki
+Manifest, Ring, Munki Client Version, Last Check-in and OS Version.
+
+- **Rings**: testing, pilot, production. Software is imported into testing,
+  verified on the pilot machines, then promoted to production.
+- **Role groups**: nine manifests (toc, sound, production, online, dit,
+  warroom, coordination-admin, client-facing, interns-temporary). A machine
+  manifest includes exactly one. The manifest chain of a machine is itself,
+  its role group, `all` and `site_default`.
+- **Bays write-back**: a machine matches a row by its names against the row's
+  Hostname and Name, ignoring case, spaces and ARD's `-NNN` suffix. It writes
+  only to one unique row, never creates a row, never clears a fact, and is a
+  dry run unless applied.
+- **Staleness**: an observation older than 3600 seconds, or with no time, is
+  stale. Its observed facts (client version, OS version, last check-in) are
+  not written.
+
 ## Consumer contract
 
 The rules every app follows to use t6-core (scope, boundary, `t6.domain`,
