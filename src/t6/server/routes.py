@@ -37,8 +37,10 @@ def load_routes(filename: str, environ: Mapping[str, str]) -> tuple[Route, ...]:
             raise ValueError(f"invalid or duplicate route path: {path}")
         if verifier not in {"frameio_v0", "notion", "google_channel"}:
             raise ValueError(f"unknown verifier: {verifier}")
+        if entry["queue"] not in {"main", "frameio", "diagnostic"}:
+            raise ValueError(f"route {path}: unknown queue {entry['queue']}")
         secret = environ.get(secret_env, "")
-        if not secret:
+        if not secret and not (verifier == "notion" and environ.get("T6_NOTION_BOOTSTRAP") == "1"):
             raise ValueError(f"route {path}: secret environment variable {secret_env} is unset or empty")
         paths.add(path)
         routes.append(Route(path, verifier, secret, entry["job_kind"], entry["queue"]))

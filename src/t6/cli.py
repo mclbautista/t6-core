@@ -415,9 +415,8 @@ def main(
     consumer.add_argument("path", type=Path, help="the app's directory (or one .py file)")
     from t6 import cli_jo, cli_studio, verbs
 
-    verbs.add_parsers(commands)
-
     cli_studio.add_parsers(commands)
+    verbs.add_parsers(commands)
     cli_jo.add_parsers(commands)
     # Share parsers so both names accept exactly the same arguments.
     admin = commands.add_parser("admin", help="Administration commands")
@@ -455,15 +454,15 @@ def main(
         ("backup",): "admin backup", ("restore",): "admin restore",
         ("check-consumer",): "admin consumer-check", ("drives-import-dry-run",): "admin drive import",
     }
-    for old, new in renames.items():
-        if tuple(raw[:len(old)]) == old:
-            print(f"Deprecated: t6 {' '.join(old)}; use t6 {new} until 0.5.0", file=sys.stderr)
+    for old_parts, new_name in renames.items():
+        if tuple(raw[:len(old_parts)]) == old_parts:
+            print(f"Deprecated: t6 {' '.join(old_parts)}; use t6 {new_name} until 0.5.0", file=sys.stderr)
             break
     args = parser.parse_args(raw)
     if args.command == "admin":
         args.command = {"registry": {"migrate": "migrate-projects", "classify": "classify-projects"},
                         "drive": {"import": "drives-import-dry-run"}}.get(args.admin_command, {}).get(
-                            getattr(args, "registry_command", getattr(args, "drive_command", None)),
+                            getattr(args, "registry_command", getattr(args, "drive_command", "")),
                             {"snapshot": "schema-snapshot", "consumer-check": "check-consumer"}.get(args.admin_command, args.admin_command))
     args.command = {"check": "schema-check", "person": "contacts", "project": "projects", "camera": "cameras"}.get(args.command, args.command)
     if getattr(args, "cameras_command", None) == "enrich":

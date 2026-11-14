@@ -2,13 +2,14 @@
 import contextlib
 import io
 import unittest
+from typing import Any
 from unittest.mock import patch
 
 from t6.cli import main
 
 
 class RenameTests(unittest.TestCase):
-    def test_renamed_commands_share_handlers_and_output(self):
+    def test_renamed_commands_share_handlers_and_output(self) -> None:
         rows = [
             ("jo create", "jo raise", "--file x --data-sources x", "t6.cli_jo.run"),
             ("contacts find", "person find", "name --data-sources x", "t6.cli_studio.run"),
@@ -27,7 +28,7 @@ class RenameTests(unittest.TestCase):
         ]
         for old, new, options, handler in rows:
             with self.subTest(old=old), patch(handler) as run:
-                def result(*args):
+                def result(*args: Any) -> int:
                     print('{"result": "same"}')
                     return 0
                 run.side_effect = result
@@ -44,7 +45,7 @@ class RenameTests(unittest.TestCase):
                 first, second = (call.args[0] for call in run.call_args_list)
                 self.assertEqual(first.command, second.command)
 
-    def test_admin_help_lists_commands(self):
+    def test_admin_help_lists_commands(self) -> None:
         out = io.StringIO()
         with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
             main(["admin", "--help"])

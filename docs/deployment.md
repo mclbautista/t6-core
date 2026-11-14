@@ -135,7 +135,10 @@ Frame.io and Notion jobs contain the verified JSON object. Google jobs contain
 `headers` with the `x-goog-*` notification headers except the channel token.
 Jobs are deduplicated by route and provider event ID (or body hash when absent);
 Google uses channel ID and message number. The Notion verification-token
-handshake is acknowledged without queuing, as in full mode. Full mode remains
-the default.
+handshake is acknowledged without queuing, as in full mode. The server prints the
+token to standard error for the operator to store. For initial edge setup, set
+`T6_NOTION_BOOTSTRAP=1` to allow a missing Notion route secret; other routes
+still require their secrets. Store the token, unset bootstrap, and restart.
+Unsigned events remain rejected. Full mode remains the default.
 
-Workers can also poll internal jobs by setting `T6_DATABASE` to the local t6 SQLite database path. The worker polls that job table and its configured VPS queue in turn; the database must be shared with internal job submitters. Back up the database before upgrading: migration 3 is forward-only.
+Workers can also poll internal jobs by setting `T6_DATABASE` to the local t6 SQLite database path. The worker polls that job table and its configured VPS queue in turn; the database must be shared with internal job submitters. Back up the database before upgrading.

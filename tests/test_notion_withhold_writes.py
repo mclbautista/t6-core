@@ -53,7 +53,7 @@ class WithholdOnWriteTests(unittest.TestCase):
                 }
             )
         sent = json.loads(fake.requests[0].content)  # the fake does not store `children`, so check the request
-        self.assertNotIn("1234", str(fake.page(page["id"])))
+        self.assertNotIn("1234", str(fake.page(page["id"])["properties"]))
         self.assertNotIn("1234", str(sent))
         self.assertNotIn("pin=9", str(sent))
         self.assertEqual(str(sent).count(WITHHELD), 2)

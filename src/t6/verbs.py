@@ -19,7 +19,8 @@ import os
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, get_args, get_origin
+from types import UnionType
 
 from pydantic import BaseModel, Field, RootModel
 
@@ -227,14 +228,45 @@ def catalogue() -> list[dict[str, Any]]:
              "output_schema": v.output_model.model_json_schema()} for v in VERBS]
 
 
+def _boolean(value: str) -> bool:
+    if value.lower() in {"true", "1"}:
+        return True
+    if value.lower() in {"false", "0"}:
+        return False
+    raise argparse.ArgumentTypeError("expected true or false")
+
+
+def _argument_type(annotation: Any) -> tuple[Any, bool]:
+    origin = get_origin(annotation)
+    if origin is UnionType or str(origin) == "typing.Union":
+        args = [arg for arg in get_args(annotation) if arg is not type(None)]
+        if len(args) != 1:
+            raise TypeError(f"unsupported CLI field type: {annotation}")
+        return _argument_type(args[0])
+    if origin is list:
+        item, nested = _argument_type(get_args(annotation)[0])
+        if nested:
+            raise TypeError(f"unsupported CLI field type: {annotation}")
+        return item, True
+    if annotation is bool:
+        return _boolean, False
+    if annotation in (str, int, float, Path):
+        return annotation, False
+    raise TypeError(f"unsupported CLI field type: {annotation}")
+
+
 def add_parsers(commands: Any) -> None:
     nouns: dict[str, Any] = {}
     for entry in VERBS:
         if entry.handler is None:
             continue
         if entry.noun not in nouns:
-            parser = commands.add_parser(entry.noun, help=("[verb] " if not entry.verb else "") + entry.description)
-            nouns[entry.noun] = parser.add_subparsers(dest=f"{entry.noun}_verb", required=True) if entry.verb else parser
+            if entry.noun == "project":
+                parser = commands.choices["projects"]
+                nouns[entry.noun] = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+            else:
+                parser = commands.add_parser(entry.noun, help=("[verb] " if not entry.verb else "") + entry.description)
+                nouns[entry.noun] = parser.add_subparsers(dest=f"{entry.noun}_verb", required=True) if entry.verb else parser
         parser = nouns[entry.noun]
         if entry.verb:
             parser = parser.add_parser(entry.verb, help="[verb] " + entry.description)
@@ -246,8 +278,12 @@ def add_parsers(commands: Any) -> None:
             parser.set_defaults(registered_verb=entry)
             continue
         for name, field in entry.input_model.model_fields.items():
-            parser.add_argument("--" + name.replace("_", "-"), type=field.annotation, required=field.is_required(),
-                                default=None if field.is_required() else field.default)
+            arg_type, is_list = _argument_type(field.annotation)
+            options: dict[str, Any] = {"type": arg_type, "required": field.is_required(),
+                                       "default": None if field.is_required() else field.get_default(call_default_factory=True)}
+            if is_list:
+                options["nargs"] = "+"
+            parser.add_argument("--" + name.replace("_", "-"), **options)
         parser.set_defaults(registered_verb=entry)
     commands_parser = commands.add_parser("commands", help="List registered verbs")
     commands_parser.add_argument("--json", action="store_true", required=True, help="Print the verb catalogue as JSON")
@@ -256,6 +292,7 @@ def add_parsers(commands: Any) -> None:
 def run(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
     entry: Verb = args.registered_verb
     inputs = entry.input_model.model_validate({name: getattr(args, name) for name in entry.input_model.model_fields})
+    assert entry.handler is not None
     outcome = entry.handler(inputs, open_notion)
     code, payload = outcome_json(outcome)
     if entry.noun == "departments" and not entry.verb:

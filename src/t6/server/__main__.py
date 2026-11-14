@@ -36,7 +36,9 @@ def main() -> int:
     if registry is not None and config.operator_ids:
         store = ActionStore(environ.get("T6_OPERATOR_DB", "t6-operator.sqlite"))
         operator = OperatorService(registry, store, config.operator_ids, ttl=config.operator_ttl_seconds)
-    app = WebhookApp(queue, config, registry=registry, operator=operator)
+    app = WebhookApp(queue, config, on_notion_verification=lambda token: print(
+        f"Notion verification token: {token}", file=sys.stderr, flush=True
+    ), registry=registry, operator=operator)
     serve(
         app,
         _address(environ.get("T6_PUBLIC_BIND", "127.0.0.1:8080")),

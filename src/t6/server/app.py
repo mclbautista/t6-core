@@ -257,6 +257,8 @@ class WebhookApp:
             if route.verifier == "frameio_v0":
                 verify_frameio(route.secret, headers, request.body, self._clock())
             elif route.verifier == "notion":
+                if not route.secret:
+                    return Response(503, {"error": "notion webhook token not configured"})
                 verify_notion(route.secret, headers, request.body, self._clock())
             elif not _same(route.secret, headers.get("x-goog-channel-token", "")):
                 raise WebhookRejected("bad channel token")

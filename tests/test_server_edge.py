@@ -60,3 +60,14 @@ class EdgeTests(ServerTestCase):
         self.file.write_text("- {path: /x, verifier: notion, secret_env: MISSING, job_kind: x, queue: main}")
         with self.assertRaisesRegex(ValueError, "MISSING"):
             load_routes(str(self.file), self.env)
+
+    def test_bootstrap_and_queue_validation(self) -> None:
+        self.file.write_text("- {path: /x, verifier: notion, secret_env: MISSING, job_kind: x, queue: main}")
+        routes = load_routes(str(self.file), {"T6_NOTION_BOOTSTRAP": "1"})
+        app = WebhookApp(self.queue, replace(self.app._config, edge_routes=routes), self.clock, self.tokens.append)
+        self.assertEqual(app.public(Request("POST", "/x", {}, b'{"verification_token":"new"}')).status, 200)
+        self.assertEqual(self.tokens[-1], "new")
+        self.assertNotEqual(app.public(Request("POST", "/x", {}, b"{}")).status, 200)
+        self.file.write_text("- {path: /x, verifier: notion, secret_env: NOTION, job_kind: x, queue: typo}")
+        with self.assertRaisesRegex(ValueError, "queue"):
+            load_routes(str(self.file), self.env)
