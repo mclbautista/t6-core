@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 from pydantic import BaseModel, TypeAdapter
 from t6.verbs import (
     Ambiguous, Done, NeedsPerson, Outcome, Preview, Refused,
+    VersionAddInput, VersionLockInput, VersionFindInput,
     ConcernForMessageInput, ConcernRecordMessageInput, ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
     PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
@@ -164,6 +165,15 @@ class Client:
 
     def jo_find(self, inputs: JoFindInput) -> Result:
         return self.call('jo', 'find', inputs)
+
+    def version_add(self, inputs: VersionAddInput) -> Result:
+        return self.call('version', 'add', inputs)
+
+    def version_lock(self, inputs: VersionLockInput) -> Result:
+        return self.call('version', 'lock', inputs)
+
+    def version_find(self, inputs: VersionFindInput) -> Result:
+        return self.call('version', 'find', inputs)
 
     def deliverable_milestone_record(self, inputs: MilestoneRecordInput) -> Result:
         return self.call('deliverable', 'milestone record', inputs)
