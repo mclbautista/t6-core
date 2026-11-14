@@ -26,7 +26,7 @@ JSON = dict[str, Any]
 
 def add_parsers(commands: Any) -> None:
     def data_sources(parser: argparse.ArgumentParser) -> None:
-        parser.add_argument("--data-sources", type=Path, required=True, metavar="FILE", help="JSON of database key to data source ID")
+        parser.add_argument("--data-sources", type=Path, metavar="FILE", help="JSON of database key to data source ID")
 
     jo = commands.add_parser("jo", help="Job Order commands")
     jo_commands = jo.add_subparsers(dest="jo_command", required=True)

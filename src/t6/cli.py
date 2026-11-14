@@ -18,6 +18,7 @@ from importlib.metadata import version
 from pathlib import Path
 import sys
 from typing import TYPE_CHECKING, Any
+from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from t6.notion.sync import NotionClient
@@ -407,7 +408,7 @@ def main(
         sub.add_argument(
             "--data-sources",
             type=Path,
-            required=True,
+            required=sub is update,
             metavar="FILE",
             help="JSON object of snapshot database key to live data source ID",
         )
@@ -571,7 +572,14 @@ def main(
             values["date"] = str(values["date"])
         # The actor is established by API authentication.
         values.pop("actor", None)
-        inputs = entry.input_model.model_validate(values)
+        legacy_models: dict[tuple[str, str], type[BaseModel]] = {("person", "find"): verbs.LegacyPersonFindInput,
+                         ("project", "resolve"): verbs.LegacyProjectResolveInput,
+                         ("jo", "get"): verbs.LegacyJoGetInput,
+                         ("camera", "get"): verbs.LegacyCameraGetInput}
+        model = legacy_models.get(pair, entry.input_model) if getattr(args, "data_sources", None) else entry.input_model
+        if pair in legacy_models and getattr(args, "data_sources", None):
+            values = {name: getattr(args, name, None) for name in model.model_fields}
+        inputs = model.model_validate(values)
         try:
             outcome = Client().call(entry.noun, entry.verb, inputs)
         except APIError as error:

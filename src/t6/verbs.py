@@ -23,7 +23,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, get_args, get_origin
 from types import UnionType
 
-from pydantic import BaseModel, Field, RootModel
+from pydantic import BaseModel, Field, RootModel, ConfigDict
+from t6.domain import Project, JobOrder, Deliverable, MeetingNote, Contact, Camera, ExternalRef
 
 if TYPE_CHECKING:
     from t6.person import People
@@ -69,7 +70,7 @@ def outcome_json(outcome: Outcome) -> tuple[int, dict[str, Any]]:
     return EXIT_CODES[type(outcome)], outcome.model_dump(mode="json")
 
 
-class DepartmentsInput(BaseModel):
+class LegacyDepartmentsInput(BaseModel):
     data_sources: Path
 
 
@@ -82,7 +83,7 @@ class DepartmentsOutput(BaseModel):
     departments: list[Department]
 
 
-def departments(inputs: DepartmentsInput, open_notion: Callable[..., Any]) -> Outcome:
+def departments(inputs: LegacyDepartmentsInput, open_notion: Callable[..., Any]) -> Outcome:
     from t6.cli import TOKEN_VARIABLE, _read_data_sources
 
     try:
@@ -248,7 +249,7 @@ class PersonPermissionInput(BaseModel):
     confirm: str | None = None
 
 
-class PersonGetInput(BaseModel):
+class LegacyPersonGetInput(BaseModel):
     person_id: str
     data_sources: Path
 
@@ -281,7 +282,7 @@ def person_permission(people: People, verb: str, inputs: PersonPermissionInput, 
                         actor=actor, idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
 
 
-def person_get(inputs: PersonGetInput, open_notion: Callable[..., Any]) -> Outcome:
+def person_get(inputs: LegacyPersonGetInput, open_notion: Callable[..., Any]) -> Outcome:
     from t6.cli import TOKEN_VARIABLE
     from t6.notion.contacts import Contacts
     from uuid import UUID
@@ -326,7 +327,7 @@ class LegacyOutput(RootModel[Any]):
     """The legacy commands retain their existing, command-specific JSON shapes."""
 
 
-class JoGetInput(BaseModel):
+class LegacyJoGetInput(BaseModel):
     ref: str
     data_sources: Path
 
@@ -432,18 +433,18 @@ class JoFormatInput(BaseModel):
     date: str | None = None
 
 
-class PersonFindInput(BaseModel):
+class LegacyPersonFindInput(BaseModel):
     mention: str
     data_sources: Path
 
 
-class ProjectResolveInput(BaseModel):
+class LegacyProjectResolveInput(BaseModel):
     text: str
     data_sources: Path
     registry_db: Path | None = None
 
 
-class CameraGetInput(BaseModel):
+class LegacyCameraGetInput(BaseModel):
     data_sources: Path
     page_id: str | None = None
 
@@ -476,7 +477,228 @@ def llm_api_only(inputs: LLMRunInput, open_notion: Callable[..., Any]) -> Outcom
     return Refused(rule="api", reason="LLM tasks run on the t6 API")
 
 
+class ReadInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class DepartmentsInput(ReadInput):
+    pass
+
+
+class PersonGetInput(ReadInput):
+    person_id: str
+
+
+class PersonFindInput(ReadInput):
+    mention: str
+
+
+class PersonListInput(ReadInput):
+    pass
+
+
+class ProjectGetInput(ReadInput):
+    project: str
+
+
+class ProjectResolveInput(ReadInput):
+    text: str
+
+
+class JoGetInput(ReadInput):
+    ref: str
+
+
+class CameraGetInput(ReadInput):
+    page_id: str | None = None
+
+
+class StandingCcInput(ReadInput):
+    pass
+
+
+class StudioNoticesInput(ReadInput):
+    pass
+
+
+class StudioNoticesOutput(BaseModel):
+    description: str
+
+
+class ExternalLinkFindInput(ReadInput):
+    system: str
+    kind: str
+    external_id: str
+
+
+class ExternalLinkRead(BaseModel):
+    page_id: str
+    ref: ExternalRef
+    active: bool
+    last_activity: datetime | None
+    project_ids: list[str]
+
+
+class ExternalLinkFindOutput(BaseModel):
+    link: ExternalLinkRead | None
+
+
+class ProjectListInput(ReadInput):
+    rotation: Literal["in", "out", "unclassified"] | None = None
+    status: str | None = None
+
+
+class ProjectListOutput(BaseModel):
+    projects: list[Project]
+
+
+class JoListInput(ReadInput):
+    project: str | None = None
+    assignee: str | None = None
+    status_group: Literal["not_started", "started", "cancelled", "active"] | None = None
+
+
+class JoFindInput(ReadInput):
+    telegram_key: str
+
+
+class DeliverableListInput(ReadInput):
+    project: str
+
+
+class MeetingNotesListInput(ReadInput):
+    project: str | None = None
+    since: str | None = None
+    before: str | None = None
+    title: str | None = None
+    title_prefix: str | None = None
+    ready_to_send: bool | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ReadJobOrder(JobOrder):
+    t6_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ReadContact(Contact):
+    t6_id: str | None = None
+    kind: str | None = None
+    departments: tuple[str, ...] = ()
+    roles: tuple[str, ...] = ()
+    shift: dict[str, str] | None = None
+    permissions: tuple[str, ...] = ()
+    master_brief: bool = False
+    active: bool = True
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ReadDeliverable(Deliverable):
+    t6_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ProjectCandidate(Project):
+    score: float = 0
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ContactCandidate(ReadContact):
+    score: float = 0
+
+
+class ProjectGetOutput(BaseModel):
+    project: Project
+
+
+class ProjectResolveOutput(BaseModel):
+    match: Project | None
+    method: str
+    score: float
+    needs_review: bool
+    reason: str | None
+    candidates: list[ProjectCandidate]
+
+
+class PersonGetOutput(BaseModel):
+    person: ReadContact
+
+
+class PersonListOutput(BaseModel):
+    people: list[ReadContact]
+
+
+class PersonFindOutput(BaseModel):
+    match: ReadContact | None
+    method: str
+    score: float
+    needs_review: bool
+    reason: str | None
+    candidates: list[ContactCandidate]
+
+
+class JoGetOutput(BaseModel):
+    job_order: ReadJobOrder
+
+
+class CameraGetOutput(BaseModel):
+    cameras: list[Camera]
+
+
+class StandingCcOutput(BaseModel):
+    standing_cc: str | None
+
+
+class JoListOutput(BaseModel):
+    job_orders: list[ReadJobOrder]
+
+
+class DeliverableListOutput(BaseModel):
+    deliverables: list[ReadDeliverable]
+
+
+class NoteSpan(BaseModel):
+    text: str
+    bold: bool = False
+    italic: bool = False
+    underline: bool = False
+    strikethrough: bool = False
+    code: bool = False
+    url: str | None = None
+
+
+class NoteBlock(BaseModel):
+    kind: str
+    text: str
+    spans: list[NoteSpan]
+    checked: bool | None = None
+    children: list[NoteBlock]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ReadMeetingNote(MeetingNote):
+    body: tuple[NoteBlock, ...] = ()
+
+
+class MeetingNotesListOutput(BaseModel):
+    meeting_notes: list[ReadMeetingNote]
+
+
+def api_read(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    return Refused(rule="api", reason="Reads run on the t6 API")
+
+
 VERBS = (
+    Verb("studio", "notices", "Read studio notices", (), StudioNoticesInput, StudioNoticesOutput, "reader", "Read Project source notices.", api_read),
+    Verb("external-link", "find", "Find an External Link", (), ExternalLinkFindInput, ExternalLinkFindOutput, "reader", "Resolve an external reference.", api_read),
+    Verb("project", "get", "Get a Project", (), ProjectGetInput, ProjectGetOutput, "reader", "Read a Project.", api_read),
+    Verb("person", "list", "List Contacts", (), PersonListInput, PersonListOutput, "reader", "Read Contacts.", api_read),
+    Verb("standing-cc", "", "Get standing cc", (), StandingCcInput, StandingCcOutput, "reader", "Read configured standing cc.", None),
+    Verb("jo", "list", "List Job Orders", (), JoListInput, JoListOutput, "reader", "Filter by Project, assignee or status group.", api_read),
+    Verb("jo", "find", "Find Job Orders by Telegram Key", (), JoFindInput, JoListOutput, "reader", "Return all matching orders.", api_read),
+    Verb("deliverable", "list", "List Project Deliverables", (), DeliverableListInput, DeliverableListOutput, "reader", "Read from Notion.", api_read),
+    Verb("meeting-notes", "list", "List Project Meeting Notes", (), MeetingNotesListInput, MeetingNotesListOutput, "reader", "Read from Notion.", api_read),
+    Verb("project", "list", "List Projects", (), ProjectListInput, ProjectListOutput, "reader", "Read Projects.", api_read),
     Verb("llm", "run", "Run an LLM task on the API", (), LLMRunInput, LLMRunOutput, "llm", "Server policy and masking apply.", llm_api_only),
     Verb("person", "add", "Register a Person", (), PersonAddInput, LegacyOutput, "operator", "A page belongs to one Person.", person_write),
     Verb("person", "rebind", "Bind a replacement Contacts page", (), PersonRebindInput, LegacyOutput, "operator", "A page belongs to one Person.", person_write),
@@ -484,14 +706,14 @@ VERBS = (
     Verb("person", "shift", "Set a Person shift", (), PersonShiftInput, LegacyOutput, "operator", "Set a day or night shift.", person_write),
     Verb("person", "grant", "Grant a permission", (), PersonPermissionInput, LegacyOutput, "operator", "Only an operator or admin may grant permissions.", person_write),
     Verb("person", "revoke", "Revoke a permission", (), PersonPermissionInput, LegacyOutput, "operator", "Only an operator or admin may revoke permissions.", person_write),
-    Verb("person", "get", "Get a Person", (), PersonGetInput, LegacyOutput, "reader", "Read a Person.", person_get),
+    Verb("person", "get", "Get a Person", (), PersonGetInput, PersonGetOutput, "reader", "Read a Person.", person_get),
     Verb("project", "hold", "Hold a Project", (), ProjectHoldInput, ProjectWriteOutput,
          "operator", "A held Project cannot be held again.", project_hold),
     Verb("project", "resume", "Resume a held Project", (), ProjectResumeInput, ProjectWriteOutput,
          "operator", "Only a held Project can be resumed.", project_resume),
     Verb("project", "activity", "Show Project activity, newest first", (),
          ActivityInput, ActivityOutput, "reader", "Activity is append-only.", project_activity),
-    Verb("jo", "get", "Get a Job Order", (), JoGetInput, LegacyOutput, "reader", "Read a Job Order.", None),
+    Verb("jo", "get", "Get a Job Order", (), JoGetInput, JoGetOutput, "reader", "Read a Job Order.", None),
     Verb("jo", "raise", "Raise a Job Order", ("jo create",), JoRaiseInput, JoWriteOutput, "coordinator", "Create a Job Order.", jo_write),
     Verb("jo", "assign", "Assign a Job Order", (), JoAssignInput, JoWriteOutput, "coordinator", "The Person must differ from the current assignee.", jo_write),
     Verb("jo", "reassign", "Reassign a Job Order", (), JoReassignInput, JoWriteOutput, "coordinator", "A reason is required.", jo_write),
@@ -503,9 +725,9 @@ VERBS = (
     Verb("jo", "delay", "Delay a Job Order", (), JoDelayInput, JoWriteOutput, "coordinator", "Apply the JO transition rules.", jo_write),
     Verb("jo", "cancel", "Cancel a Job Order", (), JoCancelInput, JoWriteOutput, "coordinator", "Apply the JO transition rules.", jo_write),
     Verb("jo", "format", "Format a Job Order", (), JoFormatInput, LegacyOutput, "reader", "Format a draft.", None),
-    Verb("person", "find", "Find a Person", ("contacts find",), PersonFindInput, LegacyOutput, "reader", "Find a Contact.", None),
-    Verb("project", "resolve", "Resolve a Project", ("projects resolve",), ProjectResolveInput, LegacyOutput, "reader", "Resolve a Project.", None),
-    Verb("camera", "get", "Get Cameras", ("cameras get",), CameraGetInput, LegacyOutput, "reader", "Read Cameras.", None),
+    Verb("person", "find", "Find a Person", ("contacts find",), PersonFindInput, PersonFindOutput, "reader", "Find a Contact.", None),
+    Verb("project", "resolve", "Resolve a Project", ("projects resolve",), ProjectResolveInput, ProjectResolveOutput, "reader", "Resolve a Project.", None),
+    Verb("camera", "get", "Get Cameras", ("cameras get",), CameraGetInput, CameraGetOutput, "reader", "Read Cameras.", None),
     Verb("camera", "enrich", "Enrich a Camera", ("cameras update",), CameraEnrichInput, LegacyOutput, "operator", "Update a Camera.", None, local_only=True),
     Verb("departments", "", "Print the studio Departments, read live, in display order, with option IDs", (),
          DepartmentsInput, DepartmentsOutput, "reader", "Notion Department options are the truth; use studio display order.", departments),
@@ -554,6 +776,8 @@ def _argument_type(annotation: Any) -> tuple[Any, bool]:
         if len(args) != 1:
             raise TypeError(f"unsupported CLI field type: {annotation}")
         return _argument_type(args[0])
+    if origin is Literal:
+        return str, False
     if origin is list:
         item, nested = _argument_type(get_args(annotation)[0])
         if nested:
@@ -637,6 +861,15 @@ def add_parsers(commands: Any) -> None:
             parser.add_argument('--confirm')
             parser.set_defaults(registered_verb=entry)
             continue
+        if entry.handler is person_get:
+            parser.add_argument("--person-id", required=True)
+            parser.add_argument("--data-sources", type=Path)
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.handler is departments:
+            parser.add_argument("--data-sources", type=Path)
+            parser.set_defaults(registered_verb=entry)
+            continue
         for name, field in entry.input_model.model_fields.items():
             arg_type, is_list = _argument_type(field.annotation)
             options: dict[str, Any] = {"type": arg_type, "required": field.is_required(),
@@ -651,7 +884,9 @@ def add_parsers(commands: Any) -> None:
 
 def run(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
     entry: Verb = args.registered_verb
-    inputs = entry.input_model.model_validate({name: getattr(args, name) for name in entry.input_model.model_fields})
+    inputs = (LegacyPersonGetInput(person_id=args.person_id, data_sources=args.data_sources) if entry.handler is person_get and args.data_sources else
+              LegacyDepartmentsInput(data_sources=args.data_sources) if entry.handler is departments and args.data_sources else
+              entry.input_model.model_validate({name: getattr(args, name) for name in entry.input_model.model_fields}))
     assert entry.handler is not None
     from t6.client import APIError, Client, Unavailable
     try:

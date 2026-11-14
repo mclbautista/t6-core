@@ -15,7 +15,7 @@ from t6.server.http import serve
 from t6.server.queue import JobQueue
 from t6.server.routes import load_routes
 from t6.server.llm import service_from_env
-from t6.server.verbs import VerbAPI, secrets_from_env, service_permissions_from_env
+from t6.server.verbs import VerbAPI, secrets_from_env, service_permissions_from_env, read_config_from_env
 from t6.person import People
 from t6.preview import PreviewTokens
 from t6.cli import _open_notion
@@ -53,10 +53,11 @@ def main() -> int:
         f"Notion verification token: {token}", file=sys.stderr, flush=True
     ), registry=registry, operator=operator)
     if registry is not None:
+        sources, privacy_registry = read_config_from_env(environ)
         api = VerbAPI(People(registry, PreviewTokens(environ.get("T6_PREVIEW_SIGNING_KEY", "read-only")),
                              service_permissions_from_env(environ)),
                       queue, secrets_from_env(environ), _open_notion, app,
-                      llm_service=service_from_env(environ))
+                      llm_service=service_from_env(environ), data_sources=sources, privacy_registry=privacy_registry)
         def tailnet(request: Request) -> Response:
             if request.path.split("?", 1)[0].startswith("/v1/") or request.path.split("?", 1)[0] in {"/health", "/tap"}:
                 return api(request)
