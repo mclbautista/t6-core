@@ -505,6 +505,8 @@ class LLMRunInput(BaseModel):
     input_text: str
     masking_preset: Literal['names', 'strict']
     model_hint: str | None = None
+    require_zdr: bool = False
+    temperature_zero: bool = False
 
 
 class LLMRunOutput(BaseModel):
@@ -514,6 +516,7 @@ class LLMRunOutput(BaseModel):
     prompt_hash: str
     schema_hash: str
     tokens: dict[str, int]
+    zdr: bool = False
 
 
 def llm_api_only(inputs: LLMRunInput, open_notion: Callable[..., Any]) -> Outcome:

@@ -14,7 +14,7 @@ from referencing import Registry as SchemaRegistry
 from t6.llm.config import LLMConfig
 from t6.llm.jsontext import strip_fence
 from t6.llm.policy import DataPolicy
-from t6.llm.transport import Provider, ProviderError, ProviderTimeout
+from t6.llm.transport import OpenAIChat, Provider, ProviderError, ProviderTimeout
 from t6.verbs import Done, LLMRunInput, LLMRunOutput, Refused
 from t6.privacy import Person, Project, Registry, Unresolved, pseudonymize, withhold
 
@@ -53,7 +53,10 @@ class LLMService:
         if selected is None:
             return Refused(rule='policy', reason='Model is not allowed')
         name, provider = selected
-        if not DataPolicy(min_retention='zdr_enforced' if self.require_zdr else 'unknown').allows(provider.retention):
+        if inputs.temperature_zero and isinstance(provider, OpenAIChat):
+            provider = provider.with_temperature(0)
+        require_zdr = self.require_zdr or inputs.require_zdr
+        if not DataPolicy(min_retention='zdr_enforced' if require_zdr else 'unknown').allows(provider.retention):
             return Refused(rule='policy', reason='Provider does not meet retention policy')
         masked, session = pseudonymize(withhold(inputs.input_text).text, self.registry, options=inputs.masking_preset)
         _, name_check = pseudonymize('', self.registry, options='names')
@@ -68,7 +71,7 @@ class LLMService:
         prompt = inputs.prompt_template.replace('{input}', masked.text)
         try:
             completion = provider.complete([{'role': 'system', 'content': 'Return JSON matching this schema: ' + schema_bytes.decode()},
-                                            {'role': 'user', 'content': prompt}], timeout=60, zdr=self.require_zdr)
+                                            {'role': 'user', 'content': prompt}], timeout=60, zdr=require_zdr)
             data = json.loads(strip_fence(completion.content or ''))
             validator = Draft202012Validator(inputs.output_schema, registry=SchemaRegistry())
             validator.validate(data)
@@ -83,7 +86,7 @@ class LLMService:
         return Done(result=LLMRunOutput(output=data, model=completion.model, provider=name,
                     prompt_hash=_hash(prompt_bytes), schema_hash=_hash(schema_bytes),
                     tokens={'prompt': completion.tokens.prompt, 'completion': completion.tokens.completion,
-                            'total': completion.tokens.total}))
+                            'total': completion.tokens.total}, zdr=require_zdr))
 
 
 def service_from_env(env: Mapping[str, str]) -> LLMService | None:

@@ -132,6 +132,9 @@ class RunRecord(BaseModel):
     changed_failures: list[str] = Field(default_factory=list)
     accepted_regressions: dict[str, NonEmpty] = Field(default_factory=dict)
     human_review: list[str] = Field(default_factory=list)
+    review_outputs: dict[str, list[JsonValue]] = Field(default_factory=dict)
+    reviewer: NonEmpty | None = None
+    review_date: date | None = None
 
     def write(self, path: str | Path) -> None:
         """Write the run record to a JSON file."""
@@ -256,4 +259,99 @@ def run_evals(
 
 
 __all__ = ["Case", "CaseResult", "Grader", "Provenance", "RealProvenance", "RunRecord", "SyntheticProvenance", "Attempt", "run_evals",
-           "grade_kinds", "grade_quotes", "grade_schema"]
+           "grade_kinds", "grade_quotes", "grade_schema", "LiveEvalConfig", "run_live_evals"]
+
+@dataclass(frozen=True)
+class LiveEvalConfig:
+    """App-owned live run configuration; prices are per token in one currency."""
+
+    task_name: str
+    prompt_template: str
+    output_schema: dict
+    masking_preset: Literal['names', 'strict']
+    cost_cap: float
+    prompt_token_price: float
+    completion_token_price: float
+    real_cases_path: str | Path | None = None
+    model_hint: str | None = None
+
+
+def run_live_evals(
+    cases: Sequence[Case], *, config: LiveEvalConfig, client: object,
+    grade: Callable[[Case, JsonValue], CaseResult], t6_version: str, run_date: date,
+    history: Sequence[RunRecord] = (), must_pass: set[str] | frozenset[str] = frozenset(),
+    accept: Mapping[str, str] | None = None, path: str | Path | None = None,
+    rng: object | None = None,
+) -> RunRecord:
+    """Run an app's task through the API, adding off-repo cases and a review sample.
+
+    The API must attest that ZDR was enforced. Case inputs must be strings;
+    apps with structured inputs should serialize them before creating cases.
+    Costs are calculated from API token counts and configured per-token prices.
+    """
+    import json
+    import random
+    from t6.verbs import Done, LLMRunInput, LLMRunOutput
+
+    for price in (config.prompt_token_price, config.completion_token_price):
+        if not math.isfinite(price) or price < 0:
+            raise ValueError('token prices must be finite and nonnegative')
+    if not math.isfinite(config.cost_cap) or config.cost_cap <= 0:
+        raise ValueError('live cost cap must be finite and positive')
+    all_cases = list(cases)
+    if config.real_cases_path is not None:
+        data = json.loads(Path(config.real_cases_path).read_text(encoding='utf-8'))
+        real_cases = [Case.model_validate(item) for item in data]
+        if any(case.provenance.kind != 'real' for case in real_cases):
+            raise ValueError('real-case file must contain only real cases')
+        all_cases.extend(real_cases)
+    if not all_cases or any(case.task != config.task_name or not isinstance(case.masked_input, str) for case in all_cases):
+        raise ValueError('live cases must have the configured task and string inputs')
+    metadata: tuple[str, str, str, str] | None = None
+    outputs: dict[str, list[JsonValue]] = {}
+
+    def evaluate(case: Case, _provider: Provider) -> Attempt:
+        nonlocal metadata
+        result = client.llm_run(LLMRunInput(task_name=config.task_name, prompt_template=config.prompt_template,
+            output_schema=config.output_schema, input_text=case.masked_input, masking_preset=config.masking_preset,
+            model_hint=config.model_hint, require_zdr=True, temperature_zero=True))
+        if not isinstance(result, Done):
+            raise RuntimeError(f'llm run refused or unavailable: {result}')
+        output = LLMRunOutput.model_validate(result.result)
+        if not output.zdr:
+            raise RuntimeError('llm run did not attest to zero retention')
+        current = (output.model, output.provider, output.prompt_hash, output.schema_hash)
+        if metadata is not None and metadata != current:
+            raise RuntimeError('llm run metadata changed during the run')
+        metadata = current
+        tokens = output.tokens
+        if any(type(tokens.get(k)) is not int or tokens[k] < 0 for k in ('prompt', 'completion')):
+            raise ValueError('llm run returned invalid token counts')
+        outputs.setdefault(case.id, []).append(output.output)
+        graded = grade(case, output.output)
+        if graded.case_id != case.id:
+            raise ValueError('grader returned a different case ID')
+        return Attempt(graded.passed, graded.reason,
+            tokens['prompt'] * config.prompt_token_price + tokens['completion'] * config.completion_token_price)
+
+    # Metadata is replaced with the API's values after the first call.
+    record = RunRecord(model_id='pending', provider='pending', prompt_hash='pending', schema_hash='pending',
+                       t6_version=t6_version, date=run_date, results=[])
+    result = run_evals(all_cases, record=record, evaluate=evaluate, provider=None, cost_cap=config.cost_cap,
+                       must_pass=must_pass, history=history, accept=accept)  # type: ignore[arg-type]
+    if metadata is None:
+        raise RuntimeError('live run produced no API metadata')
+    previous = next((r for r in reversed(history) if r.status != 'offline'), None)
+    prior = {r.case_id: r.passed for r in previous.results} if previous else {}
+    required = {r.case_id for r in result.results if not r.passed or
+                (r.case_id in prior and r.passed != prior[r.case_id])}
+    required.update(result.human_review)
+    remaining = [r.case_id for r in result.results if r.case_id not in required]
+    sampler = rng if rng is not None else random.SystemRandom()
+    selected = set(sampler.sample(remaining, min(5, len(remaining))))
+    review = [r.case_id for r in result.results if r.case_id in required or r.case_id in selected]
+    result = result.model_copy(update=dict(zip(('model_id', 'provider', 'prompt_hash', 'schema_hash'), metadata)) |
+                               {'human_review': review, 'review_outputs': {case_id: outputs[case_id] for case_id in review}})
+    if path is not None:
+        result.write(path)
+    return result
