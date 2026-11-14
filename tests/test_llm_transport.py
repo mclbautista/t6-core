@@ -101,3 +101,17 @@ class OpenAIChatTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class MissingUsageTests(unittest.TestCase):
+    def test_missing_usage_is_unknown(self) -> None:
+        from t6.llm.transport import _completion
+        result = _completion(b'{"choices":[{"message":{"content":"{}"}}]}', 'model')
+        self.assertIsNone(result.tokens.prompt)
+        self.assertIsNone(result.tokens.completion)
+        self.assertIsNone(result.tokens.total)
+
+    def test_partial_usage_is_unknown(self) -> None:
+        from t6.llm.transport import _completion
+        result = _completion(b'{"choices":[{"message":{"content":"{}"}}],"usage":{"prompt_tokens":0}}', 'model')
+        self.assertEqual(result.tokens.prompt, 0)
+        self.assertIsNone(result.tokens.completion)

@@ -21,7 +21,9 @@ def record() -> RunRecord:
 
 def evaluate(c: Case, provider: Provider) -> Attempt:
     completion = provider.complete([{"role": "user", "content": c.id}], timeout=1)
-    return Attempt(completion.content == "yes", completion.content or "empty", completion.tokens.total / 100, completion.content == "review")
+    total = completion.tokens.total
+    assert total is not None
+    return Attempt(completion.content == "yes", completion.content or "empty", total / 100, completion.content == "review")
 
 
 def script(*answers: str) -> FakeProvider:
@@ -112,7 +114,7 @@ class RunnerTests(unittest.TestCase):
         bodies: list[dict[str, object]] = []
         def send(url: str, headers: dict[str, str], body: bytes, timeout: float) -> bytes:
             bodies.append(json.loads(body))
-            return b'{"choices":[{"message":{"content":"yes"}}]}'
+            return b'{"choices":[{"message":{"content":"yes"}}],"usage":{"prompt_tokens":0,"completion_tokens":0}}'
         provider = OpenAIChat(base_url="https://example.invalid", api_key="x", model="m", send=send)
         self.run_cases([case(1)], provider)
         self.assertEqual([b["temperature"] for b in bodies], [0, 0, 0])

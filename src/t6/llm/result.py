@@ -23,11 +23,13 @@ Reason = Literal[
 class Tokens:
     """Token counts the provider reported. Zero when the call got no reply."""
 
-    prompt: int = 0
-    completion: int = 0
+    prompt: int | None = 0
+    completion: int | None = 0
 
     @property
-    def total(self) -> int:
+    def total(self) -> int | None:
+        if self.prompt is None or self.completion is None:
+            return None
         return self.prompt + self.completion
 
 
