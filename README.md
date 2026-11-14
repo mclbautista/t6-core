@@ -1564,3 +1564,15 @@ The table layout in `t6.resolve.schema` and the SQL in `t6.resolve.postgres`
 have not been run against a live server. Check them first, then correct the
 schema entries and fixtures. The versions in `SCHEMAS` (18, 19) are placeholders until
 `DaVinci Resolve Version` is filled on active shows.
+
+## Transcription
+
+Install `t6[transcribe]` for the ElevenLabs adapter. Construct an ElevenLabs
+client with the caller's API key and pass it to
+`transcribe(wav_path, client)` from `t6.transcribe.adapter`. The result is the
+SDK's word-level JSON as a dictionary. `language="en"` overrides the default
+Filipino language hint; English remains the secondary hint.
+
+`render_srt(transcript, offset=0, fps=24)` from `t6.transcribe` needs no SDK.
+Offsets are seconds or non-drop-frame `HH:MM:SS:FF` timecodes; set `fps` to
+the timeline's frame rate. Words with missing timestamps are skipped.
