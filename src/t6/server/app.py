@@ -282,8 +282,11 @@ class WebhookApp:
 
     def _notion(self, request: Request) -> Response:
         body = _json_object(request.body)
-        if not request.header("x-notion-signature") and body and "verification_token" in body:
+        unsigned = not request.header("x-notion-signature")
+        if (unsigned or not self._config.notion_webhook_token) and body and "verification_token" in body:
             # Setup handshake: Notion sends its token once and the operator stores it as a secret.
+            # Notion's real handshake POST carries x-notion-signature, so until the secret is set
+            # the header does not matter: the token only goes to the operator's callback.
             self._on_notion_verification(str(body["verification_token"]))
             return Response(200)
         if not self._config.notion_webhook_token:
