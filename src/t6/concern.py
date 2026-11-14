@@ -1,0 +1,133 @@
+"""Concern records, human decisions, and silence timers."""
+from __future__ import annotations
+
+from datetime import date
+import json
+import secrets
+from typing import Any
+
+from t6.ids import EntityKind, T6Id
+from t6.preview import PreviewTokens
+from t6.registry.sqlite import SqliteProjectRegistry
+from t6.verbs import Done, Outcome, Refused
+
+WEEK = 7 * 24 * 60 * 60
+
+
+class ConcernStore:
+    def __init__(self, registry: SqliteProjectRegistry, tokens: PreviewTokens) -> None:
+        self.registry, self.tokens = registry, tokens
+
+    def get(self, concern: str) -> dict[str, Any] | None:
+        with self.registry._transaction() as db:
+            row = db.execute('SELECT id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state, settles_id FROM concerns WHERE id = ?', (concern,)).fetchone()
+            if not row:
+                return None
+            record = dict(zip(('id', 'project_id', 'owner_id', 'waiting_on', 'anchor', 'as_of', 'opened_at', 'evidence_at', 'state', 'settles_id'), row))
+            record['age_seconds'] = max(0, self.registry._clock() - record['opened_at'])
+            record['notes'] = [dict(zip(('text', 'actor', 'at'), n)) for n in db.execute('SELECT text, actor, at FROM concern_notes WHERE concern_id = ? ORDER BY id', (concern,))]
+            return record
+
+    def write(self, verb: str, values: dict[str, Any], *, actor: str, idempotency_key: str | None = None, confirm: str | None = None) -> Outcome:
+        if verb not in ('raise', 'note', 'resolve', 'reopen') or not actor.strip():
+            return Refused(rule='input', reason='A valid verb and actor are required')
+        if (idempotency_key is not None and not idempotency_key.strip()) or (confirm and not idempotency_key):
+            return Refused(rule='idempotency_key', reason='A nonblank idempotency key is required')
+        key = idempotency_key or secrets.token_hex(16)
+        inputs = {**values, 'idempotency_key': key}
+        fingerprint = json.dumps({'verb': verb, 'actor': actor, **inputs}, sort_keys=True, separators=(',', ':'))
+        nonce = self.tokens.verify(confirm, f'concern {verb}', actor, inputs) if confirm else None
+        if isinstance(nonce, Refused):
+            return nonce
+        with self.registry._transaction() as db:
+            if nonce and db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce = ?', (nonce,)).fetchone():
+                return Refused(rule='token_used', reason='Preview token has already been used')
+            previous = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key = ?', (key,)).fetchone()
+            if previous and previous[0] != fingerprint:
+                return Refused(rule='idempotency_key', reason='Idempotency key was used for a different request')
+            if previous:
+                if nonce:
+                    db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
+                    return Done(result=json.loads(previous[1]))
+                return self.tokens.create(f'concern {verb}', actor, inputs, json.loads(previous[1]))
+            if verb == 'raise':
+                if any(not isinstance(values.get(k), str) or not values[k].strip() for k in ('project', 'owner', 'waiting_on', 'anchor', 'as_of')):
+                    return Refused(rule='input', reason='Project, coordinator, waiting party, line and As of date are required')
+                try:
+                    date.fromisoformat(values['as_of'])
+                except ValueError:
+                    return Refused(rule='as_of', reason='As of must be an ISO date')
+                if not db.execute('SELECT 1 FROM projects WHERE id = ?', (values['project'],)).fetchone():
+                    return Refused(rule='project', reason='Project not found')
+                if not db.execute('SELECT 1 FROM persons WHERE id = ? AND active = 1', (values['owner'],)).fetchone():
+                    return Refused(rule='owner', reason='Active coordinator Person not found')
+                project, concern, revision, state = values['project'], None, None, None
+            else:
+                concern = values.get('concern')
+                row = db.execute('SELECT project_id, state, revision FROM concerns WHERE id = ?', (concern,)).fetchone()
+                if not row:
+                    return Refused(rule='concern', reason='Concern not found')
+                project, state, revision = row
+                if verb == 'note' and (not isinstance(values.get('text'), str) or not values['text'].strip()):
+                    return Refused(rule='note', reason='A note is required')
+                if verb == 'resolve' and state == 'closed' or verb == 'reopen' and state == 'open':
+                    return Refused(rule='state', reason='Concern cannot make that transition')
+            settles = values.get('settles_id')
+            if settles is not None:
+                try:
+                    kind = next(k for k in (EntityKind.JOB_ORDER, EntityKind.APPROVAL, EntityKind.MILESTONE) if isinstance(settles, str) and settles.startswith('t6' + k.value + '_'))
+                    T6Id.parse(settles, kind)
+                except (StopIteration, ValueError):
+                    return Refused(rule='settles_id', reason='Settlement must be a Job Order, Approval or Milestone ID')
+            plan = {'action': verb, **values, 'project_id': project, 'idempotency_key': key}
+            snapshot = json.dumps([concern, revision])
+            if not nonce:
+                preview = self.tokens.create(f'concern {verb}', actor, inputs, plan)
+                token_nonce = self.tokens.verify(preview.token, f'concern {verb}', actor, inputs)
+                assert isinstance(token_nonce, str)
+                db.execute('INSERT INTO jo_state_previews VALUES (?, ?)', (token_nonce, snapshot))
+                return preview
+            observed = db.execute('SELECT state FROM jo_state_previews WHERE nonce = ?', (nonce,)).fetchone()
+            if not observed or observed[0] != snapshot:
+                return Refused(rule='concern_changed', reason='Concern changed since preview; preview again')
+            now = self.registry._clock()
+            if verb == 'raise':
+                concern = str(T6Id.mint(EntityKind.CONCERN))
+                db.execute('INSERT INTO concerns (id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state, settles_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (concern, project, values['owner'], values['waiting_on'], values['anchor'], values['as_of'], now, now, 'open', settles))
+                self._schedule(db, concern, now, 1)
+            elif verb == 'note':
+                assert isinstance(concern, str) and revision is not None
+                db.execute('INSERT INTO concern_notes (concern_id, text, actor, at) VALUES (?, ?, ?, ?)', (concern, values['text'], actor, now))
+                db.execute("UPDATE concerns SET evidence_at = ?, state = CASE WHEN state = 'quiet' THEN 'open' ELSE state END, revision = revision + 1 WHERE id = ?", (now, concern))
+                self._schedule(db, concern, now, revision + 1)
+            else:
+                db.execute('UPDATE concerns SET state = ?, manual_override = 1, settles_id = COALESCE(?, settles_id), revision = revision + 1 WHERE id = ?', ('closed' if verb == 'resolve' else 'open', settles, concern))
+            assert isinstance(concern, str)
+            self._log(db, project, concern, actor, 'concern_' + verb, now, state, values, f'Concern {verb}' + (f": {values['text']}" if verb == 'note' else ''))
+            result = {**plan, 'concern_id': concern}
+            db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
+            db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(result)))
+            return Done(result=result)
+
+    @staticmethod
+    def _schedule(db: Any, concern: str, now: float, revision: int) -> None:
+        for weeks, target in ((2, 'quiet'), (4, 'expired')):
+            db.execute("INSERT INTO internal_jobs (queue, kind, dedupe_key, payload, run_at, state, created_at) VALUES ('main', 'concern_silence', ?, ?, ?, 'queued', ?)", (f'{concern}:{revision}:{target}', json.dumps({'concern': concern, 'evidence_at': now, 'target': target}), now + weeks * WEEK, now))
+
+    @staticmethod
+    def _log(db: Any, project: str, concern: str, actor: str, action: str, now: float, before: Any, after: Any, summary: str) -> None:
+        cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)', (concern, action, actor, now, json.dumps(before), json.dumps(after)))
+        db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (project, concern, now, actor, action, summary, cursor.lastrowid))
+
+    def silence(self, concern: str, evidence_at: float, target: str) -> bool:
+        if target not in ('quiet', 'expired'):
+            raise ValueError('Invalid silence target')
+        with self.registry._transaction() as db:
+            row = db.execute('SELECT project_id, state, evidence_at, manual_override FROM concerns WHERE id = ?', (concern,)).fetchone()
+            now = self.registry._clock()
+            if not row or row[2] != evidence_at or row[3] or row[1] in ('closed', 'expired') or row[1] == target or now < evidence_at + (2 if target == 'quiet' else 4) * WEEK:
+                return False
+            db.execute('UPDATE concerns SET state = ?, revision = revision + 1 WHERE id = ?', (target, concern))
+            reason = f'Concern {target}: no evidence for {2 if target == "quiet" else 4} weeks'
+            self._log(db, row[0], concern, 'service:concern-timer', 'concern_' + target, now, row[1], target, reason)
+            return True

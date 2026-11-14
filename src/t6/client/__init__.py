@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 from pydantic import BaseModel, TypeAdapter
 from t6.verbs import (
     Ambiguous, Done, NeedsPerson, Outcome, Preview, Refused,
+    ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
     JoListInput, JoFindInput, DeliverableListInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
     JoSubmitInput, JoCloseInput, JoBlockInput, JoUnblockInput, JoDelayInput, JoCancelInput,
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
@@ -164,6 +165,21 @@ class Client:
 
     def project_activity(self, inputs: ActivityInput) -> Result:
         return self.call('project', 'activity', inputs)
+
+    def concern_get(self, inputs: ConcernGetInput) -> Result:
+        return self.call("concern", "get", inputs)
+
+    def concern_raise(self, inputs: ConcernRaiseInput) -> Result:
+        return self.call("concern", "raise", inputs)
+
+    def concern_note(self, inputs: ConcernNoteInput) -> Result:
+        return self.call("concern", "note", inputs)
+
+    def concern_resolve(self, inputs: ConcernResolveInput) -> Result:
+        return self.call("concern", "resolve", inputs)
+
+    def concern_reopen(self, inputs: ConcernReopenInput) -> Result:
+        return self.call("concern", "reopen", inputs)
 
     def jo_get(self, inputs: JoGetInput) -> Result:
         return self.call('jo', 'get', inputs)

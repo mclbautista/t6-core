@@ -295,7 +295,9 @@ def main(
             )
             queue_handlers, tick = frameio.handlers(), frameio.tick
             read_api = read_api_server(environ, frameio)
-        if not queue_handlers:
+        if not queue_handlers and settings.queue == "main" and environ.get("T6_DATABASE"):
+            queue_handlers = {}
+        if queue_handlers is None or (not queue_handlers and not (settings.queue == "main" and environ.get("T6_DATABASE"))):
             raise ConfigError(f"no handler is registered for queue {settings.queue!r}")
     except ConfigError as error:
         print(f"t6.worker: {error}", file=sys.stderr)
@@ -310,6 +312,18 @@ def main(
         from t6.worker.internal_queue import InternalJobQueue, InternalQueueClient
 
         internal_client = InternalQueueClient(InternalJobQueue(environ["T6_DATABASE"]))
+    if internal_client is not None and settings.queue == "main":
+        from t6.concern import ConcernStore
+        from t6.preview import PreviewTokens
+        from t6.registry.sqlite import SqliteProjectRegistry
+
+        concerns = ConcernStore(SqliteProjectRegistry(environ["T6_DATABASE"]), PreviewTokens("timer"))
+        def concern_silence(job: WorkerJob) -> bool:
+            concern, evidence, target = job.payload["concern"], job.payload["evidence_at"], job.payload["target"]
+            if not isinstance(concern, str) or not isinstance(evidence, (int, float)) or not isinstance(target, str):
+                raise ValueError("Invalid Concern timer payload")
+            return concerns.silence(concern, evidence, target)
+        queue_handlers = {**queue_handlers, "concern_silence": concern_silence}
     if read_api is not None:
         threading.Thread(target=read_api.serve_forever, daemon=True).start()
     try:
