@@ -6,8 +6,9 @@ import json
 import time
 from typing import Any, Literal, Mapping
 
-from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
-from jsonschema.exceptions import SchemaError, ValidationError, _WrappedReferencingError  # type: ignore[import-untyped]
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError, ValidationError
+from referencing.exceptions import Unresolvable
 from referencing import Registry as SchemaRegistry
 
 from t6.llm.config import LLMConfig
@@ -77,7 +78,7 @@ class LLMService:
             validator.validate(data)
         except (ProviderError, ProviderTimeout):
             return Refused(rule='provider', reason='LLM provider failed')
-        except (ValueError, ValidationError, Unresolved, _WrappedReferencingError):
+        except (ValueError, ValidationError, Unresolved, Unresolvable):
             return Refused(rule='output', reason='LLM output could not be validated or restored')
         return Done(result=LLMRunOutput(output=data, model=completion.model, provider=name,
                     prompt_hash=_hash(prompt_bytes), schema_hash=_hash(schema_bytes),
