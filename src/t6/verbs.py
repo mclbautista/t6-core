@@ -149,6 +149,56 @@ def project_activity(inputs: ActivityInput, open_notion: Callable[..., Any]) -> 
         return Refused(rule="input", reason=str(error))
 
 
+
+class ProjectHoldInput(BaseModel):
+    project: str
+    reason: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class ProjectResumeInput(BaseModel):
+    project: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class ProjectWriteOutput(BaseModel):
+    project_id: str
+    action: str
+    reason: str | None
+    idempotency_key: str
+    status: str
+
+
+def _project_write(inputs: ProjectHoldInput | ProjectResumeInput, verb: str) -> Outcome:
+    import pwd
+    from t6.cli import DEFAULT_REGISTRY_DB, REGISTRY_DB_VARIABLE, _open_registry
+    from t6.preview import PreviewTokens
+    from t6.project_writes import ProjectWrites
+    from t6.registry import RegistryError
+
+    key = os.environ.get("T6_PREVIEW_SIGNING_KEY", "")
+    if not key:
+        return Refused(rule="config", reason="Set T6_PREVIEW_SIGNING_KEY")
+    registry = _open_registry(Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)))
+    if registry is None:
+        return Refused(rule="registry", reason="Project registry is unavailable")
+    try:
+        return ProjectWrites(registry, PreviewTokens(key)).run(
+            verb, inputs.project, inputs.reason if isinstance(inputs, ProjectHoldInput) else None,
+            actor=pwd.getpwuid(os.getuid()).pw_name, idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+    except (RegistryError, OSError) as error:
+        return Refused(rule="registry", reason=str(error))
+
+
+def project_hold(inputs: ProjectHoldInput, open_notion: Callable[..., Any]) -> Outcome:
+    return _project_write(inputs, "hold")
+
+
+def project_resume(inputs: ProjectResumeInput, open_notion: Callable[..., Any]) -> Outcome:
+    return _project_write(inputs, "resume")
+
 @dataclass(frozen=True)
 class Verb:
     noun: str
@@ -208,6 +258,10 @@ class CameraEnrichInput(BaseModel):
 
 
 VERBS = (
+    Verb("project", "hold", "Hold a Project", (), ProjectHoldInput, ProjectWriteOutput,
+         "writer", "A held Project cannot be held again.", project_hold),
+    Verb("project", "resume", "Resume a held Project", (), ProjectResumeInput, ProjectWriteOutput,
+         "writer", "Only a held Project can be resumed.", project_resume),
     Verb("project", "activity", "Show Project activity, newest first", (),
          ActivityInput, ActivityOutput, "reader", "Activity is append-only.", project_activity),
     Verb("jo", "get", "Get a Job Order", (), JoGetInput, LegacyOutput, "reader", "Read a Job Order.", None),
@@ -270,6 +324,14 @@ def add_parsers(commands: Any) -> None:
         parser = nouns[entry.noun]
         if entry.verb:
             parser = parser.add_parser(entry.verb, help="[verb] " + entry.description)
+        if entry.handler in (project_hold, project_resume):
+            parser.add_argument("project")
+            if entry.handler is project_hold:
+                parser.add_argument("--reason", required=True)
+            parser.add_argument("--idempotency-key")
+            parser.add_argument("--confirm")
+            parser.set_defaults(registered_verb=entry)
+            continue
         if entry.handler is project_activity:
             parser.add_argument("project")
             parser.add_argument("--since", help="ISO 8601 date or timestamp (UTC if no offset)")

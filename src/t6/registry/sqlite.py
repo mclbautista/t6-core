@@ -128,6 +128,20 @@ _MIGRATIONS = (
         );
         CREATE INDEX internal_jobs_claimable ON internal_jobs (queue, state, run_at)
     """),
+    (5, False, """
+        CREATE TABLE project_hold_state (
+            project_id TEXT PRIMARY KEY REFERENCES projects(id),
+            held INTEGER NOT NULL, reason TEXT
+        );
+        CREATE TABLE used_preview_tokens (nonce TEXT PRIMARY KEY);
+        CREATE TABLE verb_requests (
+            idempotency_key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, result TEXT NOT NULL
+        );
+        CREATE TABLE status_sync_intents (
+            intent_id INTEGER PRIMARY KEY REFERENCES sync_intents(id),
+            held INTEGER NOT NULL
+        )
+    """),
 )
 
 
@@ -434,14 +448,16 @@ class SqliteProjectRegistry:
     # -- sync and reconciliation ---------------------------------------------
 
     def undispatched_sync(self) -> tuple[SyncIntent, ...]:
-        return self._intents("done_at IS NULL AND dispatched_at IS NULL")
+        return self._intents("done_at IS NULL AND dispatched_at IS NULL AND id NOT IN (SELECT intent_id FROM status_sync_intents)")
 
     def _intents(self, where: str) -> tuple[SyncIntent, ...]:
         with self._transaction() as db:
             rows = db.execute(
-                f"SELECT id, project_id, revision, created_at FROM sync_intents WHERE {where} ORDER BY id"
+                f"SELECT id, project_id, revision, created_at, "
+                f"(SELECT held FROM status_sync_intents WHERE intent_id = sync_intents.id) "
+                f"FROM sync_intents WHERE {where} ORDER BY id"
             ).fetchall()
-        return tuple(SyncIntent(*row) for row in rows)
+        return tuple(SyncIntent(row[0], row[1], row[2], row[3], None if row[4] is None else bool(row[4])) for row in rows)
 
     def mark_dispatched(self, intent_ids: Iterable[int]) -> None:
         now = self._clock()
@@ -456,7 +472,7 @@ class SqliteProjectRegistry:
     ) -> RegisteredProject | None:
         now = self._clock()
         with self._transaction() as db:
-            covered = "project_id = ? AND done_at IS NULL AND revision <= ?"
+            covered = "project_id = ? AND done_at IS NULL AND revision <= ? AND id NOT IN (SELECT intent_id FROM status_sync_intents)"
             if ok:
                 db.execute(f"UPDATE sync_intents SET done_at = ? WHERE {covered}", (now, project_id, revision))
             else:

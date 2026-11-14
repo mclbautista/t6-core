@@ -154,6 +154,8 @@ class SyncIntent:
     project_id: str
     revision: int
     created_at: float
+    status_held: bool | None = None
+    """Requested Project Status projection, or None for an identity intent."""
 
 
 @dataclass(frozen=True, slots=True)

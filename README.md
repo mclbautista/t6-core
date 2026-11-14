@@ -1599,3 +1599,16 @@ The old commands remain available until 0.5.0 and print a deprecation notice on 
 | `check-consumer` | `admin consumer-check` |
 | `drives-import-dry-run` | `admin drive import` |
 | `version`, `commands --json`, `health` | unchanged |
+
+Project hold and resume use a preview followed by confirmation. Configure
+`T6_REGISTRY_DB` and `T6_PREVIEW_SIGNING_KEY` for the local CLI. For example,
+`t6 project hold PROJECT --reason "waiting"` returns a token and an
+`idempotency_key` in its plan. Repeat the same command with `--confirm TOKEN`
+and `--idempotency-key KEY` to confirm it; resume uses `t6 project resume
+PROJECT` in the same way. The local operating-system account is recorded as
+the actor. Tokens expire after 15 minutes and are single-use. Keep the same
+idempotency key for retries and obtain a fresh preview token for each attempt.
+
+Hold and resume queue Project Status projection intents. The current sync
+worker only projects identity fields, so these intents remain pending until a
+Status-capable worker is provided.
