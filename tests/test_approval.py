@@ -134,6 +134,25 @@ class ApprovalCardTests(unittest.TestCase):
         while worker.run_once():
             pass
 
+    def test_group_link_command_delivers_approval_and_grant_confirms_link(self) -> None:
+        from t6.registry import Registered
+        self.registry._new_id = lambda: 't6p_' + '3' * 24
+        project = self.registry.register(actor=self.actor, idempotency_key='chat-project')
+        assert isinstance(project, Registered)
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO person_permissions VALUES (?, 'operator')", (self.actor,))
+        body = {'kind': 'command', 'command': 'link', 'args': project.project.id,
+                'chat': -100, 'topic': 12, 'from': {'id': 42}, 'message_id': 123}
+        result = self.send('/tap', body, secret='gateway', headers={'X-Telegram-User-Id': '42', 'Idempotency-Key': 'cmd-1'})
+        self.assertEqual(result['outcome'], 'accepted')
+        self.drain()
+        self.assertIn('chat -100, topic 12', self.gateway.messages[1]['text'])
+        payload = self.gateway.messages[1]['buttons'][0][0]['payload']
+        result = self.send('/tap', {'data': payload, 'from': {'id': 42}, 'chat': 42, 'message_id': 1001}, secret='gateway', headers={'X-Telegram-User-Id': '42', 'Idempotency-Key': 'tap-link'})
+        self.assertEqual(result['outcome'], 'granted')
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute('SELECT project_id, chat_id, topic_id, state FROM chat_links').fetchone(), (project.project.id, -100, 12, 'active'))
+
     def test_request_delivers_one_card_and_only_the_allowed_person_grants_once(self) -> None:
         values = {'gate': 'grade', 'target': 'cut', 'tapper_rule': 'person:' + self.actor, 'idempotency_key': 'one'}
         preview = self.send('/v1/approval/request', values)

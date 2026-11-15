@@ -236,6 +236,19 @@ _MIGRATIONS = (
     (19, False, """ALTER TABLE concern_notes ADD COLUMN message_id TEXT;
         CREATE TABLE concern_brief_messages (chat TEXT NOT NULL, message_id TEXT NOT NULL,
             concern_id TEXT NOT NULL REFERENCES concerns(id), PRIMARY KEY (chat, message_id, concern_id))"""),
+    (20, False, """CREATE TABLE chat_links (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+        chat_id INTEGER NOT NULL, topic_id INTEGER, state TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX chat_link_identity ON chat_links(project_id, chat_id, COALESCE(topic_id, 0));
+    CREATE TABLE chat_link_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, link_id TEXT NOT NULL REFERENCES chat_links(id),
+        state TEXT NOT NULL, actor TEXT NOT NULL, at REAL NOT NULL
+    );
+    CREATE TABLE chat_link_previews (
+        nonce TEXT PRIMARY KEY, approval_id TEXT NOT NULL REFERENCES approvals(id),
+        snapshot TEXT NOT NULL, request TEXT NOT NULL
+    )"""),
 )
 
 
