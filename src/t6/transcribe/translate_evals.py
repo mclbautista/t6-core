@@ -58,7 +58,13 @@ _SOURCES: dict[str, tuple[list[str], str]] = {
                        _srt((_A, 'Guest:\nSabi ni Kapitan Bagwis, huwag kang aalis.'))),
     'unlabelled-colon': (['A cue with no speaker label whose text has a line ending in a colon is translated in full'],
                          _srt((_A, 'Sabi niya sa akin\nang sagot ay ito:\nOo na, sige.'))),
+    'unmapped-label': (['With no speaker map there are no labels: a first line like "Sabi niya:" is dialogue and is translated'],
+                       _srt((_A, 'Sabi niya:\nOo na, sige.'))),
 }
+
+SPEAKER_NAMES = frozenset({'Host', 'Guest'})
+NO_SPEAKER_MAP = frozenset({'unmapped-label', 'unlabelled-colon'})
+"""Cases whose Transcript has no applied speaker map; every other case has one that names Host and Guest."""
 
 OFFLINE_REPLIES: dict[str, list[str]] = {
     'taglish-terms': ['Put the color grade on the timeline already before you export.',
@@ -72,11 +78,17 @@ OFFLINE_REPLIES: dict[str, list[str]] = {
     'no-merge-no-invention': ['Yes.', 'Yes indeed.', 'Okay.', 'Right, that is all.'],
     'character-name': ['Captain Bagwis said, do not leave.'],
     'unlabelled-colon': ["He told me\nthe answer is this:\nYes, okay, fine."],
+    'unmapped-label': ['He said:\nYes, okay, fine.'],
 }
 
 CASES = [_case(case_id, [*properties, 'Same cue count, timecodes, speaker labels and line breaks'], srt)
          for case_id, (properties, srt) in _SOURCES.items()]
 MUST_PASS = frozenset(case.id for case in CASES)
+
+
+def names_for(case: Case) -> frozenset[str]:
+    """The speaker names the case's Transcript knows (its applied speaker map)."""
+    return frozenset() if case.id in NO_SPEAKER_MAP else SPEAKER_NAMES
 
 
 def _terms(text: str) -> set[str]:
@@ -96,7 +108,7 @@ def grade_translation(case: Case, output: JsonValue) -> CaseResult:
     if not isinstance(case.masked_input, str) or not isinstance(output, str):
         return result(False, 'source and output must be SRT text')
     try:
-        source, translated = parse_srt(case.masked_input), parse_srt(output)
+        source, translated = parse_srt(case.masked_input, names_for(case)), parse_srt(output, names_for(case))
     except ValueError:
         return result(False, 'output is not valid SRT')
     if len(source) != len(translated):

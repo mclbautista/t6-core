@@ -71,7 +71,10 @@ class TranscriptWorker:
         return resolve_share_folder(job.payload.get('audio_folder'), self.shares).resolve(strict=True)
 
     def _translate_plan(self, job: WorkerJob) -> tuple[list[tuple[Path, Any]], dict[str, Any]]:
+        from t6.transcribe.speakers import parse_speaker_map
         from t6.transcribe.translate import parse_srt
+        csv = job.payload.get('speaker_map')
+        names = set(parse_speaker_map(str(csv)).values()) if csv else set()
         root = self._root(job)
         output = root / '_transcripts'
         if output.is_symlink() or not output.resolve().is_relative_to(root):
@@ -84,7 +87,7 @@ class TranscriptWorker:
             if path.is_symlink() or not path.resolve().is_relative_to(output.resolve()):
                 raise ValueError('Transcript path escapes output folder')
             raw = path.read_bytes()
-            cues = parse_srt(raw.decode('utf-8'))
+            cues = parse_srt(raw.decode('utf-8'), names)
             digest.update(str(path.relative_to(output)).encode())
             digest.update(raw)
             clips.append((path, cues))
@@ -195,9 +198,12 @@ class TranscriptWorker:
             self.report(job, 'progress', event)
         run_folder(plan, lambda path: transcribe(path, self.client, language=str(job.payload.get('language', 'fil')), diarize=not bool(job.payload.get('no_diarize', False))),
                    progress=progress, speaker_map=speaker_map, offset=str(job.payload.get('start_timecode') or '00:00:00:00'))
-        self.report(job, 'failed' if counts['failed'] else 'complete', {'clips_done': counts['completed'], 'failed': counts['failed'],
-                                      'skipped': plan.already_done, 'audio_hours': plan.pending_hours,
-                                      'estimated_cost': plan.estimated_cost})
+        # The preview's counts describe the whole run; this attempt may be a resume that found clips already finished.
+        saved_done, saved_hours = job.payload.get('already_done'), job.payload.get('hours_pending')
+        skipped = int(saved_done) if isinstance(saved_done, (int, float)) else plan.already_done
+        hours = float(saved_hours) if isinstance(saved_hours, (int, float)) else plan.pending_hours
+        self.report(job, 'failed' if counts['failed'] else 'complete', {'clips_done': max(0, plan.already_done - skipped) + counts['completed'], 'failed': counts['failed'],
+                                      'skipped': skipped, 'audio_hours': hours, 'estimated_cost': hours * plan.rate})
 
     def _speakers_plan(self, job: WorkerJob) -> tuple[list[tuple[Path, str, dict[str, Any]]], dict[str, Any]]:
         from t6.transcribe.folder import _load_transcript, _output

@@ -142,6 +142,46 @@ class DeadAndFailedJobTests(unittest.TestCase):
         self.assertEqual(again['outcome'], 'done')
         flow.request('/v1/transcribe/claim', {}, 'worker-secret')
         self.assertEqual(flow.transcript(identifier)['state'], 'running')
+    def kill_run(self, flow: Flow, now: list[float]) -> None:
+        """Let a run job's lease expire until it is dead, without the claim-time sweep."""
+        from t6.worker.internal_queue import InternalJobQueue
+        queue = InternalJobQueue(flow.registry, clock=flow.registry._clock)
+        for _ in range(6):
+            queue.claim('transcribe', 300)
+            now[0] += 400
+
+    def test_create_speakers_and_translate_sweep_a_dead_run_before_they_look_for_a_running_one(self) -> None:
+        flow = Flow(self, ['srt'])
+        wav(flow.root / 'one.wav')
+        now = [1_000_000.0]
+        flow.registry._clock = lambda: now[0]
+        tokens = [flow.preview()['token'] for _ in range(2)]
+        identifier = flow.create(confirm=tokens[0])['result']['transcript_id']
+        self.kill_run(flow, now)
+        self.assertEqual(flow.transcript(identifier)['state'], 'running')
+        csv = 'source,speaker,name\n,speaker_0,Character A\n'
+        self.assertEqual(flow.request('/v1/transcript/speakers', {'transcript': identifier, 'csv': csv})['outcome'], 'done')
+        self.assertEqual([e['action'] for e in flow.transcript(identifier)['history']], ['created', 'failed'])
+        self.assertEqual(flow.request('/v1/transcript/translate', {'transcript': identifier})['outcome'], 'done')
+        self.assertEqual([e['action'] for e in flow.transcript(identifier)['history']], ['created', 'failed'])
+        self.assertEqual(flow.create(confirm=tokens[1])['outcome'], 'done')
+        self.assertEqual([e['action'] for e in flow.transcript(identifier)['history']], ['created', 'failed', 're-run'])
+
+    def test_a_repeated_lookup_writes_the_failed_entry_once(self) -> None:
+        from t6.transcript import TranscriptStore
+        flow = Flow(self, ['srt'])
+        wav(flow.root / 'one.wav')
+        now = [1_000_000.0]
+        flow.registry._clock = lambda: now[0]
+        identifier = flow.create(confirm=flow.preview()['token'])['result']['transcript_id']
+        self.kill_run(flow, now)
+        store = TranscriptStore(flow.registry)
+        with flow.registry._transaction() as db:
+            self.assertFalse(store.is_running(transcript=identifier, _db=db))
+            self.assertFalse(store.is_running(transcript=identifier, _db=db))
+            self.assertFalse(store.is_running(media=flow.media, _db=db))
+        self.assertEqual([e['action'] for e in flow.transcript(identifier)['history']], ['created', 'failed'])
+        self.assertEqual([e.action for e in flow.registry.activity(flow.project)].count('transcript_failed'), 1)
 
     def test_job_that_fails_for_any_reason_marks_the_transcript_failed(self) -> None:
         flow = Flow(self)
@@ -153,6 +193,25 @@ class DeadAndFailedJobTests(unittest.TestCase):
         self.assertTrue(flow.runner.run_once())
         result = flow.transcript(confirmed['result']['transcript_id'])
         self.assertEqual((result['state'], result['history'][-1]['action']), ('failed', 'failed'))
+
+
+class ResumedSummaryTests(unittest.TestCase):
+    def test_a_resumed_run_summary_counts_the_whole_run(self) -> None:
+        flow = Flow(self, ['srt'])
+        wav(flow.root / 'one.wav', 3600)
+        wav(flow.root / 'two.wav', 3600)
+        now = [1_000_000.0]
+        flow.registry._clock = lambda: now[0]
+        flow.worker.client = InterruptingClient([WORDS, WORDS])
+        confirmed = flow.create(confirm=flow.preview()['token'])
+        with self.assertRaises(Interrupt):
+            flow.runner.run_once()
+        self.assertTrue((flow.root / '_transcripts/one.srt').exists())
+        now[0] += 400
+        self.assertTrue(flow.runner.run_once())
+        result = flow.transcript(confirmed['result']['transcript_id'])
+        self.assertEqual(result['state'], 'done')
+        self.assertEqual(result['summary'], {'clips_done': 2, 'failed': 0, 'skipped': 0, 'audio_hours': 2.0, 'estimated_cost': 0.8})
 
 
 class IdempotencyTests(unittest.TestCase):

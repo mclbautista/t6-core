@@ -431,7 +431,7 @@ class VerbAPI:
                     nonce = self.people.tokens.verify(preview.token, 'transcript create', payload['actor'], values)
                     if not isinstance(nonce, str):
                         return Response(400)
-                    db.execute('INSERT INTO transcript_previews VALUES (?, ?)', (nonce, json.dumps({'snapshot': data['snapshot'], 'audio_folder': payload['audio_folder'], 'rate': payload['rate']})))
+                    db.execute('INSERT INTO transcript_previews VALUES (?, ?)', (nonce, json.dumps({'snapshot': data['snapshot'], 'audio_folder': payload['audio_folder'], 'rate': payload['rate'], 'already_done': data['already_done'], 'hours_pending': data['hours_pending']})))
                     result = preview.model_dump(mode='json')
                     db.execute("UPDATE internal_jobs SET state='done', result=?, lease_token=NULL, lease_until=NULL WHERE id=?", (json.dumps(result), job_id))
                     return Response(200, {'accepted': True})
@@ -466,12 +466,13 @@ class VerbAPI:
         if isinstance(nonce, Refused):
             return nonce
         with self.people.registry._transaction() as db:
-            row = db.execute("SELECT m.ref, t.state FROM transcripts t JOIN media_locations m ON m.id=t.media_id WHERE t.id=? AND m.active=1 AND m.kind='nas-path'", (inputs.transcript,)).fetchone()
+            row = db.execute("SELECT m.ref FROM transcripts t JOIN media_locations m ON m.id=t.media_id WHERE t.id=? AND m.active=1 AND m.kind='nas-path'", (inputs.transcript,)).fetchone()
             if not row:
                 return Refused(rule='transcript', reason='Transcript not found')
-            if row[1] == 'running':
+            from t6.transcript import TranscriptStore
+            if TranscriptStore(self.people.registry).is_running(transcript=inputs.transcript, _db=db):
                 return Refused(rule='transcript_running', reason='Transcript is running')
-            payload = {**values, 'actor': actor, 'audio_folder': row[0]}
+            payload = {**values, 'actor': actor, 'audio_folder': row[0], 'speaker_map': TranscriptStore(self.people.registry).speaker_map(inputs.transcript, _db=db)}
             kind = 'transcript.translate.preview'
             if nonce:
                 if db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce=?', (nonce,)).fetchone():
@@ -500,10 +501,11 @@ class VerbAPI:
         if isinstance(nonce, Refused):
             return nonce
         with self.people.registry._transaction() as db:
-            row = db.execute("SELECT m.ref, t.settings, t.state FROM transcripts t JOIN media_locations m ON m.id=t.media_id WHERE t.id=? AND m.active=1 AND m.kind='nas-path'", (inputs.transcript,)).fetchone()
+            row = db.execute("SELECT m.ref, t.settings FROM transcripts t JOIN media_locations m ON m.id=t.media_id WHERE t.id=? AND m.active=1 AND m.kind='nas-path'", (inputs.transcript,)).fetchone()
             if not row:
                 return Refused(rule='transcript', reason='Transcript not found')
-            if row[2] == 'running':
+            from t6.transcript import TranscriptStore
+            if TranscriptStore(self.people.registry).is_running(transcript=inputs.transcript, _db=db):
                 return Refused(rule='transcript_running', reason='Transcript is running')
             previous = db.execute('SELECT m.csv FROM transcript_speaker_maps m JOIN transcript_history h ON h.id=m.history_id WHERE h.transcript_id=? ORDER BY h.id DESC LIMIT 1', (inputs.transcript,)).fetchone()
             previous_map = previous[0] if previous else ''
@@ -551,14 +553,13 @@ class VerbAPI:
                     return Refused(rule='media_changed', reason='Media location changed since preview')
                 if db.execute("SELECT 1 FROM internal_jobs j JOIN transcripts t ON t.id=json_extract(j.payload, '$.transcript') WHERE j.kind='transcript.speakers.run' AND j.state IN ('queued', 'claimed') AND t.media_id=?", (inputs.media,)).fetchone():
                     return Refused(rule='transcript_running', reason='Speaker job is already running')
-                existing = db.execute('SELECT state FROM transcripts WHERE media_id=?', (inputs.media,)).fetchone()
-                if existing and existing[0] == 'running':
+                if TranscriptStore(self.people.registry).is_running(media=inputs.media, _db=db):
                     return Refused(rule='transcript_running', reason='A transcription is already running')
                 try:
                     transcript = TranscriptStore(self.people.registry).start(inputs.media, inputs.deliverable, {**values, 'rate': snapshot['rate']}, actor=actor, _db=db)
                 except ValueError as error:
                     return Refused(rule='transcript', reason=str(error))
-                payload = {**values, 'actor': actor, 'audio_folder': media[0], 'rate': snapshot['rate'], 'snapshot': snapshot['snapshot'], 'transcript_id': transcript, 'speaker_map': TranscriptStore(self.people.registry).speaker_map(transcript, _db=db)}
+                payload = {**values, 'actor': actor, 'audio_folder': media[0], 'rate': snapshot['rate'], 'snapshot': snapshot['snapshot'], 'already_done': snapshot.get('already_done'), 'hours_pending': snapshot.get('hours_pending'), 'transcript_id': transcript, 'speaker_map': TranscriptStore(self.people.registry).speaker_map(transcript, _db=db)}
                 now = self.people.registry._clock()
                 row = db.execute("INSERT INTO internal_jobs (queue, kind, dedupe_key, payload, run_at, state, created_at) VALUES ('transcribe', 'transcript.run', ?, ?, ?, 'queued', ?)", (secrets.token_urlsafe(24), json.dumps(payload), now, now))
                 db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 import textwrap
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 
 from t6.llm.api import LLMRunInput
@@ -41,23 +41,24 @@ class Cue:
     text: str
 
 
-def _label_end(lines: list[str]) -> int | None:
-    """Index of the last label line when the cue starts with a label in the exact form the renderer writes, else None."""
+def _label_end(lines: list[str], names: Collection[str]) -> int | None:
+    """Index of the last label line when the cue starts with a known speaker name in the exact form the renderer writes, else None."""
     for end in range(2, len(lines) - 1):
         label = lines[2:end + 1]
-        if label[-1].endswith(':') and label == textwrap.wrap(' '.join(label), width=42):
+        if label[-1].endswith(':') and ' '.join(label).removesuffix(':') in names and label == textwrap.wrap(' '.join(label), width=42):
             return end
     return None
 
 
-def parse_srt(value: str) -> list[Cue]:
-    """Parse cues; a speaker label is only what the renderer writes: the first text lines, wrapped at 42, ending in a colon."""
+def parse_srt(value: str, names: Collection[str] = ()) -> list[Cue]:
+    """Parse cues; a speaker label is only a name in ``names`` (the Transcript's applied speaker map), written as the
+    renderer writes it: the first text lines, wrapped at 42, ending in a colon. With no names there are no labels."""
     cues = []
     for block in re.split(r'\n\s*\n', value.strip()):
         lines = block.splitlines()
         if len(lines) < 3 or not lines[0].isdigit() or not _TIMECODE.fullmatch(lines[1]):
             raise ValueError('Invalid SRT cue')
-        end = _label_end(lines)
+        end = _label_end(lines, names)
         speaker = '\n'.join(lines[2:end + 1]) if end is not None else ''
         text = '\n'.join(lines[(end + 1 if end is not None else 2):])
         if not text.strip():

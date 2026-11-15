@@ -50,21 +50,56 @@ class MCPTests(unittest.TestCase):
             self.assertNotIn('Client Corp', call('reader-secret'))
             self.assertIn('Client Corp', call('operator-secret'))
 
-    def test_tool_list_is_read_only_marked_and_has_no_writes(self) -> None:
-        from t6.verbs import VERBS
-        server = MCPServer(None)
-        by_name = {server._name(v.noun, v.verb): v for v in VERBS}
-        tools = server.tools()
-        self.assertTrue(tools)
+    TOOL_NAMES = [
+        'booking__get', 'booking__list', 'camera__get', 'concern__for-message', 'concern__get', 'deliverable__bangko',
+        'deliverable__get', 'deliverable__hand-to-mouth', 'deliverable__list', 'deliverable__sabit', 'departments',
+        'external-link__find', 'jo__find', 'jo__get', 'jo__list', 'media__list', 'meeting-notes__list', 'package__get',
+        'package__list', 'person__find', 'person__get', 'person__list', 'project__activity', 'project__flags',
+        'project__get', 'project__list', 'project__resolve', 'standing-cc', 'studio__notices', 'transcript__get',
+        'version__find', 'version__get']
+
+    def test_tool_list_is_the_written_list_of_read_tools_and_has_no_writes(self) -> None:
+        tools = MCPServer(None).tools()
+        self.assertEqual(sorted(t['name'] for t in tools), self.TOOL_NAMES)
         for tool in tools:
-            verb = by_name[tool['name']]
-            self.assertTrue(verb.read_only, tool['name'])
             self.assertNotIn('confirm', tool['inputSchema'].get('properties', {}), tool['name'])
             self.assertNotIn('idempotency_key', tool['inputSchema'].get('properties', {}), tool['name'])
         names = {t['name'] for t in tools}
         for write in ('transcript__create', 'transcript__speakers', 'transcript__translate', 'jo__format'):
             self.assertNotIn(write, names)
-        self.assertIn('transcript__get', names)
+
+    def test_project_activity_read_is_masked_for_the_mcp_service_and_a_non_operator_person(self) -> None:
+        import json
+        import tempfile
+        from unittest.mock import patch
+        from t6.person import People
+        from t6.preview import PreviewTokens
+        from t6.privacy import Person, Registry
+        from t6.registry.sqlite import SqliteProjectRegistry
+        from t6.server.app import Request
+        from t6.server.verbs import VerbAPI
+        from t6.verbs import Done
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        registry = SqliteProjectRegistry(tmp.name + '/registry')
+        operator, staff = ('t6n_' + c * 32 for c in '15')
+        with registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', NULL, 0, 1)", (operator,))
+            db.execute("INSERT INTO person_permissions VALUES (?, 'operator')", (operator,))
+            db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', NULL, 0, 1)", (staff,))
+        api = VerbAPI(People(registry, PreviewTokens('test')), None,
+                      {'mcp-secret': 'mcp', 'operator-secret': operator, 'staff-secret': staff}, lambda _: None,
+                      privacy_registry=Registry(people=[Person(name='Client Corp')]))
+        for path, body in (('/v1/project/activity', {'project': 'P-1'}),):
+            with self.subTest(path), patch('t6.server.verbs.invoke', return_value=Done(result={'items': [{'summary': 'Client Corp'}]})):
+                def call(secret: str, header: bool, path: str = path, body: dict[str, str] = body) -> str:
+                    headers = {'Authorization': 'Bearer ' + secret, **({'X-T6-MCP': '1'} if header else {})}
+                    return json.dumps(api(Request('POST', path, headers, json.dumps(body).encode())).body)
+                self.assertNotIn('Client Corp', call('mcp-secret', True))
+                self.assertNotIn('Client Corp', call('mcp-secret', False))
+                self.assertNotIn('Client Corp', call('staff-secret', True))
+                self.assertIn('Client Corp', call('staff-secret', False))
+                self.assertIn('Client Corp', call('operator-secret', True))
 
     def test_a_reader_role_alone_does_not_make_a_tool(self) -> None:
         from dataclasses import replace

@@ -1631,7 +1631,7 @@ VERBS = (
     Verb("project", "resume", "Resume a held Project", (), ProjectResumeInput, ProjectWriteOutput,
          "operator", "Only a held Project can be resumed.", project_resume),
     Verb("project", "activity", "Show Project activity, newest first", (),
-         ActivityInput, ActivityOutput, "reader", "Activity is append-only.", project_activity),
+         ActivityInput, ActivityOutput, "reader", "Activity is append-only.", project_activity, read_only=True),
     Verb('package', 'list', 'List open Packages', (), PackageListInput, PackageListOutput, 'reader', 'Filter to Packages with missing items.', package_list, read_only=True),
     Verb('package', 'get', 'Get a Package', (), PackageGetInput, PackageGetOutput, 'reader', 'Read a Package and its checklist.', package_get, read_only=True),
     Verb('package', 'prepare', 'Prepare a Package', (), PackagePrepareInput, PackageOutput, 'person', 'Copy the Package Spec.', package_write),
@@ -1663,7 +1663,7 @@ VERBS = (
     Verb("camera", "get", "Get Cameras", ("cameras get",), CameraGetInput, CameraGetOutput, "reader", "Read Cameras.", None, read_only=True),
     Verb("camera", "enrich", "Enrich a Camera", ("cameras update",), CameraEnrichInput, CameraEnrichOutput, "operator", "Update a Camera.", None),
     Verb("departments", "", "Print the studio Departments, read live, in display order, with option IDs", (),
-         DepartmentsInput, DepartmentsOutput, "reader", "Notion Department options are the truth; use studio display order.", departments),
+         DepartmentsInput, DepartmentsOutput, "reader", "Notion Department options are the truth; use studio display order.", departments, read_only=True),
 )
 
 

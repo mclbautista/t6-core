@@ -12,19 +12,25 @@ from t6.llm.testing import FakeProvider
 from t6.privacy import Person, Project, Registry
 from t6.server.llm import LLMService
 from t6.transcribe.translate import TranslationError, parse_srt, render_srt, translate_cues, task_input
-from t6.transcribe.translate_evals import CASES, MUST_PASS, OFFLINE_REPLIES, grade_translation
+from t6.transcribe.translate_evals import CASES, MUST_PASS, OFFLINE_REPLIES, grade_translation, names_for
 
+NAMES = frozenset({'Host', 'Guest'})
 TWO_CUES = '1\n00:00:01,000 --> 00:00:02,000\nHost:\nKumusta\n\n2\n00:00:02,500 --> 00:00:04,000\nGuest:\nMaayos naman\n\n'
 
 
 class CueTests(unittest.TestCase):
     def test_srt_round_trips_with_wrapped_speaker_labels_and_multiline_text(self) -> None:
         text = '1\n00:00:01,000 --> 00:00:02,000\nA very long synthetic speaker name that\nwraps:\nline one\nline two\n\n2\n00:00:03,000 --> 00:00:04,000\nplain\n\n'
-        cues = parse_srt(text)
+        cues = parse_srt(text, {'A very long synthetic speaker name that wraps'})
         self.assertEqual(cues[0].speaker, 'A very long synthetic speaker name that\nwraps:')
         self.assertEqual(cues[0].text, 'line one\nline two')
         self.assertEqual(cues[1].speaker, '')
         self.assertEqual(render_srt(cues), text)
+
+    def test_a_label_is_only_a_name_the_transcript_knows(self) -> None:
+        text = '1\n00:00:01,000 --> 00:00:02,000\nSabi niya:\nOo na\n\n2\n00:00:03,000 --> 00:00:04,000\nHost:\nSige\n\n'
+        self.assertEqual([(c.speaker, c.text) for c in parse_srt(text)], [('', 'Sabi niya:\nOo na'), ('', 'Host:\nSige')])
+        self.assertEqual([(c.speaker, c.text) for c in parse_srt(text, {'Host'})], [('', 'Sabi niya:\nOo na'), ('Host:', 'Sige')])
 
     def test_unlabelled_cue_with_a_line_ending_in_a_colon_is_translated_in_full(self) -> None:
         text = '1\n00:00:01,000 --> 00:00:02,000\nSabi niya sa akin\nang sagot ay ito:\nOo na\n\n'
@@ -33,7 +39,7 @@ class CueTests(unittest.TestCase):
         self.assertEqual(render_srt(parse_srt(text)), text)
 
     def test_translate_cues_keeps_structure_and_rejects_bad_replies(self) -> None:
-        cues = parse_srt(TWO_CUES)
+        cues = parse_srt(TWO_CUES, NAMES)
         result = translate_cues(cues, lambda text: text.upper())
         self.assertEqual([(c.index, c.timecode, c.speaker) for c in result], [(c.index, c.timecode, c.speaker) for c in cues])
         for bad in ('', '  ', 'two\nlines', 'a\n\nb'):
@@ -56,7 +62,7 @@ class EvalCaseTests(unittest.TestCase):
         self.assertEqual(
             {c.id for c in CASES},
             {'taglish-terms', 'code-switching', 'speaker-labels', 'timecodes-line-breaks', 'numbers-dates',
-             'profanity-slang', 'no-merge-no-invention', 'character-name', 'unlabelled-colon'})
+             'profanity-slang', 'no-merge-no-invention', 'character-name', 'unlabelled-colon', 'unmapped-label'})
         self.assertEqual(MUST_PASS, {c.id for c in CASES})
 
     def test_offline_harness_runs_cases_through_the_task_with_the_scripted_fake_llm(self) -> None:
@@ -76,7 +82,7 @@ class EvalCaseTests(unittest.TestCase):
                 value = outcome.result
                 return str(value.output['text']) if value.output_valid else None
 
-            output = render_srt(translate_cues(parse_srt(case.masked_input), run_cue))
+            output = render_srt(translate_cues(parse_srt(case.masked_input, names_for(case)), run_cue))
             sent.extend(str(m['content']) for call in fake.calls for m in call.messages)
             self.assertEqual(fake.pending, 0)
             result = grade_translation(case, output)
@@ -93,7 +99,7 @@ class EvalCaseTests(unittest.TestCase):
     def test_code_graders_fail_each_structural_defect(self) -> None:
         case = next(c for c in CASES if c.id == 'speaker-labels')
         assert isinstance(case.masked_input, str)
-        cues = parse_srt(case.masked_input)
+        cues = parse_srt(case.masked_input, names_for(case))
         translated = translate_cues(cues, lambda t: t)
         self.assertTrue(grade_translation(case, render_srt(translated)).passed)
         import dataclasses
@@ -111,11 +117,11 @@ class EvalCaseTests(unittest.TestCase):
         self.assertFalse(grade_translation(case, 'not an srt').passed)
         numbers = next(c for c in CASES if c.id == 'numbers-dates')
         assert isinstance(numbers.masked_input, str)
-        changed = render_srt(translate_cues(parse_srt(numbers.masked_input), lambda t: 'no digits here'))
+        changed = render_srt(translate_cues(parse_srt(numbers.masked_input, names_for(numbers)), lambda t: 'no digits here'))
         self.assertFalse(grade_translation(numbers, changed).passed)
         terms = next(c for c in CASES if c.id == 'taglish-terms')
         assert isinstance(terms.masked_input, str)
-        lost = render_srt(translate_cues(parse_srt(terms.masked_input), lambda t: 'nothing kept'))
+        lost = render_srt(translate_cues(parse_srt(terms.masked_input, names_for(terms)), lambda t: 'nothing kept'))
         self.assertFalse(grade_translation(terms, lost).passed)
 
 
@@ -164,6 +170,13 @@ class TranslateFlowTests(unittest.TestCase):
         worker = TranscriptWorker(None, queue.report, queue=queue, shares={'Studio': directory.name})
         self.runner = Worker(queue, 'transcribe', {'transcript.translate.preview': worker.translate_preview, 'transcript.translate.run': worker.translate_run})
 
+    named = False
+
+    def names(self, *names: str) -> None:
+        with self.registry._transaction() as db:
+            history = db.execute("INSERT INTO transcript_history (transcript_id, action, actor, at) VALUES (?, 'speakers changed', 'setup', 1)", (self.identifier,))
+            db.execute('INSERT INTO transcript_speaker_maps VALUES (?, ?)', (history.lastrowid, 'source,speaker,name\n' + ''.join(f',s{n},{name}\n' for n, name in enumerate(names))))
+
     def fake(self, *replies: str, retention: Any = 'zdr_enforced', registry: Registry | None = None) -> FakeProvider:
         fake = FakeProvider(retention=retention)
         for reply in replies:
@@ -183,9 +196,12 @@ class TranslateFlowTests(unittest.TestCase):
         return self.request('/v1/transcript/get', {'transcript': str(job_id)})
 
     def history(self) -> list[str]:
-        return [e['action'] for e in self.request('/v1/transcript/get', {'transcript': self.identifier})['result']['transcript']['history']]
+        return [e['action'] for e in self.request('/v1/transcript/get', {'transcript': self.identifier})['result']['transcript']['history'] if e['actor'] != 'setup']
 
-    def source(self, text: str = TWO_CUES, name: str = 'one.srt') -> None:
+    def source(self, text: str = TWO_CUES, name: str = 'one.srt', names: tuple[str, ...] = ('Host', 'Guest')) -> None:
+        if names and not self.named:
+            self.names(*names)
+            self.named = True
         (self.root / '_transcripts' / name).write_text(text, encoding='utf-8')
 
     def test_disabled_by_default_returns_refused_with_the_rule(self) -> None:
@@ -209,8 +225,8 @@ class TranslateFlowTests(unittest.TestCase):
         self.assertEqual(self.translate(confirm=plan['token'])['rule'], 'token_used')
         self.assertTrue(self.runner.run_once())
         self.assertEqual(self.request('/v1/transcript/get', {'transcript': str(run['result']['job_id'])})['outcome'], 'done')
-        english = parse_srt((self.root / '_transcripts/one.en.srt').read_text(encoding='utf-8'))
-        original = parse_srt(TWO_CUES)
+        english = parse_srt((self.root / '_transcripts/one.en.srt').read_text(encoding='utf-8'), NAMES)
+        original = parse_srt(TWO_CUES, NAMES)
         self.assertEqual([(c.index, c.timecode, c.speaker) for c in english], [(c.index, c.timecode, c.speaker) for c in original])
         self.assertEqual([c.text for c in english], ['Hello', 'I am fine'])
         self.assertEqual((self.root / '_transcripts/one.srt').read_text(), TWO_CUES)
@@ -222,6 +238,17 @@ class TranslateFlowTests(unittest.TestCase):
         self.assertEqual(self.history(), ['translated'])
         self.assertEqual([e.action for e in self.registry.activity(self.project)][:1], ['transcript_translated'])
         self.assertEqual(sorted(p.name for p in self.root.rglob('*') if p.is_file()), ['one.en.docx', 'one.en.srt', 'one.srt'])
+
+    def test_without_an_applied_speaker_map_the_first_line_is_dialogue_and_is_translated(self) -> None:
+        self.source('1\n00:00:01,000 --> 00:00:02,000\nSabi niya:\nOo na\n\n', names=())
+        fake = self.fake('He said:\nYes')
+        plan = self.preview()
+        self.translate(confirm=plan['token'])
+        self.assertTrue(self.runner.run_once())
+        sent = '\n'.join(str(m['content']) for call in fake.calls for m in call.messages)
+        self.assertIn('Sabi niya:', sent)
+        self.assertEqual((self.root / '_transcripts/one.en.srt').read_text(encoding='utf-8'),
+                         '1\n00:00:01,000 --> 00:00:02,000\nHe said:\nYes\n\n')
 
     def test_registered_names_never_reach_the_llm_and_are_restored(self) -> None:
         text = ('1\n00:00:01,000 --> 00:00:02,000\nHost:\nSabi ni Orsolya Fenwick, tapos na ang Project Zephyrine.\n\n'

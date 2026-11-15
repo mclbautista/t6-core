@@ -96,9 +96,12 @@ class TranscriptStore:
             row = db.execute('SELECT m.csv FROM transcript_speaker_maps m JOIN transcript_history h ON h.id=m.history_id WHERE h.transcript_id=? ORDER BY h.id DESC LIMIT 1', (identifier,)).fetchone()
             return str(row[0]) if row else ''
 
-    def fail_dead_runs(self) -> None:
-        """Mark failed every Transcript whose run job is dead (its lease expired too often), so later work is not blocked."""
-        with self.registry._transaction() as db:
+    def fail_dead_runs(self, *, _db: Any = None) -> None:
+        """Mark failed every Transcript whose run job is dead (its lease expired too often), so later work is not blocked.
+
+        Only a Transcript still `running` is touched, so a second sweep writes no second `failed` entry.
+        """
+        with (self.registry._transaction() if _db is None else nullcontext(_db)) as db:
             for job_id, payload in db.execute("SELECT id, payload FROM internal_jobs WHERE kind='transcript.run' AND state='dead'").fetchall():
                 job = json.loads(payload)
                 if db.execute("SELECT 1 FROM internal_jobs WHERE kind='transcript.run' AND id>? AND json_extract(payload, '$.transcript_id')=?", (job_id, job['transcript_id'])).fetchone():
@@ -107,6 +110,13 @@ class TranscriptStore:
                 if row:
                     db.execute("UPDATE transcripts SET state='failed' WHERE id=?", (job['transcript_id'],))
                     self._entry(db, job['transcript_id'], row[0], 'failed', job['actor'])
+
+    def is_running(self, *, transcript: str | None = None, media: str | None = None, _db: Any = None) -> bool:
+        """Whether a Transcript (by id, or by its Media location) has a run going; a run whose job is dead is failed first."""
+        with (self.registry._transaction() if _db is None else nullcontext(_db)) as db:
+            self.fail_dead_runs(_db=db)
+            row = db.execute('SELECT state FROM transcripts WHERE ' + ('id=?' if transcript is not None else 'media_id=?'), (transcript if transcript is not None else media,)).fetchone()
+            return bool(row and row[0] == 'running')
 
     @staticmethod
     def _request(verb: str, actor: str, values: dict[str, Any], key: str) -> tuple[str, str]:
