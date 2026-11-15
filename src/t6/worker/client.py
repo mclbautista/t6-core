@@ -39,7 +39,8 @@ class HttpTransport:
             with urllib.request.urlopen(request, timeout=self._timeout) as response:
                 return response.status, json.loads(response.read() or b"{}")
         except urllib.error.HTTPError as error:
-            return error.code, json.loads(error.read() or b"{}")
+            with error:
+                return error.code, json.loads(error.read() or b"{}")
 
 
 class QueueRejected(Exception):
