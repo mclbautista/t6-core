@@ -265,3 +265,86 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(offenders, [])
         with self.assertRaises(ImportError):
             __import__('t6.notion.external_links')
+
+
+class FrameioProjectLinkTests(unittest.TestCase):
+    """`frameio project link` and `unlink` wrap the Media location rules for kind frameio-project."""
+
+    def setUp(self) -> None:
+        from t6.registry import Rotation
+        self.registry = MemoryRegistry()
+        self.addCleanup(self.registry.db.close)
+        self.registry._new_id = lambda: str(T6Id.mint(EntityKind.PROJECT))
+        first = self.registry.register(actor='setup', idempotency_key='a', notion_page_id='page-one')
+        second = self.registry.register(actor='setup', idempotency_key='b', notion_page_id='page-two')
+        assert isinstance(first, Registered) and isinstance(second, Registered)
+        self.first, self.second = first.project.id, second.project.id
+        self.store = MediaStore(self.registry, PreviewTokens('secret'))
+        self.rotation = Rotation
+
+    def write(self, verb: str, project: str, ref: str, key: str, actor: str = 'person') -> Done:
+        values = {'project': project, 'frameio_project': ref}
+        preview = self.store.frameio_project_write(verb, values, actor=actor, idempotency_key=key)
+        assert isinstance(preview, Preview)
+        done = self.store.frameio_project_write(verb, values, actor=actor, idempotency_key=key, confirm=preview.token)
+        assert isinstance(done, Done)
+        return done
+
+    def audit_actions(self) -> list[str]:
+        with self.registry._transaction() as db:
+            return [row[0] for row in db.execute("SELECT action FROM audit WHERE action LIKE 'frameio_project_%' ORDER BY id")]
+
+    def test_link_previews_then_confirms_as_a_frameio_project_location_and_is_idempotent(self) -> None:
+        from t6.media import active_links
+        values = {'project': self.first, 'frameio_project': 'fp1'}
+        preview = self.store.frameio_project_write('link', values, actor='person', idempotency_key='k')
+        assert isinstance(preview, Preview)
+        self.assertEqual(active_links(self.registry, 'frameio-project'), ())
+        done = self.store.frameio_project_write('link', values, actor='person', idempotency_key='k', confirm=preview.token)
+        assert isinstance(done, Done)
+        (link,) = active_links(self.registry, 'frameio-project', 'frameio-project')
+        self.assertEqual((link.id, link.project_id, link.ref), (done.result['media_id'], self.first, 'fp1'))
+        replay = self.store.frameio_project_write('link', values, actor='person', idempotency_key='k')
+        assert isinstance(replay, Preview)
+        again = self.store.frameio_project_write('link', values, actor='person', idempotency_key='k', confirm=replay.token)
+        self.assertEqual(again, done)
+        self.assertEqual(self.audit_actions(), ['frameio_project_link'])
+
+    def test_second_show_is_refused_naming_the_holder_and_a_show_may_hold_many(self) -> None:
+        from t6.media import active_links
+        from t6.verbs import Refused
+        self.write('link', self.first, 'fp1', 'one')
+        self.write('link', self.first, 'fp2', 'two')
+        self.assertEqual({l.ref for l in active_links(self.registry, 'frameio-project')}, {'fp1', 'fp2'})
+        refused = self.store.frameio_project_write('link', {'project': self.second, 'frameio_project': 'fp1'}, actor='person', idempotency_key='three')
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'frameio_project')
+        self.assertIn(self.first, refused.reason)
+
+    def test_moving_is_unlink_then_link_as_two_audited_steps(self) -> None:
+        from t6.media import active_links
+        self.write('link', self.first, 'fp1', 'one')
+        self.write('unlink', self.first, 'fp1', 'two')
+        self.assertEqual(active_links(self.registry, 'frameio-project'), ())
+        self.write('link', self.second, 'fp1', 'three')
+        (link,) = active_links(self.registry, 'frameio-project')
+        self.assertEqual(link.project_id, self.second)
+        self.assertEqual(self.audit_actions(), ['frameio_project_link', 'frameio_project_unlink', 'frameio_project_link'])
+        with self.registry._transaction() as db:
+            activity = [r[0] for r in db.execute("SELECT action FROM activity WHERE action LIKE 'frameio_project_%'")]
+        self.assertEqual(len(activity), 3)
+
+    def test_unlink_of_something_not_linked_and_bad_input_are_refused(self) -> None:
+        from t6.verbs import Refused
+        for verb, values in (('unlink', {'project': self.first, 'frameio_project': 'nope'}), ('link', {'project': self.first, 'frameio_project': ' '}),
+                             ('link', {'project': 'not-an-id', 'frameio_project': 'fp1'}), ('move', {'project': self.first, 'frameio_project': 'fp1'})):
+            refused = self.store.frameio_project_write(verb, values, actor='person', idempotency_key='x' + verb)
+            self.assertIsInstance(refused, Refused, (verb, values))
+
+    def test_rotation_change_leaves_links_in_place(self) -> None:
+        from t6.media import active_links
+        self.write('link', self.first, 'fp1', 'one')
+        self.registry.set_rotation(self.first, self.rotation.IN, actor='service', idempotency_key='in', expected_revision=1)
+        self.registry.set_rotation(self.first, self.rotation.OUT, actor='service', idempotency_key='out', expected_revision=2)
+        (link,) = active_links(self.registry, 'frameio-project')
+        self.assertEqual((link.project_id, link.ref), (self.first, 'fp1'))

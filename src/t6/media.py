@@ -28,7 +28,7 @@ class MediaStore:
             return [dict(zip(('id', 'owner', 'kind', 'ref', 'role'), row)) for row in db.execute(
                 'SELECT id, owner_id, kind, ref, role FROM media_locations WHERE (owner_id=? OR owner_id=(SELECT project_id FROM deliverables WHERE id=?)) AND active=1 ORDER BY id', (owner, owner))]
 
-    def write(self, verb: str, values: dict[str, Any], *, actor: str, idempotency_key: str | None = None, confirm: str | None = None) -> Outcome:
+    def write(self, verb: str, values: dict[str, Any], *, actor: str, idempotency_key: str | None = None, confirm: str | None = None, noun: str = 'media') -> Outcome:
         if not actor.strip() or verb not in ('link', 'unlink'):
             return Refused(rule='input', reason='A valid actor and verb are required')
         if verb == 'link' and (values.get('kind') not in KINDS or values.get('role') not in ROLES or not isinstance(values.get('owner'), str) or not isinstance(values.get('ref'), str) or not values['ref'].strip()):
@@ -44,7 +44,7 @@ class MediaStore:
             return Refused(rule='idempotency_key', reason='A nonblank idempotency key is required')
         key = idempotency_key or secrets.token_hex(16)
         inputs = {**values, 'idempotency_key': key}
-        name = 'media ' + verb
+        name = noun + ' ' + verb
         fingerprint = json.dumps({'verb': name, 'actor': actor, **inputs}, sort_keys=True, separators=(',', ':'))
         nonce = self.tokens.verify(confirm, name, actor, inputs) if confirm else None
         if isinstance(nonce, Refused):
@@ -106,6 +106,24 @@ class MediaStore:
             db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
             db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(plan)))
             return Done(result=plan)
+
+    def frameio_project_write(self, verb: str, values: dict[str, Any], *, actor: str, idempotency_key: str | None = None, confirm: str | None = None) -> Outcome:
+        """`frameio project link` and `unlink`: the Media location rules for one Frame.io project of one Project."""
+        project, ref = values.get('project'), values.get('frameio_project')
+        if verb not in ('link', 'unlink') or not isinstance(ref, str) or not ref.strip() or not isinstance(project, str):
+            return Refused(rule='input', reason='A valid verb, Project and Frame.io project are required')
+        try:
+            T6Id.parse(project, EntityKind.PROJECT)
+        except ValueError:
+            return Refused(rule='project', reason='Project must be a T6 Project ID')
+        if verb == 'link':
+            return self.write('link', {'owner': project, 'kind': 'frameio-project', 'ref': ref, 'role': 'frameio-project'},
+                              actor=actor, idempotency_key=idempotency_key, confirm=confirm, noun='frameio project')
+        with self.registry._transaction() as db:
+            row = db.execute("SELECT id FROM media_locations WHERE owner_id=? AND kind='frameio-project' AND ref=? AND active=1", (project, ref)).fetchone()
+        if not row:
+            return Refused(rule='frameio_project', reason='Frame.io project is not linked to this Project')
+        return self.write('unlink', {'media': row[0]}, actor=actor, idempotency_key=idempotency_key, confirm=confirm, noun='frameio project')
 
     def migrate(self, rows: builtins.list[dict[str, Any]], *, actor: str, apply: bool = False,
                 digest: str | None = None, _db: Any = None) -> dict[str, Any]:

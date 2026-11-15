@@ -436,3 +436,33 @@ class ClientTests(VerbAPITests):
         with patch.dict(os.environ, env), redirect_stdout(io.StringIO()) as out:
             main(['health'])
         self.assertIsInstance(json.loads(out.getvalue())['api']['schema_version'], int)
+
+    def test_frameio_project_verbs_are_staff_write_verbs_and_refuse_clients_and_vendors(self) -> None:
+        from t6.client import Client
+        from t6.verbs import Done, FrameioProjectInput, Preview, Refused
+        entries = {v['verb']: v for v in catalogue() if v['noun'] == 'frameio'}
+        self.assertEqual(set(entries), {'project link', 'project unlink'})
+        for entry in entries.values():
+            self.assertEqual((entry['role'], entry['read_only']), ('staff', False))
+        client_person, vendor = 't6n_' + '3' * 32, 't6n_' + '4' * 32
+        with self.registry._transaction() as db:
+            for person, kind, telegram in ((client_person, 'client', 44), (vendor, 'vendor', 45)):
+                db.execute("INSERT INTO persons VALUES (?, ?, '[]', '[]', ?, 0, 1)", (person, kind, telegram))
+        self.api.secrets.update({'client-secret': client_person, 'vendor-secret': vendor})
+        project = self.registry.register(actor='setup', idempotency_key='fio-project')
+        assert isinstance(project, Registered)
+        body = {'project': project.project.id, 'frameio_project': 'fp1', 'idempotency_key': 'fio-link'}
+        self.assertEqual(self.request('/v1/frameio/project/link', body, secret='worker-secret')[1]['rule'], 'permission')
+        for secret in ('client-secret', 'vendor-secret'):
+            self.assertEqual(self.request('/v1/frameio/project/link', body, secret=secret)[1]['outcome'], 'refused')
+        staff = Client('http://127.0.0.1:%s' % self.server.server_port, 'staff-secret')
+        inputs = FrameioProjectInput(project=project.project.id, frameio_project='fp1', idempotency_key='fio-link')
+        preview = staff.frameio_project_link(inputs)
+        assert isinstance(preview, Preview)
+        inputs.confirm = preview.token
+        self.assertIsInstance(staff.frameio_project_link(inputs), Done)
+        other = FrameioProjectInput(project=project.project.id, frameio_project='fp1', idempotency_key='fio-unlink')
+        preview = staff.frameio_project_unlink(other)
+        assert isinstance(preview, Preview)
+        other.confirm = preview.token
+        self.assertIsInstance(staff.frameio_project_unlink(other), Done)

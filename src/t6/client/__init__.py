@@ -14,7 +14,7 @@ from pydantic import BaseModel, TypeAdapter
 from t6.verbs import (
     Ambiguous, Done, NeedsPerson, Outcome, Preview, Refused,
     VersionAddInput, VersionLockInput, VersionFindInput, VersionGetInput,
-    MediaLinkInput, MediaUnlinkInput, MediaListInput, MediaMigrateInput,
+    MediaLinkInput, MediaUnlinkInput, FrameioProjectInput, MediaListInput, MediaMigrateInput,
     TranscriptCreateInput, TranscriptGetInput, TranscriptSpeakersInput, TranscriptTranslateInput,
     DriveReceiveInput, DriveReleaseInput, DriveReturnInput, DriveRetireInput, DriveAssignInput, DriveUnassignInput,
     BayBookInput, BookingMoveInput, BookingExtendInput, BookingCancelInput, BookingGetInput, BookingListInput,
@@ -148,6 +148,12 @@ class Client:
 
     def media_unlink(self, inputs: MediaUnlinkInput) -> Result:
         return self.call('media', 'unlink', inputs)
+
+    def frameio_project_link(self, inputs: FrameioProjectInput) -> Result:
+        return self.call('frameio', 'project link', inputs)
+
+    def frameio_project_unlink(self, inputs: FrameioProjectInput) -> Result:
+        return self.call('frameio', 'project unlink', inputs)
 
     def media_list(self, inputs: MediaListInput) -> Result:
         return self.call('media', 'list', inputs)

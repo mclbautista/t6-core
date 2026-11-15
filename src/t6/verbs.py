@@ -1341,6 +1341,13 @@ class MediaUnlinkInput(BaseModel):
     confirm: str | None = None
 
 
+class FrameioProjectInput(BaseModel):
+    project: str
+    frameio_project: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
 class MediaListInput(BaseModel):
     owner: str
 
@@ -1367,6 +1374,24 @@ def media_write(inputs: MediaLinkInput | MediaUnlinkInput, open_notion: Callable
         'link' if isinstance(inputs, MediaLinkInput) else 'unlink',
         inputs.model_dump(exclude={'confirm', 'idempotency_key'}), actor=_actor.get(),
         idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
+def _frameio_project(verb: str, inputs: FrameioProjectInput) -> Outcome:
+    from t6.media import MediaStore
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    people = _people()
+    return MediaStore(people.registry, people.tokens).frameio_project_write(
+        verb, inputs.model_dump(exclude={'confirm', 'idempotency_key'}), actor=_actor.get(),
+        idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
+def frameio_project_link(inputs: FrameioProjectInput, open_notion: Callable[..., Any]) -> Outcome:
+    return _frameio_project('link', inputs)
+
+
+def frameio_project_unlink(inputs: FrameioProjectInput, open_notion: Callable[..., Any]) -> Outcome:
+    return _frameio_project('unlink', inputs)
 
 
 def media_list(inputs: MediaListInput, open_notion: Callable[..., Any]) -> Outcome:
@@ -1513,6 +1538,8 @@ VERBS = (
     Verb('drive', 'unassign', 'End a Drive Assignment', (), DriveUnassignInput, DriveWriteOutput, 'drives', 'Ends the open Assignment and keeps it in history.', drive_write),
     Verb('media', 'link', 'Link a Media location', (), MediaLinkInput, MediaWriteOutput, 'coordinator', 'Preview and confirm the link.', media_write),
     Verb('media', 'unlink', 'Unlink a Media location', (), MediaUnlinkInput, MediaWriteOutput, 'coordinator', 'Preview and confirm the unlink.', media_write),
+    Verb('frameio', 'project link', 'Link a Frame.io project to a Project', (), FrameioProjectInput, MediaWriteOutput, 'staff', 'One Frame.io project belongs to one Project. Preview and confirm.', frameio_project_link),
+    Verb('frameio', 'project unlink', 'Unlink a Frame.io project from a Project', (), FrameioProjectInput, MediaWriteOutput, 'staff', 'Moving is unlink then link. Preview and confirm.', frameio_project_unlink),
     Verb('media', 'list', 'List Media locations', (), MediaListInput, MediaListOutput, 'reader', 'Read Media locations.', media_list, read_only=True),
     Verb('bay', 'book', 'Book a Bay', (), BayBookInput, BookingOutput, 'bookings', 'Overlaps require force.', booking_write),
     Verb('booking', 'move', 'Move a Booking', (), BookingMoveInput, BookingOutput, 'bookings', 'Overlaps require force.', booking_write),
@@ -1752,6 +1779,16 @@ def add_parsers(commands: Any) -> None:
                 parser.add_argument('--end')
             else:
                 parser.add_argument('--on')
+            parser.add_argument('--idempotency-key')
+            parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.handler in (frameio_project_link, frameio_project_unlink):
+            if 'frameio project' not in nouns:
+                nouns['frameio project'] = parser.add_parser('project', help='Frame.io projects').add_subparsers(dest='frameio_project_verb', required=True)
+            parser = nouns['frameio project'].add_parser(entry.verb.split(' ')[1])
+            parser.add_argument('project')
+            parser.add_argument('frameio_project')
             parser.add_argument('--idempotency-key')
             parser.add_argument('--confirm')
             parser.set_defaults(registered_verb=entry)
