@@ -45,7 +45,7 @@ class LinkedChats:
                     if current[0] != 'requested':
                         continue
                     telegram = db.execute('SELECT telegram_id FROM persons WHERE id = ?', (person,)).fetchone()[0]
-                    text = f'<a href="tg://user?id={telegram}">File request</a>' + (': ' + escape(note) if note else '')
+                    text = f'<a href="tg://user?id={telegram}">File request</a>: please reply to this message with the file or a link.' + (' ' + escape(note) if note else '')
                     ref = self.gateway.notify(chat, text, [], 'abang:request:' + request_id, topic)
                     self._track(db, ref, chat, topic)
                     db.execute('UPDATE abang_requests SET notify_ref = ? WHERE id = ?', (ref, request_id))
@@ -54,12 +54,18 @@ class LinkedChats:
                 if status == 'sent' and message_id is not None:
                     with self.registry._transaction() as db:
                         db.execute('UPDATE abang_requests SET message_id = ? WHERE id = ?', (message_id, request_id))
+                elif status == 'failed':
+                    self._fail_request(request_id, 'the request message could not be sent')
+                    continue
             if state == 'forwarding':
                 if forward_ref is None:
                     forward_ref = self.gateway.forward(chat, reply_id, dest, dest_topic, 'abang:forward:' + request_id)
                     with self.registry._transaction() as db:
                         db.execute('UPDATE abang_requests SET forward_ref = ? WHERE id = ?', (forward_ref, request_id))
                 status, _ = self.gateway.state(forward_ref)
+                if status == 'failed':
+                    self._fail_request(request_id, 'the file could not be forwarded')
+                    continue
                 if status == 'sent':
                     with self.registry._transaction() as db:
                         db.execute("UPDATE abang_requests SET state = 'delivered' WHERE id = ?", (request_id,))
@@ -69,6 +75,13 @@ class LinkedChats:
                 edit_ref = self.gateway.edit(ref, 'Delivered', [], 'abang:delivered:' + request_id)
                 with self.registry._transaction() as db:
                     db.execute('UPDATE abang_requests SET edit_ref = ? WHERE id = ?', (edit_ref, request_id))
+
+    def _fail_request(self, request_id: str, reason: str) -> None:
+        """End a request the gateway could not send or forward, so nothing waits on it and the operators hear of it."""
+        with self.registry._transaction() as db:
+            if db.execute("UPDATE abang_requests SET state = 'failed' WHERE id = ? AND state IN ('requested', 'forwarding')", (request_id,)).rowcount:
+                record(db, self.registry, request_id, 'failed', 'worker')
+                db.execute('INSERT OR IGNORE INTO linked_chat_notices VALUES (?, ?)', (f'abang-failed:{request_id}', f'Abang request {request_id} failed: {reason}.'))
 
     def _record(self, item: dict[str, Any]) -> bool:
         seq = item['seq']

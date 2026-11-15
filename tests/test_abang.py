@@ -38,6 +38,7 @@ class Gateway:
         self.keys: dict[str, int] = {}
         self.items: list[dict[str, Any]] = []
         self.calls: list[tuple[str, str, dict[str, Any]]] = []
+        self.states: dict[int, dict[str, Any]] = {}
 
     def send(self, method: str, path: str, headers: Mapping[str, str], body: bytes) -> tuple[int, dict[str, Any]]:
         data = json.loads(body) if body else {}
@@ -48,7 +49,7 @@ class Gateway:
             after = int(path.split('=')[1])
             return 200, {'items': [i for i in self.items if i['seq'] > after]}
         if method == 'GET':
-            return 200, {'state': 'sent', 'telegram_message_id': 101}
+            return 200, self.states.get(int(path.rsplit('/', 1)[1]), {'state': 'sent', 'telegram_message_id': 101})
         key = data['idempotency_key']
         self.keys.setdefault(key, len(self.keys) + 1)
         return 202, {'message_ref': self.keys[key]}
@@ -60,7 +61,7 @@ class AbangTests(unittest.TestCase):
         self.addCleanup(self.db.db.close)
         self.store = Abang(self.db, PreviewTokens('secret'))
         self.gateway = Gateway()
-        self.worker = LinkedChats(self.db, GatewayClient(self.gateway, 'secret'))
+        self.worker = LinkedChats(self.db, GatewayClient(self.gateway, 'secret'), (42,))
 
     def write(self, verb: str, values: dict[str, Any], key: str) -> str:
         preview = self.store.write(verb, values, actor='coordinator', idempotency_key=key, confirm=None)
@@ -105,6 +106,37 @@ class AbangTests(unittest.TestCase):
         self.worker.tick()
         self.assertFalse(any(call[1] == '/forward' for call in self.gateway.calls))
         self.assertEqual(self.db.db.execute('SELECT state FROM abang_requests').fetchone()[0], 'cancelled')
+
+    def test_request_message_asks_for_a_reply_with_the_file_or_link(self) -> None:
+        self.write('request', {'person': 'vendor', 'destination': '-200', 'note': 'Graded trailer'}, 'ask')
+        self.worker.tick()
+        text = next(call[2]['text'] for call in self.gateway.calls if call[1] == '/notify')
+        self.assertIn('reply to this message with the file or a link', text)
+        self.assertIn('Graded trailer', text)
+
+    def test_a_request_that_could_not_be_sent_fails_and_does_not_hold_the_chat(self) -> None:
+        rid = self.write('request', {'person': 'vendor', 'destination': '-200', 'note': None}, 'lost')
+        self.gateway.states[1] = {'state': 'failed'}
+        self.gateway.items = [{'seq': 1, 'kind': 'update', 'chat': -100, 'message_id': 102, 'reply_to_message_id': 101, 'from': {'id': 42}, 'has_file': True, 'has_link': False}]
+        self.worker.tick()
+        self.worker.tick()
+        self.assertEqual(self.db.db.execute('SELECT state FROM abang_requests').fetchone()[0], 'failed')
+        self.assertEqual(self.db.db.execute('SELECT seq FROM linked_chat_cursor').fetchone()[0], 1)
+        self.assertEqual(self.db.db.execute('SELECT state FROM abang_history ORDER BY id').fetchall(), [('requested',), ('failed',)])
+        self.assertFalse(any(call[1] == '/forward' for call in self.gateway.calls))
+        self.assertTrue(any(call[1] == '/notify' and rid in call[2]['text'] and 'failed' in call[2]['text'] for call in self.gateway.calls))
+
+    def test_a_forward_that_fails_for_good_ends_the_request(self) -> None:
+        self.write('request', {'person': 'vendor', 'destination': '-200', 'note': None}, 'badforward')
+        self.worker.tick()
+        self.gateway.states[2] = {'state': 'failed'}
+        self.gateway.items = [{'seq': 1, 'kind': 'update', 'chat': -100, 'message_id': 103, 'reply_to_message_id': 101, 'from': {'id': 42}, 'has_file': True, 'has_link': False}]
+        self.worker.tick()
+        self.assertEqual(self.db.db.execute('SELECT state FROM abang_requests').fetchone()[0], 'failed')
+        calls = len(self.gateway.calls)
+        self.worker.tick()
+        self.assertFalse(any(call[1] == '/forward' for call in self.gateway.calls[calls:]))
+        self.assertEqual(self.db.db.execute('SELECT state FROM abang_history ORDER BY id').fetchall(), [('requested',), ('forwarding',), ('failed',)])
 
     def test_request_in_a_linked_topic_is_tracked_for_dead_topic_detection(self) -> None:
         with self.db._transaction() as db:
