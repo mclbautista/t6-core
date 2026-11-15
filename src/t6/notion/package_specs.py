@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from t6.notion import codec
+from t6.notion.generated import PackageSpecsRow
 from t6.notion.reads import is_live
 from t6.notion.sync import NotionClient
 
@@ -34,25 +34,22 @@ class PackageSpecReader:
         """Return all matching live rows; duplicates remain visible to the caller."""
         pages = self._client.query_data_source(
             self._source,
-            filter={"property": "Package kind", "rich_text": {"equals": package_kind}},
+            filter={"property": PackageSpecsRow.notion_id("package_kind"), "rich_text": {"equals": package_kind}},
         )
         result = []
         for page in pages:
             if not is_live(page):
                 continue
-            props = page["properties"]
-            kind = codec.rich_text(props.get("Package kind"))
-            client = codec.rich_text(props.get("Client spec"))
-            if kind != package_kind or client != client_spec:
+            row = PackageSpecsRow.from_page(page)
+            if row.package_kind != package_kind or row.client_spec != client_spec:
                 continue
-            version = codec.rich_text(props.get("Version"))
-            if not version or not version.strip():
+            if not row.version or not row.version.strip():
                 raise ValueError(f"Package Spec {page['id']} has no version")
             items = tuple(
                 ChecklistItem(line.strip(), blocking)
-                for name, blocking in (("Advisory items", False), ("Blocking items", True))
-                for line in (codec.rich_text(props.get(name)) or "").splitlines()
+                for text, blocking in ((row.advisory_items, False), (row.blocking_items, True))
+                for line in (text or "").splitlines()
                 if line.strip()
             )
-            result.append(PackageSpec(page["id"], kind, client, version, items))
+            result.append(PackageSpec(page["id"], row.package_kind, row.client_spec, row.version, items))
         return tuple(result)

@@ -238,7 +238,7 @@ class SchemaCheckTests(unittest.TestCase):
             report = self.check(fake, {"bays": BAYS, "projects": PROJECTS}, registry)
         self.assertTrue(report["ok"])
         self.assertEqual(report["databases"]["bays"]["status"], "ok")  # type: ignore[index]
-        self.assertEqual(len(report["skipped"]), 9)  # type: ignore[arg-type]
+        self.assertEqual(len(report["skipped"]), 10)  # type: ignore[arg-type]
 
     def test_it_reports_added_removed_and_changed_properties(self) -> None:
         fake = fake_with(bays=BAYS)

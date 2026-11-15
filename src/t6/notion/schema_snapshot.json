@@ -1751,6 +1751,41 @@
           "id": "%3DKl%5C"
         }
       ]
+    },
+    "package_specs": {
+      "title": "Package Specs",
+      "properties": [
+        {
+          "name": "Name",
+          "type": "title",
+          "id": "title"
+        },
+        {
+          "name": "Package kind",
+          "type": "rich_text",
+          "id": "%3F~%3E%5D"
+        },
+        {
+          "name": "Client spec",
+          "type": "rich_text",
+          "id": "SRLc"
+        },
+        {
+          "name": "Version",
+          "type": "rich_text",
+          "id": "evbT"
+        },
+        {
+          "name": "Advisory items",
+          "type": "rich_text",
+          "id": "b%5C%3E%5D"
+        },
+        {
+          "name": "Blocking items",
+          "type": "rich_text",
+          "id": "YIBX"
+        }
+      ]
     }
   }
 }

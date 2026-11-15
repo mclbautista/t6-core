@@ -24,7 +24,7 @@ class PackageTests(unittest.TestCase):
             db.execute("INSERT INTO persons VALUES ('recipient', 'staff', '[]', '[]', NULL, 0, 1)")
             db.execute('INSERT INTO deliverables VALUES (?, ?, ?, NULL, NULL, NULL)', ('delivery', self.project, 'FTR'))
         self.fake = FakeNotion()
-        self.fake.add_data_source('specs')
+        self.fake.add_snapshot_data_source('specs', 'package_specs')
         self.page = self.fake.add_page('specs', package_spec_properties(package_kind='Color', version='1', advisory_items=('Reference',), blocking_items=('EDL',)))
         notion = self.fake.client()
         self.addCleanup(notion.close)

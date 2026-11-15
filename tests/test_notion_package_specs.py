@@ -7,7 +7,7 @@ from t6.notion.testing import FakeNotion, package_spec_properties
 class PackageSpecReaderTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fake = FakeNotion()
-        self.fake.add_data_source("specs")
+        self.fake.add_snapshot_data_source("specs", "package_specs")
         self.general = self.fake.add_page("specs", package_spec_properties(
             package_kind="Color", version="1", advisory_items=("Picture lock", "Reference"),
         ))
@@ -39,6 +39,15 @@ class PackageSpecReaderTests(unittest.TestCase):
         archived = self.fake.add_page("specs", package_spec_properties(package_kind="Color", version="4"))
         self.fake._pages[archived["id"]]["archived"] = True
         self.assertEqual([spec.version for spec in self.reader.find("Color")], ["1", "3"])
+
+    def test_a_renamed_property_does_not_break_reads(self) -> None:
+        for name, renamed in (("Package kind", "Kind of package"), ("Client spec", "For client"), ("Version", "Rev"),
+                              ("Advisory items", "Nice to have"), ("Blocking items", "Must have")):
+            self.fake.rename_property("specs", name, renamed)
+        spec, = self.reader.find("Color", "Studio A")
+        self.assertEqual((spec.version, spec.items), ("2.1", (ChecklistItem("Reference"), ChecklistItem("EDL", True))))
+        query, = [r for r in self.fake.requests if r.url.path.endswith("/query")][-1:]
+        self.assertNotIn(b"Package kind", query.content)
 
     def test_missing_version_is_not_silently_used(self) -> None:
         self.fake.add_page("specs", package_spec_properties(package_kind="Sound", version=""))

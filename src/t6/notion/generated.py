@@ -307,6 +307,19 @@ class MeetingNotesRow(NotionModel):
     team_attendees: tuple[str, ...] = notion("Team Attendees", "people", id="%3DKl%5C", default=())
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PackageSpecsRow(NotionModel):
+    """Notion database Package Specs."""
+
+    DATABASE: ClassVar[str] = "package_specs"
+    name: str | None = notion("Name", "title", id="title")
+    package_kind: str | None = notion("Package kind", "rich_text", id="%3F~%3E%5D")
+    client_spec: str | None = notion("Client spec", "rich_text", id="SRLc")
+    version: str | None = notion("Version", "rich_text", id="evbT")
+    advisory_items: str | None = notion("Advisory items", "rich_text", id="b%5C%3E%5D")
+    blocking_items: str | None = notion("Blocking items", "rich_text", id="YIBX")
+
+
 MODELS: dict[str, type[NotionModel]] = {
     "projects": ProjectsRow,
     "contacts": ContactsRow,
@@ -319,5 +332,6 @@ MODELS: dict[str, type[NotionModel]] = {
     "events_tasks": EventsTasksRow,
     "wiki": WikiRow,
     "meeting_notes": MeetingNotesRow,
+    "package_specs": PackageSpecsRow,
 }
 """Every generated model, by snapshot database key."""
