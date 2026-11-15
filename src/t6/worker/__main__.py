@@ -268,7 +268,13 @@ def frameio_worker(
     def notify(text: str, key: str) -> None:
         gateway.notify(chat, html.escape(text, quote=False), [], key)
 
-    return FrameioWorker(tokens, run, notify, arm_review_timer=timers)
+    record_share_view = None
+    if environ.get("T6_DATABASE"):
+        from t6.frameio.share_views import DeliveryShareViews
+        from t6.registry.sqlite import SqliteProjectRegistry
+
+        record_share_view = DeliveryShareViews(SqliteProjectRegistry(environ["T6_DATABASE"])).record
+    return FrameioWorker(tokens, run, notify, arm_review_timer=timers, record_share_view=record_share_view)
 
 
 def read_api_server(environ: Mapping[str, str], frameio: FrameioWorker) -> ThreadingHTTPServer | None:

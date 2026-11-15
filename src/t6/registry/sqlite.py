@@ -282,6 +282,7 @@ _MIGRATIONS = (
     )"""),
     (24, False, """CREATE TABLE versions (id TEXT PRIMARY KEY, deliverable_id TEXT NOT NULL REFERENCES deliverables(id), frameio_file_id TEXT NOT NULL UNIQUE, frameio_stack_id TEXT, source_timeline_id TEXT, note TEXT);
         CREATE TABLE version_locks (deliverable_id TEXT PRIMARY KEY REFERENCES deliverables(id), version_id TEXT NOT NULL REFERENCES versions(id))"""),
+    (25, False, """CREATE TABLE delivery_share_views (event_id TEXT PRIMARY KEY)"""),
 )
 
 
