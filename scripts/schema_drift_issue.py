@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print the drift in a `t6 schema-check` JSON report as Markdown; print nothing when there is none.
+"""Print the drift in a `t6 admin schema-check` JSON report as Markdown; print nothing when there is none.
 
     python3 scripts/schema_drift_issue.py report.json
 """

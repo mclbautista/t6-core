@@ -322,6 +322,16 @@ class PersonAddInput(BaseModel):
     confirm: str | None = None
 
 
+class PersonCreateInput(BaseModel):
+    name: str
+    kind: str
+    telegram_handle: str | None = None
+    telegram_id: int | None = None
+    note: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
 class PersonTelegramInput(BaseModel):
     person_id: str
     telegram_id: int
@@ -526,6 +536,10 @@ class JoFormatOutput(BaseModel):
     findings: list[FormatFinding]
 
 
+class PersonCreateOutput(BaseModel):
+    person: dict[str, Any]
+
+
 class CameraEnrichOutput(BaseModel):
     id: str
     name: str | None
@@ -691,6 +705,33 @@ class ConcernReopenInput(BaseModel):
     confirm: str | None = None
 
 
+class ConcernScanInput(BaseModel):
+    project: str
+    owner: str
+
+
+class ConcernChangesInput(BaseModel):
+    project: str
+    since: str
+
+
+class ConcernChangesOutput(BaseModel):
+    changes: list[dict[str, Any]]
+
+
+class ConcernScanOutput(BaseModel):
+    project: str
+
+
+class ConcernListInput(BaseModel):
+    raise_at_psr: bool = False
+    project: str | None = None
+
+
+class ConcernListOutput(BaseModel):
+    concerns: list[dict[str, Any]]
+
+
 class ConcernGetInput(BaseModel):
     concern: str
 
@@ -720,6 +761,25 @@ def concern_write(inputs: ConcernRaiseInput | ConcernNoteInput | ConcernResolveI
 def concern_for_message(inputs: ConcernForMessageInput, open_notion: Callable[..., Any]) -> Outcome:
     from t6.concern import ConcernStore
     return Done(result={'concern_ids': ConcernStore(_people().registry, _people().tokens).for_message(inputs.chat, inputs.message_id)})
+
+
+def concern_changes(inputs: ConcernChangesInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.concern import ConcernStore
+    try:
+        return Done(result={'changes': ConcernStore(_people().registry, _people().tokens).changes(inputs.project, inputs.since)})
+    except ValueError:
+        return Refused(rule='since', reason='Since must be an ISO date')
+
+
+def concern_list(inputs: ConcernListInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.concern import ConcernStore
+    if not inputs.raise_at_psr:
+        return Refused(rule='raise_at_psr', reason='Only the Raise at PSR list is available: pass raise_at_psr')
+    return Done(result={'concerns': ConcernStore(_people().registry, _people().tokens).raise_at_psr(inputs.project)})
+
+
+def concern_scan(inputs: ConcernScanInput, open_notion: Callable[..., Any]) -> Outcome:
+    return Refused(rule='api', reason='Concern scanning runs on the t6 API')
 
 
 def concern_get(inputs: ConcernGetInput, open_notion: Callable[..., Any]) -> Outcome:
@@ -899,6 +959,14 @@ class PersonListInput(ReadInput):
 
 class ProjectGetInput(ReadInput):
     project: str
+
+
+class ProjectNotesInput(ReadInput):
+    project: str
+
+
+class ProjectNotesOutput(BaseModel):
+    lines: list[dict[str, str]]
 
 
 class ProjectFlagsInput(ReadInput):
@@ -1333,6 +1401,18 @@ def api_read(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
     return Refused(rule="api", reason="Reads run on the t6 API")
 
 
+def api_write(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    return Refused(rule="api", reason="This write runs on the t6 API")
+
+
+class AbangRequestInput(BaseModel):
+    person: str
+    destination: str
+    source: str | None = None
+    note: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
 
 class BayBookInput(BaseModel):
     bay: str
@@ -1346,12 +1426,25 @@ class BayBookInput(BaseModel):
     confirm: str | None = None
 
 
+class AbangCancelInput(BaseModel):
+    request: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
 class BookingMoveInput(BaseModel):
     booking: str
     start: str
     end: str
     bay: str | None = None
     force: bool = False
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class AbangAcceptInput(BaseModel):
+    candidate: str
+    decision: str
     idempotency_key: str | None = None
     confirm: str | None = None
 
@@ -1731,6 +1824,24 @@ def transcript_get(inputs: TranscriptGetInput, open_notion: Callable[..., Any]) 
     result = TranscriptStore(_people().registry).get(inputs.transcript)
     return Done(result={'transcript': result}) if result else Refused(rule='transcript', reason='Transcript not found')
 
+class AbangOutput(BaseModel):
+    request_id: str
+    state: str
+
+
+def abang_write(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.abang import Abang
+    from t6.preview import PreviewTokens
+    key = os.environ.get('T6_PREVIEW_SIGNING_KEY', '')
+    if not key:
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    assert isinstance(inputs, (AbangRequestInput, AbangCancelInput, AbangAcceptInput))
+    verb = 'request' if isinstance(inputs, AbangRequestInput) else 'accept' if isinstance(inputs, AbangAcceptInput) else 'cancel'
+    values = inputs.model_dump(exclude={'confirm', 'idempotency_key'})
+    return Abang(_registry.get(), PreviewTokens(key)).write(verb, values, actor=_actor.get(),
+        idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
 VERBS = (
     Verb('transcript', 'create', 'Create a Transcript', (), TranscriptCreateInput, TranscriptCreateOutput, 'staff', 'Preview and confirm a transcription job.', api_read),
     Verb('transcript', 'speakers', 'Name Transcript speakers', (), TranscriptSpeakersInput, TranscriptCreateOutput, 'staff', 'Preview and confirm speaker names.', api_read),
@@ -1760,6 +1871,9 @@ VERBS = (
     Verb('booking', 'get', 'Get a Booking', (), BookingGetInput, BookingGetOutput, 'reader', 'Read a Booking.', booking_read, read_only=True),
     Verb('booking', 'list', 'List Bookings', (), BookingListInput, BookingListOutput, 'reader', 'Read Bookings.', booking_read, read_only=True),
     Verb("version", "get", "Get a Version", (), VersionGetInput, VersionFindOutput, "reader", "Read a Version and its Approvals.", api_read, read_only=True),
+    Verb('abang', 'request', 'Request a file relay', (), AbangRequestInput, AbangOutput, 'coordinator', 'Request a file from a vendor.', abang_write),
+    Verb('abang', 'accept', 'Decide an abang candidate', (), AbangAcceptInput, AbangOutput, 'person', 'Only the freelancer may decide.', abang_write),
+    Verb('abang', 'cancel', 'Cancel a file relay', (), AbangCancelInput, AbangOutput, 'coordinator', 'Cancel a pending relay.', abang_write),
     Verb("version", "find", "Find a Version by Frame.io file", (), VersionFindInput, VersionFindOutput, "reader", "Resolve a review file to its Version.", api_read, read_only=True),
     Verb("version", "add", "Add a Version", (), VersionAddInput, VersionOutput, "coordinator", "Preview and confirm a Frame.io file.", version_write),
     Verb("version", "lock", "Lock a Version", (), VersionLockInput, VersionOutput, "coordinator", "Record picture lock.", version_write),
@@ -1769,6 +1883,7 @@ VERBS = (
     Verb("studio", "notices", "Read studio notices", (), StudioNoticesInput, StudioNoticesOutput, "reader", "Read Project source notices.", api_read, read_only=True),
     Verb("external-link", "find", "Find an External Link", (), ExternalLinkFindInput, ExternalLinkFindOutput, "reader", "Resolve an external reference.", api_read, read_only=True),
     Verb("project", "get", "Get a Project", (), ProjectGetInput, ProjectGetOutput, "reader", "Read a Project.", api_read, read_only=True),
+    Verb("project", "notes", "Read dated PM Notes", (), ProjectNotesInput, ProjectNotesOutput, "reader", "Read dated PM Notes lines.", api_read),
     Verb("project", "flags", "Read Project flags", (), ProjectFlagsInput, ProjectFlagsOutput, "reader", "Recompute data gaps and date warnings.", api_read, read_only=True),
     Verb("person", "list", "List Contacts", (), PersonListInput, PersonListOutput, "reader", "Read Contacts.", api_read, read_only=True),
     Verb("standing-cc", "", "Get standing cc", (), StandingCcInput, StandingCcOutput, "reader", "Read configured standing cc.", None, read_only=True),
@@ -1789,6 +1904,7 @@ VERBS = (
     Verb("project", "list", "List Projects", (), ProjectListInput, ProjectListOutput, "reader", "Read Projects.", api_read, read_only=True),
     Verb("llm", "run", "Run an LLM task on the API", (), LLMRunInput, LLMRunOutput, "llm", "Server policy and masking apply.", llm_api_only),
     Verb("person", "add", "Register a Person", (), PersonAddInput, PersonWriteOutput, "operator", "A page belongs to one Person.", person_write),
+    Verb("person", "create", "Create a Contact and register the Person", (), PersonCreateInput, PersonCreateOutput, "operator", "For someone with no Contacts page yet; an active Person uniquely holds a Telegram ID.", api_write),
     Verb("person", "rebind", "Bind a replacement Contacts page", (), PersonRebindInput, PersonWriteOutput, "operator", "A page belongs to one Person.", person_write),
     Verb("person", "set-telegram", "Set a Person Telegram ID", (), PersonTelegramInput, PersonWriteOutput, "operator", "An active Person uniquely holds a Telegram ID.", person_write),
     Verb("person", "shift", "Set a Person shift", (), PersonShiftInput, PersonWriteOutput, "operator", "Set a day or night shift.", person_write),
@@ -1817,13 +1933,16 @@ VERBS = (
     Verb('package', 'reject', 'Reject a Package', (), PackageRejectInput, PackageOutput, 'person', 'The recipient gives a reason.', package_write),
     Verb("concern", "for-message", "Find Concerns carried by a brief", (), ConcernForMessageInput, ConcernForMessageOutput, "reader", "Return Concern IDs for a brief message.", concern_for_message, read_only=True),
     Verb("concern", "record-message", "Record a Concern carried by a brief", (), ConcernRecordMessageInput, ConcernOutput, "coordinator", "Record a brief message reference without chat text.", concern_write),
+    Verb("concern", "scan", "Scan PM Notes for Concerns", (), ConcernScanInput, ConcernScanOutput, "coordinator", "Match new dated lines through llm run.", concern_scan),
+    Verb("concern", "list", "List Concerns to raise at PSR", (), ConcernListInput, ConcernListOutput, "reader", "Quiet Concerns only (no news for 2 weeks); age alone never lists one.", concern_list),
+    Verb("concern", "changes", "Read automatic Concern changes", (), ConcernChangesInput, ConcernChangesOutput, "reader", "Read receipts since a date.", concern_changes),
     Verb("concern", "get", "Get a Concern", (), ConcernGetInput, ConcernGetOutput, "reader", "Read a Concern and its age.", concern_get, read_only=True),
     Verb("concern", "raise", "Raise a Concern", (), ConcernRaiseInput, ConcernOutput, "coordinator", "Record a line waiting on a party.", concern_write),
     Verb("concern", "note", "Add a Concern note", (), ConcernNoteInput, ConcernOutput, "coordinator", "Notes are append-only.", concern_write),
     Verb("concern", "resolve", "Resolve a Concern", (), ConcernResolveInput, ConcernOutput, "coordinator", "A person resolves the Concern.", concern_write),
     Verb("concern", "reopen", "Reopen a Concern", (), ConcernReopenInput, ConcernOutput, "coordinator", "Keep its original age.", concern_write),
     Verb("jo", "get", "Get a Job Order", (), JoGetInput, JoGetOutput, "reader", "Read a Job Order.", None, read_only=True),
-    Verb("jo", "raise", "Raise a Job Order", ("jo create",), JoRaiseInput, JoWriteOutput, "coordinator", "Create a Job Order.", jo_write),
+    Verb("jo", "raise", "Raise a Job Order", (), JoRaiseInput, JoWriteOutput, "coordinator", "Create a Job Order.", jo_write),
     Verb("jo", "assign", "Assign a Job Order", (), JoAssignInput, JoWriteOutput, "coordinator", "The Person must differ from the current assignee.", jo_write),
     Verb("jo", "reassign", "Reassign a Job Order", (), JoReassignInput, JoWriteOutput, "coordinator", "A reason is required.", jo_write),
     Verb("jo", "note", "Add a Job Order note", (), JoNoteInput, JoWriteOutput, "coordinator", "Notes are append-only.", jo_write),
@@ -1834,10 +1953,10 @@ VERBS = (
     Verb("jo", "delay", "Delay a Job Order", (), JoDelayInput, JoWriteOutput, "coordinator", "Apply the JO transition rules.", jo_write),
     Verb("jo", "cancel", "Cancel a Job Order", (), JoCancelInput, JoWriteOutput, "coordinator", "Apply the JO transition rules.", jo_write),
     Verb("jo", "format", "Format a Job Order", (), JoFormatInput, JoFormatOutput, "reader", "Format a draft.", None),
-    Verb("person", "find", "Find a Person", ("contacts find",), PersonFindInput, PersonFindOutput, "reader", "Find a Contact.", None, read_only=True),
-    Verb("project", "resolve", "Resolve a Project", ("projects resolve",), ProjectResolveInput, ProjectResolveOutput, "reader", "Resolve a Project.", None, read_only=True),
-    Verb("camera", "get", "Get Cameras", ("cameras get",), CameraGetInput, CameraGetOutput, "reader", "Read Cameras.", None, read_only=True),
-    Verb("camera", "enrich", "Enrich a Camera", ("cameras update",), CameraEnrichInput, CameraEnrichOutput, "operator", "Update a Camera.", None),
+    Verb("person", "find", "Find a Person", (), PersonFindInput, PersonFindOutput, "reader", "Find a Contact.", None, read_only=True),
+    Verb("project", "resolve", "Resolve a Project", (), ProjectResolveInput, ProjectResolveOutput, "reader", "Resolve a Project.", None, read_only=True),
+    Verb("camera", "get", "Get Cameras", (), CameraGetInput, CameraGetOutput, "reader", "Read Cameras.", None, read_only=True),
+    Verb("camera", "enrich", "Enrich a Camera", (), CameraEnrichInput, CameraEnrichOutput, "operator", "Update a Camera.", None),
     Verb("departments", "", "Print the studio Departments, read live, in display order, with option IDs", (),
          DepartmentsInput, DepartmentsOutput, "reader", "Notion Department options are the truth; use studio display order.", departments, read_only=True),
 )
@@ -1851,8 +1970,8 @@ def invoke(entry: Verb, inputs: BaseModel, *, actor: str, people: People,
         person = people.get(actor)
         if not person or not person['active']:
             return Refused(rule='person', reason='An active replier Person is required')
-    refusal = (None if entry.noun in ('approval', 'package') and entry.role == 'person' and (person := people.get(actor)) and person['active'] else
-               Refused(rule='person', reason='An active Person is required') if entry.noun in ('approval', 'package') and entry.role == 'person' else
+    refusal = (None if entry.noun in ('approval', 'package', 'abang') and entry.role == 'person' and (person := people.get(actor)) and person['active'] else
+               Refused(rule='person', reason='An active Person is required') if entry.noun in ('approval', 'package', 'abang') and entry.role == 'person' else
                people.authorize(actor, 'reader' if isinstance(inputs, ConcernNoteInput) and inputs.from_reply is not None else entry.role))
     if refusal:
         return refusal
@@ -2106,6 +2225,17 @@ def add_parsers(commands: Any) -> None:
         if entry.verb:
             aliases = [alias.split(' ', 1)[1] for alias in entry.aliases] if entry.handler is approval_write and entry.verb != 'request' else []
             parser = parser.add_parser(entry.verb, aliases=aliases, help="[verb] " + entry.description)
+        if entry.handler is abang_write:
+            parser.add_argument('person' if entry.verb == 'request' else 'candidate' if entry.verb == 'accept' else 'request')
+            if entry.verb == 'accept':
+                parser.add_argument('decision', choices=('yes', 'no'))
+            if entry.verb == 'request':
+                parser.add_argument('--destination', required=True)
+                parser.add_argument('--note')
+            parser.add_argument('--idempotency-key')
+            parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
         if entry.handler is approval_write:
             if entry.verb == 'request':
                 parser.add_argument('gate')

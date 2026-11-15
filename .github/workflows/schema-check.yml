@@ -1,6 +1,6 @@
 name: Schema check
 
-# Daily, run `t6 schema-check` against live Notion and keep one open issue,
+# Daily, run `t6 admin schema-check` against live Notion and keep one open issue,
 # labelled schema-drift, while Notion differs from the snapshot.
 # Needs two repository secrets (Cyril adds them; see the README, "Scheduled schema check"):
 #   T6_NOTION_TOKEN        a read-only Notion integration token
@@ -32,7 +32,7 @@ jobs:
           printf '%s' "$T6_DATA_SOURCES_JSON" > "$RUNNER_TEMP/data-sources.json"
           # Exit 1 is drift (or the Projects audit, which needs a registry this job lacks); 2 means it could not run.
           status=0
-          uv run --locked t6 schema-check --data-sources "$RUNNER_TEMP/data-sources.json" > "$RUNNER_TEMP/report.json" || status=$?
+          uv run --locked t6 admin schema-check --data-sources "$RUNNER_TEMP/data-sources.json" > "$RUNNER_TEMP/report.json" || status=$?
           if [ "$status" -gt 1 ]; then exit "$status"; fi
           uv run --locked python scripts/schema_drift_issue.py "$RUNNER_TEMP/report.json" > "$RUNNER_TEMP/drift.md"
       - name: Open or update the drift issue

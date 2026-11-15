@@ -482,13 +482,7 @@ def frameio_worker(
     def notify(text: str, key: str) -> None:
         gateway.notify(chat, html.escape(text, quote=False), [], key, topic)
 
-    record_share_view = None
-    if environ.get("T6_DATABASE"):
-        from t6.frameio.share_views import DeliveryShareViews
-        from t6.registry.sqlite import SqliteProjectRegistry
-
-        record_share_view = DeliveryShareViews(SqliteProjectRegistry(environ["T6_DATABASE"])).record
-    return FrameioWorker(tokens, run, notify, arm_review_timer=timers, record_share_view=record_share_view)
+    return FrameioWorker(tokens, run, notify, arm_review_timer=timers)
 
 
 def read_api_server(environ: Mapping[str, str], frameio: FrameioWorker) -> ThreadingHTTPServer | None:
@@ -598,7 +592,22 @@ def main(
             if not isinstance(concern, str) or not isinstance(evidence, (int, float)) or not isinstance(target, str):
                 raise ValueError("Invalid Concern timer payload")
             return concerns.silence(concern, evidence, target)
-        queue_handlers = {**queue_handlers, "concern_silence": concern_silence}
+        def concern_pm_close(job: WorkerJob) -> bool:
+            project = job.payload.get('project')
+            if not isinstance(project, str):
+                raise ValueError('Invalid Concern close payload')
+            concerns.apply_pending(project)
+            return True
+        from t6.frameio.share_views import DeliveryShareViews, share_viewed_handler
+
+        share_viewed = share_viewed_handler(DeliveryShareViews(SqliteProjectRegistry(environ["T6_DATABASE"])))
+        queue_handlers = {**queue_handlers, "concern_silence": concern_silence, "concern_pm_close": concern_pm_close,
+                          JobKind.FRAMEIO_SHARE_VIEWED.value: share_viewed}
+        def unavailable_abang_nudge(job: WorkerJob) -> bool:
+            raise RuntimeError('Abang nudge needs a configured gateway')
+        def unavailable_subscriptions(job: WorkerJob) -> bool:
+            raise RuntimeError('Chat subscriptions need a configured gateway')
+        queue_handlers = {**queue_handlers, "abang_nudge": unavailable_abang_nudge, "chat_subscriptions": unavailable_subscriptions}
     if settings.queue == "main" and environ.get("T6_DATABASE") and environ.get("T6_GATEWAY_URL") and environ.get("T6_GATEWAY_SECRET"):
         from t6.registry.sqlite import SqliteProjectRegistry
         from t6.worker.linked_chats import LinkedChats
@@ -607,6 +616,7 @@ def main(
         from urllib.error import URLError
 
         linked = LinkedChats(SqliteProjectRegistry(environ["T6_DATABASE"]), GatewayClient(HttpTransport(environ["T6_GATEWAY_URL"]), environ["T6_GATEWAY_SECRET"]), operator_ids(environ))
+        queue_handlers = {**queue_handlers, "abang_nudge": linked.nudge, "chat_subscriptions": linked.replace_subscriptions}
         def linked_tick() -> None:
             try:
                 linked.tick()

@@ -9,7 +9,7 @@ All notable changes to this project are documented here, following [Keep a Chang
 - `project start` (#267): one verb with a previewed plan, a preview by job. The main worker builds the plan (it needs `T6_PREVIEW_SIGNING_KEY` and `T6_NOTION_TOKEN`); confirm creates the Approval (new gate `project start`), the Deliverables with the milestone template of the Project Type, the Media locations and the initial Bookings once each. The plan lists the manual steps (NAS folders, the Resolve project, the Resolve timelines with their stamps) and Activity records them.
 - Frame.io read API route `GET /frameio/files/<id>/location` and `FrameioReader.file_location`: the main worker records Versions from Frame.io `file.versioned` and `file.upload.completed` events live (#360). It needs `T6_FRAMEIO_READ_URL` and `T6_FRAMEIO_READ_SECRET`; without them that handler is off and the start-up log says so. `UnwiredReader` is gone.
 
-- Unlinked Frame.io activity and the Link Frame.io project button (#272). Review activity on a Frame.io project no show holds is held in the t6 database (migration 37, `frameio_held_activity`) and one operator card per Frame.io project asks a coordinator for the show; tapping it runs `frameio project link` and the held activity is released once, also when the project is linked another way. The `/project` card gets Link Frame.io project for any active staff Person: the T6 account's projects not held by a show, most recently updated first, with search. The API needs `T6_FRAMEIO_READ_URL` and `T6_FRAMEIO_READ_SECRET` for it. New allowed-tapper rule `role:staff`.
+- Unlinked Frame.io activity and the Link Frame.io project button (#272). Review activity on a Frame.io project no show holds is held in the t6 database (migration 41, `frameio_held_activity`) and one operator card per Frame.io project asks a coordinator for the show; tapping it runs `frameio project link` and the held activity is released once, also when the project is linked another way. The `/project` card gets Link Frame.io project for any active staff Person: the T6 account's projects not held by a show, most recently updated first, with search. The API needs `T6_FRAMEIO_READ_URL` and `T6_FRAMEIO_READ_SECRET` for it. New allowed-tapper rule `role:staff`.
 
 ### Changed
 
@@ -22,6 +22,80 @@ All notable changes to this project are documented here, following [Keep a Chang
 ### Removed
 
 - `t6.notion.external_links`. Only the migration's one-off row read remains, in `t6.media_migration`.
+
+## [0.5.0] - 2026-11-15
+
+Phase 2 of the t6-core shape (#178): delivery, linked chats, Versions, Concerns and abang. Released by #254.
+
+### Added
+
+- Milestones and the derived stage of a Project, with milestone templates per Project Type and Status projection to Notion (#233, #238).
+- Package handoff: `package prepare`, `check`, `handoff`, `accept` and `reject`, checked against the Package Spec (#235).
+- `deliverable deliver` with a drive or share carrier (#240), and `deliverable miss`, which tells a missed date from a delayed one (#239).
+- Linked chats: `project link-chat` and `unlink-chat`, and the `/link` and `/unlink` commands (#237). Linked chats are delivered to t6 through gateway subscriptions, a pull and member lists (#243), and a Chat link follows chat events: moves, topic names, members and dead topics (#248).
+- Versions: `version add` and `version lock` for picture lock (#241), and client cut approval on a Version (#246).
+- Review messages go to the show's linked topic (#244) and name the file's Version (#241).
+- Frame.io `share.viewed` is watched for Delivery shares only (#245).
+- Concerns: a reply to the brief is kept as a Concern note (#236); Concerns close by data, with flags (#242); Concerns open and close from new PM Notes lines with `concern scan`, `concern changes` and `project notes` (#247); `concern list --raise-at-psr` reads quiet Concerns (#336).
+- `Sixto (auto)` is a named service actor limited to the Concern verbs (#334).
+- abang: `abang request` and `cancel` and `/abang` by reply (#249); abang candidates, the Yes/No tap, `/abang` by destination button and the 3-day nudge (#251).
+- `person create` makes a Contacts page and registers the Person (#332).
+- `t6 health --local` and `--ignore-history` (#337).
+- `T6_FRAMEIO_ALERT_TOPIC` sends the Frame.io sign-in alert to a forum topic (#318).
+- Write-back safety checks in `Fleet.sync` and `Fleet.machines` (#177).
+- ADR 0007: t6 stores no chat text, with the brief-reply exception (#335).
+
+### Changed
+
+- `concern raise` takes only a Project coordinator as owner, and the waiting party must be named in the line (#230).
+- A Chat link change updates the gateway subscription set at once (#243).
+- The Package Spec reader finds properties by ID, not by name (#228).
+
+### Removed
+
+- The 0.4.0 command aliases. An old name now fails and names its replacement; see the rename table under 0.4.0 (#231).
+
+### Fixed
+
+- The worker retries an unreachable queue instead of exiting (#325).
+- A PM Notes line is retried at most 3 times, and a line that cannot change its Concern is not sent to the LLM again (#247).
+- A Concern opened from PM Notes is as old as its line (#247).
+- The Refused messages for missing Notion property IDs name `t6 admin snapshot` (#351).
+
+### Off by default
+
+- Opening and closing Concerns from PM Notes on a timer. Set `T6_CONCERN_AUTOSCAN=1` on the API to turn it on. It stays off until the live run with human review is recorded (#250). `concern scan` by hand works without it.
+
+### Before go-live
+
+1. Back up the t6 database before upgrading. Migrations 22 and 27 are forward-only: to go back to 0.4.1, restore that backup.
+2. Callers of the old command names must use the new ones first (rename table under 0.4.0).
+3. Add the Package Specs data source to the file named by `T6_READ_DATA_SOURCES`, under the key `package_specs` (#234).
+4. Deliverable projection still needs a **T6 ID** text property in the Notion Deliverables database and a new schema snapshot. Until then Deliverable sync jobs are refused; nothing else depends on it.
+5. For linked chats, review messages in topics and abang, the main worker needs `T6_DATABASE`, `T6_GATEWAY_URL` and `T6_GATEWAY_SECRET`. For `version add`, the API needs `T6_FRAMEIO_READ_URL` and `T6_FRAMEIO_READ_SECRET`.
+
+### t6 database migrations
+
+Migrations run on open.
+
+| Version | Change | Forward-only |
+| --- | --- | --- |
+| 17 | Milestones | No |
+| 18 | Packages | No |
+| 19 | Concern note message IDs and brief messages | No |
+| 20 | Chat links, their history and previews | No |
+| 21 | Deliverable date moves and misses | No |
+| 22 | Packages rebuilt, delivery carriers | Yes |
+| 23 | Linked chat cursor, message facts (no text) and members | No |
+| 24 | Versions and Version locks | No |
+| 25 | Concern milestones, date rules and dates | No |
+| 26 | Delivery share views | No |
+| 27 | Deliverable templates | Yes |
+| 28 | Linked chat topics, notices and sends | No |
+| 29 | abang requests, history and previews | No |
+| 30 | abang candidates, drafts and draft options | No |
+| 31 | PM Notes lines, pending changes and changes | No |
+| 32 | PM Notes attempts | No |
 
 ## [0.4.1] - 2026-11-15
 

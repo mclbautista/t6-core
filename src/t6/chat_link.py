@@ -91,7 +91,9 @@ class ChatLinks:
                 db.execute('UPDATE chat_links SET state = ? WHERE id = ?', (desired, link_id))
             else:
                 db.execute('INSERT INTO chat_links VALUES (?, ?, ?, ?, ?)', (link_id, project_id, chat, topic, desired))
-            db.execute('INSERT INTO chat_link_history (link_id, state, actor, at) VALUES (?, ?, ?, ?)', (link_id, desired, actor, now))
+            history = db.execute('INSERT INTO chat_link_history (link_id, state, actor, at) VALUES (?, ?, ?, ?)', (link_id, desired, actor, now))
+            from t6.worker.internal_queue import InternalJobQueue
+            InternalJobQueue(self.registry, clock=lambda: now).submit('main', 'chat_subscriptions', f'{link_id}:{history.lastrowid}', {}, db=db)
             plan.update(chat_link_id=link_id, approval_id=preview_row[0])
             cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)', (project_id, 'project_' + verb.replace('-', '_'), actor, now, json.dumps(link), json.dumps(plan)))
             db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (project_id, link_id, now, actor, 'project_' + verb.replace('-', '_'), f'{verb}: chat {chat}, topic {topic}', cursor.lastrowid))

@@ -163,4 +163,5 @@ class OneWriterOfInternalJobs(unittest.TestCase):
         from pathlib import Path
         root = Path(__file__).parents[1] / 'src' / 't6'
         writers = sorted(str(path.relative_to(root)) for path in root.rglob('*.py') if 'INSERT INTO internal_jobs' in path.read_text(encoding='utf-8'))
-        self.assertEqual(writers, ['worker/internal_queue.py'])
+        # registry/sqlite.py: main's migration 30 (0.5.0) queues the 3-day nudge of abang requests already open, once, as a one-off backfill.
+        self.assertEqual(writers, ['registry/sqlite.py', 'worker/internal_queue.py'])

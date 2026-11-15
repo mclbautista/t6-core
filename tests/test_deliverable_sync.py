@@ -41,8 +41,14 @@ class DeliverableSyncTests(SyncTestCase):
         from t6.worker.client import WorkerJob
         from t6.worker.runner import Refused
         job = WorkerJob(job_id=1, queue='main', token='token', kind='deliverable.sync', dedupe_key='test', payload={'intent_id': 1}, attempt=1)
-        with self.assertRaisesRegex(Refused, 'schema-snapshot'):
-            DeliverableProjection(self.client, RegistryClient(InProcess(self.app), WORKER_SECRET), 'deliverables').sync(job)
+        # The bundled snapshot now has the live ID; simulate one captured before the property existed.
+        with patch.object(DeliverablesRow, 'notion_id', return_value=None):
+            with self.assertRaisesRegex(Refused, 'admin snapshot'):
+                DeliverableProjection(self.client, RegistryClient(InProcess(self.app), WORKER_SECRET), 'deliverables').sync(job)
+
+    def test_the_bundled_snapshot_has_the_deliverable_projection_id(self) -> None:
+        from t6.notion.deliverable_projection import projection_id
+        self.assertTrue(projection_id())
 
     def test_identity_edit_is_restored_by_property_id(self) -> None:
         from unittest.mock import patch

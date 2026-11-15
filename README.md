@@ -5,10 +5,10 @@ before its first commit. The distribution and import namespace are `t6`.
 
 Requires Python 3.11 or newer. `t6` is not on PyPI: install it from this
 repository, pinned to a release tag, with
-`pip install 't6 @ git+https://github.com/mclbautista/t6-core.git@v0.4.1'`.
+`pip install 't6 @ git+https://github.com/mclbautista/t6-core.git@v0.5.0'`.
 Where this README says `pip install 't6[extra]'`, use the same form with the
 extra, for example
-`pip install 't6[notion] @ git+https://github.com/mclbautista/t6-core.git@v0.4.1'`.
+`pip install 't6[notion] @ git+https://github.com/mclbautista/t6-core.git@v0.5.0'`.
 The base package has no third-party runtime dependencies and includes
 `t6.domain`, `t6.lookup`, `t6.drives`, `t6.registry`, and the `t6` command.
 
@@ -132,6 +132,8 @@ Mac mini. Both use only the standard library.
 | `T6_REGISTRY_READ_SECRET` | registry caller that may only read Projects |
 | `T6_QUEUE_DB`, `T6_PUBLIC_BIND`, `T6_TAILNET_BIND` | database path, listener addresses |
 | `T6_REGISTRY_DB` | Project registry database path, default `t6-registry.sqlite` |
+| `T6_CONCERN_AUTOSCAN` | Set to `1` to scan PM Notes for Concerns automatically in the API server. Off by default; needs the LLM service. |
+| `T6_CONCERN_AUTOSCAN_SECONDS` | Seconds between automatic scans, default `900`, minimum `60` |
 | `T6_OPERATOR_IDS` | Telegram user IDs allowed to tap operator cards and send `/project`, comma separated; the first receives the cards core starts, and a `/project` card goes to whoever sent it. Unset turns operator actions off |
 | `T6_STANDING_CC` | A Contact page ID, added to the cc of every Job Order (`t6.domain.studio_people.standing_cc`). Unset means none |
 | `T6_OPERATOR_DB`, `T6_OPERATOR_TTL_SECONDS` | operator action database, default `t6-operator.sqlite`; how long a card stays live, default 7 days |
@@ -922,7 +924,7 @@ option names, because they contain show and client names. A property or option
 keeps its ID when it is renamed in Notion, so t6-core addresses by ID and the
 name is for display and errors. After a rename, run
 `t6 admin snapshot --data-sources FILE --out FILE` (same file format as
-`schema-check`) and regenerate; no code changes. A property whose entry has no
+`admin schema-check`) and regenerate; no code changes. A property whose entry has no
 ID yet is addressed by name. The `t6.notion.generated`
 module has one model per database, such as `BaysRow` and `JobOrdersRow`. Run
 `uv run python scripts/generate_models.py` after the snapshot changes. A test
@@ -1372,7 +1374,7 @@ malformed body fails with `schema_violation`.
 
 ```console
 $ t6 version
-{"version": "0.4.1"}
+{"version": "0.5.0"}
 ```
 
 `python -m t6 version` provides the same output. `t6 admin schema-check` is
@@ -1459,8 +1461,8 @@ Job Order, its T6 ID, active page, assignee Person and append-only notes. A
 Telegram Key is `<chat_id>:<message_id>`; put a negative chat ID after `--`.
 For an unbound legacy page, get still returns its existing Notion fields.
 
-`t6 jo raise --file jo.json --data-sources FILE` previews a new Job Order;
-`jo create` is an alias. The JSON accepts the previous create fields, including
+`t6 jo raise --file jo.json --data-sources FILE` previews a new Job Order.
+The JSON accepts the previous create fields, including
 `project_id` (a registered T6 Project ID or its Notion page), Contact page IDs
 in `assigned_ids`, and `source_text`. Dates without a time zone are Manila;
 the Department is checked against Notion's options, standing cc is added and
@@ -1535,7 +1537,7 @@ To add it to an app's CI, install t6 at the pinned release tag and run it on the
 app's source:
 
 ```yaml
-- run: pip install 't6 @ git+https://github.com/mclbautista/t6-core.git@v0.4.1'
+- run: pip install 't6 @ git+https://github.com/mclbautista/t6-core.git@v0.5.0'
 - run: t6 admin consumer-check .
 ```
 
@@ -1559,7 +1561,7 @@ Pull requests build the image and run the smoke test; nothing is pushed.
 the matching tag:
 
 ```sh
-git tag v0.4.1 && git push origin v0.4.1
+git tag v0.5.0 && git push origin v0.5.0
 ```
 
 The `Image` workflow fails unless the tag equals the pyproject version. It
@@ -1676,7 +1678,9 @@ against the live server.
 
 ### CLI rename table
 
-The old commands remain available until 0.5.0 and print a deprecation notice on stderr.
+Release 0.5.0 removed the old commands. Each now fails with exit status 2 and
+an error naming the new command, for example `t6 jo create was renamed to t6 jo
+raise`; the error stays for one more release.
 
 | Previous command | Current command |
 | --- | --- |
@@ -1783,7 +1787,10 @@ A recorded live run (#213) must pass before the task is released.
 The full server exposes the studio API on its tailnet listener. Set
 `T6_API_SECRETS` to a JSON object mapping each distinct bearer secret to one
 Person ID (for example `t6n_...`) or one of `gateway`, `worker`, `reports`,
-`watchdog`, `munki`, and `hermes`. Keep this configuration secret. Set
+`watchdog`, `munki`, `hermes`, and `Sixto (auto)`. `Sixto (auto)` is the actor of
+automatic Concern changes: it may run Concern verbs and nothing else, and its
+reach is fixed in code, not in `T6_API_SERVICE_PERMISSIONS`. Keep this
+configuration secret. Set
 `T6_PREVIEW_SIGNING_KEY` for previewed writes. Send `Authorization: Bearer
 <secret>` and use `GET /v1/commands` for the catalogue. Invoke a verb with
 `POST /v1/<noun>/<verb>` and its JSON input. `departments` is at

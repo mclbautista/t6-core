@@ -146,7 +146,7 @@ class FixSnapshotTests(unittest.TestCase):
             redirect_stderr(io.StringIO()),
         ):
             status = main(
-                ["schema-check", "--data-sources", str(base / "ds.json"), "--snapshot", str(snapshot), "--fix-snapshot"],
+                ["admin", "schema-check", "--data-sources", str(base / "ds.json"), "--snapshot", str(snapshot), "--fix-snapshot"],
                 open_notion=lambda _token: fake.client(),
             )
         return status, out.getvalue(), snapshot
@@ -248,7 +248,7 @@ class RefreshSnapshotTests(unittest.TestCase):
                 redirect_stderr(io.StringIO()),
             ):
                 status = main(
-                    ["schema-snapshot", "--data-sources", str(base / "ds.json"),
+                    ["admin", "snapshot", "--data-sources", str(base / "ds.json"),
                      "--snapshot", str(base / "in.json"), "--out", str(base / "out.json")],
                     open_notion=lambda _token: fake.client(),
                 )

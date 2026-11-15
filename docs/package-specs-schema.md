@@ -3,7 +3,12 @@
 Create one Notion database (data source) named **Package Specs**. Each row is
 one spec for an exact Package kind and optional Client spec. Keep only one live
 row per combination; the reader returns duplicates so callers can detect them.
-Property names and types must match exactly:
+The reader finds each property by its Notion property ID, which the schema
+snapshot records (see ADR 0002), so renaming a property in Notion does not
+break reads. Types must match; names are for people. Deleting a property and
+creating another with the same name changes the ID: run `t6 admin schema-check` to
+see it, then `t6 admin snapshot` and `scripts/generate_models.py` to refresh.
+The properties are:
 
 | Property | Notion type | Meaning |
 | --- | --- | --- |

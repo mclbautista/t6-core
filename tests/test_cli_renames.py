@@ -1,4 +1,4 @@
-"""Compatibility of the documented command rename table."""
+"""The documented command rename table: old names fail naming the new one, new names work."""
 import contextlib
 import io
 import unittest
@@ -18,7 +18,7 @@ class RenameTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_renamed_commands_share_handlers_and_output(self) -> None:
+    def test_old_names_fail_naming_the_new_name_and_new_names_work(self) -> None:
         rows = [
             ("jo create", "jo raise", "--file x --data-sources x", "t6.verbs.run"),
             ("contacts find", "person find", "name --data-sources x", "t6.cli_studio.run"),
@@ -53,15 +53,19 @@ class RenameTests(unittest.TestCase):
                     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), patch('sys.stdin', io.StringIO('{"name":"Camera"}')):
                         status = main((command + " " + options).split())
                     outputs.append((status, out.getvalue(), err.getvalue()))
-                self.assertEqual(outputs[0][:2], outputs[1][:2])
-                self.assertEqual(outputs[1][2], "")
-                self.assertEqual(outputs[0][2], f"Deprecated: t6 {old}; use t6 {new} until 0.5.0\n")
-                self.assertEqual(run.call_count, 2)
-                first, second = (call.args for call in run.call_args_list)
-                if remote:
-                    self.assertEqual(first, second)
-                else:
-                    self.assertEqual(first[0].command, second[0].command)
+                old_run, new_run = outputs
+                self.assertEqual(old_run[0], 2)
+                self.assertEqual(old_run[1], "")
+                self.assertIn(f"t6 {new}", old_run[2])
+                self.assertIn(f"t6 {old} was renamed to t6 {new}", old_run[2])
+                self.assertEqual((new_run[0], new_run[2]), (0, ""))
+                self.assertEqual(run.call_count, 1)
+
+    def test_catalogue_advertises_no_renamed_name(self) -> None:
+        from t6.verbs import catalogue
+        old = ('jo create', 'contacts', 'projects', 'cameras', 'camera update')
+        advertised = [alias for entry in catalogue() for alias in entry['aliases']]
+        self.assertEqual([alias for alias in advertised if alias.startswith(old)], [])
 
     def test_admin_help_lists_commands(self) -> None:
         out = io.StringIO()

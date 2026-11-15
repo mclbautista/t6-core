@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 from pydantic import ValidationError
 
 from t6.frameio.project_folders import LocalFrameioQueue, QueueFrameioWriter
-from t6.person import PERMISSIONS, SERVICES, People
+from t6.person import AUTO_ACTOR, PERMISSIONS, SERVICES, People
 from t6.privacy import Registry as PrivacyRegistry, Session, mask_reply
 from t6.server.app import Request, Response, WebhookApp
 from t6.registry.sqlite import _audit
@@ -178,6 +178,10 @@ class VerbAPI:
             return self.refused('masking', 'A client name occurs in an identifier')
 
     def _dispatch(self, entry: Any, data: dict[str, Any], actor: str) -> Response:
+        if actor == AUTO_ACTOR:
+            refusal = People.auto_refusal(entry.noun)
+            if refusal:
+                return self.refused(refusal.rule, refusal.reason)
         outcome: Any
         try:
             inputs = entry.input_model.model_validate(data)
@@ -198,10 +202,10 @@ class VerbAPI:
         if (entry.noun, entry.verb) in {('transcript', 'create'), ('transcript', 'speakers'), ('transcript', 'translate')}:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._transcripts().request(entry.verb, inputs, actor, translate_enabled=self.translate_enabled)
-        elif (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'flags'), ('project', 'resolve'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find'), ('version', 'get')}:
+        elif (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'notes'), ('project', 'flags'), ('project', 'resolve'), ('concern', 'list'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find'), ('version', 'get')}:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._typed_read(entry.noun, entry.verb, inputs)
-            if isinstance(outcome, Done) and entry.noun in {'project', 'jo', 'person', 'camera', 'deliverable', 'meeting-notes', 'external-link', 'studio'} and self.people.authorize(actor, 'operator'):
+            if isinstance(outcome, Done) and entry.noun in {'project', 'concern', 'jo', 'person', 'camera', 'deliverable', 'meeting-notes', 'external-link', 'studio'} and self.people.authorize(actor, 'operator'):
                 if self.privacy_registry is None:
                     outcome = Refused(rule='masking', reason='Read privacy registry is not configured')
                 else:
@@ -249,12 +253,36 @@ class VerbAPI:
                         outcome = store.deliver(inputs.model_dump(exclude={'idempotency_key', 'confirm'}), actor=actor, idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
                 except (OSError, ValueError, KeyError, NotionError) as error:
                     outcome = Refused(rule='spec', reason=str(error))
+        elif (entry.noun, entry.verb) == ('concern', 'scan'):
+            refusal = self.people.authorize(actor, entry.role)
+            if refusal:
+                outcome = refusal
+            elif self.llm_service is None:
+                outcome = Refused(rule='config', reason='LLM service is not configured')
+            else:
+                from t6.verbs import ProjectNotesInput
+                from t6.concern import ConcernStore
+                from t6.concern_task import classify
+                notes = self._typed_read('project', 'notes', ProjectNotesInput(project=inputs.project)) if inputs.owner in self._coordinators(inputs.project) else Refused(rule='owner', reason='Owner must be a Project coordinator')
+                if isinstance(notes, Done):
+                    try:
+                        ConcernStore(self.people.registry, self.people.tokens).process_notes(inputs.project, inputs.owner, notes.result['lines'], lambda payload: classify(self.llm_service, payload, actor=actor, registry=self.people.registry))
+                        outcome = Done(result={'project': inputs.project})
+                    except ValueError:
+                        outcome = Refused(rule='project', reason='Project and active coordinator are required')
+                else:
+                    outcome = notes
         elif (entry.noun, entry.verb) == ('llm', 'run'):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or (self.llm_service.run(inputs, actor=actor, registry=self.people.registry) if self.llm_service else Refused(rule='config', reason='LLM service is not configured'))
         elif (entry.noun, entry.verb) == ('camera', 'enrich'):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._camera_enrich(inputs, actor)
+        elif (entry.noun, entry.verb) == ('person', 'create'):
+            refusal = self.people.authorize(actor, entry.role)
+            outcome = refusal or self._person_create(inputs, actor)
+        elif (entry.noun, entry.verb) == ('concern', 'raise') and inputs.owner not in self._coordinators(inputs.project):
+            outcome = self.people.authorize(actor, entry.role) or Refused(rule='owner', reason='Owner must be a Project coordinator')
         elif entry.handler is None:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._legacy_read(entry.noun, entry.verb, inputs)
@@ -323,6 +351,92 @@ class VerbAPI:
         except (ValueError, KeyError, TypeError):
             return Response(400, {'error': 'invalid request'})
 
+    def _person_create(self, inputs: Any, actor: str) -> Any:
+        """Create a Contacts page and register the Person bound to it.
+
+        The page is made once per idempotency key. The key is marked pending
+        before Notion is called, so a retry after an unclear failure is
+        `Ambiguous` and never a second page.
+        """
+        import secrets
+        from dataclasses import asdict
+        from t6.ids import EntityKind, T6Id
+        from t6.notion import NotionError
+        from t6.notion.contacts import Contacts
+        from t6.notion.writes import Rejected, Ambiguous as WriteAmbiguous
+        from t6.registry.core import normalize_page_id
+        from t6.verbs import Ambiguous
+        key = inputs.idempotency_key or secrets.token_hex(16)
+        if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+            return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+        if inputs.confirm and not inputs.idempotency_key:
+            return Refused(rule='idempotency_key', reason='Supply the key from the preview')
+        name, handle, note = inputs.name.strip(), (inputs.telegram_handle or '').strip().lstrip('@'), (inputs.note or '').strip()
+        if not name or inputs.kind not in ('staff', 'client', 'vendor'):
+            return Refused(rule='input', reason='A name and valid kind are required')
+        values = {'name': name, 'kind': inputs.kind, 'telegram_handle': handle or None, 'telegram_id': inputs.telegram_id, 'note': note or None, 'idempotency_key': key}
+        fingerprint = json.dumps({'verb': 'person create', 'actor': actor, **values}, sort_keys=True, separators=(',', ':'))
+        nonce = self.people.tokens.verify(inputs.confirm, 'person create', actor, values) if inputs.confirm else None
+        if isinstance(nonce, Refused):
+            return nonce
+        registry = self.people.registry
+
+        def held(db: Any) -> Refused | None:
+            holder = db.execute('SELECT id FROM persons WHERE active = 1 AND telegram_id = ?', (inputs.telegram_id,)).fetchone() if inputs.telegram_id is not None else None
+            return Refused(rule='telegram_id', reason=f'Telegram ID is held by {holder[0]}') if holder else None
+
+        try:
+            source = self.data_sources['contacts']
+            token = os.environ['T6_NOTION_TOKEN']
+            with registry._transaction() as db:
+                previous = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key=?', (key,)).fetchone()
+                if previous and previous[0] != fingerprint:
+                    return Refused(rule='idempotency_key', reason='Idempotency key was used for a different request')
+                if nonce and db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce=?', (nonce,)).fetchone():
+                    return Refused(rule='token_used', reason='Preview token has already been used')
+                if previous and nonce:
+                    db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
+                    result = json.loads(previous[1])
+                    return Ambiguous(candidates=[result]) if result.get('pending') else Done(result=result)
+                if not previous:
+                    refusal = held(db)
+                    if refusal:
+                        return refusal
+                if nonce is None:
+                    return self.people.tokens.create('person create', actor, values, {'action': 'create', **values})
+                db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
+                db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps({'pending': True, 'reason': 'The Contacts page may have been created'})))
+            with self.open_notion(token) as client:
+                saved = Contacts(client, source).create(name, telegram_user_id=inputs.telegram_id, telegram_handle=handle, note=note)
+            if isinstance(saved, Rejected):
+                # Notion made no page, so the key is free for another try.
+                with registry._transaction() as db:
+                    db.execute('DELETE FROM verb_requests WHERE idempotency_key=?', (key,))
+                return Refused(rule='notion', reason=str(saved))
+            if isinstance(saved, WriteAmbiguous):
+                pending = {'pending': True, 'reason': str(saved), 'page_id': saved.page_id}
+                with registry._transaction() as db:
+                    db.execute('UPDATE verb_requests SET result=? WHERE idempotency_key=?', (json.dumps(pending), key))
+                return Ambiguous(candidates=[pending])
+            with registry._transaction() as db:
+                if held(db):
+                    pending = {'pending': True, 'reason': 'The Contacts page was created but the Telegram ID was taken meanwhile; register it with person add', 'page_id': saved.page_id}
+                    db.execute('UPDATE verb_requests SET result=? WHERE idempotency_key=?', (json.dumps(pending), key))
+                    return Ambiguous(candidates=[pending])
+                person_id, now = str(T6Id.mint(EntityKind.PERSON)), registry._clock()
+                db.execute('INSERT INTO persons VALUES (?, ?, ?, ?, ?, ?, ?)', (person_id, inputs.kind, '[]', '[]', inputs.telegram_id, 0, 1))
+                db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, ?, 1)", (normalize_page_id(saved.page_id), person_id, now))
+                _audit(db, person_id, 'person_create', actor, now, None, {'page_id': saved.page_id, 'kind': inputs.kind, 'telegram_id': inputs.telegram_id})
+            person = self.people.get(person_id)
+            assert person is not None
+            item = {**asdict(saved), 't6_id': person_id, **{field: person[field] for field in ('kind', 'departments', 'roles', 'project_roles', 'shift', 'permissions', 'master_brief', 'active')}}
+            result = {'person': json.loads(json.dumps(item, default=str))}
+            with registry._transaction() as db:
+                db.execute('UPDATE verb_requests SET result=? WHERE idempotency_key=?', (json.dumps(result), key))
+            return Done(result=result)
+        except (ValueError, KeyError, OSError, NotionError) as error:
+            return Refused(rule='input', reason=str(error))
+
     def _camera_enrich(self, inputs: Any, actor: str) -> Any:
         import secrets
         from t6.notion.cameras import get_cameras, validate_update, camera_to_json
@@ -372,6 +486,59 @@ class VerbAPI:
         except (ValueError, KeyError, OSError, NotionError) as error:
             return Refused(rule='input', reason=str(error))
 
+    def _vendor_person(self, mention: str) -> str | None:
+        """The Person an `/abang` mention names: a t6 ID, or an @handle or name found in Contacts."""
+        if mention.startswith('t6n_'):
+            return mention
+        from t6.cli import TOKEN_VARIABLE
+        from t6.lookup import Index, Lookup
+        from t6.notion import NotionError
+        from t6.notion.reads import ContactReader
+        from t6.registry.core import normalize_page_id
+        token, source = os.environ.get(TOKEN_VARIABLE), self.data_sources.get('contacts')
+        if not token or not source:
+            return None
+        try:
+            with self.open_notion(token) as client:
+                found = Lookup(Index(contacts=ContactReader(client, source).list())).contact(mention)
+        except (NotionError, OSError, ValueError, KeyError):
+            return None
+        if found.entity is None or found.needs_review:
+            return None
+        person = self.people.registry.bound_entity('notion', normalize_page_id(found.entity.page_id))
+        return person if isinstance(person, str) else None
+
+    def scan_concerns(self) -> int:
+        """Scan the PM Notes of every Project in rotation for new Concern evidence; returns how many were scanned."""
+        from t6.concern import ConcernStore
+        from t6.concern_task import classify
+        from t6.registry import Rotation
+        from t6.verbs import ProjectNotesInput
+        if self.llm_service is None:
+            return 0
+        scanned = 0
+        for project in self.people.registry.list_projects(Rotation.IN):
+            owners = sorted(self._coordinators(project.id))
+            notes = self._typed_read('project', 'notes', ProjectNotesInput(project=project.id)) if owners else None
+            if not isinstance(notes, Done):
+                continue
+            owner = owners[0]
+            try:
+                ConcernStore(self.people.registry, self.people.tokens).process_notes(project.id, owner, notes.result['lines'], lambda payload: classify(self.llm_service, payload, actor=owner, registry=self.people.registry))
+                scanned += 1
+            except ValueError:
+                continue
+        return scanned
+
+    def _coordinators(self, project_id: str) -> set[str]:
+        """The Persons who coordinate a Project: its Notion post coordinators and its t6 coordinator roles."""
+        from t6.verbs import ProjectGetInput
+        read = self._typed_read('project', 'get', ProjectGetInput(project=project_id))
+        if not isinstance(read, Done):
+            return set()
+        project = read.result['project']
+        return set(project.post_coordinator_ids) | {r['person_id'] for r in project.project_roles if r['role'].casefold() in ('coordinator', 'post coordinator', 'post-coordinator')}
+
     def _typed_read(self, noun: str, verb: str, inputs: Any) -> Any:
         from datetime import date, datetime
         from dataclasses import asdict, replace
@@ -383,6 +550,9 @@ class VerbAPI:
         from t6.registry import ProjectRefs
         from t6.registry.core import normalize_page_id
         from t6.cli import TOKEN_VARIABLE
+        if (noun, verb) == ('concern', 'list'):
+            from t6.concern import ConcernStore
+            return Done(result={'concerns': ConcernStore(self.people.registry, self.people.tokens).raise_at_psr(inputs.project)}) if inputs.raise_at_psr else Refused(rule='raise_at_psr', reason='Only the Raise at PSR list is available: pass raise_at_psr')
         if noun == 'standing-cc':
             from t6.domain.studio_people import standing_cc
             page = standing_cc()
@@ -474,10 +644,14 @@ class VerbAPI:
                     return Done(result={'cameras': [{'page_id': c['id'], 'name': c['name'] or '', 'tags': c['tags']} for c in cameras]})
                 if noun == 'project':
                     projects = [project_result(p) for p in ProjectReader(client, self.data_sources['projects']).list()]
-                    if verb in ('get', 'flags'):
+                    if verb in ('get', 'notes', 'flags'):
                         pages = refs.pages(inputs.project)
                         active = (pages[0] if pages else inputs.project).replace('-', '').lower()
                         project = next((p for p in projects if p.page_id.replace('-', '').lower() == active), None)
+                        if verb == 'notes' and project:
+                            from t6.pm_notes import dated_lines
+                            from t6.domain.studio_time import MANILA
+                            return Done(result={'lines': dated_lines(project.pm_notes, datetime.fromtimestamp(self.people.registry._clock(), MANILA).date())})
                         if verb == 'flags' and project:
                             from t6.domain.project_rules import date_flags, health_missing
                             from t6.domain.studio_time import MANILA
@@ -589,7 +763,7 @@ class VerbAPI:
 
     def _legacy_read(self, noun: str, verb: str, inputs: Any) -> Any:
         # The legacy write commands do not have signed previews yet.
-        if (noun, verb) == ('camera', 'enrich'):
+        if (noun, verb) in (('camera', 'enrich'), ('person', 'create')):
             return Refused(rule='verb', reason='This legacy write does not support preview and confirm')
         try:
             from t6.cli import TOKEN_VARIABLE, _read_data_sources
@@ -651,6 +825,18 @@ class VerbAPI:
                 _audit(db, f'telegram:{telegram_id}', 'tap_rejected', 'gateway', self.people.registry._clock(), None,
                        {'reason': 'no_person'})
             return Response(200, {'outcome': 'rejected'})
+        if body.get('kind') == 'command' and body.get('command') == 'abang':
+            # Typed in the source chat, where the freelancer is. The coordinator then taps a destination.
+            args, chat, topic = body.get('args'), body.get('chat'), body.get('topic')
+            key = request.header('idempotency-key') or body.get('idempotency_key')
+            if not isinstance(args, str) or not args.strip() or type(chat) is not int or (topic is not None and type(topic) is not int) or not isinstance(key, str) or not key or self.people.authorize(person[0], 'coordinator'):
+                return Response(200, {'outcome': 'rejected'})
+            mention, _, note = args.strip().partition(' ')
+            vendor = self._vendor_person(mention)
+            if vendor is None:
+                return Response(200, {'outcome': 'rejected'})
+            from t6.abang import start_draft
+            return Response(200, {'outcome': 'accepted' if isinstance(start_draft(self.people.registry, person[0], vendor, chat, topic, note.strip() or None, key), Done) else 'rejected'})
         if body.get('kind') == 'command' and body.get('command') in ('link', 'unlink'):
             if self.people.authorize(person[0], 'coordinator'):
                 return Response(200, {'outcome': 'rejected'})
@@ -670,6 +856,51 @@ class VerbAPI:
             response = self._dispatch(entry, {'project': args.strip(), 'chat': chat, 'topic': topic, 'idempotency_key': key}, person[0])
             return Response(200, {'outcome': 'accepted' if response.body.get('outcome') in ('preview', 'done') else 'rejected'})
         data = body.get('data')
+        if isinstance(data, str) and data.startswith('abang-dest:'):
+            parts = data.split(':')
+            key = request.header('idempotency-key') or body.get('idempotency_key')
+            with self.people.registry._transaction() as db:
+                draft = db.execute("SELECT d.id, d.actor, d.person_id, d.source_chat, d.source_topic, d.note, o.chat, o.topic FROM abang_drafts d JOIN abang_draft_options o ON o.draft_id = d.id WHERE d.id = ? AND o.n = ? AND d.state = 'open'", (parts[1], parts[2] if len(parts) == 3 and parts[2].isdigit() else -1)).fetchone() if len(parts) == 3 else None
+                if draft is None or draft[1] != person[0] or not isinstance(key, str) or not key:
+                    _audit(db, person[0], 'tap_rejected', person[0], self.people.registry._clock(), None, {'reason': 'not_allowed', 'data': data})
+                    return Response(200, {'outcome': 'rejected'})
+            values: dict[str, JsonValue] = {'person': draft[2], 'source': str(draft[3]) + (f'/{draft[4]}' if draft[4] is not None else ''), 'destination': str(draft[6]) + (f'/{draft[7]}' if draft[7] is not None else ''), 'note': draft[5], 'idempotency_key': key}
+            entry = self.routes['/v1/abang/request']
+            response = self._dispatch(entry, values, person[0])
+            if response.body.get('outcome') == 'preview':
+                values['confirm'] = response.body['token']
+                response = self._dispatch(entry, values, person[0])
+            done = response.body.get('outcome') == 'done'
+            if done:
+                with self.people.registry._transaction() as db:
+                    db.execute("UPDATE abang_drafts SET state = 'used' WHERE id = ?", (draft[0],))
+                    _audit(db, person[0], 'tap_accepted', person[0], self.people.registry._clock(), None, {'key': key, 'data': data, 'outcome': 'accepted'})
+            return Response(200, {'outcome': 'accepted' if done else 'rejected'})
+        if isinstance(data, str) and data.startswith('abang:'):
+            parts = data.split(':')
+            candidate = parts[1] if len(parts) == 3 else ''
+            decision = parts[2] if len(parts) == 3 else ''
+            with self.people.registry._transaction() as db:
+                row = db.execute("SELECT r.person_id FROM abang_candidates c JOIN abang_requests r ON r.id = c.request_id WHERE c.id = ?", (candidate,)).fetchone()
+                allowed = bool(row and self.people._allows(db, person[0], 'person:' + row[0]))
+                if not allowed:
+                    _audit(db, person[0], 'tap_rejected', person[0], self.people.registry._clock(), None, {'reason': 'not_allowed', 'data': data})
+            if not allowed:
+                return Response(200, {'outcome': 'rejected'})
+            key = request.header('idempotency-key') or body.get('idempotency_key')
+            if not isinstance(key, str) or not key or decision not in ('yes', 'no'):
+                return Response(200, {'outcome': 'rejected'})
+            values = {'candidate': candidate, 'decision': decision, 'idempotency_key': key}
+            entry = self.routes['/v1/abang/accept']
+            response = self._dispatch(entry, values, person[0])
+            if response.body.get('outcome') == 'preview':
+                values['confirm'] = response.body['token']
+                response = self._dispatch(entry, values, person[0])
+            decided = 'accepted' if response.body.get('outcome') == 'done' else 'rejected'
+            if decided == 'accepted':
+                with self.people.registry._transaction() as db:
+                    _audit(db, person[0], 'tap_accepted', person[0], self.people.registry._clock(), None, {'key': key, 'data': data, 'outcome': decided})
+            return Response(200, {'outcome': decided})
         if body.get('kind') != 'command' and (not isinstance(data, str) or not data.startswith('op:')):
             action, separator, target = data.partition(':') if isinstance(data, str) else ('', '', '')
             if action not in {'approve', 'retry'} or not separator or not target or not self.people.allows_telegram(telegram_id, 'permission:operator'):

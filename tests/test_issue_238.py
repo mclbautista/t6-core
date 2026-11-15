@@ -173,7 +173,7 @@ class TemplateProjectionTests(unittest.TestCase):
         self.assertEqual(self.status(identifier), 'In Progress')
         self.assertEqual(status_writes(), before + 1)
 
-        self.fake.add_data_source('specs')
+        self.fake.add_snapshot_data_source('specs', 'package_specs')
         self.fake.add_page('specs', package_spec_properties(package_kind='delivery', version='1'))
         packages = PackageStore(self.db, PreviewTokens('secret'), PackageSpecReader(self.client, 'specs'))
         deliver = {'deliverable': identifier, 'carrier': 'drive', 'ref': None}

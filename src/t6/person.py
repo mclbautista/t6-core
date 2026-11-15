@@ -16,7 +16,10 @@ from t6.registry.sqlite import SqliteProjectRegistry, _audit
 from t6.verbs import Done, Outcome, Refused
 
 
-SERVICES = frozenset({'gateway', 'worker', 'reports', 'watchdog', 'munki', 'hermes', 'mcp', 'transcribe'})
+AUTO_ACTOR = 'Sixto (auto)'
+"""The named service behind automatic Concern changes. It may run Concern verbs and nothing else."""
+
+SERVICES = frozenset({'gateway', 'worker', 'reports', 'watchdog', 'munki', 'hermes', 'mcp', 'transcribe', AUTO_ACTOR})
 
 # Internal actors: named, not a Person, used only inside the worker by one handler. They are not in SERVICES, so no API secret
 # can name them and `T6_API_SERVICE_PERMISSIONS` cannot grant them anything; their grants are fixed here.
@@ -37,6 +40,11 @@ class People:
         if any(name not in SERVICES or not grants <= PERMISSIONS
                for name, grants in self.service_permissions.items()):
             raise ValueError('Invalid service or permission in service grants')
+
+    @staticmethod
+    def auto_refusal(noun: str) -> Refused | None:
+        """`Sixto (auto)` may run Concern verbs and nothing else."""
+        return None if noun == 'concern' else Refused(rule='service', reason=f'{AUTO_ACTOR} may only run concern verbs')
 
     def get(self, person_id: str) -> dict[str, Any] | None:
         with self.registry._transaction() as db:
@@ -59,6 +67,9 @@ class People:
             return None if person and person[1] and person[0] == 'staff' else Refused(rule='permission', reason='needs active staff Person')
         if actor in INTERNAL_ACTORS:
             return None if role in INTERNAL_ACTORS[actor] else Refused(rule='permission', reason=f'needs {role}')
+        if actor == AUTO_ACTOR:
+            # Fixed, never read from configuration: reads and the coordinator verbs, narrowed to Concern verbs by `auto_refusal`.
+            return None if role in ('reader', 'coordinator') else Refused(rule='permission', reason=f'needs {role}')
         if actor in SERVICES:
             service_grants = self.service_permissions.get(actor, frozenset())
             if role == 'reader' or role in service_grants or (role in ('operator', 'coordinator') and 'admin' in service_grants) or (role == 'coordinator' and 'operator' in service_grants):

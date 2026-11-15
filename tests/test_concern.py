@@ -96,7 +96,7 @@ class ConcernTests(unittest.TestCase):
         jo = str(T6Id.mint(EntityKind.JOB_ORDER))
         with self.registry._transaction() as db:
             db.execute('INSERT INTO job_orders VALUES (?, ?, NULL, NULL, ?)', (jo, self.project, '{"status":"In progress"}'))
-        concern = self.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'editor', 'anchor': 'Waiting', 'as_of': '2026-11-01', 'settles_id': jo}, 'linked')['concern_id']
+        concern = self.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'editor', 'anchor': 'Waiting on editor', 'as_of': '2026-11-01', 'settles_id': jo}, 'linked')['concern_id']
         orders = JobOrderStore(self.registry, self.store.tokens)
         preview = orders.write('close', {'jo': jo}, actor='person', idempotency_key='close-jo')
         assert isinstance(preview, Preview)
@@ -126,7 +126,7 @@ class ConcernTests(unittest.TestCase):
         done = approvals.write('request', request, actor=person, idempotency_key='approval-request', confirm=preview.token)
         assert isinstance(done, Done)
         approval = done.result['approval_id']
-        concern = self.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'client', 'anchor': 'Waiting', 'as_of': '2026-11-01', 'settles_id': approval}, 'approval-concern')['concern_id']
+        concern = self.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'client', 'anchor': 'Waiting on client', 'as_of': '2026-11-01', 'settles_id': approval}, 'approval-concern')['concern_id']
         decision = {'approval': approval}
         preview = approvals.write('grant', decision, actor=person, idempotency_key='approval-grant')
         assert isinstance(preview, Preview)
@@ -135,10 +135,31 @@ class ConcernTests(unittest.TestCase):
         assert record is not None
         self.assertEqual(record['state'], 'closed')
 
+    def test_raise_at_psr_is_quiet_concerns_never_old_ones(self) -> None:
+        old = self.raise_concern()
+        self.now += 6 * WEEK
+        with self.registry._transaction() as db:
+            db.execute('UPDATE concerns SET evidence_at = ? WHERE id = ?', (self.now - WEEK, old))
+        self.assertEqual(self.store.raise_at_psr(self.project), [])
+        quiet = str(self.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'lab', 'anchor': 'Waiting on lab', 'as_of': '2026-11-01'}, 'quiet')['concern_id'])
+        with self.registry._transaction() as db:
+            db.execute("UPDATE concerns SET state = 'quiet' WHERE id = ?", (quiet,))
+        listed = self.store.raise_at_psr(self.project)
+        self.assertEqual([(c['id'], c['label'], c['owner_id'], c['waiting_on']) for c in listed], [(quiet, 'no news for 2 weeks', 'coordinator', 'lab')])
+        self.assertEqual(self.store.raise_at_psr('other-project'), [])
+        with self.registry._transaction() as db:
+            db.execute("UPDATE concerns SET state = 'expired' WHERE id = ?", (quiet,))
+        self.assertEqual(self.store.raise_at_psr(), [])
+
     def test_validation_and_catalogue(self) -> None:
         result = self.store.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': '', 'anchor': 'hello', 'as_of': '2026-01-01'}, actor='person')
         self.assertIsInstance(result, Refused)
-        self.assertTrue({'raise', 'note', 'resolve', 'reopen'} <= {v['verb'] for v in catalogue() if v['noun'] == 'concern'})
+        elsewhere = self.store.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'lab', 'anchor': 'Client has not sent the KDM', 'as_of': '2026-01-01'}, actor='person')
+        assert isinstance(elsewhere, Refused)
+        self.assertEqual(elsewhere.rule, 'waiting_on')
+        for line, party in (('Client has not sent the KDM', 'CLIENT'), ('For approval ni direk', 'direk'), ('Wala pa yung files kay client', 'client')):
+            self.assertIsInstance(self.store.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': party, 'anchor': line, 'as_of': '2026-01-01'}, actor='person'), Preview)
+        self.assertTrue({'raise', 'note', 'resolve', 'reopen', 'list'} <= {v['verb'] for v in catalogue() if v['noun'] == 'concern'})
 
     def test_date_sanity_follows_data_and_keeps_age(self) -> None:
         dates = {'playdate': '2026-12-10', 'submission_deadline': '2026-12-01', 'archival_deadline': '2026-11-20'}
@@ -159,7 +180,7 @@ class ConcernTests(unittest.TestCase):
 
     def test_filled_awaited_date_closes_concern_and_manual_reopen_sticks(self) -> None:
         from t6.notion_edits import NotionEdits
-        raised = {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'client', 'anchor': 'Waiting for the playdate', 'as_of': '2026-11-01', 'settles_date': 'playdate'}
+        raised = {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'client', 'anchor': 'Client, waiting for the playdate', 'as_of': '2026-11-01', 'settles_date': 'playdate'}
         concern = self.write('raise', raised, 'awaited-date')['concern_id']
         edits = NotionEdits(self.registry)
         dates: dict[str, str | None] = {'playdate': None, 'submission_deadline': '2026-12-01', 'archival_deadline': None}
@@ -212,7 +233,7 @@ class ConcernTests(unittest.TestCase):
 
     def test_brief_can_carry_multiple_concerns(self) -> None:
         first = self.raise_concern()
-        second = self.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'studio', 'anchor': 'Waiting', 'as_of': '2026-11-01'}, 'second')['concern_id']
+        second = self.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'studio', 'anchor': 'Waiting on studio', 'as_of': '2026-11-01'}, 'second')['concern_id']
         for concern in (first, second):
             self.write('record-message', {'concern': concern, 'chat': 'chat', 'message_id': '1'}, 'mapping-' + concern)
         self.assertEqual(set(self.store.for_message('chat', '1')), {first, second})

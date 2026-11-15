@@ -207,7 +207,7 @@ class VerbAPITests(unittest.TestCase):
     def test_delivery_api_uses_configured_spec_and_authenticated_actor(self) -> None:
         from t6.notion.testing import FakeNotion, package_spec_properties
         fake = FakeNotion()
-        fake.add_data_source('specs')
+        fake.add_snapshot_data_source('specs', 'package_specs')
         fake.add_page('specs', package_spec_properties(package_kind='delivery', version='1', advisory_items=('Reference',)))
         self.api.open_notion = lambda _: fake.client()
         self.api.data_sources['package_specs'] = 'specs'
@@ -238,7 +238,7 @@ class VerbAPITests(unittest.TestCase):
         project = self.registry.register(actor='setup', idempotency_key='project')
         assert isinstance(project, Registered)
         store = ConcernStore(self.registry, PreviewTokens('signing-key'))
-        values = {'project': project.project.id, 'owner': self.actor, 'waiting_on': 'client', 'anchor': 'Waiting', 'as_of': '2026-11-01'}
+        values = {'project': project.project.id, 'owner': self.actor, 'waiting_on': 'client', 'anchor': 'Waiting on client', 'as_of': '2026-11-01'}
         preview = store.write('raise', values, actor=self.actor, idempotency_key='raise')
         assert isinstance(preview, Preview)
         raised = store.write('raise', values, actor=self.actor, idempotency_key='raise', confirm=preview.token)

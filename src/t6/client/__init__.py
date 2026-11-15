@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 from pydantic import BaseModel, TypeAdapter
 from t6.verbs import (
     Ambiguous, Done, NeedsPerson, Outcome, Preview, Refused,
+    AbangRequestInput, AbangCancelInput, AbangAcceptInput,
     VersionAddInput, VersionLockInput, VersionFindInput, VersionGetInput,
     MediaLinkInput, MediaUnlinkInput, TimelineLinkInput, TimelineListInput, FrameioProjectInput, MediaListInput, MediaMigrateInput,
     TranscriptCreateInput, TranscriptGetInput, TranscriptSpeakersInput, TranscriptTranslateInput,
@@ -21,11 +22,11 @@ from t6.verbs import (
     BayBookInput, BookingMoveInput, BookingExtendInput, BookingCancelInput, BookingGetInput, BookingListInput,
     DeliverableDeliverInput, PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
-    ConcernForMessageInput, ConcernRecordMessageInput, ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
-    JoListInput, JoFindInput, DeliverableListInput, FloorReadInput, DeliverableGetInput, DeliverableDefineInput, DeliverableRebindInput, DeliverableMissInput, DeliverableDelayInput, MilestoneRecordInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, ProjectFlagsInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
+    ConcernScanInput, ConcernListInput, ConcernChangesInput, ConcernForMessageInput, ConcernRecordMessageInput, ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
+    JoListInput, JoFindInput, DeliverableListInput, FloorReadInput, DeliverableGetInput, DeliverableDefineInput, DeliverableRebindInput, DeliverableMissInput, DeliverableDelayInput, MilestoneRecordInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, ProjectNotesInput, ProjectFlagsInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
     JoSubmitInput, JoCloseInput, JoBlockInput, JoUnblockInput, JoDelayInput, JoCancelInput,
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
-    LLMRunInput, PersonAddInput, PersonFindInput,
+    LLMRunInput, PersonAddInput, PersonCreateInput, PersonFindInput,
     PersonGetInput, PersonProjectRoleInput, PersonPermissionInput, PersonRebindInput, PersonShiftInput, PersonClassifyInput,
     PersonTelegramInput, ProjectChatInput, ProjectHoldInput, ProjectResolveInput, ProjectResumeInput, ProjectStartInput,
 )
@@ -201,6 +202,9 @@ class Client:
     def person_add(self, inputs: PersonAddInput) -> Result:
         return self.call('person', 'add', inputs)
 
+    def person_create(self, inputs: PersonCreateInput) -> Result:
+        return self.call('person', 'create', inputs)
+
     def person_rebind(self, inputs: PersonRebindInput) -> Result:
         return self.call('person', 'rebind', inputs)
 
@@ -243,6 +247,18 @@ class Client:
     def external_link_find(self, inputs: ExternalLinkFindInput) -> Result:
         return self.call('external-link', 'find', inputs)
 
+    def concern_scan(self, inputs: ConcernScanInput) -> Result:
+        return self.call('concern', 'scan', inputs)
+
+    def concern_list(self, inputs: ConcernListInput) -> Result:
+        return self.call('concern', 'list', inputs)
+
+    def concern_changes(self, inputs: ConcernChangesInput) -> Result:
+        return self.call('concern', 'changes', inputs)
+
+    def project_notes(self, inputs: ProjectNotesInput) -> Result:
+        return self.call('project', 'notes', inputs)
+
     def project_get(self, inputs: ProjectGetInput) -> Result:
         return self.call('project', 'get', inputs)
 
@@ -260,6 +276,15 @@ class Client:
 
     def jo_find(self, inputs: JoFindInput) -> Result:
         return self.call('jo', 'find', inputs)
+
+    def abang_request(self, inputs: AbangRequestInput) -> Result:
+        return self.call('abang', 'request', inputs)
+
+    def abang_accept(self, inputs: AbangAcceptInput) -> Result:
+        return self.call('abang', 'accept', inputs)
+
+    def abang_cancel(self, inputs: AbangCancelInput) -> Result:
+        return self.call('abang', 'cancel', inputs)
 
     def version_add(self, inputs: VersionAddInput) -> Result:
         return self.call('version', 'add', inputs)

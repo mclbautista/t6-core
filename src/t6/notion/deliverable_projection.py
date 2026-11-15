@@ -15,7 +15,7 @@ from t6.worker.runner import Refused
 def projection_id() -> str:
     property_id = DeliverablesRow.notion_id('t6_id')
     if not property_id:
-        raise Refused('Deliverable T6 ID property ID is missing; create the property and run t6 admin schema-snapshot, then regenerate models')
+        raise Refused('Deliverable T6 ID property ID is missing; create the property and run t6 admin snapshot, then regenerate models')
     return property_id
 
 

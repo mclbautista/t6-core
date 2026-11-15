@@ -28,6 +28,7 @@ class VerbTests(unittest.TestCase):
 
         root = help_text([])
         aliases = {alias.split()[-1] for entry in catalogue for alias in entry["aliases"]}
+        aliases.add("update")  # internal parser that "camera enrich" routes to; the old name itself fails (#231)
         from_help: set[tuple[str, str]] = set()
         for noun in {noun for noun, _ in pairs}:
             self.assertRegex(root, rf"\b{re.escape(noun.split()[0])}\b")

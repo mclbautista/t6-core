@@ -76,7 +76,7 @@ class MilestoneTests(unittest.TestCase):
         with self.registry._transaction() as db:
             db.execute("INSERT INTO persons VALUES ('owner', 'staff', '[]', '[]', NULL, 0, 1)")
         concerns = ConcernStore(self.registry, self.store.tokens)
-        values = {'project': self.project, 'owner': 'owner', 'waiting_on': 'editor', 'anchor': 'Waiting for piclock', 'as_of': '2026-11-01', 'settles_deliverable': self.identifier, 'settles_milestone': 'piclock'}
+        values = {'project': self.project, 'owner': 'owner', 'waiting_on': 'editor', 'anchor': 'Editor, waiting for piclock', 'as_of': '2026-11-01', 'settles_deliverable': self.identifier, 'settles_milestone': 'piclock'}
         preview = concerns.write('raise', values, actor='alice', idempotency_key='concern')
         assert isinstance(preview, Preview)
         result = concerns.write('raise', values, actor='alice', idempotency_key='concern', confirm=preview.token)
