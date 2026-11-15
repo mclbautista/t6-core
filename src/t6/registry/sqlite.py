@@ -301,6 +301,10 @@ _MIGRATIONS = (
     );
     CREATE TABLE abang_history (id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL, state TEXT NOT NULL, actor TEXT NOT NULL, at REAL NOT NULL);
     CREATE TABLE abang_previews (nonce TEXT PRIMARY KEY, plan TEXT NOT NULL)"""),
+    (29, False, """CREATE TABLE concern_pm_lines (project_id TEXT NOT NULL REFERENCES projects(id), as_of TEXT NOT NULL, line TEXT NOT NULL, PRIMARY KEY (project_id, as_of, line));
+    CREATE TABLE concern_pm_pending (concern_id TEXT PRIMARY KEY REFERENCES concerns(id), as_of TEXT NOT NULL, quote TEXT NOT NULL, due REAL NOT NULL, revision INTEGER NOT NULL);
+    CREATE TABLE concern_pm_changes (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL REFERENCES projects(id), concern_id TEXT NOT NULL REFERENCES concerns(id), action TEXT NOT NULL, quote TEXT NOT NULL, at REAL NOT NULL)"""),
+
 )
 
 
