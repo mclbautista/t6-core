@@ -14,7 +14,7 @@ from pydantic import BaseModel, TypeAdapter
 from t6.verbs import (
     Ambiguous, Done, NeedsPerson, Outcome, Preview, Refused,
     VersionAddInput, VersionLockInput, VersionFindInput, VersionGetInput,
-    AbangRequestInput, AbangCancelInput,
+    AbangRequestInput, AbangCancelInput, AbangAcceptInput,
     ConcernForMessageInput, ConcernRecordMessageInput, ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
     DeliverableDeliverInput, PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
@@ -172,6 +172,9 @@ class Client:
 
     def abang_request(self, inputs: AbangRequestInput) -> Result:
         return self.call('abang', 'request', inputs)
+
+    def abang_accept(self, inputs: AbangAcceptInput) -> Result:
+        return self.call('abang', 'accept', inputs)
 
     def abang_cancel(self, inputs: AbangCancelInput) -> Result:
         return self.call('abang', 'cancel', inputs)

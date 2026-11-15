@@ -62,6 +62,15 @@ class Abang:
                 except (ValueError, AttributeError):
                     return Refused(rule='destination', reason='Destination must be chat or chat/topic IDs')
                 plan = {'person': values['person'], 'source_chat': chats[0][0], 'source_topic': chats[0][1], 'destination_chat': dest, 'destination_topic': topic, 'note': values.get('note'), 'idempotency_key': key}
+            elif verb == 'accept':
+                row = db.execute("SELECT c.request_id, c.message_id, c.state, r.state, r.person_id FROM abang_candidates c JOIN abang_requests r ON r.id = c.request_id WHERE c.id = ?", (values['candidate'],)).fetchone()
+                if not row or row[2] != 'pending' or row[3] != 'requested':
+                    return Refused(rule='candidate', reason='Candidate is no longer pending')
+                if actor != row[4]:
+                    return Refused(rule='person', reason='Only the freelancer may decide')
+                if values['decision'] not in ('yes', 'no'):
+                    return Refused(rule='decision', reason='Choose yes or no')
+                plan = {'request_id': row[0], 'candidate': values['candidate'], 'message_id': row[1], 'decision': values['decision'], 'idempotency_key': key}
             else:
                 row = db.execute('SELECT state FROM abang_requests WHERE id = ?', (values['request'],)).fetchone()
                 if not row or row[0] != 'requested':
@@ -79,6 +88,17 @@ class Abang:
                 request_id = str(T6Id.mint(EntityKind.ABANG))
                 db.execute('INSERT INTO abang_requests (id, person_id, source_chat, source_topic, destination_chat, destination_topic, note, actor, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', (request_id, values['person'], chats[0][0], chats[0][1], dest, topic, values.get('note'), actor, 'requested'))
                 plan.update(request_id=request_id, state='requested')
+                now = self.registry._clock()
+                db.execute("INSERT INTO internal_jobs (queue, kind, dedupe_key, payload, run_at, state, created_at) VALUES ('main', 'abang_nudge', ?, ?, ?, 'queued', ?)", (request_id, json.dumps({'request': request_id}), now + 3 * 86400, now))
+            elif verb == 'accept':
+                request_id = row[0]
+                decision = values['decision']
+                db.execute('UPDATE abang_candidates SET state = ? WHERE id = ?', ('accepted' if decision == 'yes' else 'rejected', values['candidate']))
+                if decision == 'yes':
+                    db.execute("UPDATE abang_requests SET state = 'forwarding', reply_id = ? WHERE id = ?", (row[1], request_id))
+                    plan['state'] = 'forwarding'
+                else:
+                    plan['state'] = 'candidate_rejected'
             else:
                 request_id = values['request']
                 db.execute("UPDATE abang_requests SET state = 'cancelled' WHERE id = ?", (request_id,))
