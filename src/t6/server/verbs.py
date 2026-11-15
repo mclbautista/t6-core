@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
-from t6.person import PERMISSIONS, SERVICES, People
+from t6.person import AUTO_ACTOR, PERMISSIONS, SERVICES, People
 from t6.privacy import Registry as PrivacyRegistry, Session
 from t6.server.app import Request, Response, WebhookApp
 from t6.registry.sqlite import _audit
@@ -115,6 +115,10 @@ class VerbAPI:
             return self._dispatch(entry, data, actor)
 
     def _dispatch(self, entry: Any, data: dict[str, Any], actor: str) -> Response:
+        if actor == AUTO_ACTOR:
+            refusal = People.auto_refusal(entry.noun)
+            if refusal:
+                return self.refused(refusal.rule, refusal.reason)
         try:
             inputs = entry.input_model.model_validate(data)
         except ValidationError as error:

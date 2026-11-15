@@ -9,6 +9,7 @@ import secrets
 from typing import Any
 
 from t6.ids import EntityKind, T6Id
+from t6.person import AUTO_ACTOR, People
 from t6.preview import PreviewTokens
 from t6.registry.sqlite import SqliteProjectRegistry
 from t6.verbs import Done, Outcome, Refused
@@ -32,7 +33,7 @@ def settle_concern(db: Any, concern: str, now: float, evidence: str) -> None:
     row = db.execute("SELECT project_id, state FROM concerns WHERE id = ? AND manual_override = 0 AND state != 'closed'", (concern,)).fetchone()
     if row:
         db.execute("UPDATE concerns SET state = 'closed', revision = revision + 1 WHERE id = ?", (concern,))
-        ConcernStore._log(db, row[0], concern, 'Sixto (auto)', 'concern_auto_resolve', now, row[1], {'evidence': evidence}, f'Concern resolved by {evidence}')
+        ConcernStore._log(db, row[0], concern, AUTO_ACTOR, 'concern_auto_resolve', now, row[1], {'evidence': evidence}, f'Concern resolved by {evidence}')
 
 
 class ConcernStore:
@@ -57,7 +58,7 @@ class ConcernStore:
 
     @staticmethod
     def _pm_log(db: Any, project: str, concern: str, action: str, quote: str, now: float, before: Any) -> None:
-        ConcernStore._log(db, project, concern, 'Sixto (auto)', action, now, before, {'quote': quote}, quote)
+        ConcernStore._log(db, project, concern, AUTO_ACTOR, action, now, before, {'quote': quote}, quote)
         db.execute('INSERT INTO concern_pm_changes (project_id, concern_id, action, quote, at) VALUES (?, ?, ?, ?, ?)', (project, concern, action, quote, now))
 
     def apply_pending(self, project: str) -> None:
@@ -188,10 +189,10 @@ class ConcernStore:
                     concern = str(T6Id.mint(EntityKind.CONCERN))
                     db.execute("INSERT INTO concerns (id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')", (concern, project, owner, 'data', evidence, today, now, now))
                     db.execute('INSERT INTO concern_date_rules VALUES (?, ?, ?)', (project, rule, concern))
-                    self._log(db, project, concern, 'Sixto (auto)', 'concern_auto_raise', now, None, evidence, evidence)
+                    self._log(db, project, concern, AUTO_ACTOR, 'concern_auto_raise', now, None, evidence, evidence)
                 elif a < b and row and row[1] == 'closed':
                     db.execute("UPDATE concerns SET state = 'open', revision = revision + 1 WHERE id = ?", (row[0],))
-                    self._log(db, project, row[0], 'Sixto (auto)', 'concern_auto_reopen', now, 'closed', evidence, evidence)
+                    self._log(db, project, row[0], AUTO_ACTOR, 'concern_auto_reopen', now, 'closed', evidence, evidence)
                 elif a >= b and row:
                     settle_concern(db, row[0], now, f'{first} ({a}), {second} ({b})')
             return {r[0]: r[1] for r in db.execute('SELECT rule, concern_id FROM concern_date_rules WHERE project_id = ?', (project,))}
@@ -318,6 +319,8 @@ class ConcernStore:
 
     @staticmethod
     def _log(db: Any, project: str, concern: str, actor: str, action: str, now: float, before: Any, after: Any, summary: str) -> None:
+        if actor == AUTO_ACTOR and People.auto_refusal(action.split('_', 1)[0]):
+            raise PermissionError(f'{AUTO_ACTOR} may only write Concern changes')
         cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)', (concern, action, actor, now, json.dumps(before), json.dumps(after)))
         db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (project, concern, now, actor, action, summary, cursor.lastrowid))
 
@@ -331,5 +334,5 @@ class ConcernStore:
                 return False
             db.execute('UPDATE concerns SET state = ?, revision = revision + 1 WHERE id = ?', (target, concern))
             reason = f'Concern {target}: no evidence for {2 if target == "quiet" else 4} weeks'
-            self._log(db, row[0], concern, 'service:concern-timer', 'concern_' + target, now, row[1], target, reason)
+            self._log(db, row[0], concern, AUTO_ACTOR, 'concern_' + target, now, row[1], target, reason)
             return True
