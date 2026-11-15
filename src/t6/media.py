@@ -121,6 +121,8 @@ class MediaStore:
                 kind = str(row.get('kind') or '').casefold()
                 if previous:
                     item.update(action='keep', t6_id=previous[0])
+                elif row.get('active', True) is not True:
+                    item['reason'] = 'Deactivated in External Links'
                 elif system == 'frameio':
                     item['reason'] = 'Frame.io links are not migrated'
                 elif system == 'telegram':

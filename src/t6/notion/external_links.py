@@ -257,7 +257,8 @@ def read_media_migration_rows(client: NotionClient, data_source_id: str) -> list
             continue
         props = page.get('properties') or {}
         rows.append({'page_id': str(page['id']), 'system': codec.select(props.get(_P.SYSTEM)),
-                     'kind': codec.select(props.get(_P.KIND)), 'ref': codec.rich_text(props.get(_P.EXTERNAL_ID)),
+                     'kind': codec.select(props.get(_P.KIND)),
+                     'active': codec.checkbox(props.get(_P.ACTIVE)) is True, 'ref': codec.rich_text(props.get(_P.EXTERNAL_ID)),
                      'projects': list(codec.relation(props.get(_P.PROJECTS))),
                      'deliverables': list(codec.relation(props.get(_P.DELIVERABLES)))})
     return rows

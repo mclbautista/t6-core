@@ -492,7 +492,7 @@ class DryRunCommandTests(unittest.TestCase):
         self.assertIn(
             {"sheet": "PAPER MOON", "row": 13, "reason": "no label", "detail": "", "workbook": str(path.resolve())}, report["review"]
         )
-        self.assertIn("PAPER MOON", [i["detail"] for i in report["review"] if i["reason"] == "unresolved project"])
+        self.assertNotIn("PAPER MOON", [i["detail"] for i in report["review"] if i["reason"] == "unresolved project"])
 
     def test_the_dry_run_can_add_the_log_sheet(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

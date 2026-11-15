@@ -65,6 +65,41 @@ class MediaTests(unittest.TestCase):
         self.assertEqual({row['system'] for row in rows}, {'Frame.io', 'Telegram', 'resolve'})
         self.assertEqual(len(rows), 3)
 
+    def test_migration_sends_a_deactivated_row_to_review(self) -> None:
+        registry = MemoryRegistry()
+        self.addCleanup(registry.db.close)
+        registry._new_id = lambda: str(T6Id.mint(EntityKind.PROJECT))
+        project = registry.register(actor='setup', idempotency_key='setup', notion_page_id='project-page')
+        assert isinstance(project, Registered)
+        store = MediaStore(registry, PreviewTokens('secret'))
+        rows = [
+            {'page_id': 'live-row', 'system': 'resolve', 'kind': 'project', 'ref': 'db/live', 'projects': ['project-page'], 'deliverables': [], 'active': True},
+            {'page_id': 'off-row', 'system': 'resolve', 'kind': 'project', 'ref': 'db/off', 'projects': ['project-page'], 'deliverables': [], 'active': False},
+        ]
+        preview = store.migrate(rows, actor='person')
+        self.assertEqual([(r['page_id'], r['reason']) for r in preview['review']], [('off-row', 'Deactivated in External Links')])
+        store.migrate(rows, actor='person', apply=True, digest=preview['digest'])
+        self.assertEqual([location['ref'] for location in store.list(project.project.id)], ['db/live'])
+
+    def test_fake_notion_reader_carries_the_active_checkbox(self) -> None:
+        from t6.notion.testing import FakeNotion, external_link_properties
+        from t6.notion.external_links import read_media_migration_rows
+        fake = FakeNotion()
+        fake.add_data_source('links')
+        fake.add_page('links', external_link_properties(system='resolve', kind='project', external_id='on', projects=['page'], active=True))
+        fake.add_page('links', external_link_properties(system='resolve', kind='project', external_id='off', projects=['page'], active=False))
+        with fake.client() as client:
+            rows = read_media_migration_rows(client, 'links')
+        self.assertEqual({row['ref']: row['active'] for row in rows}, {'on': True, 'off': False})
+
+    def test_link_input_schema_lists_kinds_and_roles(self) -> None:
+        from t6.media import KINDS, ROLES
+        from t6.verbs import catalogue
+        entry, = [v for v in catalogue() if (v['noun'], v['verb']) == ('media', 'link')]
+        properties = entry['input_schema']['properties']
+        self.assertEqual(set(properties['kind']['enum']), KINDS)
+        self.assertEqual(set(properties['role']['enum']), ROLES)
+
     def test_all_kinds_and_roles_and_retry(self) -> None:
         registry = MemoryRegistry()
         self.addCleanup(registry.db.close)

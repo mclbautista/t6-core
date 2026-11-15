@@ -78,7 +78,7 @@ class VerbAPITests(unittest.TestCase):
         fake.add_data_source('links')
         project = self.registry.register(actor='setup', idempotency_key='media-migration-project', notion_page_id='project-page')
         assert isinstance(project, Registered)
-        fake.add_page('links', external_link_properties(system='resolve', kind='project', external_id='db/show', projects=['project-page']))
+        fake.add_page('links', external_link_properties(system='resolve', kind='project', external_id='db/show', projects=['project-page'], active=True))
         fake.add_page('links', external_link_properties(system='frameio', kind='project', external_id='f', projects=['project-page']))
         fake.add_page('links', external_link_properties(system='telegram', kind='chat', external_id='c', projects=['project-page']))
         self.api.open_notion = lambda _: fake.client()

@@ -1328,9 +1328,9 @@ class MediaMigrateOutput(BaseModel):
 
 class MediaLinkInput(BaseModel):
     owner: str
-    kind: str
+    kind: Literal['drive', 'nas-path', 'frameio-project', 'frameio-folder', 'resolve-project', 'timeline']
     ref: str
-    role: str
+    role: Literal['master', 'backup', 'review', 'working', 'frameio-project']
     idempotency_key: str | None = None
     confirm: str | None = None
 

@@ -341,12 +341,16 @@ def _drives_import_dry_run(args: argparse.Namespace) -> int:
     from t6.domain import Project
     from t6.drives import Ref
     from t6.drives.testing import InMemoryDriveStore
+    from t6.ids import EntityKind, T6Id
     from t6.lookup import Index, Lookup
 
     try:
         listed: Any = json.loads(args.projects.read_text(encoding="utf-8")) if args.projects else []
         projects = tuple(Project(page_id=p["page_id"], name=p["name"]) for p in listed)
-        store, lookup, logged_by = InMemoryDriveStore(), Lookup(Index(projects=projects)), Ref(text="dry run")
+        # A dry run has no registry: a Project the list names counts as resolved, with a throwaway T6 ID.
+        bindings = {p.page_id: str(T6Id.mint(EntityKind.PROJECT)) for p in projects}
+        store = InMemoryDriveStore(project_bindings=bindings)
+        lookup, logged_by = Lookup(Index(projects=projects)), Ref(text="dry run")
         results = [import_per_project_workbook(args.workbook, store, lookup=lookup, logged_by=logged_by)]
         if args.log_sheet:
             results.append(import_log_sheet_workbook(args.log_sheet, store, lookup=lookup, logged_by=logged_by))
