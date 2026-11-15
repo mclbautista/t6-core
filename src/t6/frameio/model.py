@@ -248,6 +248,7 @@ class Version(_Json):
 
     file_id: str
     name: str
+    stack_id: str | None = None
     url: str | None = None
     created_at: datetime | None = None
 

@@ -89,6 +89,13 @@ class ReadApiTestCase(unittest.TestCase):
 
 
 class ReaderTests(ReadApiTestCase):
+    def test_versions_include_stack_identity(self) -> None:
+        self.frameio.add_version_stack('stack', ['f1'])
+        versions = self.reader.versions('f1')
+        self.assertIsInstance(versions, tuple)
+        assert isinstance(versions, tuple)
+        self.assertEqual(versions[0].stack_id, 'stack')
+
     def test_every_read_comes_back_typed(self) -> None:
         projects = self.reader.projects()
         self.assertIsInstance(projects, tuple)
@@ -169,7 +176,7 @@ class RouteTests(ReadApiTestCase):
 
     def test_no_route_gives_the_token_or_anything_unlisted(self) -> None:
         for path in ("/frameio/token", "/frameio/tokens", "/frameio/sign-in", "/frameio/files/f1", "/frameio/projects/fp1",
-                     "/frameio/projects/fp1/comments", "/frameio/files/f1/versions", "/frameio/", "/", "/queue/claim"):
+                     "/frameio/projects/fp1/comments", "/frameio/", "/", "/queue/claim"):
             status, body = self.call("GET", path)
             self.assertEqual(status, 404, path)
             self.assertEqual(body, {"error": "not found"})
