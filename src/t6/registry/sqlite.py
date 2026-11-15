@@ -289,6 +289,7 @@ _MIGRATIONS = (
         project_id TEXT NOT NULL REFERENCES projects(id), rule TEXT NOT NULL, concern_id TEXT NOT NULL REFERENCES concerns(id),
         PRIMARY KEY (project_id, rule)
     )"""),
+    (26, False, """CREATE TABLE delivery_share_views (event_id TEXT PRIMARY KEY)"""),
 )
 
 
