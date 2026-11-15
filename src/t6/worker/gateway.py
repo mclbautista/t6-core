@@ -68,3 +68,9 @@ class GatewayClient:
 
     def updates(self, after: int) -> list[dict[str, Any]]:
         return cast(list[dict[str, Any]], self._call("GET", f"/updates?after={after}")["items"])
+
+    def forward(self, from_chat: int, message_id: int, to: int, topic: int | None, key: str) -> int:
+        body: dict[str, Any] = {'from_chat': from_chat, 'message_id': message_id, 'to': to, 'idempotency_key': key}
+        if topic is not None:
+            body['topic'] = topic
+        return int(self._call('POST', '/forward', body)['message_ref'])

@@ -1213,8 +1213,42 @@ def api_read(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
     return Refused(rule="api", reason="Reads run on the t6 API")
 
 
+class AbangRequestInput(BaseModel):
+    person: str
+    destination: str
+    note: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class AbangCancelInput(BaseModel):
+    request: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class AbangOutput(BaseModel):
+    request_id: str
+    state: str
+
+
+def abang_write(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.abang import Abang
+    from t6.preview import PreviewTokens
+    key = os.environ.get('T6_PREVIEW_SIGNING_KEY', '')
+    if not key:
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    assert isinstance(inputs, (AbangRequestInput, AbangCancelInput))
+    verb = 'request' if isinstance(inputs, AbangRequestInput) else 'cancel'
+    values = inputs.model_dump(exclude={'confirm', 'idempotency_key'})
+    return Abang(_registry.get(), PreviewTokens(key)).write(verb, values, actor=_actor.get(),
+        idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
 VERBS = (
     Verb("version", "get", "Get a Version", (), VersionGetInput, VersionFindOutput, "reader", "Read a Version and its Approvals.", api_read),
+    Verb('abang', 'request', 'Request a file relay', (), AbangRequestInput, AbangOutput, 'coordinator', 'Request a file from a vendor.', abang_write),
+    Verb('abang', 'cancel', 'Cancel a file relay', (), AbangCancelInput, AbangOutput, 'coordinator', 'Cancel a pending relay.', abang_write),
     Verb("version", "find", "Find a Version by Frame.io file", (), VersionFindInput, VersionFindOutput, "reader", "Resolve a review file to its Version.", api_read),
     Verb("version", "add", "Add a Version", (), VersionAddInput, VersionOutput, "coordinator", "Preview and confirm a Frame.io file.", version_write),
     Verb("version", "lock", "Lock a Version", (), VersionLockInput, VersionOutput, "coordinator", "Record picture lock.", version_write),
@@ -1420,6 +1454,15 @@ def add_parsers(commands: Any) -> None:
         if entry.verb:
             aliases = [alias.split(' ', 1)[1] for alias in entry.aliases] if entry.handler is approval_write and entry.verb != 'request' else []
             parser = parser.add_parser(entry.verb, aliases=aliases, help="[verb] " + entry.description)
+        if entry.handler is abang_write:
+            parser.add_argument('person' if entry.verb == 'request' else 'request')
+            if entry.verb == 'request':
+                parser.add_argument('--destination', required=True)
+                parser.add_argument('--note')
+            parser.add_argument('--idempotency-key')
+            parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
         if entry.handler is approval_write:
             if entry.verb == 'request':
                 parser.add_argument('gate')

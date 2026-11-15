@@ -536,6 +536,19 @@ class VerbAPI:
                 _audit(db, f'telegram:{telegram_id}', 'tap_rejected', 'gateway', self.people.registry._clock(), None,
                        {'reason': 'no_person'})
             return Response(200, {'outcome': 'rejected'})
+        if body.get('kind') == 'command' and body.get('command') == 'abang':
+            args, chat, topic = body.get('args'), body.get('chat'), body.get('topic')
+            key = request.header('idempotency-key') or body.get('idempotency_key')
+            if not isinstance(args, str) or not args.strip() or type(chat) is not int or (topic is not None and type(topic) is not int) or not isinstance(key, str) or not key:
+                return Response(200, {'outcome': 'rejected'})
+            parts = args.strip().split(maxsplit=1)
+            data: dict[str, Any] = {'person': parts[0], 'destination': str(chat) + (f'/{topic}' if topic is not None else ''), 'note': parts[1] if len(parts) > 1 else None, 'idempotency_key': key}
+            entry = self.routes['/v1/abang/request']
+            response = self._dispatch(entry, data, person[0])
+            if response.body.get('outcome') == 'preview':
+                data['confirm'] = response.body['token']
+                response = self._dispatch(entry, data, person[0])
+            return Response(200, {'outcome': 'accepted' if response.body.get('outcome') == 'done' else 'rejected'})
         if body.get('kind') == 'command' and body.get('command') in ('link', 'unlink'):
             if self.people.authorize(person[0], 'coordinator'):
                 return Response(200, {'outcome': 'rejected'})

@@ -3,6 +3,9 @@ from __future__ import annotations
 
 from typing import Any
 import json
+from html import escape
+
+from t6.abang import record
 
 from t6.registry.sqlite import SqliteProjectRegistry
 from t6.worker.gateway import GatewayClient
@@ -25,18 +28,55 @@ class LinkedChats:
         if subscriptions != self._subscriptions:
             self.gateway.replace_subscriptions(subscriptions)
             self._subscriptions = subscriptions
+        self._relay_pending()
         for item in self.gateway.updates(cursor):
-            self._record(item)
+            if not self._record(item):
+                break
+        self._relay_pending()
+
+    def _relay_pending(self) -> None:
+        with self.registry._transaction() as db:
+            rows = db.execute("SELECT id, source_chat, source_topic, person_id, note, notify_ref, message_id, reply_id, forward_ref, destination_chat, destination_topic, state, edit_ref FROM abang_requests WHERE state IN ('requested', 'forwarding', 'delivered')").fetchall()
+        for request_id, chat, topic, person, note, ref, message_id, reply_id, forward_ref, dest, dest_topic, state, edit_ref in rows:
+            if state == 'requested' and ref is None:
+                with self.registry._transaction() as db:
+                    current = db.execute('SELECT state FROM abang_requests WHERE id = ?', (request_id,)).fetchone()
+                    if current[0] != 'requested':
+                        continue
+                    telegram = db.execute('SELECT telegram_id FROM persons WHERE id = ?', (person,)).fetchone()[0]
+                    text = f'<a href="tg://user?id={telegram}">File request</a>' + (': ' + escape(note) if note else '')
+                    ref = self.gateway.notify(chat, text, [], 'abang:request:' + request_id, topic)
+                    db.execute('UPDATE abang_requests SET notify_ref = ? WHERE id = ?', (ref, request_id))
+            if state == 'requested' and ref is not None and message_id is None:
+                status, message_id = self.gateway.state(ref)
+                if status == 'sent' and message_id is not None:
+                    with self.registry._transaction() as db:
+                        db.execute('UPDATE abang_requests SET message_id = ? WHERE id = ?', (message_id, request_id))
+            if state == 'forwarding':
+                if forward_ref is None:
+                    forward_ref = self.gateway.forward(chat, reply_id, dest, dest_topic, 'abang:forward:' + request_id)
+                    with self.registry._transaction() as db:
+                        db.execute('UPDATE abang_requests SET forward_ref = ? WHERE id = ?', (forward_ref, request_id))
+                status, _ = self.gateway.state(forward_ref)
+                if status == 'sent':
+                    with self.registry._transaction() as db:
+                        db.execute("UPDATE abang_requests SET state = 'delivered' WHERE id = ?", (request_id,))
+                        record(db, self.registry, request_id, 'delivered', 'worker')
+                    state = 'delivered'
+            if state == 'delivered' and ref is not None and edit_ref is None:
+                edit_ref = self.gateway.edit(ref, 'Delivered', [], 'abang:delivered:' + request_id)
+                with self.registry._transaction() as db:
+                    db.execute('UPDATE abang_requests SET edit_ref = ? WHERE id = ?', (edit_ref, request_id))
         self._notices()
 
-    def _record(self, item: dict[str, Any]) -> None:
+    def _record(self, item: dict[str, Any]) -> bool:
         seq = item['seq']
         chat = item.get('chat')
         topic = item.get('topic')
         with self.registry._transaction() as db:
             cursor = db.execute('SELECT seq FROM linked_chat_cursor WHERE id = 1').fetchone()[0]
             if seq <= cursor:
-                return
+                return True
             if item.get('kind') == 'event' and item.get('event') == 'chat_migrated':
                 old, new = item.get('old_chat'), item.get('new_chat')
                 if type(old) is int and type(new) is int and old != new:
@@ -46,6 +86,10 @@ class LinkedChats:
                         db.execute('UPDATE OR REPLACE linked_chat_members SET chat_id = ? WHERE chat_id = ?', (new, old))
                         db.execute('UPDATE OR REPLACE linked_chat_topics SET chat_id = ? WHERE chat_id = ?', (new, old))
                         db.execute('INSERT OR IGNORE INTO linked_chat_notices VALUES (?, ?)', (f'migration:{old}:{new}', f'Chat moved from {old} to {new}.'))
+            # A reply can arrive while the gateway has not exposed the sent message ID yet.
+            # Keep the cursor behind it so a later poll can match it.
+            if item.get('kind') == 'update' and item.get('reply_to_message_id') is not None and db.execute("SELECT 1 FROM abang_requests WHERE state = 'requested' AND source_chat = ? AND notify_ref IS NOT NULL AND message_id IS NULL", (chat,)).fetchone():
+                return False
             linked = db.execute("SELECT 1 FROM chat_links WHERE state = 'active' AND chat_id = ? AND (topic_id IS NULL OR topic_id = ?)", (chat, topic)).fetchone()
             chat_linked = db.execute("SELECT 1 FROM chat_links WHERE state = 'active' AND chat_id = ?", (chat,)).fetchone()
             name = item.get('name') if item.get('kind') == 'event' and item.get('event') in ('topic_created', 'topic_renamed') else item.get('topic_name') if item.get('kind') == 'update' else None
@@ -64,7 +108,15 @@ class LinkedChats:
                 sender_id = sender_id if type(sender_id) is int else None
                 person = db.execute('SELECT id FROM persons WHERE telegram_id = ? AND active = 1', (sender_id,)).fetchone()
                 db.execute('INSERT INTO linked_chat_messages VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chat_id, message_id) DO UPDATE SET topic_id=excluded.topic_id, sender_id=excluded.sender_id, person_id=excluded.person_id, has_file=excluded.has_file, has_link=excluded.has_link', (chat, topic, item['message_id'], sender_id, person[0] if person else None, int(item.get('has_file') is True), int(item.get('has_link') is True)))
+            if linked and item.get('kind') == 'update' and type(item.get('message_id')) is int and (item.get('has_file') is True or item.get('has_link') is True):
+                reply = item.get('reply_to_message_id')
+                sender = item.get('from') or {}
+                row = db.execute("SELECT r.id FROM abang_requests r JOIN persons p ON p.id = r.person_id WHERE r.state = 'requested' AND r.source_chat = ? AND r.message_id = ? AND p.telegram_id = ?", (chat, reply, sender.get('id'))).fetchone()
+                if row:
+                    db.execute("UPDATE abang_requests SET state = 'forwarding', reply_id = ? WHERE id = ?", (item['message_id'], row[0]))
+                    record(db, self.registry, row[0], 'forwarding', 'worker')
             db.execute('UPDATE linked_chat_cursor SET seq = ? WHERE id = 1', (seq,))
+            return True
 
     def track_send(self, ref: int, chat: int, topic: int | None) -> None:
         if topic is None:
