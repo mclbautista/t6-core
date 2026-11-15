@@ -7,6 +7,7 @@ import secrets
 from typing import Any
 
 from t6.deliverable import write_milestone
+from t6.drives.sqlite import SqliteDriveStore
 from t6.ids import EntityKind, T6Id
 from t6.preview import PreviewTokens
 from t6.registry.sqlite import SqliteProjectRegistry
@@ -35,7 +36,8 @@ class PackageStore:
             carrier = db.execute('SELECT kind, ref FROM delivery_carriers WHERE package_id=?', (package,)).fetchone()
             if carrier:
                 record['carrier'], record['ref'] = carrier
-            return record
+        record['drives'] = list(SqliteDriveStore(self.registry).delivery_drives(package))
+        return record
 
     def list(self, missing: bool = False) -> list[dict[str, Any]]:
         with self.registry._transaction() as db:

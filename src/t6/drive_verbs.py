@@ -2,7 +2,9 @@
 
 Custody is an append-only event log and status is derived from it. An
 Assignment carries its label, Project, role and dates; unassign ends it and
-keeps it. A shipment groups the releases of one handover.
+keeps it. A shipment groups the releases of one handover. Every Drive fact is
+read and written through the DriveStore interface; this module keeps only the
+verb flow (preview, confirm, idempotency, audit and activity).
 """
 from __future__ import annotations
 
@@ -10,21 +12,31 @@ import hashlib
 import json
 import re
 import secrets
+from collections.abc import Callable
 from datetime import date, datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 from t6.domain.studio_time import MANILA
-from t6.drives import Assignment, CustodyEvent, CustodyKind, Party, PartyKind, Ref, Role
-from t6.drives.sqlite import SqliteDriveStore, _assignment, _dump
-from t6.ids import EntityKind, T6Id
+from t6.drives import Assignment, CustodyEvent, CustodyKind, DriveStore, Party, PartyKind, Ref, Role, open_duplicate
+from t6.drives.sqlite import SqliteDriveStore, audit_json
 from t6.preview import PreviewTokens
 from t6.registry.core import normalize_page_id
 from t6.registry.sqlite import SqliteProjectRegistry
 from t6.verbs import Ambiguous, Done, Outcome, Refused
 
-VERBS = ('receive', 'release', 'return', 'retire', 'assign', 'unassign')
+WRITE_VERBS = ('receive', 'release', 'return', 'retire', 'assign', 'unassign')
 _KINDS = {'receive': CustodyKind.RECEIVED, 'release': CustodyKind.RELEASED, 'return': CustodyKind.RETURNED, 'retire': CustodyKind.RETIRED}
 _PAGE = re.compile(r'[0-9a-f]{32}')
+
+Change = tuple[str, dict[str, Any] | None, dict[str, Any] | None]
+"""One Drive changed by a verb: its ID, what it was and what it is now (for the audit entry)."""
+
+
+class Plan(NamedTuple):
+    """What a verb would do: the preview, the Drive state it was planned on, and the change itself."""
+    plan: dict[str, Any]
+    state: list[Any]
+    apply: Callable[[DriveStore], list[Change]]
 
 
 def _party(values: dict[str, Any]) -> Party | None:
@@ -38,13 +50,14 @@ def _party(values: dict[str, Any]) -> Party | None:
 class DriveVerbs:
     def __init__(self, registry: SqliteProjectRegistry, tokens: PreviewTokens) -> None:
         self.registry, self.tokens = registry, tokens
+        self.store = SqliteDriveStore(registry)
 
     def _today(self) -> str:
         return datetime.fromtimestamp(self.registry._clock(), MANILA).date().isoformat()
 
     def write(self, verb: str, values: dict[str, Any], *, actor: str, idempotency_key: str | None = None,
               confirm: str | None = None) -> Outcome:
-        if not actor.strip() or verb not in VERBS:
+        if not actor.strip() or verb not in WRITE_VERBS:
             return Refused(rule='input', reason='A valid actor and verb are required')
         if (idempotency_key is not None and not idempotency_key.strip()) or (confirm and not idempotency_key):
             return Refused(rule='idempotency_key', reason='A nonblank idempotency key is required')
@@ -59,6 +72,7 @@ class DriveVerbs:
         if isinstance(nonce, Refused):
             return nonce
         with self.registry._transaction() as db:
+            store = self.store.within(db)
             if nonce and db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce=?', (nonce,)).fetchone():
                 return Refused(rule='token_used', reason='Preview token has already been used')
             previous = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key=?', (key,)).fetchone()
@@ -69,23 +83,23 @@ class DriveVerbs:
                     db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
                     return Done(result=json.loads(previous[1]))
                 return self.tokens.create(name, actor, inputs, json.loads(previous[1]))
-            planned = self._plan(db, verb, values, key, actor)
+            planned = self._plan(store, verb, values, key, actor)
             if isinstance(planned, (Refused, Ambiguous)):
                 return planned
-            plan, state, changes = planned
+            plan, state, apply = planned
             if not nonce:
                 preview = self.tokens.create(name, actor, inputs, plan)
                 preview_nonce = self.tokens.verify(preview.token, name, actor, inputs)
-                db.execute('INSERT INTO drive_previews VALUES (?, ?)', (preview_nonce, json.dumps({'plan': plan, 'state': state})))
+                store.save_preview(str(preview_nonce), json.dumps({'plan': plan, 'state': state}))
                 return preview
-            saved = db.execute('SELECT snapshot FROM drive_previews WHERE nonce=?', (nonce,)).fetchone()
+            saved = store.preview(nonce)
             if not saved:
                 return Refused(rule='preview', reason='Preview not found')
-            snapshot = json.loads(saved[0])
+            snapshot = json.loads(saved)
             if snapshot['state'] != state or snapshot['plan'] != plan:
                 return Refused(rule='drive_changed', reason='Drive changed since preview; preview again')
             now = self.registry._clock()
-            for drive_id, before, after in changes(db):
+            for drive_id, before, after in apply(store):
                 audit = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)',
                                    (drive_id, 'drive_' + verb, actor, now, json.dumps(before), json.dumps(after)))
                 db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -112,6 +126,12 @@ class DriveVerbs:
             return Refused(rule='input', reason='A release needs the Contact or Studio receiving the Drives')
         if verb == 'retire' and not (values.get('reason') or '').strip():
             return Refused(rule='reason', reason='A retirement needs a reason, such as dead, lost or sold')
+        if verb == 'unassign':
+            if values.get('role') is not None and values['role'] not in {role.value for role in Role}:
+                return Refused(rule='input', reason='role must be one of ' + ', '.join(role.value for role in Role))
+            number = values.get('assignment')
+            if number is not None and (not isinstance(number, int) or isinstance(number, bool) or number < 1):
+                return Refused(rule='input', reason='assignment must be a number from 1')
         if verb == 'assign':
             if not (values.get('label') or '').strip():
                 return Refused(rule='input', reason='An Assignment needs a label')
@@ -119,20 +139,20 @@ class DriveVerbs:
                 return Refused(rule='input', reason='role must be one of ' + ', '.join(role.value for role in Role))
         return None
 
-    def _plan(self, db: Any, verb: str, values: dict[str, Any], key: str, actor: str) -> Any:
+    def _plan(self, store: DriveStore, verb: str, values: dict[str, Any], key: str, actor: str) -> Plan | Refused | Ambiguous:
         ids = list(dict.fromkeys(values['drives'])) if verb == 'release' else [values['drive']]
         for drive_id in ids:
-            if not db.execute('SELECT 1 FROM drives WHERE id=?', (drive_id,)).fetchone():
+            if store.get_drive(drive_id) is None:
                 return Refused(rule='drive', reason=f'Drive {drive_id} not found')
         project = values['project']
         try:
-            T6Id.parse(project, EntityKind.PROJECT)
-        except ValueError:
-            return Refused(rule='project', reason='Project must be a t6 Project ID')
-        if not db.execute('SELECT 1 FROM projects WHERE id=?', (project,)).fetchone():
-            return Refused(rule='project', reason='Project not found')
-        state = [[d, db.execute('SELECT COUNT(*) FROM drive_events WHERE drive_id=?', (d,)).fetchone()[0],
-                  [r[0] for r in db.execute('SELECT data FROM drive_assignments WHERE drive_id=? ORDER BY id', (d,))]] for d in ids]
+            store.check_project(Ref(page_id=project))
+        except ValueError as error:
+            return Refused(rule='project', reason=str(error))
+        state: list[Any] = []
+        for drive_id in ids:
+            listed = store.list_assignments(drive_id)
+            state.append([drive_id, len(store.list_events(drive_id)), len(listed), sum(a.is_open for a in listed)])
         today = self._today()
         plan: dict[str, Any] = {'action': 'drive_' + verb, 'drive_ids': ids, 'project_id': project, 'idempotency_key': key}
         if verb in _KINDS:
@@ -144,16 +164,17 @@ class DriveVerbs:
             except ValueError as error:
                 return Refused(rule='input', reason=str(error))
             plan['on'] = on
+            delivery = None
             if verb == 'release':
                 plan['shipment_id'] = event.shipment_id
                 if values.get('delivery'):
-                    row = db.execute("SELECT c.kind, d.project_id FROM delivery_carriers c JOIN packages p ON p.id=c.package_id JOIN deliverables d ON d.id=p.deliverable_id WHERE c.package_id=?", (values['delivery'],)).fetchone()
-                    if not row or row[0] != 'drive':
+                    carrier = store.delivery_carrier(values['delivery'])
+                    if not carrier or carrier[0] != 'drive':
                         return Refused(rule='delivery', reason='Delivery not found or its carrier is not a drive')
-                    if row[1] != project:
+                    if carrier[1] != project:
                         return Refused(rule='delivery', reason='Delivery belongs to a different Project')
-                    plan['delivery_id'] = values['delivery']
-            return plan, state, lambda db_: self._append(db_, event, plan, ids)
+                    delivery = plan['delivery_id'] = values['delivery']
+            return Plan(plan, state, lambda store_: self._custody(store_, verb, event, ids, delivery))
         if verb == 'assign':
             start = values.get('start') or today
             try:
@@ -161,42 +182,55 @@ class DriveVerbs:
                                         start=date.fromisoformat(start), end=date.fromisoformat(values['end']) if values.get('end') else None)
             except ValueError as error:
                 return Refused(rule='input', reason=str(error))
+            clash = open_duplicate(store.list_assignments(ids[0]), assignment)
+            if clash is not None:
+                return Refused(rule='assignment', reason=f'The Drive already has an open Assignment ({clash.label}) for this Project and role; unassign it first')
             plan.update(label=assignment.label, role=values['role'], start=start, end=values.get('end'))
-            return plan, state, lambda db_: self._assign(db_, ids[0], assignment)
+            return Plan(plan, state, lambda store_: self._assign(store_, ids[0], assignment))
         end = values.get('end') or today
-        open_rows = [(row[0], _assignment(row[1])) for row in db.execute('SELECT id, data FROM drive_assignments WHERE drive_id=? ORDER BY id', (ids[0],))]
-        found = [(row_id, a) for row_id, a in open_rows
-                 if a.is_open and a.project.page_id == project and (values.get('label') is None or a.label == values['label'].strip())]
+        label = values['label'].strip() if values.get('label') is not None else None
+        found = [(number, a) for number, a in enumerate(store.list_assignments(ids[0]), 1)
+                 if a.is_open and a.project.page_id == project
+                 and (label is None or a.label == label)
+                 and (values.get('role') is None or (a.role is not None and a.role.value == values['role']))
+                 and (values.get('assignment') is None or number == values['assignment'])]
         if not found:
             return Refused(rule='assignment', reason='No open Assignment for this Drive and Project')
         if len(found) > 1:
-            return Ambiguous(candidates=[a.label for _, a in found])
-        row_id, held = found[0]
+            return Ambiguous(candidates=[{'assignment': number, 'label': a.label, 'role': a.role.value if a.role else None,
+                                          'start': a.start.isoformat() if a.start else None} for number, a in found])
+        number, held = found[0]
         try:
-            closed = Assignment(label=held.label, project=held.project, role=held.role, start=held.start,
-                                end=date.fromisoformat(end), remarks=held.remarks)
+            date.fromisoformat(end)
+            if held.start is not None and date.fromisoformat(end) < held.start:
+                raise ValueError(f'an Assignment cannot end ({end}) before it starts ({held.start})')
         except ValueError as error:
             return Refused(rule='input', reason=str(error))
-        plan.update(label=held.label, end=end)
-        state.append(row_id)
-        return plan, state, lambda db_: self._close(db_, ids[0], row_id, held, closed)
+        plan.update(label=held.label, end=end, assignment=number)
+        state.append(number)
+        return Plan(plan, state, lambda store_: self._close(store_, ids[0], number, held, date.fromisoformat(end)))
 
     @staticmethod
-    def _append(db: Any, event: CustodyEvent, plan: dict[str, Any], ids: list[str]) -> list[tuple[str, Any, Any]]:
-        changes = []
-        for drive_id in ids:
-            SqliteDriveStore._append(db, drive_id, event)
-            if 'delivery_id' in plan:
-                db.execute('INSERT OR IGNORE INTO delivery_drives VALUES (?, ?)', (plan['delivery_id'], drive_id))
-            changes.append((drive_id, None, json.loads(_dump(event))))
-        return changes
+    def _custody(store: DriveStore, verb: str, event: CustodyEvent, ids: list[str], delivery: str | None) -> list[Change]:
+        after = audit_json(event)
+        if delivery is not None:
+            after['delivery_id'] = delivery
+        if verb == 'release':
+            assert event.party is not None and event.on is not None
+            store.release_shipment(ids, on=event.on, party=event.party, project=event.project, logged_by=event.logged_by, shipment_id=event.shipment_id)
+            if delivery is not None:
+                store.link_delivery(delivery, ids)
+        else:
+            for drive_id in ids:
+                store.append_event(drive_id, event)
+        return [(drive_id, None, after) for drive_id in ids]
 
     @staticmethod
-    def _assign(db: Any, drive_id: str, assignment: Assignment) -> list[tuple[str, Any, Any]]:
-        db.execute('INSERT INTO drive_assignments (drive_id, data) VALUES (?, ?)', (drive_id, _dump(assignment)))
-        return [(drive_id, None, json.loads(_dump(assignment)))]
+    def _assign(store: DriveStore, drive_id: str, assignment: Assignment) -> list[Change]:
+        store.add_assignment(drive_id, assignment)
+        return [(drive_id, None, audit_json(assignment))]
 
     @staticmethod
-    def _close(db: Any, drive_id: str, row_id: int, held: Assignment, closed: Assignment) -> list[tuple[str, Any, Any]]:
-        db.execute('UPDATE drive_assignments SET data=? WHERE id=?', (_dump(closed), row_id))
-        return [(drive_id, json.loads(_dump(held)), json.loads(_dump(closed)))]
+    def _close(store: DriveStore, drive_id: str, number: int, held: Assignment, end: date) -> list[Change]:
+        closed = store.end_assignment(drive_id, number, end)
+        return [(drive_id, audit_json(held), audit_json(closed))]

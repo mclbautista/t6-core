@@ -1486,6 +1486,8 @@ class DriveUnassignInput(BaseModel):
     drive: str
     project: str
     label: str | None = None
+    role: Literal['master', 'backup', 'offline', 'swing', 'archive'] | None = None
+    assignment: int | None = None
     end: str | None = None
     idempotency_key: str | None = None
     confirm: str | None = None
@@ -1500,6 +1502,7 @@ class DriveWriteOutput(BaseModel):
     delivery_id: str | None = None
     label: str | None = None
     role: str | None = None
+    assignment: int | None = None
     start: str | None = None
     end: str | None = None
     idempotency_key: str
@@ -1572,7 +1575,7 @@ VERBS = (
     Verb('drive', 'return', 'Return a Drive to custody', (), DriveReturnInput, DriveWriteOutput, 'drives', 'Preview and confirm; appends a returned event.', drive_write),
     Verb('drive', 'retire', 'Retire a Drive', (), DriveRetireInput, DriveWriteOutput, 'drives', 'Needs a reason; a later receive or return brings the Drive back.', drive_write),
     Verb('drive', 'assign', 'Assign a Drive to a Project', (), DriveAssignInput, DriveWriteOutput, 'drives', 'Preview and confirm; adds an Assignment with label and role.', drive_write),
-    Verb('drive', 'unassign', 'End a Drive Assignment', (), DriveUnassignInput, DriveWriteOutput, 'drives', 'Ends the open Assignment and keeps it in history.', drive_write),
+    Verb('drive', 'unassign', 'End a Drive Assignment', (), DriveUnassignInput, DriveWriteOutput, 'drives', 'Ends the open Assignment and keeps it in history; when several are open, pick by label, role or assignment number.', drive_write),
     Verb('media', 'link', 'Link a Media location', (), MediaLinkInput, MediaWriteOutput, 'coordinator', 'Preview and confirm the link.', media_write),
     Verb('media', 'unlink', 'Unlink a Media location', (), MediaUnlinkInput, MediaWriteOutput, 'coordinator', 'Preview and confirm the unlink.', media_write),
     Verb('frameio', 'project link', 'Link a Frame.io project to a Project', (), FrameioProjectInput, MediaWriteOutput, 'staff', 'One Frame.io project belongs to one Project. Preview and confirm.', frameio_project_link),
@@ -1815,6 +1818,8 @@ def add_parsers(commands: Any) -> None:
                 parser.add_argument('--start')
             if entry.verb == 'unassign':
                 parser.add_argument('--label')
+                parser.add_argument('--role', choices=('master', 'backup', 'offline', 'swing', 'archive'))
+                parser.add_argument('--assignment', type=int)
             if entry.verb in ('assign', 'unassign'):
                 parser.add_argument('--end')
             else:

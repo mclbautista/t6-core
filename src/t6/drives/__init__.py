@@ -29,6 +29,7 @@ __all__ = [
     "Drive",
     "DriveStatus",
     "DriveStore",
+    "DuplicateAssignment",
     "DuplicateSerial",
     "Ownership",
     "FormFactor",
@@ -41,6 +42,7 @@ __all__ = [
     "UnknownDrive",
     "derive_status",
     "normalize_serial",
+    "open_duplicate",
     "parse_capacity_tb",
     "shipment_manifest",
 ]
@@ -331,6 +333,24 @@ class UnknownDrive(LookupError):
         self.drive_id = drive_id
 
 
+class DuplicateAssignment(ValueError):
+    """The Drive already has an open Assignment for this Project and role."""
+
+    def __init__(self, label: str | None) -> None:
+        super().__init__(f"the Drive already has an open Assignment ({label!r}) for this Project and role")
+        self.label = label
+
+
+def open_duplicate(held: Iterable[Assignment], new: Assignment) -> Assignment | None:
+    """The open Assignment that makes `new` a second one for its Project and role, if any.
+
+    Only an open `new` with a role can clash; old rows with no role never do.
+    """
+    if not new.is_open or new.role is None:
+        return None
+    return next((a for a in held if a.is_open and a.project == new.project and a.role is new.role), None)
+
+
 class DuplicateSerial(ValueError):
     """A Drive with this serial is already recorded."""
 
@@ -446,9 +466,13 @@ class DriveStore(Protocol):
         ...
 
     def release_shipment(
-        self, drive_ids: Iterable[str], *, on: date, party: Party, project: Ref, logged_by: Ref
+        self, drive_ids: Iterable[str], *, on: date, party: Party, project: Ref, logged_by: Ref,
+        shipment_id: str | None = None
     ) -> str:
         """Release several Drives in one handover and return the new shipment ID.
+
+        A caller that must give the same shipment on a retry passes its own
+        `shipment_id`; otherwise the store makes a new one.
 
         Appends one released event per Drive, all with the same new shipment ID.
         An ID given twice is released once. Raises ValueError if no ID is
@@ -468,10 +492,54 @@ class DriveStore(Protocol):
     def add_assignment(self, drive_id: str, assignment: Assignment) -> None:
         """Assign a recorded Drive. Raises UnknownDrive if the ID is not recorded.
 
+        An open Assignment with a role is refused (DuplicateAssignment) while the
+        Drive holds another open one for the same Project and role.
+
         Earlier Assignments are kept: relabelling a reused Drive adds a new
         Assignment and never edits or removes an old one. Nothing is closed
         automatically.
         """
+        ...
+
+    def list_assignments(self, drive_id: str) -> tuple[Assignment, ...]:
+        """A Drive's Assignments in the order they were added.
+
+        The place in this list, counted from 1, is the Assignment number: it
+        never changes, because an Assignment is never removed. Raises
+        UnknownDrive if the ID is not recorded.
+        """
+        ...
+
+    def end_assignment(self, drive_id: str, number: int, end: date) -> Assignment:
+        """End the open Assignment with this number and return it as ended.
+
+        Raises ValueError if there is no such Assignment, it is already ended,
+        or `end` is before its start; UnknownDrive if the ID is not recorded.
+        Nothing else changes.
+        """
+        ...
+
+    def check_project(self, project: Ref) -> None:
+        """Raise ValueError unless `project` can be used on an Assignment or event.
+
+        Unresolved text is always accepted. An ID must be a T6 Project ID, and
+        a store on the t6 database also needs the Project to be registered.
+        """
+        ...
+
+    def link_delivery(self, delivery_id: str, drive_ids: Iterable[str]) -> None:
+        """Link Drives to a Delivery. Linking again changes nothing.
+
+        Raises UnknownDrive if any ID is not recorded; then nothing is linked.
+        """
+        ...
+
+    def delivery_drives(self, delivery_id: str) -> tuple[str, ...]:
+        """The IDs of the Drives linked to a Delivery, sorted. Empty if none."""
+        ...
+
+    def delivery_carrier(self, delivery_id: str) -> tuple[str, str] | None:
+        """The carrier kind and Project ID of a Delivery, or None if it is not recorded."""
         ...
 
     def open_assignments(self, project: Ref) -> list[tuple[Drive, Assignment]]:

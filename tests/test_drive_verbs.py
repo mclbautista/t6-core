@@ -4,10 +4,11 @@ import json
 import os
 import unittest
 from contextlib import redirect_stdout
+from datetime import date
 from typing import Any
 from unittest.mock import patch
 
-from t6.drives import Drive, DriveStatus, Role
+from t6.drives import Assignment, Drive, DriveStatus, Role
 from t6.drives.sqlite import SqliteDriveStore
 from t6.ids import EntityKind, T6Id
 from t6.person import People
@@ -110,11 +111,77 @@ class DriveVerbTests(unittest.TestCase):
         self.assertIsInstance(self.call('drive', 'unassign', {'drive': drive, 'project': one}), Refused)
         self.write('assign', {'drive': drive, 'project': one, 'label': 'A', 'role': 'master', 'start': '2026-11-01'}, 'a')
         self.write('assign', {'drive': drive, 'project': one, 'label': 'B', 'role': 'backup', 'start': '2026-11-01'}, 'b')
-        self.assertIsInstance(self.call('drive', 'unassign', {'drive': drive, 'project': one}), Ambiguous)
+        ambiguous = self.call('drive', 'unassign', {'drive': drive, 'project': one})
+        self.assertIsInstance(ambiguous, Ambiguous)
+        self.assertEqual([(c['assignment'], c['label'], c['role']) for c in ambiguous.candidates], [(1, 'A', 'master'), (2, 'B', 'backup')])
         self.write('unassign', {'drive': drive, 'project': one, 'label': 'B', 'end': '2026-11-02'})
         self.assertEqual([a.label for _, a in self.store.open_assignments(self.ref(one))], ['A'])
         early = self.call('drive', 'unassign', {'drive': drive, 'project': one, 'label': 'A', 'end': '2026-10-01'})
         self.assertIsInstance(early, Refused)
+
+    def test_assign_refuses_a_second_open_assignment_for_the_same_drive_project_and_role(self) -> None:
+        drive, one, two = self.drives[0], *self.projects
+        self.write('assign', {'drive': drive, 'project': one, 'label': 'A', 'role': 'master', 'start': '2026-11-01'})
+        refused = self.call('drive', 'assign', {'drive': drive, 'project': one, 'label': 'B', 'role': 'master'})
+        self.assertIsInstance(refused, Refused)
+        self.assertEqual(refused.rule, 'assignment')
+        self.write('assign', {'drive': drive, 'project': one, 'label': 'B', 'role': 'backup'})
+        self.write('assign', {'drive': drive, 'project': two, 'label': 'B', 'role': 'master'})
+        self.write('unassign', {'drive': drive, 'project': one, 'label': 'A', 'end': '2026-11-02'})
+        self.write('assign', {'drive': drive, 'project': one, 'label': 'C', 'role': 'master'})
+
+    def test_unassign_can_always_be_picked_by_role_or_by_assignment_number(self) -> None:
+        drive, one = self.drives[0], self.projects[0]
+        self.write('assign', {'drive': drive, 'project': one, 'label': 'A', 'role': 'master', 'start': '2026-11-01'}, 'a')
+        self.write('assign', {'drive': drive, 'project': one, 'label': 'A', 'role': 'backup', 'start': '2026-11-01'}, 'b')
+        ambiguous = self.call('drive', 'unassign', {'drive': drive, 'project': one, 'label': 'A'})
+        self.assertIsInstance(ambiguous, Ambiguous)
+        self.write('unassign', {'drive': drive, 'project': one, 'label': 'A', 'role': 'backup', 'end': '2026-11-02'})
+        self.assertEqual([a.role for _, a in self.store.open_assignments(self.ref(one))], [Role.MASTER])
+        # Rows from the old workbooks can repeat label and role: only the number picks then.
+        self.store.import_row('row-1', Drive(serial='SYNTH-X'), Assignment(label='Z', project=self.ref(one), role=Role.SWING, start=date(2026, 1, 1)), [])
+        other = self.store.find_by_serial('SYNTH-X')
+        assert other is not None
+        self.store.import_row('row-2', Drive(serial='SYNTH-X'), Assignment(label='Z', project=self.ref(one), role=Role.SWING, start=date(2026, 1, 2)), [])
+        stuck = self.call('drive', 'unassign', {'drive': other.id, 'project': one, 'label': 'Z', 'role': 'swing'})
+        self.assertIsInstance(stuck, Ambiguous)
+        self.assertEqual([c['assignment'] for c in stuck.candidates], [1, 2])
+        self.write('unassign', {'drive': other.id, 'project': one, 'assignment': 2, 'end': '2026-11-02'})
+        self.assertEqual([a.start for a in self.store.list_assignments(other.id) if a.is_open], [date(2026, 1, 1)])
+        self.assertEqual(self.call('drive', 'unassign', {'drive': other.id, 'project': one, 'assignment': 2}).rule, 'assignment')
+
+    def test_the_delivery_link_is_shown_on_the_delivery_and_named_in_the_audit_entry(self) -> None:
+        from t6.package import PackageStore
+        project = self.projects[0]
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO deliverables VALUES ('t6v_1', ?, 'FTR', NULL, NULL, NULL)", (project,))
+            db.execute("INSERT INTO packages VALUES ('t6g_1', 't6v_1', 'delivery', 'keeper', 'client', 'client', NULL, '{}', '[]', 'handed_off', NULL, 1)")
+            db.execute("INSERT INTO delivery_carriers VALUES ('t6g_1', 'drive', NULL)")
+        packages = PackageStore(self.registry, PreviewTokens('test'))
+        self.assertEqual(packages.get('t6g_1')['drives'], [])  # type: ignore[index]
+        self.write('release', {'drives': self.drives[:2], 'project': project, 'party': 'Invented Studio', 'party_kind': 'studio', 'delivery': 't6g_1'})
+        self.assertEqual(packages.get('t6g_1')['drives'], sorted(self.drives[:2]))  # type: ignore[index]
+        for drive in self.drives[:2]:
+            (entry,) = self.registry.audit(drive)
+            self.assertEqual(entry.after['delivery_id'], 't6g_1')
+        self.assertEqual(self.registry.activity(project)[0].action, 'drive_release')
+
+    def test_the_verbs_use_the_drive_store_interface_only(self) -> None:
+        import ast
+        import inspect
+        import re
+        import typing
+        from t6 import drive_verbs
+        tree = ast.parse(inspect.getsource(drive_verbs))
+        imported = [alias.name for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) for alias in node.names]
+        self.assertEqual([name for name in imported if name.startswith('_')], [])
+        defined = {node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
+        self.assertFalse(defined & {'_check_project', 'add_assignment', 'release_shipment', '_append'})
+        sql = ' '.join(node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str) and re.match(r'\s*(SELECT|INSERT|UPDATE|DELETE)', node.value))
+        self.assertIsNone(re.search(r'drives|drive_events|drive_assignments|delivery_drives|delivery_carriers|drive_previews', sql))
+        self.assertFalse(hasattr(drive_verbs, 'VERBS'))
+        self.assertIn('WRITE_VERBS', dir(drive_verbs))
+        self.assertIsNot(typing.get_type_hints(drive_verbs.DriveVerbs._plan)['return'], typing.Any)
 
     def test_permission_and_input_refusals(self) -> None:
         values = {'drive': self.drives[0], 'project': self.projects[0]}

@@ -18,6 +18,7 @@ from t6.drives import (
     CustodyKind,
     Drive,
     DriveStatus,
+    DuplicateAssignment,
     DuplicateSerial,
     Party,
     Ref,
@@ -25,6 +26,7 @@ from t6.drives import (
     UnknownDrive,
     derive_status,
     normalize_serial,
+    open_duplicate,
 )
 
 
@@ -32,11 +34,14 @@ class InMemoryDriveStore:
     """In-memory ID-addressed fake; optional same_project resolves Project aliases."""
 
     def __init__(self, same_project: Callable[[str | None, str | None], bool] | None = None, *,
-                 project_bindings: dict[str, str] | None = None) -> None:
+                 project_bindings: dict[str, str] | None = None,
+                 deliveries: dict[str, tuple[str, str]] | None = None) -> None:
         self._same_project = same_project or (lambda a, b: a == b)
         self._project_bindings = dict(project_bindings or {})
         for identifier in self._project_bindings.values():
             T6Id.parse(identifier, EntityKind.PROJECT)
+        self._deliveries = dict(deliveries or {})
+        self._delivery_drives: dict[str, set[str]] = {}
         self._drives: dict[str, Drive] = {}
         self._events: dict[str, list[CustodyEvent]] = {}
         self._assignments: dict[str, list[Assignment]] = {}
@@ -146,7 +151,8 @@ class InMemoryDriveStore:
             self._shipped.append((drive_id, event))
 
     def release_shipment(
-        self, drive_ids: Iterable[str], *, on: date, party: Party, project: Ref, logged_by: Ref
+        self, drive_ids: Iterable[str], *, on: date, party: Party, project: Ref, logged_by: Ref,
+        shipment_id: str | None = None
     ) -> str:
         keys = list(dict.fromkeys(drive_id for drive_id in drive_ids))
         if not keys:
@@ -160,7 +166,7 @@ class InMemoryDriveStore:
             party=party,
             project=project,
             logged_by=logged_by,
-            shipment_id=f"shipment-{self._shipments}",
+            shipment_id=shipment_id or f"shipment-{self._shipments}",
         )
         for key in keys:
             self.append_event(key, event)
@@ -188,7 +194,38 @@ class InMemoryDriveStore:
     def add_assignment(self, drive_id: str, assignment: Assignment) -> None:
         assigned = self._assigned(drive_id)
         self._check_project(assignment.project)
+        clash = open_duplicate(assigned, assignment)
+        if clash is not None:
+            raise DuplicateAssignment(clash.label)
         assigned.append(assignment)
+
+    def check_project(self, project: Ref) -> None:
+        self._check_project(project)
+
+    def list_assignments(self, drive_id: str) -> tuple[Assignment, ...]:
+        return tuple(self._assigned(drive_id))
+
+    def end_assignment(self, drive_id: str, number: int, end: date) -> Assignment:
+        assigned = self._assigned(drive_id)
+        if not 1 <= number <= len(assigned):
+            raise ValueError(f"the Drive has no Assignment number {number}")
+        if not assigned[number - 1].is_open:
+            raise ValueError(f"Assignment number {number} is already ended")
+        ended = replace(assigned[number - 1], end=end)
+        assigned[number - 1] = ended
+        return ended
+
+    def link_delivery(self, delivery_id: str, drive_ids: Iterable[str]) -> None:
+        keys = list(dict.fromkeys(drive_ids))
+        for key in keys:
+            self._drive(key)
+        self._delivery_drives.setdefault(delivery_id, set()).update(keys)
+
+    def delivery_drives(self, delivery_id: str) -> tuple[str, ...]:
+        return tuple(sorted(self._delivery_drives.get(delivery_id, ())))
+
+    def delivery_carrier(self, delivery_id: str) -> tuple[str, str] | None:
+        return self._deliveries.get(delivery_id)
 
     def open_assignments(self, project: Ref) -> list[tuple[Drive, Assignment]]:
         found = [
