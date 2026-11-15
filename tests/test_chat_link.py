@@ -59,6 +59,26 @@ class ChatLinkTests(unittest.TestCase):
         self.assertEqual(actions.count('project_unlink_chat'), 2)
         self.assertEqual(len([a for a in self.registry.audit(self.project) if a.action.startswith('project_')]), 4)
 
+    def test_linking_and_unlinking_queue_a_subscription_update_at_once(self) -> None:
+        from test_abang import Gateway
+        from t6.worker.client import WorkerJob
+        from t6.worker.gateway import GatewayClient
+        from t6.worker.linked_chats import LinkedChats
+        values = {'project': self.project, 'chat': -100, 'topic': 12}
+        gateway = Gateway()
+        worker = LinkedChats(self.registry, GatewayClient(gateway, 'secret'))
+        job = WorkerJob(1, 'main', 'chat_subscriptions', 'x', {}, 'token', 1)
+        self.approved('link-chat', values, 'link')
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM internal_jobs WHERE kind = 'chat_subscriptions'").fetchone()[0], 1)
+        self.assertTrue(worker.replace_subscriptions(job))
+        self.assertEqual(gateway.calls[-1], ('PUT', '/subscriptions', [{'chat': -100, 'topic': 12}]))
+        self.approved('unlink-chat', values, 'unlink')
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM internal_jobs WHERE kind = 'chat_subscriptions'").fetchone()[0], 2)
+        self.assertTrue(worker.replace_subscriptions(job))
+        self.assertEqual(gateway.calls[-1], ('PUT', '/subscriptions', []))
+
     def test_catalogue(self) -> None:
         self.assertTrue({'link-chat', 'unlink-chat'} <= {v['verb'] for v in catalogue() if v['noun'] == 'project'})
 
