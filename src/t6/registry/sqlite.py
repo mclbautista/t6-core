@@ -297,6 +297,13 @@ _MIGRATIONS = (
     (28, False, """CREATE TABLE linked_chat_topics (chat_id INTEGER NOT NULL, topic_id INTEGER NOT NULL, name TEXT NOT NULL, PRIMARY KEY (chat_id, topic_id));
     CREATE TABLE linked_chat_notices (key TEXT PRIMARY KEY, text TEXT NOT NULL);
     CREATE TABLE linked_chat_sends (ref INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL, topic_id INTEGER NOT NULL, links TEXT NOT NULL)"""),
+    (29, False, """CREATE TABLE abang_requests (
+        id TEXT PRIMARY KEY, person_id TEXT NOT NULL, source_chat INTEGER NOT NULL, source_topic INTEGER,
+        destination_chat INTEGER NOT NULL, destination_topic INTEGER, note TEXT, actor TEXT NOT NULL,
+        state TEXT NOT NULL, notify_ref INTEGER, message_id INTEGER, reply_id INTEGER, forward_ref INTEGER, edit_ref INTEGER
+    );
+    CREATE TABLE abang_history (id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL, state TEXT NOT NULL, actor TEXT NOT NULL, at REAL NOT NULL);
+    CREATE TABLE abang_previews (nonce TEXT PRIMARY KEY, plan TEXT NOT NULL)"""),
 )
 
 

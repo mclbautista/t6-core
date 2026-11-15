@@ -24,6 +24,7 @@ class EntityKind(str, Enum):
     MILESTONE = "s"
     CHAT_LINK = "h"
     TRANSCRIPT = "x"
+    ABANG = "q"
 
 
 @dataclass(frozen=True)
