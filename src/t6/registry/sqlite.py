@@ -282,6 +282,14 @@ _MIGRATIONS = (
     )"""),
     (24, False, """CREATE TABLE versions (id TEXT PRIMARY KEY, deliverable_id TEXT NOT NULL REFERENCES deliverables(id), frameio_file_id TEXT NOT NULL UNIQUE, frameio_stack_id TEXT, source_timeline_id TEXT, note TEXT);
         CREATE TABLE version_locks (deliverable_id TEXT PRIMARY KEY REFERENCES deliverables(id), version_id TEXT NOT NULL REFERENCES versions(id))"""),
+
+    (25, False, """CREATE TABLE abang_requests (
+        id TEXT PRIMARY KEY, person_id TEXT NOT NULL, source_chat INTEGER NOT NULL, source_topic INTEGER,
+        destination_chat INTEGER NOT NULL, destination_topic INTEGER, note TEXT, actor TEXT NOT NULL,
+        state TEXT NOT NULL, notify_ref INTEGER, message_id INTEGER, reply_id INTEGER, forward_ref INTEGER, edit_ref INTEGER
+    );
+    CREATE TABLE abang_history (id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL, state TEXT NOT NULL, actor TEXT NOT NULL, at REAL NOT NULL);
+    CREATE TABLE abang_previews (nonce TEXT PRIMARY KEY, plan TEXT NOT NULL)"""),
 )
 
 
