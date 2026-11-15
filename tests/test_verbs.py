@@ -30,12 +30,12 @@ class VerbTests(unittest.TestCase):
         aliases = {alias.split()[-1] for entry in catalogue for alias in entry["aliases"]}
         from_help: set[tuple[str, str]] = set()
         for noun in {noun for noun, _ in pairs}:
-            self.assertRegex(root, rf"\b{re.escape(noun)}\b")
+            self.assertRegex(root, rf"\b{re.escape(noun.split()[0])}\b")
             noun_pairs = {(n, verb) for n, verb in pairs if n == noun}
             if (noun, "") in noun_pairs:
                 from_help.add((noun, ""))
                 continue
-            match = re.search(r"\{([^{}]+)\}", help_text([noun]))
+            match = re.search(r"\{([^{}]+)\}", help_text(noun.split()))
             self.assertIsNotNone(match)
             assert match is not None
             from_help.update((noun, verb) for verb in match.group(1).split(",") if verb not in aliases or (noun, verb) in pairs)
@@ -44,7 +44,7 @@ class VerbTests(unittest.TestCase):
         for noun, verb in pairs:
             output = io.StringIO()
             with contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as exit:
-                main([noun, verb, "--help"] if verb else [noun, "--help"])
+                main([*noun.split(), verb, "--help"] if verb else [*noun.split(), "--help"])
             self.assertEqual(exit.exception.code, 0)
 
     def test_write_and_formatter_catalogue_outputs_are_described(self) -> None:
