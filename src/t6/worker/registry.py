@@ -42,6 +42,17 @@ class RegistryClient:
         answer = self._call("GET", f"/registry/review-chat/{quote(page_id, safe='')}")
         return [] if answer is None else answer["links"]
 
+    def review_version(self, frameio_file_id: str) -> dict[str, Any] | None:
+        """The Version a Frame.io file belongs to, or None when t6 has none or this worker may not read it."""
+        from urllib.parse import quote
+        try:
+            answer = self._call("GET", f"/registry/review-version/{quote(frameio_file_id, safe='')}")
+        except RegistryRejected as refused:
+            if refused.status == 403:
+                return None
+            raise
+        return None if answer is None else answer["version"]
+
     def report_sync(
         self, project_id: str, revision: int, *, ok: bool, detail: str = "", attempt: int = 1, final: bool = False
     ) -> None:

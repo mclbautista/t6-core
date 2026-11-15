@@ -262,6 +262,39 @@ class ReviewMessageTests(ServerTestCase):
         (message,) = gateway.sent.values()
         self.assertEqual(message["topic"], 7)
 
+    def test_the_message_names_the_version_of_a_known_file(self) -> None:
+        registry = SqliteProjectRegistry(Path(self.directory.name) / "registry.sqlite3")
+        registered = registry.register(actor="test", idempotency_key="register", notion_page_id="page-1", code="SHOW")
+        assert isinstance(registered, Registered)
+        with registry._transaction() as db:
+            db.execute("INSERT INTO deliverables VALUES ('t6v_1', ?, 'EP01', NULL, NULL, NULL)", (registered.project.id,))
+            db.execute("INSERT INTO versions VALUES ('t6r_1', 't6v_1', 'f1', 'stack', NULL, 'rough <cut>')")
+        granted = WebhookApp(self.queue, ServerConfig(grants=(Grant(WORKER_SECRET, registry_read=True),)), self.clock, registry=registry)
+        lookup = RegistryClient(InProcess(granted), WORKER_SECRET).review_version
+        self.assertIsNone(lookup("other-file"))
+        self.review = ReviewMessage(GatewayClient(self.gateway, "secret"), CHAT, None, self.ask, version=lookup)
+        self.worker = Worker(self.queue_client, "main", self.review.handlers())
+        self.comment("c1", "Ana", "u-a", "2026-11-12T10:00:00Z")
+        self.clock.advance(15 * MINUTE)
+        self.run_worker()
+        self.assertIn("Version: EP01, rough &lt;cut&gt;, t6r_1\n", self.gateway.texts()[-1])
+        with registry._transaction() as db:
+            db.execute("INSERT INTO version_locks VALUES ('t6v_1', 't6r_1')")
+        self.comment("c2", "Ben", "u-b", "2026-11-12T11:00:00Z")
+        self.clock.advance(15 * MINUTE)
+        self.run_worker()
+        self.assertIn("t6r_1 (locked)\n", self.gateway.texts()[-1])
+        ungranted = WebhookApp(self.queue, ServerConfig(grants=(Grant(WORKER_SECRET),)), self.clock, registry=registry)
+        self.assertIsNone(RegistryClient(InProcess(ungranted), WORKER_SECRET).review_version("f1"))
+
+    def test_a_failed_version_lookup_is_retried_then_sent_without_the_line(self) -> None:
+        def down(file_id: str) -> dict[str, Any] | None:
+            raise OSError("server down")
+        review = ReviewMessage(GatewayClient(self.gateway, "secret"), CHAT, None, self.ask, version=down)
+        self.assertEqual(review._version_line("f1", 3), "")
+        with self.assertRaises(RuntimeError):
+            review._version_line("f1", 1)
+
     def test_linked_topic_and_general_and_inactive_fallback(self) -> None:
         registry = SqliteProjectRegistry(Path(self.directory.name) / "registry.sqlite3")
         registered = registry.register(actor="test", idempotency_key="register", notion_page_id="page-1", code="SHOW")

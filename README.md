@@ -776,7 +776,10 @@ if isinstance(result, Ok):
   commented, when they started and stopped (Manila time), how many comments they
   made and how many the file has in total, and two links: the newest share
   that is on, not expired and made from the file (its short URL, or "no share
-  link"), and the internal Frame.io link for signed-in people. No share
+  link"), and the internal Frame.io link for signed-in people. When t6 has a
+  Version for the file (`version add`), the message also names it: the
+  Deliverable code, the polish note, the Version ID, and "(locked)" when it is
+  the locked Version. No share
   password. The title, links and share come from the Frame.io worker through
   the `frameio` queue; when it cannot answer, the job is tried again every 30
   seconds and the third try sends the message with "unknown" in place of what

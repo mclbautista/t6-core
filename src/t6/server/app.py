@@ -713,6 +713,22 @@ class WebhookApp:
     def _registry_answer(
         self, registry: ProjectRegistry, grants: list[Grant], steps: list[str], request: Request
     ) -> Response:
+        if len(steps) == 2 and steps[0] == "review-version":
+            if request.method != "GET":
+                return Response(405)
+            if not any(g.registry_read for g in grants):
+                return Response(403, {"error": "registry read not allowed"})
+            from t6.registry.sqlite import SqliteProjectRegistry
+            if not isinstance(registry, SqliteProjectRegistry):
+                return Response(503, {"error": "versions unavailable"})
+            with registry._transaction() as db:
+                row = db.execute(
+                    "SELECT v.id, d.code, v.note, EXISTS(SELECT 1 FROM version_locks l WHERE l.version_id = v.id) "
+                    "FROM versions v JOIN deliverables d ON d.id = v.deliverable_id WHERE v.frameio_file_id = ?", (steps[1],)
+                ).fetchone()
+            if row is None:
+                return Response(404)
+            return Response(200, {"version": {"id": row[0], "deliverable": row[1], "note": row[2], "locked": bool(row[3])}})
         if len(steps) == 2 and steps[0] == "review-chat":
             if request.method != "GET":
                 return Response(405)
