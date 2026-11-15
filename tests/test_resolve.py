@@ -1,6 +1,7 @@
 """Resolve project server reader, tested against a schema fixture per Resolve version."""
 
 from pathlib import Path
+from dataclasses import replace
 import sqlite3
 import unittest
 
@@ -26,6 +27,26 @@ def load(version: str) -> ServerFixture:
 
 
 class PerVersionTests(unittest.TestCase):
+    def test_unverified_schema_is_rejected_by_default(self) -> None:
+        server = load("19")
+        self.addCleanup(server.close)
+        db = server.readonly()
+        self.addCleanup(db.close)
+        with self.assertRaisesRegex(ValueError, "unverified"):
+            ProjectServer(db, "db1", schema_for("19"))
+
+    def test_verified_schema_can_be_used_without_opt_in(self) -> None:
+        server = load("19")
+        self.addCleanup(server.close)
+        db = server.readonly()
+        self.addCleanup(db.close)
+        schema = replace(schema_for("19"), verified=True)
+        self.assertEqual(len(ProjectServer(db, "db1", schema).projects()), 4)
+
+    def test_project_server_app_version_20_has_no_assumed_layout(self) -> None:
+        with self.assertRaises(KeyError):
+            schema_for("20")
+
     def test_every_supported_version_has_a_fixture_that_passes(self) -> None:
         for version in SCHEMAS:
             with self.subTest(version=version):
@@ -34,7 +55,7 @@ class PerVersionTests(unittest.TestCase):
                 self.addCleanup(server.close)
                 db = server.readonly()
                 self.addCleanup(db.close)
-                projects = ProjectServer(db, "db1", schema_for(version)).projects()
+                projects = ProjectServer(db, "db1", schema_for(version), allow_unverified_schema=True).projects()
                 self.assertEqual(
                     [(p.external_id, p.internal_id) for p in projects],
                     [
@@ -59,7 +80,7 @@ class InventoryTests(unittest.TestCase):
         db = self.server.readonly()
         self.addCleanup(db.close)
         project = next(
-            p for p in ProjectServer(db, "db1", schema_for("19")).projects() if p.internal_id == "p-1"
+            p for p in ProjectServer(db, "db1", schema_for("19"), allow_unverified_schema=True).projects() if p.internal_id == "p-1"
         )
         self.assertEqual(
             project,
@@ -84,14 +105,14 @@ class InventoryTests(unittest.TestCase):
         db = self.server.writable()
         self.addCleanup(db.close)
         with self.assertRaises(ReadOnlyViolation):
-            ProjectServer(db, "db1", schema_for("19"))
+            ProjectServer(db, "db1", schema_for("19"), allow_unverified_schema=True)
 
     def test_the_read_only_connection_cannot_write(self) -> None:
         db = self.server.readonly()
         self.addCleanup(db.close)
         with self.assertRaises(sqlite3.OperationalError):
             db.execute('DELETE FROM "Sm2Project"')
-        self.assertEqual(len(ProjectServer(db, "db1", schema_for("19")).projects()), 4)
+        self.assertEqual(len(ProjectServer(db, "db1", schema_for("19"), allow_unverified_schema=True).projects()), 4)
 
 
 class MappingTests(unittest.TestCase):
@@ -100,7 +121,7 @@ class MappingTests(unittest.TestCase):
         self.addCleanup(server.close)
         db = server.readonly()
         self.addCleanup(db.close)
-        projects = ProjectServer(db, "db1", schema_for("19")).projects()
+        projects = ProjectServer(db, "db1", schema_for("19"), allow_unverified_schema=True).projects()
 
         fake = FakeNotion()
         fake.add_data_source(LINKS)

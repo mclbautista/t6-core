@@ -58,7 +58,15 @@ class ResolveProject:
 class ProjectServer:
     """The project inventory of one database on the Resolve project server."""
 
-    def __init__(self, db: Database, database: str, schema: ProjectServerSchema) -> None:
+    def __init__(
+        self, db: Database, database: str, schema: ProjectServerSchema, *,
+        allow_unverified_schema: bool = False,
+    ) -> None:
+        if not schema.verified and not allow_unverified_schema:
+            raise ValueError(
+                f"Resolve {schema.version!r} schema is unverified; "
+                "only use allow_unverified_schema=True for controlled investigation"
+            )
         if db.can_write():
             raise ReadOnlyViolation(
                 f"the role for database {database!r} can write; use a read-only role"
