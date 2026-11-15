@@ -455,6 +455,25 @@ class EntrypointTests(FrameioWorkerTestCase):
         self.assertEqual((method, url, body["to"]), ("POST", "http://gateway.invalid/notify", 42))
         self.assertIn("https://sign-in.example/authorize?state=s1", body["text"])
         self.assertTrue(body["idempotency_key"].startswith("frameio-sign-in:"))
+        self.assertNotIn("topic", body)
+
+    def test_the_alert_goes_to_the_configured_topic(self) -> None:
+        sent: list[dict[str, Any]] = []
+
+        class Gateway:
+            def __init__(self, base_url: str) -> None:
+                pass
+
+            def send(self, method: str, path: str, headers: Any, body: bytes) -> tuple[int, dict[str, Any]]:
+                sent.append(json.loads(body))
+                return 202, {"message_ref": 1}
+
+        self.token_store.refresh_error = SignInRequired("refresh token revoked")
+        with mock.patch("t6.worker.__main__.HttpTransport", Gateway):
+            frameio_worker({**GATEWAY_ENVIRON, "T6_FRAMEIO_ALERT_TOPIC": "3337"}, self.token_store, self.frameio).tick()
+        self.assertEqual((sent[0]["to"], sent[0]["topic"]), (42, 3337))
+        with self.assertRaisesRegex(ConfigError, "T6_FRAMEIO_ALERT_TOPIC"):
+            frameio_worker({**GATEWAY_ENVIRON, "T6_FRAMEIO_ALERT_TOPIC": "general"}, self.token_store, self.frameio)
 
 
 if __name__ == "__main__":

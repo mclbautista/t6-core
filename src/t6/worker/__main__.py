@@ -242,6 +242,8 @@ def frameio_worker(
 ) -> FrameioWorker:
     """The Frame.io worker, with its sign-in alert going to one Telegram chat through the gateway.
 
+    `T6_FRAMEIO_ALERT_TOPIC` (optional) is the forum topic in that chat; unset means General.
+
     `timers` starts the review timers for the comments it reads (`main` builds it from the server settings).
     """
     names = ("T6_GATEWAY_URL", "T6_GATEWAY_SECRET", "T6_FRAMEIO_ALERT_CHAT")
@@ -252,10 +254,11 @@ def frameio_worker(
         chat = int(environ["T6_FRAMEIO_ALERT_CHAT"])
     except ValueError:
         raise ConfigError("T6_FRAMEIO_ALERT_CHAT must be a Telegram chat ID (a whole number)") from None
+    topic = _whole_number(environ, "T6_FRAMEIO_ALERT_TOPIC", required=False)
     gateway = GatewayClient(HttpTransport(environ["T6_GATEWAY_URL"]), environ["T6_GATEWAY_SECRET"])
 
     def notify(text: str, key: str) -> None:
-        gateway.notify(chat, html.escape(text, quote=False), [], key)
+        gateway.notify(chat, html.escape(text, quote=False), [], key, topic)
 
     return FrameioWorker(tokens, run, notify, arm_review_timer=timers)
 
