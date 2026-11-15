@@ -24,6 +24,15 @@ class VersionStore:
             row = db.execute('SELECT v.id, v.deliverable_id, v.frameio_file_id, v.frameio_stack_id, v.source_timeline_id, v.note, EXISTS(SELECT 1 FROM version_locks l WHERE l.version_id=v.id) FROM versions v WHERE v.frameio_file_id=?', (file_id,)).fetchone()
             return dict(zip(('id', 'deliverable_id', 'frameio_file_id', 'frameio_stack_id', 'source_timeline_id', 'note', 'locked'), (*row[:6], bool(row[6])))) if row else None
 
+    def get(self, version_id: str) -> dict[str, Any] | None:
+        with self.registry._transaction() as db:
+            row = db.execute('SELECT id, deliverable_id, frameio_file_id, frameio_stack_id, source_timeline_id, note, EXISTS(SELECT 1 FROM version_locks WHERE version_id=versions.id) FROM versions WHERE id=?', (version_id,)).fetchone()
+            if not row:
+                return None
+            result = dict(zip(('id', 'deliverable_id', 'frameio_file_id', 'frameio_stack_id', 'source_timeline_id', 'note', 'locked'), (*row[:6], bool(row[6]))))
+            result['approvals'] = [dict(zip(('id', 'gate', 'state', 'decided_by', 'decided_at', 'reason'), approval)) for approval in db.execute("SELECT id, gate, state, decided_by, decided_at, reason FROM approvals WHERE target=? AND gate='client cut'", (version_id,))]
+            return result
+
     def write(self, verb: str, values: dict[str, Any], *, actor: str, idempotency_key: str | None = None, confirm: str | None = None) -> Outcome:
         if not actor.strip() or any(not isinstance(v, str) or not v.strip() for v in ([values.get('deliverable'), values.get('frameio_file')] if verb == 'add' else [values.get('version')])):
             return Refused(rule='input', reason='Required values must be nonblank')

@@ -32,7 +32,7 @@ class ApprovalTests(unittest.TestCase):
         self.assertIsInstance(self.approvals.write('request', values, actor=self.actor, idempotency_key='request-1', confirm=preview.token), Refused)
 
     def test_all_gates_and_unknown_gate(self) -> None:
-        for gate in ('vfx committee', 'client cut', 'grade', 'delivery sign-off', 'drive wipe', 'fleet promotion'):
+        for gate in ('vfx committee', 'grade', 'delivery sign-off', 'drive wipe', 'fleet promotion'):
             with self.subTest(gate=gate):
                 self.assertIsInstance(self.approvals.write('request', {'gate': gate, 'target': 'cut'}, actor=self.actor), Preview)
         self.assertIsInstance(self.approvals.write('request', {'gate': 'mystery', 'target': 'cut'}, actor=self.actor), Refused)
@@ -78,6 +78,49 @@ class ApprovalTests(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0].subject_id, done.result['approval_id'])
         self.assertTrue(any(item.action == 'approval_request' for item in self.registry.audit(done.result['approval_id'])))
+
+    def test_client_cut_targets_version_and_records_grant(self) -> None:
+        from t6.deliverable import DeliverableStore
+        from t6.registry import Registered
+        from t6.version import VersionStore
+        self.registry._new_id = lambda: 't6p_' + '1' * 24
+        project = self.registry.register(actor=self.actor, idempotency_key='project', notion_page_id='p')
+        assert isinstance(project, Registered)
+        store = DeliverableStore(self.registry, PreviewTokens('test'))
+        rows = [{'page_id': 'd', 'project_page': 'p', 'code': 'FTR'}]
+        migration = store.migrate(rows, actor=self.actor)
+        deliverable = store.migrate(rows, actor=self.actor, apply=True, digest=migration['digest'])['entries'][0]['t6_id']
+        values = {'gate': 'client-cut', 'target': deliverable, 'tapper_rule': 'person:' + self.actor}
+        self.assertIsInstance(self.approvals.write('request', values, actor=self.actor), Refused)
+        with self.registry._transaction() as db:
+            db.execute('INSERT INTO versions VALUES (?, ?, ?, NULL, NULL, NULL)', ('v1', deliverable, 'file1'))
+            db.execute('INSERT INTO versions VALUES (?, ?, ?, NULL, NULL, NULL)', ('v2', deliverable, 'file2'))
+        preview = self.approvals.write('request', values, actor=self.actor, idempotency_key='request-cut')
+        assert isinstance(preview, Preview)
+        self.assertEqual(preview.plan['target'], 'v2')
+        explicit_values = {**values, 'version': 'v1'}
+        explicit = self.approvals.write('request', explicit_values, actor=self.actor, idempotency_key='explicit')
+        assert isinstance(explicit, Preview)
+        self.assertEqual(explicit.plan['target'], 'v1')
+        explicit_done = self.approvals.write('request', explicit_values, actor=self.actor, idempotency_key='explicit', confirm=explicit.token)
+        assert isinstance(explicit_done, Done)
+        approval = self.approvals.get(explicit_done.result['approval_id'])
+        assert approval is not None
+        self.assertEqual(approval['target'], 'v1')
+        self.assertIsInstance(self.approvals.write('request', {**values, 'version': 'bad'}, actor=self.actor), Refused)
+        with self.registry._transaction() as db:
+            db.execute('INSERT INTO versions VALUES (?, ?, ?, NULL, NULL, NULL)', ('v3', deliverable, 'file3'))
+        done = self.approvals.write('request', values, actor=self.actor, idempotency_key='request-cut', confirm=preview.token)
+        assert isinstance(done, Done)
+        self.assertEqual(done.result['target'], 'v2')
+        decision = {'approval': done.result['approval_id']}
+        grant = self.approvals.write('grant', decision, actor=self.actor, idempotency_key='grant-cut')
+        assert isinstance(grant, Preview)
+        self.assertIsInstance(self.approvals.write('grant', decision, actor=self.actor, idempotency_key='grant-cut', confirm=grant.token), Done)
+        version = VersionStore(self.registry, PreviewTokens('test')).get('v2')
+        assert version is not None
+        self.assertEqual(version['approvals'][0]['state'], 'granted')
+        self.assertTrue(any(item.action == 'approval_grant' and 'v2' in item.summary for item in self.registry.activity(project.project.id)))
 
     def test_commands_catalogue_exposes_the_three_verbs(self) -> None:
         from t6.verbs import catalogue
@@ -174,7 +217,7 @@ class ApprovalCardTests(unittest.TestCase):
         self.assertEqual(self.actions.rejections()[0][0], 'not_allowed')
 
     def test_card_denial_records_selected_reason(self) -> None:
-        values = {'gate': 'client cut', 'target': 'cut', 'tapper_rule': 'person:' + self.actor, 'idempotency_key': 'denial'}
+        values = {'gate': 'grade', 'target': 'cut', 'tapper_rule': 'person:' + self.actor, 'idempotency_key': 'denial'}
         preview = self.send('/v1/approval/request', values)
         done = self.send('/v1/approval/request', {**values, 'confirm': preview['token']})
         self.drain()
