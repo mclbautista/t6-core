@@ -37,7 +37,7 @@ Phase 3 of the t6-core shape (#178) and transcription (#180): Bays, Media locati
 - Workers claim only the job kinds they have a handler for: `/queue/claim` takes `kinds`. A job a worker cannot run stays queued until one that can starts (#361).
 - A job whose lease ran out with all its tries used is marked dead at once, also when no worker polls (#361).
 - The Deliverables T6 ID property ID is in the schema snapshot and the generated model, so `deliverable.sync` no longer refuses for a missing ID (#227, #353).
-- Review messages for a Frame.io project with no link are held until it is linked, instead of going to the default review chat (#272).
+- When the main worker has `T6_DATABASE` set (the production setup), review messages for a Frame.io project with no link are held until it is linked, instead of going to the default review chat (#272). Without it the message still goes to the default review chat.
 - Drive verbs use the Drive store; a duplicate Assignment is refused (#359).
 
 ### Removed
@@ -65,9 +65,9 @@ Phase 3 of the t6-core shape (#178) and transcription (#180): Bays, Media locati
 1. Back up the t6 database before upgrading. Migrations 33 to 41 run on open; none is forward-only.
 2. Deploy the queue server (VPS) before the workers. Workers now claim by job kind: `/queue/claim` takes `kinds`.
 3. The main worker needs `T6_API_URL` when `T6_DATABASE` is set. `T6_SERVER_URL` stays for queue calls only. Without `T6_API_URL` the worker refuses to start.
-4. The API needs `T6_FRAMEIO_QUEUE_URL` and `T6_FRAMEIO_QUEUE_SECRET` for Project Start, which creates the Frame.io project through the `frameio` queue. The Frame.io worker needs `T6_FRAMEIO_ACCOUNT_ID`, and `T6_FRAMEIO_WORKSPACE_ID` when the account has more than one workspace.
-5. Review messages for a Frame.io project with no link are held until it is linked.
-6. Three more reads are MCP tools (37 in all): `concern list`, `concern changes` and `project notes`.
+4. The API needs `T6_FRAMEIO_QUEUE_URL` and `T6_FRAMEIO_QUEUE_SECRET` for Project Start, which creates the Frame.io project through the `frameio` queue. The Frame.io worker needs `T6_FRAMEIO_ACCOUNT_ID` only when the sign-in sees more than one Frame.io account, and `T6_FRAMEIO_WORKSPACE_ID` only when the account has more than one workspace. The Frame.io sign-in must be allowed to create projects and folders.
+5. When the main worker has `T6_DATABASE` set (the production setup), review messages for a Frame.io project with no link are held until it is linked. Without it the message still goes to the default review chat. Link the active Frame.io projects right after the upgrade (`frameio project link`, the operator card, or the Link button on `/project`).
+6. The MCP server is new (`python -m t6.mcp`). It lists the 37 read-only verbs. Its output is masked for the `mcp` service and for any caller that is not an operator.
 7. `t6 health` reports due jobs waiting over 15 minutes.
 8. The image now has the `google` and `lookup` extras. To give the Bookings that already exist their calendar events when the calendar goes live, run `t6 admin calendar resync`. `t6 admin drive import --swing` imports the Notion Swing Drives database once.
 9. The Deliverables T6 ID property is in the snapshot (#353), so step 4 of the 0.5.0 go-live list is done.
