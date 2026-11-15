@@ -364,10 +364,15 @@ def main(
             if not isinstance(concern, str) or not isinstance(evidence, (int, float)) or not isinstance(target, str):
                 raise ValueError("Invalid Concern timer payload")
             return concerns.silence(concern, evidence, target)
-        queue_handlers = {**queue_handlers, "concern_silence": concern_silence}
+        def concern_pm_close(job: WorkerJob) -> bool:
+            project = job.payload.get('project')
+            if not isinstance(project, str):
+                raise ValueError('Invalid Concern close payload')
+            concerns.apply_pending(project)
+            return True
         def unavailable_abang_nudge(job: WorkerJob) -> bool:
             raise RuntimeError('Abang nudge needs a configured gateway')
-        queue_handlers = {**queue_handlers, "abang_nudge": unavailable_abang_nudge}
+        queue_handlers = {**queue_handlers, "concern_silence": concern_silence, "concern_pm_close": concern_pm_close, "abang_nudge": unavailable_abang_nudge}
     if settings.queue == "main" and environ.get("T6_DATABASE") and environ.get("T6_GATEWAY_URL") and environ.get("T6_GATEWAY_SECRET"):
         from t6.registry.sqlite import SqliteProjectRegistry
         from t6.worker.linked_chats import LinkedChats
