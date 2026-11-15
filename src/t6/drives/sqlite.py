@@ -53,7 +53,7 @@ def _drive(data: str) -> Drive:
 
 def _assignment(data: str) -> Assignment:
     value = json.loads(data)
-    value['project'] = Ref(**value['project'])
+    value['project'] = Ref(**value['project']) if value['project'] else None
     value['start'], value['end'] = _date(value['start']), _date(value['end'])
     value['return_date'] = _date(value.get('return_date'))
     if value['role']:
@@ -176,17 +176,18 @@ class SqliteDriveStore:
         db.execute('INSERT INTO drive_events (drive_id, shipment_id, data) VALUES (?, ?, ?)', (drive_id, event.shipment_id, _dump(event)))
 
     @staticmethod
-    def _check_project(db: sqlite3.Connection, project: Ref) -> None:
-        if project.page_id is not None:
+    def _check_project(db: sqlite3.Connection, project: Ref | None) -> None:
+        if project is not None and project.page_id is not None:
             T6Id.parse(project.page_id, EntityKind.PROJECT)
             if not db.execute('SELECT 1 FROM projects WHERE id=?', (project.page_id,)).fetchone():
                 raise ValueError('assignment Project must be a registered t6 Project ID or unresolved text')
 
-    def import_row(self, row_key: str, drive: Drive, assignment: Assignment, events: Sequence[CustodyEvent], *, source: SourceRow | None = None) -> None:
+    def import_row(self, row_key: str, drive: Drive, assignment: Assignment | None, events: Sequence[CustodyEvent], *, source: SourceRow | None = None) -> None:
         with self._tx() as db:
             if db.execute('SELECT 1 FROM drive_imports WHERE row_key=?', (row_key,)).fetchone():
                 return
-            self._check_project(db, assignment.project)
+            if assignment is not None:
+                self._check_project(db, assignment.project)
             row = db.execute('SELECT data FROM drives WHERE serial=?', (drive.serial,)).fetchone() if drive.serial else None
             if row:
                 held = _drive(row[0])
@@ -198,8 +199,8 @@ class SqliteDriveStore:
                 if db.execute('SELECT 1 FROM drives WHERE id=?', (held.id,)).fetchone():
                     raise ValueError('Drive ID is already recorded')
                 self._save(db, held, new=True)
-            data = _dump(assignment)
-            if not db.execute('SELECT 1 FROM drive_assignments WHERE drive_id=? AND data=?', (held.id, data)).fetchone():
+            data = _dump(assignment) if assignment is not None else None
+            if data is not None and not db.execute('SELECT 1 FROM drive_assignments WHERE drive_id=? AND data=?', (held.id, data)).fetchone():
                 db.execute('INSERT INTO drive_assignments (drive_id, data) VALUES (?, ?)', (held.id, data))
             for event in events:
                 self._append(db, held.id, event)
@@ -286,6 +287,11 @@ class SqliteDriveStore:
             pairs = [(_drive(d), _assignment(a)) for d, a in rows]
             return sorted((p for p in pairs if p[1].is_open and p[1].return_date is not None and p[1].return_date < today),
                           key=lambda p: (p[1].return_date or date.min, p[1].label or '', p[0].id))
+
+    def resolve_person(self, contact_page_id: str) -> str | None:
+        with self._tx() as db:
+            row = db.execute("SELECT b.project_id FROM bindings b JOIN persons p ON p.id=b.project_id WHERE b.system='notion' AND b.page_id=?", (normalize_page_id(contact_page_id),)).fetchone()
+            return str(row[0]) if row else None
 
     def check_person(self, person_id: str) -> None:
         with self._tx() as db:

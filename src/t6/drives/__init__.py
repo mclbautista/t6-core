@@ -292,7 +292,9 @@ class Assignment:
     """One stretch of a Drive's life on one Project, under one label.
 
     `project` is a `Ref`: a T6 Project ID in the t6 database, or the Project's
-    name as text when it could not be resolved. An Assignment with no `end` is open: the Drive is
+    name as text when it could not be resolved. It is None only for a Drive held
+    by a Person alone (a `holder` and no Project, as in a swing lent to a
+    person). An Assignment with no `end` is open: the Drive is
     still out for that Project. The same label may be on different Drives in
     different Projects. `role` and `start` are None when they were never
     recorded, as in rows imported from the old workbooks.
@@ -303,7 +305,7 @@ class Assignment:
     """
 
     label: str | None
-    project: Ref
+    project: Ref | None
     role: Role | None
     start: date | None
     end: date | None = None
@@ -317,7 +319,10 @@ class Assignment:
             raise ValueError(f"an Assignment cannot end ({self.end}) before it starts ({self.start})")
         if self.return_date is not None and self.start is not None and self.return_date < self.start:
             raise ValueError(f"an Assignment cannot be due back ({self.return_date}) before it starts ({self.start})")
-        object.__setattr__(self, "holder", _blank_to_none(self.holder))
+        holder = _blank_to_none(self.holder)
+        if self.project is None and holder is None:
+            raise ValueError("an Assignment with no Project needs a holder, the Person who has the Drive")
+        object.__setattr__(self, "holder", holder)
         object.__setattr__(self, "label", label)
         object.__setattr__(self, "remarks", _blank_to_none(self.remarks))
 
@@ -354,10 +359,21 @@ def open_duplicate(held: Iterable[Assignment], new: Assignment) -> Assignment | 
     """The open Assignment that makes `new` a second one for its Project and role, if any.
 
     Only an open `new` with a role can clash; old rows with no role never do.
+    Two Assignments with a Project clash on the same Project. A holder also
+    clashes with itself: when either Assignment has no Project, the same
+    holder and role is a second open one.
     """
     if not new.is_open or new.role is None:
         return None
-    return next((a for a in held if a.is_open and a.project == new.project and a.role is new.role), None)
+
+    def clashes(a: Assignment) -> bool:
+        if not a.is_open or a.role is not new.role:
+            return False
+        if new.project is not None and a.project == new.project:
+            return True
+        return new.holder is not None and a.holder == new.holder and (new.project is None or a.project is None)
+
+    return next((a for a in held if clashes(a)), None)
 
 
 class DuplicateSerial(ValueError):
@@ -421,14 +437,15 @@ class DriveStore(Protocol):
         ...
 
     def import_row(
-        self, row_key: str, drive: Drive, assignment: Assignment, events: Sequence[CustodyEvent],
+        self, row_key: str, drive: Drive, assignment: Assignment | None, events: Sequence[CustodyEvent],
         *, source: SourceRow | None = None
     ) -> None:
         """Atomically import a row and its receipt, or do nothing if already recorded.
 
         Match only an accepted serial, otherwise add the new permanent ID.
         Preserve existing physical facts, combine review notes, add an Assignment
-        unless equal to one already held, and append every supplied event in order.
+        unless equal to one already held (None adds none), and append every supplied
+        event in order.
         Distinct row keys preserve repeated events, even with identical facts.
         Persist all changes and the receipt in one transaction; failure writes nothing.
         """
@@ -502,7 +519,8 @@ class DriveStore(Protocol):
         """Assign a recorded Drive. Raises UnknownDrive if the ID is not recorded.
 
         An open Assignment with a role is refused (DuplicateAssignment) while the
-        Drive holds another open one for the same Project and role.
+        Drive holds another open one for the same Project and role, or for the
+        same holder and role when either has no Project.
 
         Earlier Assignments are kept: relabelling a reused Drive adds a new
         Assignment and never edits or removes an old one. Nothing is closed
@@ -550,6 +568,10 @@ class DriveStore(Protocol):
         Ordered by return date, then label, then Drive ID. An ended Assignment,
         or one with no return date, is never overdue.
         """
+        ...
+
+    def resolve_person(self, contact_page_id: str) -> str | None:
+        """The T6 Person ID bound to a Contacts page ID, or None if no Person is bound to it."""
         ...
 
     def check_person(self, person_id: str) -> None:

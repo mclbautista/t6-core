@@ -219,6 +219,7 @@ class AssignmentFactsTests(unittest.TestCase):
             remarks="  first copy ",
         )
         self.assertEqual(assignment.label, "M01")
+        assert assignment.project is not None
         self.assertEqual(assignment.project.page_id, "t6p_aaaaaaaaaaaaaaaaaaaaaaaa")
         self.assertIs(assignment.role, Role.MASTER)
         self.assertEqual(assignment.start, date(2024, 5, 1))

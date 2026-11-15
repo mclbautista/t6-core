@@ -244,6 +244,7 @@ class PerProjectImportTests(unittest.TestCase):
     def test_a_project_name_is_resolved_with_lookup_or_kept_as_text(self) -> None:
         (unresolved,) = self.store.assignment_history(drive_id(self.store, "QQ200BB1"))
         self.assertEqual(unresolved.project, Ref(text="GLASS HARBOUR (WORKING TITLE)"))
+        assert unresolved.project is not None
         self.assertTrue(unresolved.project.unresolved)
         (untitled,) = self.store.assignment_history(drive_id(self.store, "QQ300CC1"))
         self.assertEqual(untitled.project, Ref(text="UNTITLED TAB"))

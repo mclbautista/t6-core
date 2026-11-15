@@ -1,7 +1,7 @@
 """Drive custody, assignment and swing verbs on the t6 database.
 
 Custody is an append-only event log and status is derived from it. An
-Assignment carries its label, Project, role and dates; unassign ends it and
+Assignment carries its label, Project (none for a swing held by a Person alone), role and dates; unassign ends it and
 keeps it. A swing is a Drive with a `swing` Assignment that may carry a return
 date; `swing return` ends it and clears the date, and overdue returns are read
 from the store. A shipment groups the releases of one handover. Every Drive fact is
@@ -111,7 +111,7 @@ class DriveVerbs:
                 audit = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)',
                                    (drive_id, action, actor, now, json.dumps(before), json.dumps(after)))
                 db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
-                           (plan['project_id'], drive_id, now, actor, action, name, audit.lastrowid))
+                           (plan.get('project_id') or drive_id, drive_id, now, actor, action, name, audit.lastrowid))
             db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
             db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(plan)))
             return Done(result=plan)
@@ -164,6 +164,8 @@ class DriveVerbs:
         number = values.get('assignment')
         if number is not None and (not isinstance(number, int) or isinstance(number, bool) or number < 1):
             return Refused(rule='input', reason='assignment must be a number from 1')
+        if values.get('person') is not None and not (isinstance(values['person'], str) and values['person'].startswith('t6n_')):
+            return Refused(rule='input', reason='person must be a T6 Person ID')
         return None
 
     @staticmethod
@@ -179,7 +181,7 @@ class DriveVerbs:
         today = date.fromisoformat(self._today())
         found = (store or self.store).overdue_returns(today)
         return {'today': today.isoformat(), 'overdue': [
-            {'drive_id': drive.id, 'serial': drive.serial, 'label': a.label, 'project_id': a.project.page_id, 'holder': a.holder,
+            {'drive_id': drive.id, 'serial': drive.serial, 'label': a.label, 'project_id': a.project.page_id if a.project else None, 'holder': a.holder,
              'start': a.start.isoformat() if a.start else None, 'return_date': a.return_date.isoformat() if a.return_date else None,
              'days_overdue': (today - a.return_date).days if a.return_date else 0} for drive, a in found]}
 
@@ -194,8 +196,6 @@ class DriveVerbs:
             target, project, holder = values['target'], values.get('project'), None
             if target.startswith('t6n_'):
                 holder = target
-                if not project:
-                    return Refused(rule='project', reason='A swing given to a Person also needs the Project it is for')
             elif target.startswith('t6p_'):
                 if project and project != target:
                     return Refused(rule='project', reason='The target is a Project; do not name a different one')
@@ -203,7 +203,8 @@ class DriveVerbs:
             else:
                 return Refused(rule='target', reason='The target must be a T6 Person ID or a T6 Project ID')
             try:
-                store.check_project(Ref(page_id=project))
+                if project:
+                    store.check_project(Ref(page_id=project))
             except ValueError as error:
                 return Refused(rule='project', reason=str(error))
             try:
@@ -213,30 +214,31 @@ class DriveVerbs:
                 return Refused(rule='person', reason=str(error))
             start = values.get('start') or today
             try:
-                assignment = Assignment(label=values.get('label'), project=Ref(page_id=project), role=Role.SWING, start=date.fromisoformat(start),
+                assignment = Assignment(label=values.get('label'), project=Ref(page_id=project) if project else None, role=Role.SWING, start=date.fromisoformat(start),
                                         return_date=date.fromisoformat(values['return_date']) if values.get('return_date') else None, holder=holder)
             except ValueError as error:
                 return Refused(rule='input', reason=str(error))
             clash = open_duplicate(store.list_assignments(drive_id), assignment)
             if clash is not None:
-                return Refused(rule='assignment', reason=f'The Drive already has an open swing ({clash.label}) for this Project; unassign or return it first')
+                return Refused(rule='assignment', reason=f'The Drive already has an open swing ({clash.label}) for this Project or holder; unassign or return it first')
             plan.update(project_id=project, label=assignment.label, role='swing', start=start, return_date=values.get('return_date'), holder=holder)
             return Plan(plan, state, lambda store_: self._assign(store_, drive_id, assignment))
-        project = values.get('project')
+        project, person = values.get('project'), values.get('person')
         found = [(number, a) for number, a in enumerate(store.list_assignments(drive_id), 1)
-                 if a.is_open and a.role is Role.SWING and (not project or a.project.page_id == project)
+                 if a.is_open and a.role is Role.SWING and (not project or (a.project is not None and a.project.page_id == project))
+                 and (not person or a.holder == person)
                  and (values.get('assignment') is None or number == values['assignment'])]
         if not found:
             return Refused(rule='assignment', reason='No open swing Assignment for this Drive')
         if len(found) > 1:
-            return Ambiguous(candidates=[{'assignment': number, 'label': a.label, 'project_id': a.project.page_id,
+            return Ambiguous(candidates=[{'assignment': number, 'label': a.label, 'project_id': a.project.page_id if a.project else None, 'holder': a.holder,
                                           'start': a.start.isoformat() if a.start else None} for number, a in found])
         number, held = found[0]
         end = values.get('end') or today
         if held.start is not None and date.fromisoformat(end) < held.start:
             return Refused(rule='input', reason=f'an Assignment cannot end ({end}) before it starts ({held.start})')
         clears = verb == 'swing_return'
-        plan.update(project_id=held.project.page_id or drive_id, label=held.label, role='swing', end=end, assignment=number, holder=held.holder,
+        plan.update(project_id=held.project.page_id if held.project else None, label=held.label, role='swing', end=end, assignment=number, holder=held.holder,
                     return_date=None if clears else held.return_date.isoformat() if held.return_date else None)
         state.append(number)
         return Plan(plan, state, lambda store_: self._close(store_, drive_id, number, held, date.fromisoformat(end), drop_return_date=clears))
@@ -291,7 +293,7 @@ class DriveVerbs:
         end = values.get('end') or today
         label = values['label'].strip() if values.get('label') is not None else None
         found = [(number, a) for number, a in enumerate(store.list_assignments(ids[0]), 1)
-                 if a.is_open and a.project.page_id == project
+                 if a.is_open and a.project is not None and a.project.page_id == project
                  and (label is None or a.label == label)
                  and (values.get('role') is None or (a.role is not None and a.role.value == values['role']))
                  and (values.get('assignment') is None or number == values['assignment'])]

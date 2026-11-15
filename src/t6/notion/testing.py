@@ -523,6 +523,10 @@ def select(name: str | None) -> JSON:
     return {"type": "select", "select": {"name": name} if name else None}
 
 
+def multi_select(*names: str) -> JSON:
+    return {"type": "multi_select", "multi_select": [{"name": name} for name in names]}
+
+
 def number(value: float | int | None) -> JSON:
     return {"type": "number", "number": value}
 

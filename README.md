@@ -506,7 +506,10 @@ I/O and needs no extra.
   raises `UnknownDrive`. A label can repeat on different Drives and Projects.
 - A swing Assignment (role `SWING`) may carry a `return_date`, the day it is due
   back, and a `holder` (a T6 Person ID). `return_date` cannot be before the
-  start. `DriveStore.drop_return_date(drive_id, number)` clears it,
+  start. An Assignment may have no Project (`project` is None) only when it has a
+  holder; a second open Assignment for the same Drive, role and holder is refused
+  when either has no Project. `DriveStore.resolve_person(contact_page_id)` gives
+  the Person bound to a Contacts page. `DriveStore.drop_return_date(drive_id, number)` clears it,
   `overdue_returns(today)` lists the open Assignments due back before `today`,
   and `check_person(person_id)` checks a holder.
 
@@ -515,23 +518,28 @@ I/O and needs no extra.
 Swing Drives live once, in `t6.drives`. The verbs, all with the `drives`
 permission except the read, are `t6 swing assign DRIVE TARGET [--project P]
 [--label L] [--start D] [--return-date D]` (TARGET is a T6 Project ID, or a T6
-Person ID with `--project`), `t6 swing unassign DRIVE [--project P]
-[--assignment N] [--end D]` and `t6 swing return DRIVE [...]` (the same
+Person ID; a Person needs no Project, and `--project` may be added), `t6 swing unassign DRIVE [--project P]
+[--person T6N] [--assignment N] [--end D]` and `t6 swing return DRIVE [...]` (the same
 options). Each previews, then confirms with `--confirm`, and is idempotent.
 `return` ends the swing and clears its return date; `unassign` ends it and
 keeps the date in history. When a Drive has several open swings, name one with
-`--project` or `--assignment`, or the verb answers Ambiguous. `t6 swing
+`--project`, `--person` or `--assignment`, or the verb answers Ambiguous. `t6 swing
 overdue` (read only) lists the open swings due back before today in Manila time.
 
 `t6 admin drive import --swing --data-sources FILE` (with a `swing_drives`
 entry) previews the import of the Notion Swing Drives database and writes
 nothing. `--apply --preview FILE` carries it out, and only if Notion still
-holds the data the preview saw. A second apply changes nothing. A row is
-identified by its page ID and its Serial only, never by name or label. A row
-with no usable serial, a serial on several rows or only suspected, or no or
-an unregistered Project goes to the exception queue with its page ID. A row
-not in use is skipped and listed. The committed snapshot has no Serial or
-Projects property on this database; until they exist every row is an exception.
+holds the data the preview saw. A second apply changes nothing. The import
+reads the live properties by name (Name, In Use, Last Moved, Collaborator,
+Format, HD Type, Short Notes). Every row creates one Drive keyed by its page
+ID, with no serial, unknown ownership and its label from Name; a name or label
+never matches another Drive. Format, HD Type and Short Notes fill the Drive's
+existing `format`, `description` and `remarks`. A row not in use is a Drive with
+no Assignment. A row in use with exactly one Collaborator that is a registered
+Person (its Contacts page is bound to a Person) and a Last Moved date gets an
+open swing held by that Person from that date, with no Project. Any other
+holder case still creates the Drive and puts the holder question in the
+exception queue with its page ID. Person-In-Charge and For Bawi are not read.
 
 ### Importing the legacy workbooks
 

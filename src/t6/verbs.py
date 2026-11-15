@@ -1639,6 +1639,7 @@ class SwingAssignInput(BaseModel):
 class SwingUnassignInput(BaseModel):
     drive: str
     project: str | None = None
+    person: str | None = None
     assignment: int | None = None
     end: str | None = None
     idempotency_key: str | None = None
@@ -1650,6 +1651,7 @@ class SwingReturnInput(SwingUnassignInput):
 
 
 class SwingWriteOutput(DriveWriteOutput):
+    project_id: str | None = None  # type: ignore[assignment]
     holder: str | None = None
     return_date: str | None = None
 
@@ -1736,8 +1738,8 @@ VERBS = (
     Verb('drive', 'retire', 'Retire a Drive', (), DriveRetireInput, DriveWriteOutput, 'drives', 'Needs a reason; a later receive or return brings the Drive back.', drive_write),
     Verb('drive', 'assign', 'Assign a Drive to a Project', (), DriveAssignInput, DriveWriteOutput, 'drives', 'Preview and confirm; adds an Assignment with label and role.', drive_write),
     Verb('drive', 'unassign', 'End a Drive Assignment', (), DriveUnassignInput, DriveWriteOutput, 'drives', 'Ends the open Assignment and keeps it in history; when several are open, pick by label, role or assignment number.', drive_write),
-    Verb('swing', 'assign', 'Assign a swing Drive to a Person or Project', (), SwingAssignInput, SwingWriteOutput, 'drives', 'Preview and confirm; adds a swing Assignment, with an optional return date. A Person target also needs --project.', swing_write),
-    Verb('swing', 'unassign', 'End a swing Assignment', (), SwingUnassignInput, SwingWriteOutput, 'drives', 'Ends the open swing Assignment and keeps it, with its return date, in history.', swing_write),
+    Verb('swing', 'assign', 'Assign a swing Drive to a Person or Project', (), SwingAssignInput, SwingWriteOutput, 'drives', 'Preview and confirm; adds a swing Assignment, with an optional return date. A Person target needs no Project; --project may be added.', swing_write),
+    Verb('swing', 'unassign', 'End a swing Assignment', (), SwingUnassignInput, SwingWriteOutput, 'drives', 'Ends the open swing Assignment and keeps it, with its return date, in history. When several are open, pick by --project, --person or --assignment.', swing_write),
     Verb('swing', 'return', 'Return a swing Drive', (), SwingReturnInput, SwingWriteOutput, 'drives', 'Ends the open swing Assignment and clears its return date.', swing_write),
     Verb('swing', 'overdue', 'List swing Drives past their return date', (), SwingOverdueInput, SwingOverdueOutput, 'reader', 'Open swing Assignments due back before today (Asia/Manila).', swing_overdue, read_only=True),
     Verb('media', 'link', 'Link a Media location', (), MediaLinkInput, MediaWriteOutput, 'coordinator', 'Preview and confirm the link.', media_write),
@@ -2009,6 +2011,7 @@ def add_parsers(commands: Any) -> None:
             elif entry.handler is swing_write:
                 parser.add_argument('drive')
                 parser.add_argument('--project')
+                parser.add_argument('--person')
                 parser.add_argument('--assignment', type=int)
                 parser.add_argument('--end')
             if entry.handler is swing_write:

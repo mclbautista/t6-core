@@ -8,7 +8,7 @@ from datetime import date
 from typing import Any
 from unittest.mock import patch
 
-from t6.drives import Assignment, Drive, Ref, Role, UnknownDrive
+from t6.drives import Assignment, Drive, DuplicateAssignment, Ref, Role, UnknownDrive
 from t6.drives.sqlite import SqliteDriveStore
 from t6.drives.testing import InMemoryDriveStore
 from t6.ids import EntityKind, T6Id
@@ -104,16 +104,67 @@ class SwingVerbTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT action, actor FROM audit WHERE action='swing_assign'").fetchall(), [('swing_assign', 'keeper')])
             self.assertEqual(db.execute("SELECT project_id, action FROM activity WHERE action='swing_assign'").fetchall(), [(one, 'swing_assign')])
 
-    def test_assign_to_a_person_needs_the_project_and_records_the_holder(self) -> None:
+    def test_assign_to_a_person_alone_needs_no_project(self) -> None:
+        drive = self.drives[0]
+        preview = self.call('assign', {'drive': drive, 'target': PERSON, 'start': '2026-11-10', 'idempotency_key': 'p'})
+        self.assertIsInstance(preview, Preview)
+        self.write('assign', {'drive': drive, 'target': PERSON, 'start': '2026-11-10'}, 'p')
+        (held,) = self.store.list_assignments(drive)
+        self.assertEqual((held.holder, held.project, held.role, held.is_open), (PERSON, None, Role.SWING, True))
+        unknown = self.call('assign', {'drive': self.drives[1], 'target': str(T6Id.mint(EntityKind.PERSON))})
+        self.assertIsInstance(unknown, Refused)
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute("SELECT project_id, subject_id FROM activity WHERE action='swing_assign'").fetchall(), [(drive, drive)])
+
+    def test_a_person_target_may_still_name_a_project(self) -> None:
         drive, one = self.drives[0], self.projects[0]
-        refused = self.call('assign', {'drive': drive, 'target': PERSON})
-        self.assertIsInstance(refused, Refused)
-        self.assertEqual(refused.rule, 'project')
         self.write('assign', {'drive': drive, 'target': PERSON, 'project': one}, 'p')
         (held,) = self.store.list_assignments(drive)
         self.assertEqual((held.holder, held.project), (PERSON, Ref(page_id=one)))
-        unknown = self.call('assign', {'drive': self.drives[1], 'target': str(T6Id.mint(EntityKind.PERSON)), 'project': one})
-        self.assertIsInstance(unknown, Refused)
+
+    def test_a_second_open_swing_for_the_same_drive_and_holder_is_refused(self) -> None:
+        drive, one = self.drives[0], self.projects[0]
+        self.write('assign', {'drive': drive, 'target': PERSON, 'start': '2026-11-10'}, 'p')
+        for values in ({'drive': drive, 'target': PERSON}, {'drive': drive, 'target': PERSON, 'project': one}):
+            refused = self.call('assign', values)
+            self.assertIsInstance(refused, Refused)
+            self.assertEqual(refused.rule, 'assignment')
+        with self.assertRaises(DuplicateAssignment):  # the store refuses it too
+            self.store.add_assignment(drive, Assignment(label='x', project=None, role=Role.SWING, start=date(2026, 11, 11), holder=PERSON))
+        self.write('assign', {'drive': drive, 'target': self.projects[1]}, 'q')  # a Project alone is a different holder
+
+    def test_a_person_held_swing_is_named_and_ended_by_assignment_or_by_the_person(self) -> None:
+        drive, one = self.drives[0], self.projects[0]
+        self.write('assign', {'drive': drive, 'target': PERSON, 'label': 'A', 'start': '2026-11-10'}, 'a')
+        self.write('assign', {'drive': drive, 'target': one, 'label': 'B', 'start': '2026-11-10'}, 'b')
+        ambiguous = self.call('return', {'drive': drive})
+        self.assertIsInstance(ambiguous, Ambiguous)
+        self.assertEqual([(c['assignment'], c['project_id'], c['holder']) for c in ambiguous.candidates], [(1, None, PERSON), (2, one, None)])
+        self.write('unassign', {'drive': drive, 'person': PERSON, 'end': '2026-11-12'}, 'u')
+        self.assertEqual([(a.label, a.is_open) for a in self.store.list_assignments(drive)], [('A', False), ('B', True)])
+        self.write('assign', {'drive': drive, 'target': PERSON, 'label': 'C', 'start': '2026-11-13'}, 'c')
+        self.write('return', {'drive': drive, 'assignment': 3, 'end': '2026-11-14'}, 'r')
+        self.assertEqual([(a.label, a.is_open) for a in self.store.list_assignments(drive)], [('A', False), ('B', True), ('C', False)])
+        self.assertIsInstance(self.call('return', {'drive': drive, 'person': PERSON}), Refused)
+
+    def test_a_person_held_swing_with_no_project_can_be_overdue(self) -> None:
+        self.write('assign', {'drive': self.drives[0], 'target': PERSON, 'label': 'LATE', 'start': '2026-11-01', 'return_date': '2026-11-10'}, 'a')
+        (late,) = self.call('overdue', {}, actor='reader').result['overdue']
+        self.assertEqual((late['label'], late['project_id'], late['holder'], late['days_overdue']), ('LATE', None, PERSON, 6))
+
+    def test_an_assignment_with_no_project_needs_a_holder_and_survives_the_database(self) -> None:
+        with self.assertRaises(ValueError):
+            Assignment(label='x', project=None, role=Role.SWING, start=date(2026, 11, 1))
+        drive = self.drives[0]
+        self.store.add_assignment(drive, Assignment(label='x', project=None, role=Role.SWING, start=date(2026, 11, 1), holder=PERSON))
+        (held,) = self.store.list_assignments(drive)
+        self.assertEqual((held.project, held.holder), (None, PERSON))
+        self.assertEqual(self.store.open_assignments(Ref(page_id=self.projects[0])), [])
+
+    def test_a_contact_page_bound_to_a_person_resolves_to_the_person(self) -> None:
+        self.registry.bind_entity('notion', 'd' * 32, T6Id.parse(PERSON, EntityKind.PERSON), actor='setup')
+        self.assertEqual(self.store.resolve_person('d' * 32), PERSON)
+        self.assertIsNone(self.store.resolve_person('e' * 32))
 
     def test_assign_refuses_bad_input(self) -> None:
         drive, one = self.drives[0], self.projects[0]
@@ -179,6 +230,16 @@ class SwingVerbTests(unittest.TestCase):
             status = main(['swing', 'assign', self.drives[0], self.projects[0], '--return-date', '2026-11-20'])
         self.assertEqual(status, 0)
         self.assertEqual(json.loads(out.getvalue())['outcome'], 'preview')
+
+    def test_cli_swing_assign_to_a_person_without_project_and_unassign_by_person(self) -> None:
+        from cli_api_fake import client_patch
+        from t6.cli import main
+        self.write('assign', {'drive': self.drives[0], 'target': PERSON}, 'p')
+        for argv in (['swing', 'assign', self.drives[1], PERSON], ['swing', 'unassign', self.drives[0], '--person', PERSON]):
+            out = io.StringIO()
+            with patch.dict(os.environ, {'T6_PERSON_ID': 'keeper', 'T6_PREVIEW_SIGNING_KEY': 'test'}), patch('t6.cli._open_registry', return_value=self.registry), client_patch(lambda _: None), redirect_stdout(out):
+                self.assertEqual(main(argv), 0)
+            self.assertEqual(json.loads(out.getvalue())['outcome'], 'preview')
 
 
 if __name__ == '__main__':

@@ -378,7 +378,7 @@ def _import_drive_rows(
             review.append(_unreadable(row, problems))
         assignment = _write(store, row, drive, assignment, events, review)
         imported += 1
-        if assignment.project.unresolved and (row.sheet, row.project_row) not in unresolved:
+        if _held_project(assignment).unresolved and (row.sheet, row.project_row) not in unresolved:
             unresolved.add((row.sheet, row.project_row))
             review.append(ReviewItem(row.sheet, row.project_row, "unresolved project", row.project, row.workbook))
     return imported
@@ -507,6 +507,12 @@ def _inventory_facts(row: _Row, lookup: Lookup, logged_by: Ref, problems: list[s
     return drive, assignment, events
 
 
+def _held_project(assignment: Assignment) -> Ref:
+    """The Project of a workbook Assignment; a workbook row always names one."""
+    assert assignment.project is not None
+    return assignment.project
+
+
 def _write(
     store: DriveStore, row: _Row, drive: Drive, assignment: Assignment,
     events: list[CustodyEvent], review: list[ReviewItem]
@@ -517,7 +523,7 @@ def _write(
     Matching a clean serial does not overwrite existing physical facts: additional
     observations stay traceable in the local review report instead.
     """
-    project = store.resolve_project(assignment.project, row.text("PROJECT NAME") or row.project)
+    project = store.resolve_project(_held_project(assignment), row.text("PROJECT NAME") or row.project)
     assignment = replace(assignment, project=project)
     events = [replace(event, project=project) for event in events]
     held = store.find_by_serial(drive.serial) if drive.serial else None
@@ -528,9 +534,9 @@ def _write(
         review.append(row.review("additional drive facts", row.evidence()))
     if not row.previously_imported:
         pending = [item for item in review if (item.workbook, item.sheet, item.row) == (row.workbook, row.sheet, row.number)]
-        if assignment.project.unresolved:
+        if _held_project(assignment).unresolved:
             if "IN/OUT" in row.cells:
-                pending.append(row.review("unresolved project", assignment.project.text or ""))
+                pending.append(row.review("unresolved project", _held_project(assignment).text or ""))
             else:
                 pending.append(ReviewItem(row.sheet, row.project_row, "unresolved project", row.project, row.workbook))
         _preserve_exceptions(store, pending, [row])
@@ -577,7 +583,7 @@ def _import_movements(
             review.append(_unreadable(row, problems))
         assignment = _write(store, row, drive, assignment, [event], review)
         imported += 1
-        name = assignment.project.text
+        name = _held_project(assignment).text
         if name is not None and name not in unresolved:
             unresolved.add(name)
             review.append(row.review("unresolved project", name))

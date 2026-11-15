@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from t6.drives.importer import ReviewItem
 
 from t6.ids import EntityKind, T6Id
+from t6.registry.core import normalize_page_id
 
 from t6.drives import (
     Assignment,
@@ -35,11 +36,15 @@ class InMemoryDriveStore:
 
     def __init__(self, same_project: Callable[[str | None, str | None], bool] | None = None, *,
                  project_bindings: dict[str, str] | None = None,
+                 person_bindings: dict[str, str] | None = None,
                  deliveries: dict[str, tuple[str, str]] | None = None) -> None:
         self._same_project = same_project or (lambda a, b: a == b)
         self._project_bindings = dict(project_bindings or {})
         for identifier in self._project_bindings.values():
             T6Id.parse(identifier, EntityKind.PROJECT)
+        self._person_bindings = dict(person_bindings or {})
+        for identifier in self._person_bindings.values():
+            T6Id.parse(identifier, EntityKind.PERSON)
         self._deliveries = dict(deliveries or {})
         self._delivery_drives: dict[str, set[str]] = {}
         self._drives: dict[str, Drive] = {}
@@ -112,12 +117,13 @@ class InMemoryDriveStore:
         return any(d.suspected_serial == normalized for d in self._drives.values())
 
     def import_row(
-        self, row_key: str, drive: Drive, assignment: Assignment, events: Sequence[CustodyEvent],
+        self, row_key: str, drive: Drive, assignment: Assignment | None, events: Sequence[CustodyEvent],
         *, source: SourceRow | None = None
     ) -> None:
         if row_key in self._imports:
             return
-        self._check_project(assignment.project)
+        if assignment is not None:
+            self._check_project(assignment.project)
         held = self.find_by_serial(drive.serial) if drive.serial else None
         if held is None:
             if drive.id in self._drives:
@@ -131,7 +137,7 @@ class InMemoryDriveStore:
         # Consume the complete source and stage every collection before publishing.
         incoming_events = list(events)
         assignments = list(self._assignments.get(held.id, ()))
-        if assignment not in assignments:
+        if assignment is not None and assignment not in assignments:
             assignments.append(assignment)
         history = [*self._events.get(held.id, ()), *incoming_events]
         shipped = self._shipped + [
@@ -187,8 +193,8 @@ class InMemoryDriveStore:
         return derive_status(self._log(drive_id))
 
     @staticmethod
-    def _check_project(project: Ref) -> None:
-        if project.page_id is not None:
+    def _check_project(project: Ref | None) -> None:
+        if project is not None and project.page_id is not None:
             T6Id.parse(project.page_id, EntityKind.PROJECT)
 
     def add_assignment(self, drive_id: str, assignment: Assignment) -> None:
@@ -227,6 +233,9 @@ class InMemoryDriveStore:
                  if a.is_open and a.return_date is not None and a.return_date < today]
         return sorted(found, key=lambda pair: (pair[1].return_date or date.min, pair[1].label or "", pair[0].key))
 
+    def resolve_person(self, contact_page_id: str) -> str | None:
+        return self._person_bindings.get(normalize_page_id(contact_page_id))
+
     def check_person(self, person_id: str) -> None:
         T6Id.parse(person_id, EntityKind.PERSON)
 
@@ -247,7 +256,7 @@ class InMemoryDriveStore:
             (self._drives[key], assignment)
             for key, assignments in self._assignments.items()
             for assignment in assignments
-            if assignment.is_open and self._matches(assignment.project, project)
+            if assignment.is_open and assignment.project is not None and self._matches(assignment.project, project)
         ]
         return sorted(
             found, key=lambda pair: (pair[1].start or date.min, pair[1].label or "", pair[0].key)
