@@ -25,8 +25,8 @@ class Task:
 class Timeline:
     """One Instagantt project and its tasks, in export order.
 
-    `external_id` is what External Links stores: the export's project ID when
-    it has one, otherwise the project name.
+    `external_id` is what a Media location of kind timeline stores as its `ref`:
+    the export's project ID when it has one, otherwise the project name.
     """
 
     project: str
@@ -40,7 +40,7 @@ class Timeline:
 
 @dataclass(frozen=True, slots=True)
 class LinkedTimeline:
-    """A timeline tied to the Notion Project its External Links row relates to."""
+    """A timeline tied to the T6 Project its Media location belongs to."""
 
     timeline: Timeline
     project_id: str
@@ -48,7 +48,7 @@ class LinkedTimeline:
 
 @dataclass(frozen=True, slots=True)
 class Unmapped:
-    """An Instagantt project that could not be tied to exactly one Notion Project.
+    """An Instagantt project that could not be tied to exactly one Project.
 
     Reported, never guessed: nobody should see a timeline under the wrong show.
     """

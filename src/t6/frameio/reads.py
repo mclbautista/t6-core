@@ -2,8 +2,8 @@
 
 `FrameioReads(api)` answers projects, share links, comments, versions and
 approvals as JSON lists of the objects in `t6.frameio.model`. With `links`
-(the External Links rows in Notion) it also answers the briefing feed, and
-gives every live share link an External Links row.
+(the Media locations in t6, kind `frameio-project`) it also answers the briefing
+feed. Nothing is written to Notion or to t6: the link lives only in t6.
 
 The T6 account is found from the token (`GET /v4/accounts`). A token that sees
 more than one account needs `account_id`.
@@ -15,10 +15,9 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timezone
 import time
-from typing import Any, Protocol
+from typing import Any
 import urllib.parse
 
-from t6.domain import ExternalRef
 from t6.domain.events import JsonValue
 from t6.frameio.api import FrameioApi, FrameioError
 from t6.frameio.model import (
@@ -36,6 +35,7 @@ from t6.frameio.model import (
     _time,
     clip_remaining_seconds,
 )
+from t6.media_links import MediaLinks
 from t6.frameio.requests import (
     Approvals,
     BriefingFeed,
@@ -48,9 +48,8 @@ from t6.frameio.requests import (
     Versions,
 )
 
-SYSTEM = "frameio"
-PROJECT_KIND = "project"
-SHARE_LINK_KIND = "share_link"
+PROJECT_KIND = "frameio-project"
+"""The Media location kind that links a Frame.io project to a Project."""
 APPROVAL_FIELD = "Status"
 SHARE_CACHE_SECONDS = 3600.0
 """How long a share list or a share's asset list is kept in memory (`T6_FRAMEIO_SHARE_CACHE_SECONDS`; 0 is off)."""
@@ -62,31 +61,6 @@ DURATION_FIELD = "duration"
 FRAME_RATE_FIELD = "frame rate"
 """Frame.io's file metadata field for frames per second (compared case-folded)."""
 """The metadata field Frame.io V4 keeps a file's approval in."""
-
-
-class Link(Protocol):
-    """One External Links row (`t6.notion.external_links.ExternalLink`)."""
-
-    @property
-    def page_id(self) -> str: ...
-    @property
-    def ref(self) -> ExternalRef: ...
-    @property
-    def active(self) -> bool: ...
-    @property
-    def last_activity(self) -> datetime | None: ...
-    @property
-    def project_ids(self) -> tuple[str, ...]: ...
-
-
-class Links(Protocol):
-    """The External Links rows (`t6.notion.external_links.ExternalLinks`)."""
-
-    def links_for_system(self, system: str, kind: str) -> tuple[Any, ...]: ...
-
-    def ensure(self, ref: ExternalRef, *, project_id: str | None = None) -> Any: ...
-
-    def touch(self, page_id: str, when: datetime) -> Any: ...
 
 
 def _head_version_id(item: Any) -> str | None:
@@ -108,7 +82,7 @@ class FrameioReads:
     def __init__(
         self,
         api: FrameioApi,
-        links: Links | None = None,
+        links: MediaLinks | None = None,
         account_id: str | None = None,
         now: Callable[[], datetime] = _now,
         *,
@@ -291,37 +265,32 @@ class FrameioReads:
     def briefing_feed(self, since: datetime) -> tuple[BriefingShow, ...]:
         """Per Frame.io project, the live share links with activity after `since`.
 
-        Every live share link gets an External Links row if it has none
-        (related to the show when the Frame.io project has a row of its own).
-        A row's Last Activity is moved forward to the link's latest activity.
-        Active is never written.
+        A Frame.io project is tied to its Project by a Media location of kind
+        `frameio-project`; `project_page_ids` are that Project's Notion pages
+        (empty when the project is unlinked). Nothing is written: share links
+        have no row and no Last Activity stamp, because the activity is read
+        from Frame.io each time. A live share is reported `active`.
         """
         if self._links is None:
             raise RuntimeError(
-                "the briefing feed needs T6_NOTION_TOKEN and T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE on the Frame.io worker"
+                "the briefing feed needs T6_SERVER_URL and T6_WORKER_SECRET (with registry read) on the Frame.io worker"
             )
         now = self._now()
-        project_rows = {row.ref.external_id: row for row in self._links.links_for_system(SYSTEM, PROJECT_KIND)}
-        share_rows = {row.ref.external_id: row for row in self._links.links_for_system(SYSTEM, SHARE_LINK_KIND)}
+        pages_by_project: dict[str, tuple[str, ...]] = {}
+        for link in self._links.media_links(PROJECT_KIND):
+            pages_by_project.setdefault(link.ref, link.pages)
         shows = []
         for project in self.projects():
-            project_row = project_rows.get(project.id)
-            pages: tuple[str, ...] = project_row.project_ids if project_row is not None else ()
+            pages = pages_by_project.get(project.id, ())
             found = []
             for share in self.share_links(project.id, with_files=False):
                 if not share.live(now):
                     continue
-                row: Link | None = share_rows.get(share.id)
-                if row is None:
-                    ref = ExternalRef(system=SYSTEM, kind=SHARE_LINK_KIND, external_id=share.id, url=share.url)
-                    row = self._links.ensure(ref, project_id=pages[0] if pages else None)
                 latest = self._last_activity(share)
                 if latest is None or latest <= since:
                     continue
-                if row.last_activity is None or row.last_activity < latest:
-                    self._links.touch(row.page_id, latest)
                 found.append(
-                    BriefingLink(share_id=share.id, name=share.name, url=share.url, last_activity=latest, active=row.active)
+                    BriefingLink(share_id=share.id, name=share.name, url=share.url, last_activity=latest, active=True)
                 )
             if found:
                 shows.append(

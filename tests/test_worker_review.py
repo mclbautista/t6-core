@@ -304,10 +304,13 @@ class ReviewMessageTests(ServerTestCase):
         config = ServerConfig(grants=(Grant(WORKER_SECRET, registry_read=True),))
         app = WebhookApp(self.queue, config, self.clock, registry=registry)
         registry_client = RegistryClient(InProcess(app), WORKER_SECRET)
-        class Links:
-            def find(self, ref: Any) -> Any:
-                return SimpleNamespace(project_ids=("page-1",)) if ref.external_id == "fp1" else None
-        target = ReviewTarget(Links(), registry_client)
+        from t6.media import MediaStore
+        from t6.preview import PreviewTokens
+        store = MediaStore(registry, PreviewTokens("secret"))
+        values = {"owner": project.id, "kind": "frameio-project", "ref": "fp1", "role": "frameio-project"}
+        preview = store.write("link", values, actor="person", idempotency_key="link-fp1")
+        store.write("link", values, actor="person", idempotency_key="link-fp1", confirm=preview.token)  # type: ignore[union-attr]
+        target = ReviewTarget(registry_client, registry_client)
         self.review = ReviewMessage(GatewayClient(self.gateway, "secret"), CHAT, None, self.ask, target=target)
         self.worker = Worker(self.queue_client, "main", self.review.handlers())
         with registry._transaction() as db:
@@ -334,6 +337,26 @@ class ReviewMessageTests(ServerTestCase):
         self.run_worker()
         self.assertEqual([(m["to"], m.get("topic")) for m in self.gateway.sent.values()][-1], (CHAT, None))
         self.assertIsNone(target("unknown"))
+
+    def test_media_locations_route_serves_a_reader_with_registry_read_and_nobody_else(self) -> None:
+        registry = SqliteProjectRegistry(Path(self.directory.name) / "registry.sqlite3")
+        registered = registry.register(actor="test", idempotency_key="register", notion_page_id="page-1", code="SHOW")
+        assert isinstance(registered, Registered)
+        from t6.media import MediaStore
+        from t6.preview import PreviewTokens
+        store = MediaStore(registry, PreviewTokens("secret"))
+        for kind, ref, role in (("frameio-project", "fp1", "frameio-project"), ("resolve-project", "db/show", "working")):
+            values = {"owner": registered.project.id, "kind": kind, "ref": ref, "role": role}
+            preview = store.write("link", values, actor="person", idempotency_key="link-" + kind)
+            store.write("link", values, actor="person", idempotency_key="link-" + kind, confirm=preview.token)  # type: ignore[union-attr]
+        config = ServerConfig(grants=(Grant(WORKER_SECRET, registry_read=True), Grant("other-secret")))
+        app = WebhookApp(self.queue, config, self.clock, registry=registry)
+        links = RegistryClient(InProcess(app), WORKER_SECRET).media_links("frameio-project")
+        self.assertEqual([(l.ref, l.role, l.project_id, l.pages) for l in links],
+                         [("fp1", "frameio-project", registered.project.id, ("page-1",))])
+        self.assertEqual(RegistryClient(InProcess(app), WORKER_SECRET).media_links("resolve-project", "backup"), ())
+        with self.assertRaises(Exception):
+            RegistryClient(InProcess(app), "other-secret").media_links("frameio-project")
 
     def test_names_are_escaped_for_telegram_html(self) -> None:
         self.comment("c1", "<b>Tom & Jerry", "u-a", "2026-11-12T10:00:00Z")

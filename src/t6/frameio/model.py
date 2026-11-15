@@ -288,7 +288,7 @@ class BriefingLink(_Json):
     url: str | None
     last_activity: datetime
     active: bool
-    """The External Links row's Active box, which people set."""
+    """True for every live share: no External Links row holds an Active box any more."""
 
     @classmethod
     def from_json(cls, raw: Mapping[str, Any]) -> BriefingLink:
@@ -301,7 +301,7 @@ class BriefingLink(_Json):
 @dataclass(frozen=True, slots=True, kw_only=True)
 class BriefingShow(_Json):
     """One show's links. `project_page_ids` are the Notion Projects pages its Frame.io project is linked to;
-    empty when the Frame.io project has no External Links row yet."""
+    empty when the Frame.io project has no Media location yet."""
 
     frameio_project_id: str
     frameio_project_name: str

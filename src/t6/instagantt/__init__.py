@@ -1,8 +1,8 @@
 """Read Instagantt Standalone exports. Install with `pip install 't6[instagantt]'`.
 
 - `parse_export` / `read_export`: CSV export to `Timeline`s of `Task`s.
-- `link_timelines`: tie each Timeline to its Notion Project through External
-  Links; unmapped projects are reported, not guessed.
+- `link_timelines`: tie each Timeline to its Project through Media locations
+  (kind `timeline`); unmapped projects are reported, not guessed.
 
 Read only: writes to Instagantt go through the browser skill, and CSV import
 is never used to sync.

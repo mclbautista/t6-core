@@ -40,7 +40,7 @@ import httpx
 
 from t6.notion.client import NOTION_VERSION, AsyncNotionClient, RetryPolicy
 from t6.notion import named
-from t6.notion.external_links import ExternalLinksProperties as xl
+from t6.media_migration import ExternalLinksProperties as xl
 from t6.notion.models import ProjectsProperties as p
 from t6.notion.schema import load_snapshot
 from t6.notion.sync import NotionClient

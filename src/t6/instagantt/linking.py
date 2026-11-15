@@ -1,7 +1,8 @@
-"""Tie each Instagantt project to its Notion Project through External Links.
+"""Tie each Instagantt project to its Project through Media locations.
 
-Reads External Links rows only (System `instagantt`, Kind `project`). It
-reads no Notion date properties, and it writes nothing.
+Reads active Media locations of kind `timeline` only; an export's project ID
+is the Timeline ID (`t6t_`) of the location. It reads no Notion date
+properties, and it writes nothing.
 """
 
 from __future__ import annotations
@@ -9,25 +10,28 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from t6.instagantt.model import LinkedTimeline, LinkReport, Timeline, Unmapped
-from t6.notion.external_links import ExternalLinks
+from t6.media_links import MediaLinks
+
+MEDIA_KIND = "timeline"
 
 
-def link_timelines(timelines: Iterable[Timeline], links: ExternalLinks) -> LinkReport:
-    """Resolve every timeline. One row relating to exactly one Project links it.
+def link_timelines(timelines: Iterable[Timeline], links: MediaLinks) -> LinkReport:
+    """Resolve every timeline. Media locations that name it in exactly one Project link it.
 
-    No row, a row with no Project, or a row with several Projects is reported
-    as unmapped with the reason; nothing is guessed.
+    No location, or locations in several Projects, is reported as unmapped with
+    the reason; nothing is guessed.
     """
+    projects: dict[str, set[str]] = {}
+    for link in links.media_links(MEDIA_KIND):
+        projects.setdefault(link.ref, set()).add(link.project_id)
     linked: list[LinkedTimeline] = []
     unmapped: list[Unmapped] = []
     for timeline in timelines:
-        row = links.find(timeline.ref)
-        if row is None:
-            unmapped.append(Unmapped(timeline, "no External Links row"))
-        elif not row.project_ids:
-            unmapped.append(Unmapped(timeline, "External Links row has no Project"))
-        elif len(row.project_ids) > 1:
-            unmapped.append(Unmapped(timeline, "External Links row relates to several Projects"))
+        owners = projects.get(timeline.external_id, set())
+        if not owners:
+            unmapped.append(Unmapped(timeline, "no Media location"))
+        elif len(owners) > 1:
+            unmapped.append(Unmapped(timeline, "Media locations relate to several Projects"))
         else:
-            linked.append(LinkedTimeline(timeline, row.project_ids[0]))
+            linked.append(LinkedTimeline(timeline, next(iter(owners))))
     return LinkReport(tuple(linked), tuple(unmapped))

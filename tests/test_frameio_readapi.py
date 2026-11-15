@@ -19,8 +19,7 @@ from t6.frameio.model import Approval, BriefingShow, Comment, FrameioProject, Sh
 from t6.frameio.readapi import ReadApi
 from t6.frameio.reads import FrameioReads
 from t6.frameio.testing import FakeFrameio, StaticTokens
-from t6.notion.external_links import ExternalLinks
-from t6.notion.testing import FakeNotion
+from t6.media_links import StaticMediaLinks
 from t6.server.app import Request
 from t6.server.http import make_server
 from t6.worker.__main__ import ConfigError, read_api_server
@@ -67,13 +66,9 @@ class ReadApiTestCase(unittest.TestCase):
         self.frameio.add_file("f1", "Cut 1.mov")
         self.frameio.add_comment("f1", "c1", "Example comment")
         self.frameio.set_status("f1", "Approved")
-        self.notion = FakeNotion()
-        self.notion.add_data_source("ds-links")
-        client = self.notion.client()
-        self.addCleanup(client.close)
         reads = FrameioReads(
             FrameioApi(StaticTokens(), self.frameio.fetch, lambda _: None),
-            ExternalLinks(client, "ds-links"),
+            StaticMediaLinks(),
             now=lambda: NOW,
         )
         self.alerts: list[tuple[str, str]] = []

@@ -11,7 +11,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from t6.notion import codec
-from t6.notion.external_links import ExternalLinksProperties
+from t6.media_migration import ExternalLinksProperties
 from t6.notion.generated import DeliverablesRow, JobOrdersRow
 from t6.notion.models import project_from_page
 from t6.notion.sync import NotionClient

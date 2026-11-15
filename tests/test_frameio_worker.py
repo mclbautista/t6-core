@@ -408,10 +408,23 @@ class EntrypointTests(FrameioWorkerTestCase):
     def test_the_worker_built_from_the_environment_answers_reads_through_the_queue(self) -> None:
         adobe, fake = FakeAdobe(), FakeFrameioApi()
         fake.add_project("fp1", "Example Show")
-        fake.add_share("fp1", "s1", "Cut 1")
+        fake.add_share("fp1", "s1", "Cut 1", last_viewed_at="2026-11-03T10:00:00Z")
         token_file = Path(self.directory.name) / "frameio-token.json"
         environ = {**FRAMEIO_ENVIRON, **GATEWAY_ENVIRON, **ADOBE_ENVIRON, "T6_FRAMEIO_TOKEN_FILE": str(token_file)}
-        with mock.patch("t6.frameio.tokens.http_post", adobe), mock.patch("t6.frameio.api.http_fetch", fake.fetch):
+        asked: list[str] = []
+
+        class Registry:
+            def __init__(self, base_url: str) -> None:
+                pass
+
+            def send(self, method: str, path: str, headers: Any, body: bytes) -> tuple[int, dict[str, Any]]:
+                asked.append(f"{method} {path}")
+                link = {"id": "t6m_1", "owner": "t6p_1", "project": "t6p_1", "kind": "frameio-project",
+                        "ref": "fp1", "role": "frameio-project", "pages": ["page-1"]}
+                return 200, {"links": [link]}
+
+        with (mock.patch("t6.frameio.tokens.http_post", adobe), mock.patch("t6.frameio.api.http_fetch", fake.fetch),
+              mock.patch("t6.worker.__main__.HttpTransport", Registry)):
             tokens, run = frameio_backend(environ)
             tokens.exchange("code-1", urllib.parse.parse_qs(urllib.parse.urlsplit(tokens.sign_in_url()).query)["state"][0])
             worker = Worker(
@@ -425,8 +438,10 @@ class EntrypointTests(FrameioWorkerTestCase):
         assert isinstance(result, Ok)
         self.assertEqual([link.url for link in decode(ShareLinks, result.value)], ["https://f.io/s1"])
         self.assertEqual(fake.tokens_seen[0], "Bearer access-1")
-        assert isinstance(feed, Failed)
-        self.assertIn("T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE", feed.reason)
+        assert isinstance(feed, Ok)
+        self.assertEqual([(show.frameio_project_id, show.project_page_ids) for show in decode(BriefingFeed, feed.value)],
+                         [("fp1", ("page-1",))])
+        self.assertEqual(asked, ["GET /registry/media-links/frameio-project"])
 
     def test_the_alert_needs_the_gateway_and_a_chat(self) -> None:
         for name in GATEWAY_ENVIRON:

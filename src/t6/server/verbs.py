@@ -93,7 +93,7 @@ class VerbAPI:
             from t6.verbs import MediaMigrateInput
             from t6.media import MediaStore
             from t6.notion import NotionError
-            from t6.notion.external_links import read_media_migration_rows
+            from t6.media_migration import read_external_links_once_for_migration
             try:
                 data = json.loads(request.body)
                 if not isinstance(data, dict) or set(data) - {'idempotency_key', 'confirm'}:
@@ -107,7 +107,7 @@ class VerbAPI:
                 if not token or not signing or not self.data_sources.get('external_links'):
                     return self.refused('config', 'Notion and preview configuration are required')
                 with self.open_notion(token) as client:
-                    rows = read_media_migration_rows(client, self.data_sources['external_links'])
+                    rows = read_external_links_once_for_migration(client, self.data_sources['external_links'])
                 result = MediaStore(self.people.registry, self.people.tokens).migrate_write(
                     rows, actor=actor, idempotency_key=key or inputs.idempotency_key, confirm=inputs.confirm)
                 return Response(200, result.model_dump(mode='json'))
@@ -647,6 +647,9 @@ class VerbAPI:
                 record = store.get(inputs.ref)
                 return Done(result={'deliverable': record}) if record else Refused(rule='deliverable', reason='Deliverable not found')
             return Done(result={'deliverables': store.list(inputs.project)})
+        if noun == 'external-link':
+            from t6.media import external_link_result
+            return Done(result={'link': external_link_result(self.people.registry, inputs.system, inputs.kind, inputs.external_id)})
         token = os.environ.get(TOKEN_VARIABLE)
         if not token:
             return Refused(rule='config', reason='Notion token is not configured')
@@ -703,15 +706,6 @@ class VerbAPI:
                     if person:
                         item.update({key: person[key] for key in ('kind', 'departments', 'roles', 'project_roles', 'shift', 'permissions', 'master_brief', 'active')})
                     return Done(result={'person': item})
-                if noun == 'external-link':
-                    from t6.domain import ExternalRef
-                    from t6.notion.external_links import ExternalLinks
-                    link = ExternalLinks(client, self.data_sources['external_links']).find(
-                        ExternalRef(system=inputs.system, kind=inputs.kind, external_id=inputs.external_id))
-                    link_item = asdict(link) if link else None
-                    if link_item is not None:
-                        link_item['project_ids'] = [refs.identity(page) or page for page in link_item['project_ids']]
-                    return Done(result={'link': link_item})
                 if noun == 'studio':
                     source = client.retrieve_data_source(self.data_sources['projects'])
                     description = ''.join(part.get('plain_text', (part.get('text') or {}).get('content', ''))

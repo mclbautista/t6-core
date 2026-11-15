@@ -29,13 +29,13 @@ Camera and ExternalRef.
   two Projects with a T6 ID are equal when the IDs match, whatever page each
   was read from. A Project read before registration and the same Project read
   after are not equal values; compare through `ProjectRefs.same`. Episodes
-  carry the Project's `key`. Job Orders, Deliverables and External Links still
+  carry the Project's `key`. Job Orders, Deliverables and External Links (until its migration) still
   hold page IDs; see [Migrating existing Projects](#migrating-existing-projects).
 - A Project's human key is its Project Code, which may be blank (`None`).
 - `Project.episodes` derives Episodes 1 to `Eps` for the series Project Types
   (`SERIES_PROJECT_TYPES`). Films and other types have no Episodes.
 - An ExternalRef (system, kind, external ID, URL, internal ID) mirrors one
-  External Links row. System, kind and external ID identify the object; the URL
+  retired External Links row. System, kind and external ID identify the object; the URL
   and the optional internal ID (the tool's own key, such as the project
   server's project ID) are carried but do not affect equality.
 
@@ -114,7 +114,7 @@ Mac mini. Both use only the standard library.
 | `T6_FRAMEIO_REDIRECT_URI` | Frame.io worker: required, the `https://` address of the server's `/frameio/callback`, exactly as set on the Adobe credential |
 | `T6_FRAMEIO_TOKEN_FILE` | Frame.io worker: required, where the token is kept, on a volume only this worker mounts |
 | `T6_FRAMEIO_ACCOUNT_ID` | Frame.io worker: optional, the Frame.io account ID; needed only when the sign-in sees more than one account |
-| `T6_NOTION_TOKEN`, `T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE` | Frame.io worker: optional, turn on the briefing feed and External Links rows; main worker: resolve review messages to Project Chat links |
+| `T6_SERVER_URL`, `T6_WORKER_SECRET` (the secret needs registry read) | Frame.io worker: turn on the briefing feed from Media locations; main worker: resolve review messages to Project Chat links |
 | `T6_FRAMEIO_READ_BIND`, `T6_FRAMEIO_READ_SECRET` | Frame.io worker: optional, turn on the [read API](#frameio): `host:port` on the LAN or tailnet address (never a public one) and the bearer secret callers send. Both are needed together |
 | `T6_FRAMEIO_READ_URL`, `T6_FRAMEIO_READ_SECRET` | t6 API: Frame.io worker read API URL and bearer secret, needed for `version add` to resolve the file and stack. |
 
@@ -326,10 +326,8 @@ every call and raises `RegistryUnavailable` when there is none.
 
 - `Lookup(index, same_project=refs.same)`: `deliverable(text, project_id=)`
   takes either form.
-- `ExternalLinks(client, data_source_id, refs)`: `refs_for_project` and
-  `links_for_project` take either form and find rows related to any page the
-  Project has had. `ensure(project_id=)` relates a new row to the active page.
-  Without `refs` a Project is its page ID, as before.
+- Media locations belong to the T6 Project, so they stay attached when its
+  Notion page is replaced; `MediaLink.pages` lists the active page first.
 - `InMemoryDriveStore(same_project=refs.same)` finds a Project's open
   Assignments under either form. A Drive store you write should match
   `Ref.page_id` the same way.
@@ -709,13 +707,12 @@ if isinstance(result, Ok):
   live share links whose latest activity is after `since`. Activity is the
   later of the share's last view and its newest entry in Frame.io's activity
   list. Each group carries the Notion Projects pages its Frame.io project is
-  linked to (`frameio` / `project` External Links row), or none. The feed also
-  gives every live share link a `frameio` / `share_link` External Links row
-  if it has none, and moves the row's Last Activity forward. It reports the
-  row's Active box and never writes it. Running it again creates no
-  duplicate. The feed needs `T6_NOTION_TOKEN` and
-  `T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE` on the Frame.io worker and the
-  `notion` extra; the other reads do not. A feed over many share links can
+  linked to (the Media location of kind `frameio-project`), or none. The feed
+  writes nothing, neither to Notion nor to t6: share links have no row and no
+  Last Activity stamp, because activity is read from Frame.io each time, and
+  every live share is reported `active`. The feed needs `T6_SERVER_URL` and
+  `T6_WORKER_SECRET` on the Frame.io worker, and the secret needs registry read.
+  A feed over many share links can
   take minutes because of Frame.io's rate limit, so give `ask` a long
   `timeout`.
 - **Read API.** With `T6_FRAMEIO_READ_BIND` and `T6_FRAMEIO_READ_SECRET` set,
@@ -771,8 +768,8 @@ if isinstance(result, Ok):
   main worker runs `frameio.review_done` (`t6.worker.review.ReviewMessage`)
   and sends one Telegram message through the gateway's `/notify` to
   the first active Project Chat link, or `T6_REVIEW_CHAT` (and `T6_REVIEW_TOPIC`
-  if set) when no link is found. The main worker needs the Notion External Links
-  data source configured to resolve the Frame.io project. The message has the file's title, who
+  if set) when no link is found. The main worker resolves the Frame.io project through its
+  Media location (kind `frameio-project`). The message has the file's title, who
   commented, when they started and stopped (Manila time), how many comments they
   made and how many the file has in total, and two links: the newest share
   that is on, not expired and made from the file (its short URL, or "no share
@@ -795,11 +792,10 @@ if isinstance(result, Ok):
 `t6.instagantt` reads an Instagantt Standalone export saved as CSV (stdlib
 only; no Excel). `read_export(path)` / `parse_export(text)` return a
 `Timeline` per Instagantt project, each with its `Task`s (name, start, end; a
-blank end is a milestone). `link_timelines(timelines, ExternalLinks(...))`
-ties each timeline to its Notion Project through an External Links row
-(System `instagantt`, Kind `project`, External ID = the export's Project ID,
-or the project name when the export has none). A project with no row, a row
-with no Project or a row with several Projects comes back in `unmapped` with
+blank end is a milestone). `link_timelines(timelines, links)`
+ties each timeline to its Project through Media locations (kind `timeline`,
+ref = the export's Project ID, which is the Timeline ID `t6t_`). A project with no Media location, or with
+locations in several Projects, comes back in `unmapped` with
 a reason; nothing is guessed. It reads no Notion dates and writes nothing.
 The column names are assumed, not yet checked against a live export.
 
@@ -844,23 +840,6 @@ clients (the async client also has `iter_block_children`). The sync and async
 clients take the same arguments. An append is a write under the retry policy
 below: if a later request of a long append fails, the earlier requests are
 already saved.
-
-### External Links
-
-`t6.notion.external_links.ExternalLinks(client, data_source_id)` reads and
-writes the External Links database:
-
-- `refs_for_project(project_id)` returns the Project's rows as ExternalRefs,
-  Internal ID included. `links_for_project` also returns the row's page ID,
-  Active and Last Activity. With a `ProjectRefs` as the third argument, either
-  accepts a T6 ID or any page of the Project.
-- `ensure(ref, project_id=...)` creates a row only when no row has the same
-  System, Kind and External ID. If one exists, it is returned and nothing is
-  written. It never sets Active, because people do.
-- `touch(page_id, when)` sets Last Activity and writes nothing else.
-
-The property names and types are not yet checked against the live database
-(see the module docstring).
 
 ### Retry policy
 
@@ -1635,9 +1614,10 @@ with `pip install 't6[resolve]'`.
   project in the root folder has no folder segment. `ResolveProject.ref` is the
   ExternalRef (system `resolve`, kind `project`, Internal ID the server's
   project ID).
-- `map_projects(projects, external_links)` matches projects to External Links
-  rows. `unmapped` holds projects with no row or no Notion Project;
-  `orphan_links` holds rows whose project is no longer on the server.
+- `map_projects(projects, links)` matches projects to Media locations (kind
+  `resolve-project`, role `working`). `unmapped` holds projects with no
+  location; `orphan_links` holds locations whose project is no longer on the
+  server.
 - `schema_for(version)` returns an assumed table layout per `DaVinci Resolve
   Version`. Tests use synthetic SQLite fixtures in `tests/fixtures/resolve/`.
 

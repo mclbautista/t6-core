@@ -11,11 +11,13 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from t6.domain import ExternalRef
-from t6.notion.external_links import ExternalLink, ExternalLinks
+from t6.media_links import MediaLink, MediaLinks
 from t6.resolve.schema import ProjectServerSchema
 
 SYSTEM = "resolve"
 KIND = "project"
+MEDIA_KIND = "resolve-project"
+MEDIA_ROLE = "working"
 
 
 class ReadOnlyViolation(Exception):
@@ -117,23 +119,23 @@ class ProjectServer:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MappingReport:
-    """Server projects against External Links rows."""
+    """Server projects against Media locations (kind resolve-project, role working)."""
 
-    mapped: tuple[tuple[ResolveProject, ExternalLink], ...]
-    unmapped: tuple[ResolveProject, ...]  # no row, or a row with no Notion Project
-    orphan_links: tuple[ExternalLink, ...]  # rows whose project is not on the server
+    mapped: tuple[tuple[ResolveProject, MediaLink], ...]
+    unmapped: tuple[ResolveProject, ...]  # no Media location
+    orphan_links: tuple[MediaLink, ...]  # locations whose project is not on the server
 
 
 def map_projects(
-    projects: Sequence[ResolveProject], links: ExternalLinks
+    projects: Sequence[ResolveProject], links: MediaLinks
 ) -> MappingReport:
-    """Match each project to its External Links row and Notion Project. Reads only."""
-    by_id = {link.ref.external_id: link for link in links.links_for_system(SYSTEM, KIND)}
-    mapped: list[tuple[ResolveProject, ExternalLink]] = []
+    """Match each project to the Media location that names it, and so to its Project. Reads only."""
+    by_id = {link.ref: link for link in links.media_links(MEDIA_KIND, MEDIA_ROLE)}
+    mapped: list[tuple[ResolveProject, MediaLink]] = []
     unmapped: list[ResolveProject] = []
     for project in projects:
         link = by_id.get(project.external_id)
-        if link is not None and link.project_ids:
+        if link is not None:
             mapped.append((project, link))
         else:
             unmapped.append(project)

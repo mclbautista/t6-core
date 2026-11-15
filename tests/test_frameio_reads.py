@@ -1,4 +1,4 @@
-"""Frame.io reads and the briefing feed on a fake Frame.io API and the fake Notion. No real client data."""
+"""Frame.io reads and the briefing feed on a fake Frame.io API and fake Media locations. No real client data."""
 
 from datetime import datetime, timezone
 from typing import Any
@@ -18,10 +18,8 @@ from t6.frameio.api import RATE_LIMIT_TRIES, FrameioApi, FrameioError
 from t6.frameio.model import Approval, BriefingShow, Comment, FrameioProject, ShareLink, Version, decode
 from t6.frameio.reads import FrameioReads
 from t6.frameio.testing import FakeFrameio, StaticTokens
-from t6.notion.external_links import ExternalLinks
-from t6.notion.testing import FakeNotion, external_link_properties
+from t6.media_links import MediaLink, StaticMediaLinks
 
-LINKS = "ds-external-links"
 NOW = datetime(2026, 11, 8, 8, 0, tzinfo=timezone.utc)
 SINCE = datetime(2026, 11, 1, 8, 0, tzinfo=timezone.utc)
 BEFORE, AFTER = "2026-10-30T10:00:00Z", "2026-11-03T10:00:00Z"
@@ -33,15 +31,8 @@ class ReadsTestCase(unittest.TestCase):
         self.tokens = StaticTokens()
         self.waits: list[float] = []
         self.api = FrameioApi(self.tokens, self.frameio.fetch, self.waits.append)
-        self.notion = FakeNotion()
-        self.notion.add_data_source(LINKS)
-        client = self.notion.client()
-        self.addCleanup(client.close)
-        self.links = ExternalLinks(client, LINKS)
+        self.links = StaticMediaLinks()
         self.reads = FrameioReads(self.api, self.links, now=lambda: NOW)
-
-    def rows(self, kind: str = "share_link") -> dict[str, tuple[str, ...]]:
-        return {row.ref.external_id: row.project_ids for row in self.links.links_for_system("frameio", kind)}
 
 
 class ReadTests(ReadsTestCase):
@@ -200,9 +191,10 @@ class BriefingFeedTests(ReadsTestCase):
         self.frameio.add_project("fp1", "Example Show")
         self.frameio.add_project("fp2", "Second Show")
         self.frameio.add_project("fp3", "Quiet Show")
-        self.notion.add_page(
-            LINKS, external_link_properties(system="frameio", kind="project", external_id="fp1", projects=["show-1"])
-        )
+        self.links.add(MediaLink(id="t6m_1", owner="t6p_1", project_id="t6p_1", kind="frameio-project",
+                                 ref="fp1", role="frameio-project", pages=("show-1", "old-show-1")))
+        self.links.add(MediaLink(id="t6m_2", owner="t6p_2", project_id="t6p_2", kind="resolve-project",
+                                 ref="fp2", role="working", pages=("show-2",)))  # another kind is not a Frame.io link
 
     def feed(self, since: datetime = SINCE) -> tuple[BriefingShow, ...]:
         return decode(BriefingFeed, self.reads(BriefingFeed(since=since)))
@@ -221,7 +213,7 @@ class BriefingFeedTests(ReadsTestCase):
         shows = self.feed()
         self.assertEqual([show.frameio_project_id for show in shows], ["fp1", "fp2"])
         first, second = shows
-        self.assertEqual((first.frameio_project_name, first.project_page_ids), ("Example Show", ("show-1",)))
+        self.assertEqual((first.frameio_project_name, first.project_page_ids), ("Example Show", ("show-1", "old-show-1")))
         self.assertEqual([(link.share_id, link.url) for link in first.links], [("s-viewed", "https://f.io/s-viewed")])
         self.assertEqual(second.project_page_ids, ())
         self.assertEqual([link.share_id for link in second.links], ["s-commented"])
@@ -231,41 +223,36 @@ class BriefingFeedTests(ReadsTestCase):
         self.frameio.add_share("fp1", "s1", "Cut 1", last_viewed_at="2026-11-01T08:00:00Z")
         self.assertEqual(self.feed(), ())
 
-    def test_every_live_link_gets_one_external_links_row_and_a_second_run_adds_none(self) -> None:
+    def test_the_feed_reads_media_locations_and_writes_nothing_to_notion(self) -> None:
+        """Share links get no row and no Last Activity stamp: the link lives only in t6."""
         self.frameio.add_share("fp1", "s-viewed", "Cut 1", last_viewed_at=AFTER)
         self.frameio.add_share("fp1", "s-never", "Cut 2")
         self.frameio.add_share("fp1", "s-off", "Cut 3", enabled=False)
         self.frameio.add_share("fp2", "s-unlinked", "Trailer")
-        self.feed()
-        self.assertEqual(self.rows(), {"s-viewed": ("show-1",), "s-never": ("show-1",), "s-unlinked": ()})
-        pages = self.notion.page_count()
-        self.feed()
-        self.assertEqual(self.notion.page_count(), pages)
+        shows = self.feed()
+        self.assertEqual([(s.frameio_project_id, [l.share_id for l in s.links]) for s in shows],
+                         [("fp1", ["s-viewed"])])
+        self.assertEqual(self.links.calls, [("frameio-project", None)])
+        self.assertEqual(sorted(name for name in dir(self.links) if name in ("ensure", "touch", "link")), [])
 
-    def test_a_link_that_already_has_a_row_keeps_it_and_its_active_box_is_reported_not_written(self) -> None:
+    def test_every_live_link_with_activity_is_reported_active(self) -> None:
+        """No External Links row holds an Active box any more, so a live share is active."""
         self.frameio.add_share("fp1", "s1", "Cut 1", last_viewed_at=AFTER)
         self.frameio.add_share("fp1", "s2", "Cut 2", last_viewed_at=AFTER)
-        self.notion.add_page(
-            LINKS, external_link_properties(system="frameio", kind="share_link", external_id="s1", active=True)
-        )
-        links = {link.share_id: link.active for link in self.feed()[0].links}
-        self.assertEqual(links, {"s1": True, "s2": False})
-        self.assertEqual(len(self.rows()), 2)
-        self.assertFalse(any(b'"Active"' in request.content for request in self.notion.requests))
-        self.assertTrue(self.links.links_for_system("frameio", "share_link")[0].active)
+        self.assertEqual({link.share_id: link.active for link in self.feed()[0].links}, {"s1": True, "s2": True})
 
-    def test_last_activity_on_the_row_moves_forward_only(self) -> None:
+    def test_a_second_run_reports_the_same_links_because_activity_is_read_live(self) -> None:
         self.frameio.add_share("fp1", "s1", "Cut 1", last_viewed_at=AFTER)
-        self.feed()
-        (row,) = self.links.links_for_system("frameio", "share_link")
-        self.assertEqual(row.last_activity, datetime(2026, 11, 3, 10, tzinfo=timezone.utc))
-        patches = sum(request.method == "PATCH" for request in self.notion.requests)
-        self.feed()
-        self.assertEqual(sum(request.method == "PATCH" for request in self.notion.requests), patches)
+        self.assertEqual(self.feed(), self.feed())
 
-    def test_without_external_links_the_feed_fails_and_the_reads_still_work(self) -> None:
+    def test_an_unlinked_frameio_project_has_no_pages(self) -> None:
+        self.frameio.add_share("fp2", "s-unlinked", "Trailer", last_viewed_at=AFTER)
+        (show,) = self.feed()
+        self.assertEqual((show.frameio_project_id, show.project_page_ids), ("fp2", ()))
+
+    def test_without_media_locations_the_feed_fails_and_the_reads_still_work(self) -> None:
         reads = FrameioReads(self.api, now=lambda: NOW)
-        with self.assertRaisesRegex(RuntimeError, "T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE"):
+        with self.assertRaisesRegex(RuntimeError, "T6_SERVER_URL"):
             reads(BriefingFeed(since=SINCE))
         self.assertEqual(len(decode(FrameioProjects, reads(FrameioProjects()))), 3)
 

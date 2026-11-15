@@ -729,6 +729,18 @@ class WebhookApp:
             if row is None:
                 return Response(404)
             return Response(200, {"version": {"id": row[0], "deliverable": row[1], "note": row[2], "locked": bool(row[3])}})
+        if len(steps) in (2, 3) and steps[0] == "media-links":
+            if request.method != "GET":
+                return Response(405)
+            if not any(g.registry_read for g in grants):
+                return Response(403, {"error": "registry read not allowed"})
+            from t6.media import active_links
+            from t6.registry.sqlite import SqliteProjectRegistry
+            if not isinstance(registry, SqliteProjectRegistry):
+                return Response(503, {"error": "media locations unavailable"})
+            return Response(200, {"links": [
+                {"id": l.id, "owner": l.owner, "project": l.project_id, "kind": l.kind, "ref": l.ref, "role": l.role, "pages": list(l.pages)}
+                for l in active_links(registry, steps[1], steps[2] if len(steps) == 3 else None)]})
         if len(steps) == 2 and steps[0] == "review-chat":
             if request.method != "GET":
                 return Response(405)

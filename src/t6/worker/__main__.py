@@ -171,14 +171,9 @@ def configured_handlers(
         from t6.worker.registry import RegistryClient
 
         review_registry = RegistryClient(transport, settings.secret)
-        target = None
-        external_links = environ.get("T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE")
-        if token and external_links:
-            from t6.notion import NotionClient
-            from t6.notion.external_links import ExternalLinks
-            from t6.worker.review_target import ReviewTarget
+        from t6.worker.review_target import ReviewTarget
 
-            target = ReviewTarget(ExternalLinks(NotionClient(token), external_links), review_registry)
+        target = ReviewTarget(review_registry, review_registry)
 
         track_send = None
         if environ.get("T6_DATABASE"):
@@ -203,9 +198,9 @@ def frameio_backend(environ: Mapping[str, str]) -> tuple[Tokens, Run]:
 
     The token store signs in to Adobe with the OAuth Web App credential in the
     environment and keeps the token in `T6_FRAMEIO_TOKEN_FILE`. With
-    `T6_NOTION_TOKEN` and `T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE` set, the
-    briefing feed works and live share links get External Links rows (needs
-    the `notion` extra); without them the other reads still work.
+    `T6_SERVER_URL` and `T6_WORKER_SECRET` (the secret needs registry read), the
+    briefing feed finds each Frame.io project's Project in the server's Media
+    locations. It writes nothing to Notion; without them the other reads still work.
     """
     names = ("T6_FRAMEIO_CLIENT_ID", "T6_FRAMEIO_CLIENT_SECRET", "T6_FRAMEIO_REDIRECT_URI", "T6_FRAMEIO_TOKEN_FILE")
     missing = [name for name in names if not environ.get(name)]
@@ -222,13 +217,11 @@ def frameio_backend(environ: Mapping[str, str]) -> tuple[Tokens, Run]:
         Path(environ["T6_FRAMEIO_TOKEN_FILE"]),
     )
 
-    links = None
-    notion_token, data_source = environ.get("T6_NOTION_TOKEN"), environ.get("T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE")
-    if notion_token and data_source:
-        from t6.notion import NotionClient
-        from t6.notion.external_links import ExternalLinks
+    from t6.worker.registry import RegistryClient
 
-        links = ExternalLinks(NotionClient(notion_token), data_source)
+    links = None
+    if environ.get("T6_SERVER_URL") and environ.get("T6_WORKER_SECRET"):
+        links = RegistryClient(HttpTransport(environ["T6_SERVER_URL"]), environ["T6_WORKER_SECRET"])
     from t6.frameio.api import FrameioApi
     from t6.frameio.reads import FrameioReads
 

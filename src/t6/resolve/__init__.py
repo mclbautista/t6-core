@@ -4,10 +4,10 @@
   It refuses unverified schemas and roles detected as writable.
 - `ResolveProject`: database, folder path, name and internal ID. Its
   `external_id` is `<database>/<folder path>/<project name>`, and `ref` is the
-  ExternalRef for External Links (system `resolve`, kind `project`, internal ID
-  the server's project ID).
-- `map_projects(projects, links)`: match projects to External Links rows and
-  report the unmapped ones.
+  ExternalRef (system `resolve`, kind `project`, internal ID the server's
+  project ID).
+- `map_projects(projects, links)`: match projects to Media locations (kind
+  `resolve-project`, role `working`) and report the unmapped ones.
 - `schema_for(version)`: table layout per `DaVinci Resolve Version`.
 - `t6.resolve.postgres.PostgresDatabase`: the live connection.
 """

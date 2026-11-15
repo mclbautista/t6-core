@@ -52,16 +52,16 @@ class MediaTests(unittest.TestCase):
         self.assertEqual(len(store.list(project.project.id)), 1)
         self.assertEqual(result['entries'][0]['page_id'], 'chat-row')
 
-    def test_fake_notion_reader_retains_unclassifiable_rows(self) -> None:
+    def test_one_off_migration_reader_retains_unclassifiable_rows(self) -> None:
         from t6.notion.testing import FakeNotion, external_link_properties
-        from t6.notion.external_links import read_media_migration_rows
+        from t6.media_migration import read_external_links_once_for_migration
         fake = FakeNotion()
         fake.add_data_source('links')
         fake.add_page('links', external_link_properties(system='Frame.io', kind='project', external_id='ref', projects=['page']))
         fake.add_page('links', external_link_properties(system='Telegram', kind='chat', external_id='ref', projects=['page']))
         fake.add_page('links', external_link_properties(system='resolve', kind='project', external_id='db/show', projects=['page']))
         with fake.client() as client:
-            rows = read_media_migration_rows(client, 'links')
+            rows = read_external_links_once_for_migration(client, 'links')
         self.assertEqual({row['system'] for row in rows}, {'Frame.io', 'Telegram', 'resolve'})
         self.assertEqual(len(rows), 3)
 
@@ -81,15 +81,15 @@ class MediaTests(unittest.TestCase):
         store.migrate(rows, actor='person', apply=True, digest=preview['digest'])
         self.assertEqual([location['ref'] for location in store.list(project.project.id)], ['db/live'])
 
-    def test_fake_notion_reader_carries_the_active_checkbox(self) -> None:
+    def test_one_off_migration_reader_carries_the_active_checkbox(self) -> None:
         from t6.notion.testing import FakeNotion, external_link_properties
-        from t6.notion.external_links import read_media_migration_rows
+        from t6.media_migration import read_external_links_once_for_migration
         fake = FakeNotion()
         fake.add_data_source('links')
         fake.add_page('links', external_link_properties(system='resolve', kind='project', external_id='on', projects=['page'], active=True))
         fake.add_page('links', external_link_properties(system='resolve', kind='project', external_id='off', projects=['page'], active=False))
         with fake.client() as client:
-            rows = read_media_migration_rows(client, 'links')
+            rows = read_external_links_once_for_migration(client, 'links')
         self.assertEqual({row['ref']: row['active'] for row in rows}, {'on': True, 'off': False})
 
     def test_link_input_schema_lists_kinds_and_roles(self) -> None:
@@ -183,3 +183,85 @@ class MediaTests(unittest.TestCase):
         preview = store.migrate(rows, actor='person')
         self.assertEqual(preview['review'], [])
         self.assertEqual(preview['entries'][0]['owner'], deliverable)
+
+
+def linked(registry: 'MemoryRegistry', store: MediaStore, owner: str, kind: str, ref: str, role: str, again: str = '') -> str:
+    values = {'owner': owner, 'kind': kind, 'ref': ref, 'role': role}
+    key = 'link-' + kind + ref + role + again
+    preview = store.write('link', values, actor='person', idempotency_key=key)
+    assert isinstance(preview, Preview)
+    result = store.write('link', values, actor='person', idempotency_key=key, confirm=preview.token)
+    assert isinstance(result, Done)
+    return str(result.result['media_id'])
+
+
+class ReaderTests(unittest.TestCase):
+    """Readers outside the verbs ask for Media locations by kind and role."""
+
+    def setUp(self) -> None:
+        self.registry = MemoryRegistry()
+        self.addCleanup(self.registry.db.close)
+        self.registry._new_id = lambda: str(T6Id.mint(EntityKind.PROJECT))
+        first = self.registry.register(actor='setup', idempotency_key='one', notion_page_id='page-one')
+        second = self.registry.register(actor='setup', idempotency_key='two', notion_page_id='page-two')
+        assert isinstance(first, Registered) and isinstance(second, Registered)
+        self.first, self.second = first.project.id, second.project.id
+        self.store = MediaStore(self.registry, PreviewTokens('secret'))
+
+    def test_active_links_filter_by_kind_and_role_and_carry_the_notion_pages(self) -> None:
+        from t6.media import active_links
+        frame = linked(self.registry, self.store, self.first, 'frameio-project', 'fp1', 'frameio-project')
+        resolve = linked(self.registry, self.store, self.second, 'resolve-project', 'db/show', 'working')
+        linked(self.registry, self.store, self.second, 'resolve-project', 'db/old', 'master')
+        self.assertEqual([(l.id, l.project_id, l.ref, l.pages) for l in active_links(self.registry, 'frameio-project')],
+                         [(frame, self.first, 'fp1', ('page-one',))])
+        self.assertEqual([l.id for l in active_links(self.registry, 'resolve-project', 'working')], [resolve])
+        self.assertEqual(len(active_links(self.registry, 'resolve-project')), 2)
+        self.assertEqual(active_links(self.registry, 'timeline'), ())
+
+    def test_an_unlinked_location_is_not_read_and_a_relink_is_read_again(self) -> None:
+        from t6.media import active_links
+        media = linked(self.registry, self.store, self.first, 'frameio-project', 'fp1', 'frameio-project')
+        unlink = self.store.write('unlink', {'media': media}, actor='person', idempotency_key='off')
+        assert isinstance(unlink, Preview)
+        self.store.write('unlink', {'media': media}, actor='person', idempotency_key='off', confirm=unlink.token)
+        self.assertEqual(active_links(self.registry, 'frameio-project'), ())
+        self.assertEqual(linked(self.registry, self.store, self.first, 'frameio-project', 'fp1', 'frameio-project', 'again'), media)
+        self.assertEqual(len(active_links(self.registry, 'frameio-project')), 1)
+
+    def test_locations_stay_attached_after_the_notion_page_is_replaced(self) -> None:
+        from t6.media import active_links
+        linked(self.registry, self.store, self.first, 'frameio-project', 'fp1', 'frameio-project')
+        with self.registry._transaction() as db:
+            db.execute("UPDATE bindings SET active=0 WHERE page_id='page-one'")
+            db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', 'page-new', ?, 1, 1)", (self.first,))
+        (link,) = active_links(self.registry, 'frameio-project')
+        self.assertEqual((link.project_id, link.pages), (self.first, ('page-new', 'page-one')))
+
+    def test_a_frameio_project_belongs_to_one_project_and_the_refusal_names_the_holder(self) -> None:
+        from t6.verbs import Refused
+        linked(self.registry, self.store, self.first, 'frameio-project', 'fp1', 'frameio-project')
+        values = {'owner': self.second, 'kind': 'frameio-project', 'ref': 'fp1', 'role': 'frameio-project'}
+        refused = self.store.write('link', values, actor='person', idempotency_key='second')
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'frameio_project')
+        self.assertIn(self.first, refused.reason)
+
+    def test_find_external_answers_the_old_external_link_lookup_from_media_locations(self) -> None:
+        from t6.media import find_external
+        media = linked(self.registry, self.store, self.second, 'resolve-project', 'db/show', 'working')
+        found = find_external(self.registry, 'Resolve', 'Project', 'db/show')
+        assert found is not None
+        self.assertEqual((found.id, found.project_id, found.pages), (media, self.second, ('page-two',)))
+        self.assertIsNone(find_external(self.registry, 'resolve', 'project', 'missing'))
+        self.assertIsNone(find_external(self.registry, 'telegram', 'chat', 'db/show'))
+
+    def test_t6_core_has_no_use_of_the_external_links_reader(self) -> None:
+        import re
+        from pathlib import Path
+        root = Path(__file__).resolve().parent.parent / 'src'
+        pattern = re.compile(r'notion\.external_links|\bExternalLinks\b|\bExternalLink\b')
+        offenders = [str(path) for path in root.rglob('*.py') if pattern.search(path.read_text())]
+        self.assertEqual(offenders, [])
+        with self.assertRaises(ImportError):
+            __import__('t6.notion.external_links')

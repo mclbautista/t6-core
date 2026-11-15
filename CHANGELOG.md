@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here, following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Frame.io reads, Resolve `map_projects`, Instagantt linking and the review message read Media locations (by kind and role) instead of the Notion External Links database (#261). The briefing feed writes nothing to Notion: no share-link rows, no Last Activity stamps; a live share is `active`.
+- `external-link find` is answered from Media locations; its `page_id` is the Media location ID.
+- The Frame.io worker needs `T6_SERVER_URL` and `T6_WORKER_SECRET` (registry read) for the briefing feed; `T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE` is no longer read by any worker.
+
+### Removed
+
+- `t6.notion.external_links`. Only the migration's one-off row read remains, in `t6.media_migration`.
+
 ## [0.4.1] - 2026-11-15
 
 ### Added

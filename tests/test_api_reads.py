@@ -25,7 +25,6 @@ class ReadTests(unittest.TestCase):
         self.notion = FakeNotion()
         for source in ('projects', 'job_orders', 'deliverables', 'meeting_notes', 'contacts', 'cameras'):
             self.notion.add_snapshot_data_source(source, source)
-        self.notion.add_data_source('external_links')
         self.notion.add_page('projects', {'Name': title('Client Corp campaign')})
         self.person = self.notion.add_page('contacts', {'Name': title('Ana Cruz')})
         self.camera = self.notion.add_page('cameras', {'Name': title('Camera One')})
@@ -44,7 +43,7 @@ class ReadTests(unittest.TestCase):
         self.api = VerbAPI(People(registry, PreviewTokens('key')), JobQueue(self.tmp.name + '/queue'),
                            {'secret': 'reports', 'operator': operator}, lambda _: self.notion.client(),
                            privacy_registry=Registry(people=[Person(name='Client Corp')]),
-                           data_sources={name: name for name in ('projects', 'job_orders', 'deliverables', 'meeting_notes', 'contacts', 'cameras', 'external_links')})
+                           data_sources={name: name for name in ('projects', 'job_orders', 'deliverables', 'meeting_notes', 'contacts', 'cameras')})
         env = patch.dict(os.environ, {'T6_NOTION_TOKEN': 'fake'})
         env.start()
         self.addCleanup(env.stop)
@@ -265,14 +264,27 @@ class ReadTests(unittest.TestCase):
         assert isinstance(result, Done)
         self.assertEqual(result.result['person']['t6_id'], person_id)
 
-    def test_external_link_find_for_reports_instagantt(self) -> None:
-        from t6.notion.testing import external_link_properties
-        from t6.verbs import ExternalLinkFindInput
-        self.notion.add_page('external_links', external_link_properties(
-            system='Instagantt', kind='timeline', external_id='timeline-1', projects=[self.project['id']]))
-        result = self.client.external_link_find(ExternalLinkFindInput(system='Instagantt', kind='timeline', external_id='timeline-1'))
+    def test_external_link_find_for_reports_instagantt_reads_media_locations(self) -> None:
+        from t6.ids import EntityKind, T6Id
+        from t6.media import MediaStore
+        from t6.registry import Registered
+        from t6.verbs import ExternalLinkFindInput, Preview
+        registered = self.registry.register(actor='setup', idempotency_key='timeline-project', notion_page_id=self.project['id'])
+        assert isinstance(registered, Registered)
+        project = registered.project.id
+        timeline = str(T6Id.mint(EntityKind.TIMELINE))
+        store = MediaStore(self.registry, PreviewTokens('key'))
+        values = {'owner': project, 'kind': 'timeline', 'ref': timeline, 'role': 'working'}
+        preview = store.write('link', values, actor='person', idempotency_key='link-timeline')
+        assert isinstance(preview, Preview)
+        store.write('link', values, actor='person', idempotency_key='link-timeline', confirm=preview.token)
+        result = self.client.external_link_find(ExternalLinkFindInput(system='Instagantt', kind='timeline', external_id=timeline))
         assert isinstance(result, Done)
-        self.assertEqual(result.result['link']['project_ids'], [self.project['id']])
+        self.assertEqual(result.result['link']['project_ids'], [project])
+        self.assertEqual(result.result['link']['ref']['external_id'], timeline)
+        missing = self.client.external_link_find(ExternalLinkFindInput(system='Instagantt', kind='timeline', external_id='missing'))
+        assert isinstance(missing, Done)
+        self.assertIsNone(missing.result['link'])
 
     def test_studio_notices_and_global_meeting_notes(self) -> None:
         from t6.verbs import StudioNoticesInput, MeetingNotesListInput

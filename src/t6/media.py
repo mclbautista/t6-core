@@ -9,6 +9,7 @@ import secrets
 from typing import Any
 
 from t6.ids import EntityKind, T6Id
+from t6.media_links import MediaLink
 from t6.preview import PreviewTokens
 from t6.registry.sqlite import SqliteProjectRegistry
 from t6.registry.core import normalize_page_id
@@ -210,3 +211,39 @@ class MediaStore:
             db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
             db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(result)))
             return Done(result=result)
+
+
+def active_links(registry: SqliteProjectRegistry, kind: str, role: str | None = None) -> tuple[MediaLink, ...]:
+    """The active Media locations of one kind, and one role when given, in ID order. Reads only."""
+    with registry._transaction() as db:
+        rows = db.execute('SELECT id, owner_id, project_id, kind, ref, role FROM media_locations '
+                          'WHERE kind=? AND active=1 AND (? IS NULL OR role=?) ORDER BY id', (kind, role, role)).fetchall()
+    return tuple(_link(registry, row) for row in rows)
+
+
+def _link(registry: SqliteProjectRegistry, row: Any) -> MediaLink:
+    project = registry.get(row[2])
+    pages = tuple(b.page_id for b in sorted((b for b in project.bindings if b.system == 'notion'), key=lambda b: not b.active)) if project else ()
+    return MediaLink(id=row[0], owner=row[1], project_id=row[2], kind=row[3], ref=row[4], role=row[5], pages=pages)
+
+
+# What the retired External Links rows called their System and Kind, and the Media location kind each became.
+_EXTERNAL_KINDS = {('frameio', 'project'): 'frameio-project', ('resolve', 'project'): 'resolve-project',
+                   ('instagantt', 'project'): 'timeline', ('instagantt', 'timeline'): 'timeline'}
+
+
+def find_external(registry: SqliteProjectRegistry, system: str, kind: str, external_id: str) -> MediaLink | None:
+    """The active Media location that answers an old `external-link find` question, or None."""
+    media_kind = _EXTERNAL_KINDS.get((system.casefold().replace('.', '').replace(' ', ''), kind.casefold()))
+    if media_kind is None:
+        return None
+    return next((link for link in active_links(registry, media_kind) if link.ref == external_id), None)
+
+
+def external_link_result(registry: SqliteProjectRegistry, system: str, kind: str, external_id: str) -> dict[str, Any] | None:
+    """`external-link find`'s answer, in its old shape, from Media locations: `page_id` is the Media location ID."""
+    found = find_external(registry, system, kind, external_id)
+    if found is None:
+        return None
+    return {'page_id': found.id, 'ref': {'system': system, 'kind': kind, 'external_id': found.ref, 'url': None, 'internal_id': None},
+            'active': True, 'last_activity': None, 'project_ids': [found.project_id]}

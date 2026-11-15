@@ -6,6 +6,7 @@ from collections.abc import Mapping
 import json
 from typing import Any
 
+from t6.media_links import MediaLink
 from t6.worker.client import Transport
 
 
@@ -41,6 +42,17 @@ class RegistryClient:
         from urllib.parse import quote
         answer = self._call("GET", f"/registry/review-chat/{quote(page_id, safe='')}")
         return [] if answer is None else answer["links"]
+
+    def media_links(self, kind: str, role: str | None = None) -> tuple[MediaLink, ...]:
+        """The active Media locations of `kind` (and `role`), from the server. Needs a grant with registry read."""
+        from urllib.parse import quote
+        path = f"/registry/media-links/{quote(kind, safe='')}" + (f"/{quote(role, safe='')}" if role else "")
+        answer = self._call("GET", path)
+        return tuple(
+            MediaLink(id=item["id"], owner=item["owner"], project_id=item["project"], kind=item["kind"],
+                      ref=item["ref"], role=item["role"], pages=tuple(item["pages"]))
+            for item in ([] if answer is None else answer["links"])
+        )
 
     def review_version(self, frameio_file_id: str) -> dict[str, Any] | None:
         """The Version a Frame.io file belongs to, or None when t6 has none or this worker may not read it."""

@@ -16,11 +16,10 @@ from unittest import mock
 
 from test_registry_service import PAGE, PAGE_DASHED, RegistryTestCase
 
-from t6.domain import Deliverable, ExternalRef, Project, ProjectStatusChanged
+from t6.domain import Deliverable, Project, ProjectStatusChanged
 from t6.drives import Assignment, Drive, Ref, Role
 from t6.drives.testing import InMemoryDriveStore
 from t6.lookup import Index, Lookup
-from t6.notion.external_links import ExternalLinks
 from t6.notion.migration import read_legacy_projects
 from t6.notion.testing import FakeNotion, external_link_properties, project_properties, relation, title
 from t6.registry import (
@@ -301,7 +300,6 @@ class NotionRelationsTests(MigrationTestCase):
         self.notion.add_page(JOB_ORDERS_SOURCE, {"Name": title("Conform"), "Projects": relation(self.a)})
         self.notion.add_page(DELIVERABLES_SOURCE, {"Name": title("Final Master"), "\U0001f5fa️ Projects": relation(self.a)}, page_id="d-1")
         self.notion.add_page(DELIVERABLES_SOURCE, {"Name": title("Trailer"), "\U0001f5fa️ Projects": relation(self.b)}, page_id="d-2")
-        self.frameio = ExternalRef(system="frameio", kind="project", external_id="f-1")
         self.notion.add_page(
             LINKS_SOURCE,
             external_link_properties(system="frameio", kind="project", external_id="f-1", projects=[self.a]),
@@ -335,33 +333,6 @@ class NotionRelationsTests(MigrationTestCase):
         report = apply(self.registry, projects, actor=ACTOR)
         classify(self.registry, {PAGE: Rotation.OUT, OTHER_PAGE: Rotation.IN, THIRD_PAGE: Rotation.IN}, actor=ACTOR)
         return {page: t6 for page, t6 in report.registered}
-
-    def test_external_links_read_the_same_rows_by_t6_id_and_by_page_id(self) -> None:
-        ids = self.migrate()
-        refs = ProjectRefs(self.registry)
-        with self.notion.client() as client:
-            links = ExternalLinks(client, LINKS_SOURCE, refs)
-            by_t6 = links.refs_for_project(ids[PAGE])
-            by_page = links.refs_for_project(self.a)
-            self.assertEqual((by_t6, by_page), ((self.frameio,), (self.frameio,)))
-            self.assertEqual(links.refs_for_project(ids[OTHER_PAGE]), ())  # the same code never borrows rows
-            self.assertEqual(links.refs_for_project(f"{PROJECT_ID_PREFIX}unknown"), ())
-            # Without the registry the old behaviour holds: a Project is its page ID.
-            self.assertEqual(ExternalLinks(client, LINKS_SOURCE).refs_for_project(self.a), (self.frameio,))
-
-    def test_rows_stay_attached_after_the_page_is_replaced(self) -> None:
-        ids = self.migrate()
-        t6 = ids[PAGE]
-        self.send("POST", f"/registry/projects/{t6}/bindings", {"notion_page_id": FOURTH_PAGE, "expected_revision": self.registry.get(t6).revision}, key="bind")  # type: ignore[union-attr]
-        with self.notion.client() as client:
-            links = ExternalLinks(client, LINKS_SOURCE, ProjectRefs(self.registry))
-            self.assertEqual(links.refs_for_project(FOURTH_PAGE), (self.frameio,))  # the new page, through the Project
-            self.assertEqual(links.refs_for_project(t6), (self.frameio,))
-            made = links.ensure(ExternalRef(system="resolve", kind="project", external_id="db/A"), project_id=t6)
-            self.assertEqual(made.project_ids, (FOURTH_PAGE,))  # written against the active page
-            self.assertEqual(len(links.refs_for_project(PAGE)), 2)  # and found from the old one
-            with self.assertRaises(ValueError):
-                links.ensure(ExternalRef(system="resolve", kind="project", external_id="x"), project_id=f"{PROJECT_ID_PREFIX}nope")
 
     def test_deliverable_lookup_takes_either_form_of_the_project(self) -> None:
         ids = self.migrate()
