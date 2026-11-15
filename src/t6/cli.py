@@ -353,15 +353,18 @@ def _ops(args: argparse.Namespace) -> int:
         elif args.command == "restore":
             result = ops.restore(args.source, _database_paths())
         else:
-            result = ops.health(_database_paths())
-            from t6.client import APIError, Client, Unavailable
-            try:
-                api = Client().health()
-                result["api"] = ({"reachable": False, "reason": api.reason} if isinstance(api, Unavailable)
-                                 else {"reachable": True, **api})
-            except APIError as error:
-                result["api"] = {"reachable": False, "reason": str(error)}
-            result["ok"] = bool(result["ok"] and result["api"]["reachable"])
+            required = ("queue",) if os.environ.get("T6_SERVER_MODE") == "edge" else ("registry", "queue")
+            result = ops.health(_database_paths(), required=required,
+                                count_history=not getattr(args, "ignore_history", False))
+            if not getattr(args, "local", False):
+                from t6.client import APIError, Client, Unavailable
+                try:
+                    api = Client().health()
+                    result["api"] = ({"reachable": False, "reason": api.reason} if isinstance(api, Unavailable)
+                                     else {"reachable": True, **api})
+                except APIError as error:
+                    result["api"] = {"reachable": False, "reason": str(error)}
+                result["ok"] = bool(result["ok"] and result["api"]["reachable"])
     except (OSError, ops.OpsError) as error:
         return _fail(str(error))
     print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -483,11 +486,16 @@ def main(
     classify_projects.add_argument("--decisions", type=Path, required=True, metavar="FILE")
     classify_projects.add_argument("--registry-db", type=Path, default=Path(registry_db), metavar="FILE")
     classify_projects.add_argument("--actor", required=True, help="who decided, for the audit history")
-    commands.add_parser(
+    health = commands.add_parser(
         "health",
         help="Report sync lag, persistent Notion failures and failed jobs; exits 1 on a problem",
-        description="Reads the server's databases (T6_REGISTRY_DB, T6_QUEUE_DB, T6_OPERATOR_DB) and changes nothing.",
+        description="Reads the server's databases (T6_REGISTRY_DB, T6_QUEUE_DB, T6_OPERATOR_DB) and changes nothing. "
+        "With T6_SERVER_MODE=edge no registry is required.",
     )
+    health.add_argument("--local", action="store_true",
+                        help="check this host's databases only; do not ask the t6 API")
+    health.add_argument("--ignore-history", action="store_true",
+                        help="list jobs and syncs that failed after their retries without failing the check")
     backup = commands.add_parser(
         "backup",
         help="Snapshot the registry, queue and operator databases into a new directory",

@@ -141,6 +141,27 @@ class HealthTests(OpsTestCase):
         self.assertIn("failed after retries", str(report["problems"]))
 
 
+    def test_history_can_be_reported_without_failing_health(self) -> None:
+        project = self.new("ABC", "in")
+        self.send(
+            "POST",
+            f"/registry/projects/{project['id']}/sync",
+            {"revision": project["revision"], "ok": False, "detail": "boom", "attempt": 5},
+            secret="worker-secret",
+        )
+        report = ops.health(self.live(), now=self.clock(), count_history=False)
+        self.assertIs(report["ok"], True)
+        self.assertEqual(report["problems"], [])
+        self.assertIn("failed after retries", str(report["history"]))
+
+    def test_an_edge_server_needs_no_registry(self) -> None:
+        paths = dict(self.live())
+        paths["registry"] = Path(self.directory.name) / "absent.sqlite"
+        self.assertIs(ops.health(paths, now=self.clock())["ok"], False)
+        report = ops.health(paths, now=self.clock(), required=("queue",))
+        self.assertIs(report["ok"], True)
+
+
 class CommandTests(OpsTestCase):
     def test_the_commands_use_the_servers_environment_variables(self) -> None:
         import os
@@ -154,6 +175,11 @@ class CommandTests(OpsTestCase):
             self.assertEqual(cli_main(["backup", "--into", str(backup)]), 0)
             self.assertEqual(cli_main(["health"]), 0)
             self.assertEqual(cli_main(["restore", "--from", str(backup)]), 2)  # the databases exist: refused
+        with mock.patch.dict(os.environ, env), mock.patch("t6.client.Client.health", side_effect=AssertionError("must not call the API")):
+            self.assertEqual(cli_main(["health", "--local"]), 0)
+            self.assertEqual(cli_main(["health", "--local", "--ignore-history"]), 0)
+            with mock.patch.dict(os.environ, {"T6_SERVER_MODE": "edge", "T6_REGISTRY_DB": str(Path(self.directory.name) / "none.sqlite")}):
+                self.assertEqual(cli_main(["health", "--local"]), 0)
         target = self.paths("restored")
         env = {"T6_REGISTRY_DB": str(target["registry"]), "T6_QUEUE_DB": str(target["queue"]), "T6_OPERATOR_DB": str(target["operator"])}
         with mock.patch.dict(os.environ, env):

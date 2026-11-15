@@ -74,6 +74,18 @@ one leak is one capability. An unset secret turns its route off (503).
 - `failed_jobs`: queue jobs that failed after their attempts; read their `result`.
 - `pending_actions`: operator cards waiting for a tap.
 
+Failed jobs and syncs are also listed under `history`. Two flags narrow the check for
+deploy tools and monitors:
+
+- `--local`: check this host's databases only and do not ask the t6 API. Without it,
+  `t6 health` also needs `T6_API_URL` and `T6_API_SECRET` and fails when the API is
+  unreachable.
+- `--ignore-history`: list failed jobs and syncs under `history` without failing the
+  check. Use it to ask "is this process healthy" after a deploy.
+
+With `T6_SERVER_MODE=edge` (the VPS server) no registry database is required. For a
+deploy check: `t6 health --local --ignore-history`.
+
 ## Backup and restore
 
 ```sh
