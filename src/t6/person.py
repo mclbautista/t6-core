@@ -8,6 +8,7 @@ import re
 from datetime import time
 from typing import Any, Iterable, Mapping
 
+from t6.google.sharing import PERMISSION as BOOKINGS, enqueue as enqueue_sharing
 from t6.ids import EntityKind, T6Id
 from t6.preview import PreviewTokens
 from t6.registry.core import normalize_page_id
@@ -284,6 +285,8 @@ class People:
                     db.execute('INSERT OR IGNORE INTO person_permissions VALUES (?, ?)', (person_id, permission))
                 else:
                     db.execute('DELETE FROM person_permissions WHERE person_id = ? AND permission = ?', (person_id, permission))
+                if permission == BOOKINGS:
+                    enqueue_sharing(db, str(person_id), verb, key, now)
             else:
                 before = {'telegram_id': db.execute('SELECT telegram_id FROM persons WHERE id = ?', (person_id,)).fetchone()[0]}
                 db.execute('UPDATE persons SET telegram_id = ? WHERE id = ?', (telegram, person_id))

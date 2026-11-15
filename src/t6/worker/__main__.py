@@ -214,6 +214,7 @@ def configured_handlers(
     if environ.get("T6_DATABASE"):
         handlers["booking.calendar_sync"] = booking_calendar_handler(environ)
         handlers.update(inbound_calendar_handlers(environ))
+        handlers.update(sharing_calendar_handlers(environ))
         if environ.get("T6_PREVIEW_SIGNING_KEY"):
             handlers["project_start.preview"] = project_start_handler(environ)
         else:
@@ -324,6 +325,30 @@ def inbound_calendar_handlers(environ: Mapping[str, str]) -> dict[str, Handler]:
 
     try:
         return inbound_handlers(environ, lambda: SqliteProjectRegistry(environ["T6_DATABASE"]), names)
+    except ValueError as error:
+        raise ConfigError(str(error)) from error
+
+
+def sharing_calendar_handlers(environ: Mapping[str, str]) -> dict[str, Handler]:
+    """`booking.calendar_sharing` (queued by `person grant` and `person revoke` for `bookings`) and `google.reconcile_sharing` (daily, internal).
+
+    Both finish with a result that says so when the Bay calendars or the credential is missing. The emails come from
+    Notion, so `T6_NOTION_TOKEN` is required with them.
+    """
+    from t6.google.sharing import sharing_handlers
+    from t6.registry.sqlite import SqliteProjectRegistry
+
+    def identities(registry: SqliteProjectRegistry) -> object:
+        token = environ.get("T6_NOTION_TOKEN")
+        if not token:
+            raise ValueError("missing environment variable: T6_NOTION_TOKEN (calendar sharing maps a Person to a Google email)")
+        from t6.google.names import NotionNames
+        from t6.notion import NotionClient
+
+        return NotionNames(registry, NotionClient(token))
+
+    try:
+        return sharing_handlers(environ, lambda: SqliteProjectRegistry(environ["T6_DATABASE"]), identities)
     except ValueError as error:
         raise ConfigError(str(error)) from error
 

@@ -249,7 +249,7 @@ class GoogleCredentialTests(unittest.TestCase):
         root = Path(__file__).parents[1] / 'src' / 't6'
         for path in root.rglob('*.py'):
             relative = path.relative_to(root).as_posix()
-            if relative.startswith(('google/', 'worker/')) or relative in ('bay.py', 'registry/sqlite.py'):
+            if relative.startswith(('google/', 'worker/')) or relative in ('bay.py', 'person.py', 'registry/sqlite.py'):
                 continue
             self.assertNotIn('t6.google', path.read_text(), relative)
 
