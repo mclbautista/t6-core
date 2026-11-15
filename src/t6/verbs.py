@@ -657,6 +657,15 @@ class ConcernScanOutput(BaseModel):
     project: str
 
 
+class ConcernListInput(BaseModel):
+    raise_at_psr: bool = False
+    project: str | None = None
+
+
+class ConcernListOutput(BaseModel):
+    concerns: list[dict[str, Any]]
+
+
 class ConcernGetInput(BaseModel):
     concern: str
 
@@ -694,6 +703,13 @@ def concern_changes(inputs: ConcernChangesInput, open_notion: Callable[..., Any]
         return Done(result={'changes': ConcernStore(_people().registry, _people().tokens).changes(inputs.project, inputs.since)})
     except ValueError:
         return Refused(rule='since', reason='Since must be an ISO date')
+
+
+def concern_list(inputs: ConcernListInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.concern import ConcernStore
+    if not inputs.raise_at_psr:
+        return Refused(rule='raise_at_psr', reason='Only the Raise at PSR list is available: pass raise_at_psr')
+    return Done(result={'concerns': ConcernStore(_people().registry, _people().tokens).raise_at_psr(inputs.project)})
 
 
 def concern_scan(inputs: ConcernScanInput, open_notion: Callable[..., Any]) -> Outcome:
@@ -1386,6 +1402,7 @@ VERBS = (
     Verb("concern", "for-message", "Find Concerns carried by a brief", (), ConcernForMessageInput, ConcernForMessageOutput, "reader", "Return Concern IDs for a brief message.", concern_for_message),
     Verb("concern", "record-message", "Record a Concern carried by a brief", (), ConcernRecordMessageInput, ConcernOutput, "coordinator", "Record a brief message reference without chat text.", concern_write),
     Verb("concern", "scan", "Scan PM Notes for Concerns", (), ConcernScanInput, ConcernScanOutput, "coordinator", "Match new dated lines through llm run.", concern_scan),
+    Verb("concern", "list", "List Concerns to raise at PSR", (), ConcernListInput, ConcernListOutput, "reader", "Quiet Concerns only (no news for 2 weeks); age alone never lists one.", concern_list),
     Verb("concern", "changes", "Read automatic Concern changes", (), ConcernChangesInput, ConcernChangesOutput, "reader", "Read receipts since a date.", concern_changes),
     Verb("concern", "get", "Get a Concern", (), ConcernGetInput, ConcernGetOutput, "reader", "Read a Concern and its age.", concern_get),
     Verb("concern", "raise", "Raise a Concern", (), ConcernRaiseInput, ConcernOutput, "coordinator", "Record a line waiting on a party.", concern_write),

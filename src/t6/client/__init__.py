@@ -17,7 +17,7 @@ from t6.verbs import (
     VersionAddInput, VersionLockInput, VersionFindInput, VersionGetInput,
     DeliverableDeliverInput, PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
-    ConcernScanInput, ConcernChangesInput, ConcernForMessageInput, ConcernRecordMessageInput, ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
+    ConcernScanInput, ConcernListInput, ConcernChangesInput, ConcernForMessageInput, ConcernRecordMessageInput, ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
     JoListInput, JoFindInput, DeliverableListInput, DeliverableGetInput, DeliverableDefineInput, DeliverableRebindInput, DeliverableMissInput, DeliverableDelayInput, MilestoneRecordInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, ProjectNotesInput, ProjectFlagsInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
     JoSubmitInput, JoCloseInput, JoBlockInput, JoUnblockInput, JoDelayInput, JoCancelInput,
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
@@ -157,6 +157,9 @@ class Client:
 
     def concern_scan(self, inputs: ConcernScanInput) -> Result:
         return self.call('concern', 'scan', inputs)
+
+    def concern_list(self, inputs: ConcernListInput) -> Result:
+        return self.call('concern', 'list', inputs)
 
     def concern_changes(self, inputs: ConcernChangesInput) -> Result:
         return self.call('concern', 'changes', inputs)

@@ -50,6 +50,13 @@ class ConcernStore:
             record['notes'] = [dict(zip(('text', 'actor', 'at', 'message_id'), n)) for n in db.execute('SELECT text, actor, at, message_id FROM concern_notes WHERE concern_id = ? ORDER BY id', (concern,))]
             return record
 
+    def raise_at_psr(self, project: str | None = None) -> list[dict[str, Any]]:
+        """Concerns that went quiet (no new evidence for 2 weeks). Age alone never lists one; expired ones are shown elsewhere."""
+        now = self.registry._clock()
+        with self.registry._transaction() as db:
+            rows = db.execute("SELECT id, project_id, owner_id, waiting_on, opened_at FROM concerns WHERE state = 'quiet' AND (? IS NULL OR project_id = ?) ORDER BY opened_at, id", (project, project)).fetchall()
+        return [{'id': row[0], 'project_id': row[1], 'owner_id': row[2], 'waiting_on': row[3], 'age_seconds': max(0, now - row[4]), 'label': 'no news for 2 weeks'} for row in rows]
+
     def changes(self, project: str, since: str) -> list[dict[str, Any]]:
         start = datetime.fromisoformat(since).replace(tzinfo=MANILA).timestamp()
         with self.registry._transaction() as db:
