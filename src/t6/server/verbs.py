@@ -210,6 +210,8 @@ class VerbAPI:
         elif (entry.noun, entry.verb) == ('person', 'create'):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._person_create(inputs, actor)
+        elif (entry.noun, entry.verb) == ('concern', 'raise') and inputs.owner not in self._coordinators(inputs.project):
+            outcome = self.people.authorize(actor, entry.role) or Refused(rule='owner', reason='Owner must be a Project coordinator')
         elif entry.handler is None:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._legacy_read(entry.noun, entry.verb, inputs)

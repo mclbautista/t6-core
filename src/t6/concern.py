@@ -228,6 +228,8 @@ class ConcernStore:
                     date.fromisoformat(values['as_of'])
                 except ValueError:
                     return Refused(rule='as_of', reason='As of must be an ISO date')
+                if values['waiting_on'].strip().casefold() not in values['anchor'].casefold():
+                    return Refused(rule='waiting_on', reason='The party it waits on must be named in the line')
                 if not db.execute('SELECT 1 FROM projects WHERE id = ?', (values['project'],)).fetchone():
                     return Refused(rule='project', reason='Project not found')
                 if not db.execute('SELECT 1 FROM persons WHERE id = ? AND active = 1', (values['owner'],)).fetchone():
