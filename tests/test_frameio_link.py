@@ -488,6 +488,46 @@ class UnlinkedActivityTests(MainWorkerCase):
         self.drain()
         self.assertEqual((len(self.reviews()), self.held.waiting('fp-1')), (1, []))
 
+    def test_project_start_through_the_api_releases_the_held_activity(self) -> None:
+        """A real /v1/project/start preview, job and confirm: the Frame.io step links the project, and the held review is sent once."""
+        from t6.frameio.project_folders import ProjectFolders
+        from t6.project_start import ProjectStartStore
+
+        class Writer:
+            def create_project_folders(self, project_id: str, name: str, folders: tuple[str, ...], *,
+                                       known_project_id: str | None = None, taken: tuple[str, ...] = ()) -> ProjectFolders:
+                return ProjectFolders('fp-1', {code: 'folder-' + code for code in folders}, True, folders)
+
+        made = self.registry.register(actor='setup', idempotency_key='reg-start', code='START', rotation=Rotation.IN, notion_page_id='start-page')
+        assert isinstance(made, Registered)
+        project = made.project.id
+        self.registry.review_chat_links = lambda page: []  # type: ignore[attr-defined]  # the memory registry has no chat links; the review goes to the default chat
+        self.event('fp-1', 'evt-1')
+        self.drain()
+        self.assertEqual((len(self.reviews()), bool(self.held.waiting('fp-1'))), (0, True))
+        api = VerbAPI(self.people, self.queue, {'person': self.operator_person}, lambda _: None, self.app)
+        api.frameio = Writer()  # type: ignore[assignment]  # the Frame.io worker's answer; the queue to it is not what is tested here
+        store = ProjectStartStore(self.registry, self.people.tokens, lambda page: 'Feature Film', lambda page: 'Start Show')
+        planner = Worker(InternalQueueClient(self.inside), 'main', {'project_start.preview': lambda job: store.run_preview(job.payload)})
+        headers = {'Authorization': 'Bearer person'}
+
+        def post(values: dict[str, Any]) -> dict[str, Any]:
+            return dict(api(Request('POST', '/v1/project/start', headers, json.dumps(values).encode())).body)
+
+        values = {'project': project, 'deliverables': [{'code': 'Ep01', 'episode': 'Episode 1', 'due': '2026-12-01', 'air': None}],
+                  'media': [], 'bookings': []}
+        with patch.dict('os.environ', {'T6_PREVIEW_SIGNING_KEY': 'test'}):
+            started = post({**values, 'idempotency_key': 'start-e2e'})
+            self.assertEqual(started['outcome'], 'done', started)
+            while planner.run_once():
+                pass
+            preview = post({'project': project, 'job': started['result']['job_id']})
+            self.assertEqual(preview['outcome'], 'preview', preview)
+            done = post({**values, 'idempotency_key': 'start-e2e', 'confirm': preview['token']})
+        self.assertEqual(done['outcome'], 'done', done)
+        self.drain()
+        self.assertEqual((len(self.reviews()), self.held.waiting('fp-1')), (1, []))
+
     def test_any_done_verb_releases_activity_whose_project_a_link_made_outside_the_verb_path(self) -> None:
         """The decision is the link data, not a verb name: `project start` links through the Media store inside its own steps."""
         from t6.verbs import Done as Finished

@@ -53,8 +53,15 @@ class InMemoryDriveStore:
         self._imports: dict[str, str] = {}
         self._sources: dict[str, list[SourceRow]] = {}
         self._exceptions: list[ReviewItem] = []
+        self._previews: dict[str, str] = {}
         self._shipments = 0
         self._shipped: list[tuple[str, CustodyEvent]] = []
+
+    def save_preview(self, nonce: str, snapshot: str) -> None:
+        self._previews[nonce] = snapshot
+
+    def preview(self, nonce: str) -> str | None:
+        return self._previews.get(nonce)
 
     def add_drive(self, drive: Drive) -> Drive:
         if drive.id in self._drives:

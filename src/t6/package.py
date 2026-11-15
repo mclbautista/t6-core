@@ -14,6 +14,21 @@ from t6.registry.sqlite import SqliteProjectRegistry
 from t6.verbs import Ambiguous, Done, Outcome, Refused
 
 
+def blocking_cleared(checklist: list[dict[str, Any]]) -> bool:
+    """The one definition of kasado (#178): every blocking item is ticked. A checklist with no blocking item
+    (every spec starts with none) is kasado from the start; a fully ticked checklist always is."""
+    return all(item['checked_at'] is not None for item in checklist if item['blocking'])
+
+
+def kasado_since(checklist: list[dict[str, Any]], prepared_at: float | None) -> float | None:
+    """When the Package became kasado: the last blocking tick, or when it was prepared if it has no blocking item.
+    None when it is not kasado, or when the preparation time is unknown."""
+    if not blocking_cleared(checklist):
+        return None
+    ticks = [item['checked_at'] for item in checklist if item['blocking']]
+    return max(ticks) if ticks else prepared_at
+
+
 class PackageStore:
     def __init__(self, registry: SqliteProjectRegistry, tokens: PreviewTokens, specs: Any = None) -> None:
         self.registry, self.tokens, self.specs = registry, tokens, specs
@@ -24,7 +39,7 @@ class PackageStore:
         record['spec'] = json.loads(record['spec'])
         record['checklist'] = json.loads(record['checklist'])
         record['missing'] = [item['text'] for item in record['checklist'] if item['checked_at'] is None]
-        record['kasado'] = all(item['checked_at'] is not None for item in record['checklist'] if item['blocking'])
+        record['kasado'] = blocking_cleared(record['checklist'])
         return record
 
     def get(self, package: str) -> dict[str, Any] | None:

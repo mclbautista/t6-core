@@ -93,6 +93,42 @@ class FloorTests(unittest.TestCase):
         self.assertEqual(self.codes('bangko'), ['kasado-early'])
         self.assertEqual(self.codes('hand-to-mouth'), ['kasado-close'])
 
+    def package(self, deliverable: str, checklist: list[dict[str, Any]], *, kind: str = 'delivery', prepared_on: str | None = None) -> str:
+        identifier = str(T6Id.mint(EntityKind.PACKAGE))
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES ('to', 'staff', '[]', '[]', NULL, 0, 1) ON CONFLICT DO NOTHING")
+            db.execute("INSERT INTO packages VALUES (?, ?, ?, 'reader', 'nas', 'to', NULL, '{}', ?, 'prepared', NULL, 1)", (identifier, deliverable, kind, json.dumps(checklist)))
+            if prepared_on:
+                db.execute("INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, 'package_prepare', 'reader', ?, NULL, '{}')", (identifier, stamp(prepared_on)))
+        return identifier
+
+    def test_kasado_is_one_rule_for_package_get_and_the_floor_reads(self) -> None:
+        """#178: every spec starts with zero blocking items, so a Package with none is kasado from the day it was prepared."""
+        from t6.package import PackageStore
+        advisory = [{'text': 'Note', 'blocking': False, 'checked_by': None, 'checked_at': None}]
+        plain = self.deliverable('no-blocking', '2026-12-10')
+        identifier = self.package(plain, advisory, prepared_on='2026-12-04')
+        with self.registry._transaction() as db:
+            record = PackageStore._record(db.execute('SELECT * FROM packages WHERE id = ?', (identifier,)).fetchone())
+        self.assertTrue(record['kasado'])
+        self.assertEqual(self.codes('bangko'), ['no-blocking'])
+
+    def test_bangko_counts_only_delivery_packages(self) -> None:
+        """Ready for the air date means ready to deliver to the client: a Color or Sound handoff ticked early is not."""
+        internal = self.deliverable('internal', '2026-12-10')
+        self.package(internal, [{'text': 'QC', 'blocking': True, 'checked_by': 'x', 'checked_at': stamp('2026-12-01')}], kind='Color')
+        self.assertEqual(self.codes('bangko'), [])
+
+    def test_a_deliverable_missed_twice_is_listed_once_with_the_latest_miss(self) -> None:
+        twice = self.deliverable('twice', '2026-12-10')
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO deliverable_misses VALUES (?, 'first reason', 'x', ?)", (twice, stamp('2026-12-11')))
+            db.execute("INSERT INTO deliverable_misses VALUES (?, 'second reason', 'x', ?)", (twice, stamp('2026-12-14')))
+        outcome = self.read('sabit')
+        assert isinstance(outcome, Done)
+        self.assertEqual([(item['code'], item['reason'], item['missed_on']) for item in outcome.result['deliverables']],
+                         [('twice', 'second reason', '2026-12-14')])
+
     def test_ready_date_is_the_manila_day_and_the_earliest_signal(self) -> None:
         both = self.deliverable('both', '2026-12-10', delivered='2026-12-09')
         self.kasado(both, '2026-12-05')

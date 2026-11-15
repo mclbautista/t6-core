@@ -20,6 +20,30 @@ from test_person import MemoryRegistry
 CONTACT = '12345678123412341234123456789abc'
 
 
+class DriveStoreSeamTests(unittest.TestCase):
+    def test_drive_verbs_call_the_store_only_through_the_drive_store_protocol(self) -> None:
+        """The in-memory fake and the SQLite store are interchangeable behind DriveStore, so the verb flow may
+        call only what the protocol names (preview bookkeeping lives in the verb flow, not on the store)."""
+        import ast
+        import inspect
+        from t6 import drive_verbs
+        from t6.drives import DriveStore
+        protocol = {name for name in dir(DriveStore) if not name.startswith('_')}
+        used = set()
+        for node in ast.walk(ast.parse(inspect.getsource(drive_verbs))):
+            if isinstance(node, ast.Attribute):
+                owner = node.value
+                if (isinstance(owner, ast.Name) and owner.id == 'store') or (isinstance(owner, ast.Attribute) and owner.attr == 'store'):
+                    used.add(node.attr)
+        self.assertEqual(sorted(used - protocol), [])
+
+    def test_the_in_memory_fake_and_the_sqlite_store_have_the_same_public_surface(self) -> None:
+        from t6.drives.testing import InMemoryDriveStore
+        def public(cls: type) -> set[str]:
+            return {name for name in dir(cls) if not name.startswith('_')}
+        self.assertEqual(public(InMemoryDriveStore) ^ public(SqliteDriveStore), set())
+
+
 class DriveVerbTests(unittest.TestCase):
     def setUp(self) -> None:
         env = patch.dict(os.environ, {'T6_PREVIEW_SIGNING_KEY': 'test'})

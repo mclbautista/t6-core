@@ -676,6 +676,14 @@ class NotRecordedTests(unittest.TestCase):
 class VerbSupportTests(unittest.TestCase):
     """What the Drive verbs need from the store: one contract for every store."""
 
+    def test_a_saved_preview_is_read_back_by_its_nonce(self) -> None:
+        store = make_store()
+        self.assertIsNone(store.preview("nonce-1"))
+        store.save_preview("nonce-1", '{"plan": 1}')
+        store.save_preview("nonce-2", '{"plan": 2}')
+        self.assertEqual(store.preview("nonce-1"), '{"plan": 1}')
+        self.assertEqual(store.preview("nonce-2"), '{"plan": 2}')
+
     def test_a_second_open_assignment_for_the_same_drive_project_and_role_is_refused(self) -> None:
         store = store_with_drives("D1")
         assign(store, "D1", "M01", SHOW_A, date(2026, 1, 1))

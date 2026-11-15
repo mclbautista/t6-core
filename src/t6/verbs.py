@@ -1506,7 +1506,7 @@ def media_list(inputs: MediaListInput, open_notion: Callable[..., Any]) -> Outco
 class TimelineLinkInput(BaseModel):
     project: str
     timeline: str
-    stamp: str
+    stamp: str | None = None
     idempotency_key: str | None = None
     confirm: str | None = None
 
@@ -1539,7 +1539,10 @@ def timeline_write(inputs: TimelineLinkInput, open_notion: Callable[..., Any]) -
 def timeline_list(inputs: TimelineListInput, open_notion: Callable[..., Any]) -> Outcome:
     from t6.timeline import TimelineStore
     people = _people()
-    return Done(result={'timelines': TimelineStore(people.registry, people.tokens).list(inputs.project)})
+    try:
+        return Done(result={'timelines': TimelineStore(people.registry, people.tokens).list(inputs.project)})
+    except LookupError as error:
+        return Refused(rule='project', reason=str(error))
 
 
 class DriveReceiveInput(BaseModel):
@@ -1747,7 +1750,7 @@ VERBS = (
     Verb('media', 'unlink', 'Unlink a Media location', (), MediaUnlinkInput, MediaWriteOutput, 'coordinator', 'Preview and confirm the unlink.', media_write),
     Verb('frameio', 'project link', 'Link a Frame.io project to a Project', (), FrameioProjectInput, MediaWriteOutput, 'staff', 'One Frame.io project belongs to one Project. Preview and confirm.', frameio_project_link),
     Verb('frameio', 'project unlink', 'Unlink a Frame.io project from a Project', (), FrameioProjectInput, MediaWriteOutput, 'staff', 'Moving is unlink then link. Preview and confirm.', frameio_project_unlink),
-    Verb('timeline', 'link', 'Record a hand-written Timeline stamp', (), TimelineLinkInput, TimelineWriteOutput, 'staff', 'The stamp is written by hand in Resolve; one Timeline per stamp. Preview and confirm.', timeline_write),
+    Verb('timeline', 'link', 'Record a hand-written Timeline stamp', (), TimelineLinkInput, TimelineWriteOutput, 'staff', 'The stamp is written by hand in Resolve; one Timeline per stamp. Without --stamp t6 creates the stamp and the preview shows it. Preview and confirm.', timeline_write),
     Verb('timeline', 'list', 'List Timelines of a Project', (), TimelineListInput, TimelineListOutput, 'reader', 'Read Timelines with their canonical copy.', timeline_list, read_only=True),
     Verb('media', 'list', 'List Media locations', (), MediaListInput, MediaListOutput, 'reader', 'Read Media locations.', media_list, read_only=True),
     Verb('bay', 'book', 'Book a Bay', (), BayBookInput, BookingOutput, 'bookings', 'Overlaps require force.', booking_write),
@@ -2050,7 +2053,7 @@ def add_parsers(commands: Any) -> None:
             parser.add_argument('project')
             if entry.handler is timeline_write:
                 parser.add_argument('timeline')
-                parser.add_argument('--stamp', required=True)
+                parser.add_argument('--stamp')
                 parser.add_argument('--idempotency-key')
                 parser.add_argument('--confirm')
             parser.set_defaults(registered_verb=entry)

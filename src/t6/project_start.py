@@ -155,6 +155,12 @@ class ProjectStartStore:
         codes = [item['code'] for item in values['deliverables']]
         if len(set(codes)) != len(codes):
             return Refused(rule='deliverable_code', reason='A Deliverable code appears twice')
+        with self.registry._transaction() as db:
+            held = sorted(code for (code,) in db.execute(
+                'SELECT code FROM deliverables d WHERE project_id=? AND NOT EXISTS (SELECT 1 FROM verb_requests WHERE idempotency_key = ? || d.code)',
+                (project, f'{key}:deliverable:')) if code in codes)  # a Deliverable this Start's own key made is not another owner
+        if held:  # one Frame.io folder per code: a Start never gives a code a second owner (the Deliverable store itself does not forbid it)
+            return Refused(rule='deliverable_code', reason='The Project already has a Deliverable with the code ' + ', '.join(held))
         name = name or self._name(project)
         if name is None:
             return Refused(rule='project_name', reason='The Project has no name to give the Frame.io project')

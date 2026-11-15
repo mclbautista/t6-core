@@ -433,6 +433,14 @@ class DriveStore(Protocol):
         """Set general review state without changing serials or workflow rights."""
         ...
 
+    def save_preview(self, nonce: str, snapshot: str) -> None:
+        """Keep what a Drive verb planned under its preview nonce, so the confirm can check nothing changed."""
+        ...
+
+    def preview(self, nonce: str) -> str | None:
+        """What `save_preview` kept for the nonce, or None."""
+        ...
+
     def imported_drive(self, row_key: str) -> str | None:
         """Importer receipt: ID previously associated with an opaque row key.
 

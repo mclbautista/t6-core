@@ -158,6 +158,36 @@ class TimelineTests(unittest.TestCase):
         self.link('Anything', STAMP, 'y', store=store)
         self.assertEqual(self.store.list(self.project)[0]['canonical']['name'], 'Anything')
 
+    def test_link_without_a_stamp_creates_one_and_shows_it_in_the_preview(self) -> None:
+        self.resolve.add(RESOLVE_REF, ResolveTimeline(uuid='u2', name='Unstamped', stamp=None))
+        values = {'project': self.project, 'timeline': 'Unstamped'}
+        preview = self.store.write(values, actor='alice', idempotency_key='gen')
+        assert isinstance(preview, Preview), preview
+        stamp = preview.plan['stamp']
+        T6Id.parse(stamp, EntityKind.TIMELINE)
+        self.assertTrue(preview.plan['stamp_generated'])
+        # The same key shows the same stamp again, so the one written by hand in Resolve stays right.
+        again = self.store.write(values, actor='alice', idempotency_key='gen')
+        assert isinstance(again, Preview)
+        self.assertEqual(again.plan['stamp'], stamp)
+        done = self.store.write(values, actor='alice', idempotency_key='gen', confirm=preview.token)
+        assert isinstance(done, Done), done
+        self.assertEqual(done.result['timeline_id'], stamp)
+        self.assertEqual([t['id'] for t in self.store.list(self.project)], [stamp])
+        # Idempotent by key: confirming the other preview of the key, or replaying it, records nothing new.
+        replay = self.store.write(values, actor='alice', idempotency_key='gen', confirm=again.token)
+        self.assertEqual(replay, done)
+        self.assertEqual(len(self.store.list(self.project)), 1)
+
+    def test_a_timeline_that_already_has_a_stamp_is_not_given_a_new_one(self) -> None:
+        refused = self.store.write({'project': self.project, 'timeline': 'Ep1 v1'}, actor='alice', idempotency_key='has')
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'stamp')
+
+    def test_list_refuses_an_unknown_project(self) -> None:
+        with self.assertRaises(LookupError):
+            self.store.list('t6p_' + 'f' * 24)
+
     def test_a_version_may_name_its_source_timeline(self) -> None:
         deliverables = DeliverableStore(self.registry, self.tokens)
         rows = [{'page_id': 'd', 'project_page': 'p', 'code': 'FTR'}]
@@ -202,6 +232,7 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual(link['role'], 'staff')
         self.assertFalse(link['read_only'])
         self.assertEqual(set(link['input_schema']['properties']), {'project', 'timeline', 'stamp', 'idempotency_key', 'confirm'})
+        self.assertNotIn('stamp', link['input_schema'].get('required', []))
         self.assertEqual((listing['role'], listing['read_only']), ('reader', True))
         self.assertIn('timeline', entries[('version', 'add')]['input_schema']['properties'])
 

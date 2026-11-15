@@ -432,6 +432,37 @@ class ProjectStartTests(unittest.TestCase):
         self.assertEqual(duplicate.rule, 'deliverable_code')
         self.assertEqual((self.count('approvals'), self.count('deliverables')), (0, 0))
 
+    def define(self, code: str) -> None:
+        with self.registry._transaction() as db:
+            db.execute('INSERT INTO deliverables VALUES (?, ?, ?, NULL, NULL, NULL)', (str(T6Id.mint(EntityKind.DELIVERABLE)), self.project, code))
+
+    def test_a_deliverable_code_the_project_already_has_is_refused_at_preview(self) -> None:
+        """One Frame.io folder per code: a Start may not give a code a second owner."""
+        self.define('Ep02')
+        refused = self.preview()
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'deliverable_code')
+        self.assertIn('Ep02', refused.reason)
+        self.assertEqual((self.count('approvals'), self.count('deliverables')), (0, 1))
+
+    def test_a_deliverable_code_defined_after_the_preview_is_refused_at_confirm_and_nothing_is_made(self) -> None:
+        confirm = {**self.values, 'idempotency_key': 'start', 'confirm': self.preview().token}
+        self.define('Ep01')
+        refused = self.call(confirm)
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'deliverable_code')
+        self.assertEqual((self.count('approvals'), self.count('deliverables'), len(self.frameio.projects)), (0, 1, 0))
+
+    def test_a_resumed_start_is_not_refused_by_its_own_deliverables(self) -> None:
+        confirm = {**self.values, 'idempotency_key': 'start', 'confirm': self.preview().token}
+        with self.crash_at_folders(), self.assertRaises(RuntimeError):
+            self.call(confirm)
+        self.assertEqual(self.totals(), (1, 2))  # Ep01 and Ep02 now exist, made by this key
+        self.later(16 * 60)
+        done = self.call(confirm)
+        assert isinstance(done, Done), done
+        self.assertEqual(self.totals(), (1, 2))
+
     def test_a_project_type_without_a_template_is_refused(self) -> None:
         page = str(self.fake.add_page('projects', project_properties(name='Other', project_type='Music Video'))['id'])
         other = self.registry.register(actor='setup', idempotency_key='other', notion_page_id=page)

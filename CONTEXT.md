@@ -122,6 +122,11 @@ A **Timeline** (`t6t_`) is a DaVinci Resolve sequence timeline known by its
 marker at the timeline's first frame. The stamp is the identity; the Resolve
 name is only a label, so editors may rename and back up freely. Writing the
 stamp is a Resolve write and stays manual. Nothing in T6 writes to Resolve.
+`timeline link` without `--stamp` creates the stamp: the preview shows the new
+`t6t_` ID (the same one for the same key), the confirm records exactly it, and
+the person then writes it into the marker by hand. A Timeline that already
+carries a stamp is not given a new one (pass `--stamp`). `timeline list` refuses a
+Project that is not registered.
 
 - A Timeline records its `t6t_` ID (the stamp), its Resolve project (the
   Project's active resolve-project Media location, on the project server) and
@@ -199,6 +204,10 @@ applies the **t6 steps**; a changed input is refused. Role: operator, and the
 - **Plan order**: approval, NAS folders, Frame.io project and per-Deliverable
   folder, Resolve project, Resolve timelines, Media locations, milestone
   template, Bookings.
+- A Deliverable code the Project already has is refused (rule `deliverable_code`)
+  at preview and at confirm, so a Start never gives one Frame.io folder two
+  owners; the Deliverables a Start's own key made do not count. The Deliverable
+  store itself does not forbid a repeated code.
 - A Project is started once: a second Start, or a Start of an archived Project,
   is refused. Frame.io Media locations are refused in the `media` input of a
   Start: they come from the Frame.io step only.
@@ -207,15 +216,23 @@ applies the **t6 steps**; a changed input is refused. Role: operator, and the
 
 Three derived reads over Deliverables, Milestones, Packages and dates, per Project
 or studio-wide. Nothing is stored; dates are Asia/Manila days. A Deliverable is
-ready on the earlier of its `delivered` Milestone date and the day its Package
-became kasado.
+ready on the earlier of its `delivered` Milestone date and the day its delivery
+Package (Package kind `delivery`) became kasado. Other Package kinds are
+handoffs between people and never make a Deliverable ready for air.
+
+**Kasado** (ready) is one rule, used by `package get` and by these reads (#178):
+every blocking item of the Package's checklist is ticked. Every spec starts with
+zero blocking items, so a Package with none is kasado from the day it was
+prepared; with blocking items it became kasado on the day the last one was
+ticked (Asia/Manila). A rejected Package is never kasado.
 
 - **Bangko**: a Deliverable ready at least the configured margin (default 3 days)
   before its air date.
 - **Hand-to-mouth**: a Deliverable ready within the configured margin (default 1
   day) before its air date, with no buffer.
 - **Sabit**: a Deliverable that missed its date (a recorded miss). A date moved
-  with a reason is delayed, not sabit.
+  with a reason is delayed, not sabit. A Deliverable missed twice is listed once,
+  with its latest miss.
 
 ## Transcripts
 

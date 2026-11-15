@@ -79,7 +79,7 @@ class DriveVerbs:
             return request
         key, nonce = request.key, request.nonce
         with self.registry._transaction() as db:
-            store = self.store.within(db)
+            store = SqliteDriveStore(self.registry, within=db)
             settled = verbflow.settle(db, self.tokens, request)
             if settled:
                 return settled

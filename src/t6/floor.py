@@ -1,8 +1,8 @@
 """Floor reads derived from Deliverables, Milestones, Packages and dates: bangko, hand-to-mouth, sabit.
 
 Nothing is stored. Dates are Asia/Manila days. A Deliverable is ready on the earliest of its
-`delivered` Milestone date and the day its Package became kasado (the last blocking checklist item
-ticked, Package not rejected). Margins come from config (environment), never from code paths.
+`delivered` Milestone date and the day its delivery Package became kasado (t6.package.kasado_since:
+the last blocking checklist item ticked, or the day it was prepared when it has none; Package not rejected). Margins come from config (environment), never from code paths.
 """
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from datetime import date, datetime
 from typing import Any
 
 from t6.domain.studio_time import MANILA
+from t6.package import kasado_since
 from t6.registry.sqlite import SqliteProjectRegistry
 
 BANGKO_VARIABLE = 'T6_BANGKO_DAYS'
@@ -67,11 +68,11 @@ class FloorReads:
             delivered = db.execute("SELECT MIN(occurred_on) FROM milestones WHERE deliverable_id = ? AND milestone = 'delivered'", (identifier,)).fetchone()[0]
             if delivered:
                 signals.append((delivered[:10], 'delivered'))
-            for (checklist,) in db.execute("SELECT checklist FROM packages WHERE deliverable_id = ? AND state IN ('prepared', 'handed_off', 'accepted')", (identifier,)).fetchall():
-                blocking = [item for item in json.loads(checklist) if item['blocking']]
-                if blocking and all(item['checked_at'] is not None for item in blocking):
-                    day = datetime.fromtimestamp(max(item['checked_at'] for item in blocking), MANILA).date().isoformat()
-                    signals.append((day, 'kasado'))
+            for package, checklist in db.execute("SELECT id, checklist FROM packages WHERE deliverable_id = ? AND kind = 'delivery' AND state IN ('prepared', 'handed_off', 'accepted')", (identifier,)).fetchall():
+                prepared = db.execute("SELECT MIN(at) FROM audit WHERE project_id = ? AND action = 'package_prepare'", (package,)).fetchone()[0]
+                since = kasado_since(json.loads(checklist), prepared)
+                if since is not None:
+                    signals.append((datetime.fromtimestamp(since, MANILA).date().isoformat(), 'kasado'))
             if not signals:
                 continue
             on, via = min(signals)
@@ -94,5 +95,7 @@ class FloorReads:
             scope = self._project(db, project)
             rows = db.execute('SELECT d.id, d.project_id, d.code, d.episode, d.due, d.air, m.reason, m.recorded_at FROM deliverable_misses m JOIN deliverables d ON d.id = m.deliverable_id '
                               'WHERE (? IS NULL OR d.project_id = ?) ORDER BY d.code, d.id, m.rowid', (scope, scope)).fetchall()
+        latest = {row[0]: row for row in rows}  # one entry per Deliverable: the latest miss (rows run oldest first)
+        rows = list(latest.values())
         return [{'deliverable_id': r[0], 'project_id': r[1], 'code': r[2], 'episode': r[3], 'due': r[4], 'air': r[5],
                  'reason': r[6], 'missed_on': datetime.fromtimestamp(r[7], MANILA).date().isoformat()} for r in rows]

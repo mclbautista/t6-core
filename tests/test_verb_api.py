@@ -135,6 +135,14 @@ class VerbAPITests(unittest.TestCase):
             self.assertEqual(main(['media', 'link', project.project.id, 'nas-path', '/other', '--role', 'backup']), 0)
         self.assertEqual(json.loads(out.getvalue())['outcome'], 'preview')
 
+    def test_timeline_list_refuses_an_unknown_project_over_the_api(self) -> None:
+        from t6.client import Client
+        from t6.verbs import Refused, TimelineListInput
+        client = Client('http://127.0.0.1:%s' % self.server.server_port, 'operator-secret')
+        refused = client.timeline_list(TimelineListInput(project='t6p_' + 'e' * 24))
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'project')
+
     def test_timeline_verbs_over_the_api_and_cli(self) -> None:
         import io
         from contextlib import redirect_stdout

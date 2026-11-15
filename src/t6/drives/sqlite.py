@@ -72,19 +72,11 @@ def _event(data: str) -> CustodyEvent:
 
 
 class SqliteDriveStore:
-    def __init__(self, registry: SqliteProjectRegistry) -> None:
+    def __init__(self, registry: SqliteProjectRegistry, *, within: sqlite3.Connection | None = None) -> None:
+        """`within` works inside a transaction the caller already holds, so a verb keeps its Drive
+        changes, audit entry and idempotency record in one commit."""
         self.registry = registry
-        self._open: sqlite3.Connection | None = None
-
-    def within(self, db: sqlite3.Connection) -> SqliteDriveStore:
-        """The same store working inside a transaction the caller already holds.
-
-        A verb uses this to keep Drive changes, its audit entry and its
-        idempotency record in one commit.
-        """
-        bound = SqliteDriveStore(self.registry)
-        bound._open = db
-        return bound
+        self._open = within
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
@@ -95,7 +87,6 @@ class SqliteDriveStore:
                 yield db
 
     def save_preview(self, nonce: str, snapshot: str) -> None:
-        """Keep what a Drive verb planned, so its confirm can check nothing changed."""
         with self._tx() as db:
             db.execute('INSERT INTO drive_previews VALUES (?, ?)', (nonce, snapshot))
 
