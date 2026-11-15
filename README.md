@@ -1715,7 +1715,10 @@ and frame-rate options as SRT. Neither renderer calls ElevenLabs.
 The full server exposes the studio API on its tailnet listener. Set
 `T6_API_SECRETS` to a JSON object mapping each distinct bearer secret to one
 Person ID (for example `t6n_...`) or one of `gateway`, `worker`, `reports`,
-`watchdog`, `munki`, and `hermes`. Keep this configuration secret. Set
+`watchdog`, `munki`, `hermes`, and `Sixto (auto)`. `Sixto (auto)` is the actor of
+automatic Concern changes: it may run Concern verbs and nothing else, and its
+reach is fixed in code, not in `T6_API_SERVICE_PERMISSIONS`. Keep this
+configuration secret. Set
 `T6_PREVIEW_SIGNING_KEY` for previewed writes. Send `Authorization: Bearer
 <secret>` and use `GET /v1/commands` for the catalogue. Invoke a verb with
 `POST /v1/<noun>/<verb>` and its JSON input. `departments` is at

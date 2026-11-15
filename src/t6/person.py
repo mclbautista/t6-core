@@ -15,7 +15,10 @@ from t6.registry.sqlite import SqliteProjectRegistry, _audit
 from t6.verbs import Done, Outcome, Refused
 
 
-SERVICES = frozenset({'gateway', 'worker', 'reports', 'watchdog', 'munki', 'hermes'})
+AUTO_ACTOR = 'Sixto (auto)'
+"""The named service behind automatic Concern changes. It may run Concern verbs and nothing else."""
+
+SERVICES = frozenset({'gateway', 'worker', 'reports', 'watchdog', 'munki', 'hermes', AUTO_ACTOR})
 
 PERMISSIONS = frozenset({"operator", "coordinator", "bookings", "drives", "admin", "llm"})
 
@@ -28,6 +31,11 @@ class People:
         if any(name not in SERVICES or not grants <= PERMISSIONS
                for name, grants in self.service_permissions.items()):
             raise ValueError('Invalid service or permission in service grants')
+
+    @staticmethod
+    def auto_refusal(noun: str) -> Refused | None:
+        """`Sixto (auto)` may run Concern verbs and nothing else."""
+        return None if noun == 'concern' else Refused(rule='service', reason=f'{AUTO_ACTOR} may only run concern verbs')
 
     def get(self, person_id: str) -> dict[str, Any] | None:
         with self.registry._transaction() as db:
@@ -45,6 +53,9 @@ class People:
             return self._authorize(db, actor, role)
 
     def _authorize(self, db: Any, actor: str, role: str) -> Refused | None:
+        if actor == AUTO_ACTOR:
+            # Fixed, never read from configuration: reads and the coordinator verbs, narrowed to Concern verbs by `auto_refusal`.
+            return None if role in ('reader', 'coordinator') else Refused(rule='permission', reason=f'needs {role}')
         if actor in SERVICES:
             service_grants = self.service_permissions.get(actor, frozenset())
             if role == 'reader' or role in service_grants or (role in ('operator', 'coordinator') and 'admin' in service_grants) or (role == 'coordinator' and 'operator' in service_grants):
