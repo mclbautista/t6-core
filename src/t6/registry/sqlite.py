@@ -293,7 +293,8 @@ _MIGRATIONS = (
         concern_id TEXT PRIMARY KEY REFERENCES concerns(id), project_id TEXT NOT NULL REFERENCES projects(id), field TEXT NOT NULL
     )"""),
     (26, False, """CREATE TABLE delivery_share_views (event_id TEXT PRIMARY KEY)"""),
-    (27, False, """CREATE TABLE linked_chat_topics (chat_id INTEGER NOT NULL, topic_id INTEGER NOT NULL, name TEXT NOT NULL, PRIMARY KEY (chat_id, topic_id));
+    (27, True, """CREATE TABLE deliverable_templates (deliverable_id TEXT PRIMARY KEY REFERENCES deliverables(id), template TEXT NOT NULL)"""),
+    (28, False, """CREATE TABLE linked_chat_topics (chat_id INTEGER NOT NULL, topic_id INTEGER NOT NULL, name TEXT NOT NULL, PRIMARY KEY (chat_id, topic_id));
     CREATE TABLE linked_chat_notices (key TEXT PRIMARY KEY, text TEXT NOT NULL);
     CREATE TABLE linked_chat_sends (ref INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL, topic_id INTEGER NOT NULL, links TEXT NOT NULL)"""),
 )
@@ -639,7 +640,8 @@ class SqliteProjectRegistry:
             def page(identifier: str) -> str | None:
                 found = db.execute("SELECT page_id FROM bindings WHERE system='notion' AND project_id=? AND active=1", (identifier,)).fetchone()
                 return found[0] if found else None
-            return {'id': row[0], 'project_id': row[1], 'code': row[2], 'episode': row[3], 'due': row[4], 'air': row[5], 'done': row[6] is not None, 'started': bool(row[7]), 'page_id': page(row[0]), 'project_page': page(row[1])}
+            from t6.deliverable import deliverable_status
+            return {'id': row[0], 'project_id': row[1], 'code': row[2], 'episode': row[3], 'due': row[4], 'air': row[5], 'status': deliverable_status(db, row[0]), 'done': row[6] is not None, 'started': bool(row[7]), 'page_id': page(row[0]), 'project_page': page(row[1])}
 
     def begin_deliverable_create(self, intent_id: int) -> bool:
         with self._transaction() as db:

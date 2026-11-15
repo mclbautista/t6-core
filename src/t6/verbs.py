@@ -906,6 +906,7 @@ class JoFindInput(ReadInput):
 class DeliverableDefineInput(BaseModel):
     project: str
     code: str
+    template: str | None = None
     episode: str | None = None
     due: str | None = None
     air: str | None = None
@@ -1077,9 +1078,23 @@ def deliverable_define(inputs: DeliverableDefineInput, open_notion: Callable[...
     from t6.deliverable import DeliverableStore
     if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
         return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
-    return DeliverableStore(_people().registry, _people().tokens).define(
-        inputs.model_dump(exclude={'idempotency_key', 'confirm'}), actor=_actor.get(),
-        idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+    from t6.cli import TOKEN_VARIABLE
+    from t6.notion.generated import ProjectsRow
+    from t6.notion import NotionError
+
+    def project_type(page: str) -> str | None:
+        token = os.environ.get(TOKEN_VARIABLE)
+        if not token:
+            raise ValueError(f'set {TOKEN_VARIABLE} to read Project Type')
+        with open_notion(token) as client:
+            return ProjectsRow.from_page(client.retrieve_page(page)).project_type
+
+    try:
+        return DeliverableStore(_people().registry, _people().tokens, project_type).define(
+            inputs.model_dump(exclude={'idempotency_key', 'confirm'}), actor=_actor.get(),
+            idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+    except (NotionError, OSError, ValueError) as error:
+        return Refused(rule='project_type', reason=str(error))
 
 
 class DeliverableListInput(ReadInput):
@@ -1475,7 +1490,7 @@ def add_parsers(commands: Any) -> None:
         if entry.handler is deliverable_define:
             parser.add_argument('project')
             parser.add_argument('code')
-            for name in ('episode', 'due', 'air', 'idempotency-key', 'confirm'):
+            for name in ('episode', 'due', 'air', 'template', 'idempotency-key', 'confirm'):
                 parser.add_argument('--' + name)
             parser.set_defaults(registered_verb=entry)
             continue
