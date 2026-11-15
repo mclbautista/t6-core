@@ -77,6 +77,33 @@ class VerbAPITests(unittest.TestCase):
             result = self.request('/v1/person/grant', {'person_id': self.staff, 'permission': 'admin'})[1]
         self.assertEqual((result['outcome'], result['rule']), ('refused', 'config'))
 
+    def test_brief_reply_uses_gateway_replier_identity(self) -> None:
+        from t6.concern import ConcernStore
+        from t6.verbs import Preview, Done
+        project = self.registry.register(actor='setup', idempotency_key='project')
+        assert isinstance(project, Registered)
+        store = ConcernStore(self.registry, PreviewTokens('signing-key'))
+        values = {'project': project.project.id, 'owner': self.actor, 'waiting_on': 'client', 'anchor': 'Waiting', 'as_of': '2026-11-01'}
+        preview = store.write('raise', values, actor=self.actor, idempotency_key='raise')
+        assert isinstance(preview, Preview)
+        raised = store.write('raise', values, actor=self.actor, idempotency_key='raise', confirm=preview.token)
+        assert isinstance(raised, Done)
+        concern = raised.result['concern_id']
+        mapping = {'concern': concern, 'chat': '-100', 'message_id': '12', 'idempotency_key': 'map'}
+        preview_body = self.request('/v1/concern/record-message', mapping)[1]
+        self.assertEqual(preview_body['outcome'], 'preview')
+        self.assertEqual(self.request('/v1/concern/record-message', {**mapping, 'confirm': preview_body['token']})[1]['outcome'], 'done')
+        self.assertEqual(self.request('/v1/concern/for-message', {'chat': '-100', 'message_id': '12'}, secret='gateway-secret')[1]['result']['concern_ids'], [concern])
+        reply = {'concern': concern, 'text': 'Update', 'from_reply': '-100:12', 'message_id': '13', 'idempotency_key': 'reply'}
+        self.assertEqual(self.request('/v1/concern/note', reply, secret='gateway-secret')[1]['rule'], 'person')
+        headers = {'X-Telegram-User-Id': '43'}
+        preview_body = self.request('/v1/concern/note', reply, secret='gateway-secret', headers=headers)[1]
+        self.assertEqual(preview_body['outcome'], 'preview')
+        self.assertEqual(self.request('/v1/concern/note', {**reply, 'confirm': preview_body['token']}, secret='gateway-secret', headers=headers)[1]['outcome'], 'done')
+        record = store.get(concern)
+        assert record is not None
+        self.assertEqual((record['notes'][0]['actor'], record['notes'][0]['message_id']), (self.staff, '13'))
+
     def test_offline_write_generates_retry_key(self) -> None:
         from t6.client import Client, Unavailable
         from t6.verbs import ProjectHoldInput

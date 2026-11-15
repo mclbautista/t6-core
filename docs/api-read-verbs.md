@@ -58,3 +58,18 @@ The registry also exposes `project get`, `project resolve`, `person find` and
 `camera get` for the requested cutovers and other clients. The table documents
 what the referenced drafts actually call, including their local wrappers; it
 is not a claim that their separate write cutovers have already been built.
+
+### Concern brief replies
+
+`concern for-message` accepts `chat` and `message_id` as strings and returns
+`concern_ids` (an empty list for an unknown message). A brief sender can record
+each Concern on a sent message with `concern record-message`, using the usual
+preview and confirm flow. The reports app must call this after sending a brief;
+that integration is part of the reports cutover follow-up.
+
+For a reply, the relay selects a Concern from that lookup and calls `concern
+note` with `concern`, `text`, `from_reply` in `<chat>:<brief message id>` form,
+and `message_id` for the reply itself. The gateway must authenticate on behalf
+of the replier. The write uses preview and confirmation; an unmapped reference
+is ignored without storing the text. A message carrying several Concerns has a
+separate mapping for each, and the relay must select the intended Concern.

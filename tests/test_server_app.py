@@ -478,6 +478,7 @@ class HttpTests(ServerTestCase):
         )
         with self.assertRaises(urllib.error.HTTPError) as refused:
             urllib.request.urlopen(post_public)
+        self.addCleanup(refused.exception.close)
         self.assertEqual(refused.exception.code, 404)
 
 

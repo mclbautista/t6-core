@@ -233,6 +233,9 @@ _MIGRATIONS = (
         recipient TEXT NOT NULL REFERENCES persons(id), note TEXT, spec TEXT NOT NULL,
         checklist TEXT NOT NULL, state TEXT NOT NULL, reason TEXT, revision INTEGER NOT NULL DEFAULT 1
     )"""),
+    (19, False, """ALTER TABLE concern_notes ADD COLUMN message_id TEXT;
+        CREATE TABLE concern_brief_messages (chat TEXT NOT NULL, message_id TEXT NOT NULL,
+            concern_id TEXT NOT NULL REFERENCES concerns(id), PRIMARY KEY (chat, message_id, concern_id))"""),
 )
 
 
