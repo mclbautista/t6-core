@@ -68,5 +68,5 @@ class MilestoneTests(unittest.TestCase):
 
     def test_invalid_and_catalogue(self) -> None:
         self.assertIsInstance(self.store.record_milestone({'deliverable': self.identifier, 'milestone': 'unknown'}, actor='alice'), Refused)
-        self.assertEqual(len(MILESTONES), 11)
+        self.assertEqual(len(MILESTONES), 12)
         self.assertTrue(any(v['noun'] == 'deliverable' and v['verb'] == 'milestone record' for v in catalogue()))

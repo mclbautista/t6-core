@@ -23,7 +23,7 @@ class DeliverableTests(unittest.TestCase):
         self.store = DeliverableStore(self.registry, PreviewTokens('secret'))
 
     def test_define_replay_creates_one_record_and_intent(self) -> None:
-        values = {'project': self.project, 'code': 'Ep01', 'episode': 'Episode 1', 'due': '2026-12-01', 'air': None}
+        values = {'template': 'film', 'project': self.project, 'code': 'Ep01', 'episode': 'Episode 1', 'due': '2026-12-01', 'air': None}
         preview = self.store.define(values, actor='alice', idempotency_key='key')
         assert isinstance(preview, Preview)
         done = self.store.define(values, actor='alice', idempotency_key='key', confirm=preview.token)
@@ -118,7 +118,7 @@ class DeliverableTests(unittest.TestCase):
         today = datetime.fromtimestamp(self.registry._clock(), MANILA).date()
         old = (today + timedelta(days=1)).isoformat()
         new = (today + timedelta(days=3)).isoformat()
-        define = {'project': self.project, 'code': 'EP', 'due': old}
+        define = {'template': 'film', 'project': self.project, 'code': 'EP', 'due': old}
         identifier = self._confirmed(self.store.define, define, actor='alice', idempotency_key='define').result['deliverable_id']
         values = {'deliverable': identifier, 'field': 'due', 'date': new, 'reason': 'client request'}
         result = self._confirmed(self.store.schedule_write, 'delay', values, actor='alice', idempotency_key='delay')
@@ -133,7 +133,7 @@ class DeliverableTests(unittest.TestCase):
         self.assertEqual(self.registry.activity(self.project)[0].action, 'deliverable_delay')
 
     def test_miss_and_delivery_between_preview_and_confirm(self) -> None:
-        values = {'project': self.project, 'code': 'EP', 'due': '2000-01-01'}
+        values = {'template': 'film', 'project': self.project, 'code': 'EP', 'due': '2000-01-01'}
         identifier = self._confirmed(self.store.define, values, actor='alice', idempotency_key='define').result['deliverable_id']
         miss = {'deliverable': identifier, 'reason': 'late'}
         self._confirmed(self.store.schedule_write, 'miss', miss, actor='alice', idempotency_key='miss')

@@ -104,7 +104,10 @@ class VersionStore:
                 result = saved
                 if changed:
                     milestone = str(T6Id.mint(EntityKind.MILESTONE))
+                    from t6.deliverable import deliverable_status, intend_status_change
+                    before_status = deliverable_status(db, row[1])
                     db.execute('INSERT INTO milestones VALUES (?, ?, ?, ?, ?, ?)', (milestone, row[1], 'piclock', datetime.fromtimestamp(now, MANILA).date().isoformat(), actor, now))
+                    intend_status_change(db, row[1], before_status, now)
                     db.execute('INSERT INTO version_locks VALUES (?, ?) ON CONFLICT(deliverable_id) DO UPDATE SET version_id=excluded.version_id', (row[1], row[0]))
                     result = {**saved, 'milestone_id': milestone}
             if changed:

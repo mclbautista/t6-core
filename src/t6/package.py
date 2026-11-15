@@ -225,7 +225,10 @@ class PackageStore:
             db.execute('INSERT INTO delivery_carriers VALUES (?, ?, ?)', (package, values['carrier'], values.get('ref')))
             milestone = str(T6Id.mint(EntityKind.MILESTONE))
             day = datetime.fromtimestamp(now, MANILA).date().isoformat()
+            from t6.deliverable import deliverable_status, intend_status_change
+            before_status = deliverable_status(db, row[0])
             db.execute('INSERT INTO milestones VALUES (?, ?, ?, ?, ?, ?)', (milestone, row[0], 'delivered', day, actor, now))
+            intend_status_change(db, row[0], before_status, now)
             result = {**plan, 'package_id': package, 'milestone_id': milestone, 'on': day}
             cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)', (package, 'deliverable_deliver', actor, now, json.dumps(record), json.dumps(result)))
             summary = 'Deliverable delivered' + ('; missing: ' + ', '.join(missing) if missing else '')

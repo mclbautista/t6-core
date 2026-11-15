@@ -30,14 +30,28 @@ class DeliverableProjection:
             return {'outcome': 'not_a_deliverable_page'}
         property_id = projection_id()
         properties = page.get('properties') or {}
-        prop = next((value for value in properties.values() if unquote(str(value.get('id', ''))) == unquote(property_id)), None)
+        status_id = DeliverablesRow.notion_id('status') or 'Status'
+        def prop(identifier: str) -> Any:
+            return next((value for value in properties.values() if unquote(str(value.get('id', ''))) == unquote(identifier)), None)
         changed = job.payload.get('updated_properties')
-        updated = isinstance(changed, list) and any(unquote(str(value)) == unquote(property_id) for value in changed)
+        updated = [name for name, identifier in (('t6_id', property_id), ('status', status_id))
+                   if isinstance(changed, list) and any(unquote(str(value)) == unquote(identifier) for value in changed)]
         editor, editor_id = notion_editor(self.notion, job)
-        result = self.registry.observe_deliverable(page_id, {'t6_id': codec.rich_text(prop)}, ['t6_id'] if updated else [], editor, str(job.payload.get('event_id') or job.dedupe_key), editor_id=editor_id)
-        if result.get('restore', {}).get('t6_id'):
-            self.notion.update_page(page_id, {'properties': {property_id: {'rich_text': [{'text': {'content': result['restore']['t6_id']}}]}}})
-            self.registry.projection(page_id, {'t6_id': result['restore']['t6_id']}, record=True)
+        result = self.registry.observe_deliverable(page_id, {'t6_id': codec.rich_text(prop(property_id)), 'status': codec.select(prop(status_id))}, updated, editor, str(job.payload.get('event_id') or job.dedupe_key), editor_id=editor_id)
+        restore = result.get('restore', {})
+        writes: dict[str, Any] = {}
+        if restore.get('t6_id'):
+            writes[property_id] = {'rich_text': [{'text': {'content': restore['t6_id']}}]}
+        if restore.get('status'):
+            writes[status_id] = {'select': {'name': restore['status']}}
+        if writes:
+            self.notion.update_page(page_id, {'properties': writes})
+            values = {}
+            if restore.get('t6_id'):
+                values['t6_id'] = restore['t6_id']
+            if restore.get('status'):
+                values['deliverable_status'] = restore['status']
+            self.registry.projection(page_id, values, record=True)
         return cast(dict[str, Any], result)
 
     def sync(self, job: Any) -> dict[str, Any]:
@@ -70,6 +84,13 @@ class DeliverableProjection:
                     self.registry.report_deliverable_sync(intent, error=str(saved))
                     raise Refused(f'Notion create needs review: {saved}')
                 page = saved.page_id
-        self.notion.update_page(page, {'properties': {property_id: {'rich_text': [{'text': {'content': identifier}}]}}})
+        status_id = DeliverablesRow.notion_id('status') or 'Status'
+        current = self.notion.retrieve_page(page)
+        current_status = DeliverablesRow.from_page(current).status
+        properties: dict[str, Any] = {property_id: {'rich_text': [{'text': {'content': identifier}}]}}
+        if current_status != state['status']:
+            properties[status_id] = {'select': {'name': state['status']}}
+        self.notion.update_page(page, {'properties': properties})
+        self.registry.projection(page, {'deliverable_status': state['status']}, record=True)
         self.registry.report_deliverable_sync(intent, page_id=page)
         return {'deliverable_id': identifier, 'page_id': page}

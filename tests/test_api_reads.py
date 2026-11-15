@@ -121,7 +121,7 @@ class ReadTests(unittest.TestCase):
         project = self.registry.register(actor='setup', idempotency_key='deliverable-project', notion_page_id=self.project['id'])
         assert isinstance(project, Registered)
         store = DeliverableStore(self.registry, PreviewTokens('key'))
-        values = {'project': project.project.id, 'code': 'TLR', 'episode': None, 'due': None, 'air': None}
+        values = {'template': 'film', 'project': project.project.id, 'code': 'TLR', 'episode': None, 'due': None, 'air': None}
         preview = store.define(values, actor='setup', idempotency_key='deliverable')
         assert isinstance(preview, Preview)
         done = store.define(values, actor='setup', idempotency_key='deliverable', confirm=preview.token)
