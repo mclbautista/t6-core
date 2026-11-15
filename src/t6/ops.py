@@ -148,15 +148,28 @@ def restore(source: Path, targets: Mapping[str, Path]) -> dict[str, dict[str, in
     return restored
 
 
-def health(paths: Mapping[str, Path], now: float | None = None) -> dict[str, object]:
-    """What an operator checks: sync lag, persistent failures, stuck work. Reads only."""
+def health(
+    paths: Mapping[str, Path],
+    now: float | None = None,
+    *,
+    required: tuple[str, ...] = ("registry", "queue"),
+    count_history: bool = True,
+) -> dict[str, object]:
+    """What an operator checks: sync lag, persistent failures, stuck work. Reads only.
+
+    `required` names the databases that must exist (an edge server keeps no registry).
+    Jobs and Notion syncs that failed after their retries are history: always listed under
+    `history`, and counted as problems only when `count_history` is true, so a deploy check can
+    ask "is this process healthy" without being failed by old work an operator has to review.
+    """
     now = time.time() if now is None else now
     report: dict[str, object] = {"ok": True, "problems": []}
     problems: list[str] = []
+    history: list[str] = []
     for role in ROLES:
         path = paths.get(role)
         if path is None or not path.is_file():
-            if role != "operator":
+            if role in required:
                 problems.append(f"no {role} database at {path}")
             continue
         report[role] = counts(role, path)
@@ -173,10 +186,13 @@ def health(paths: Mapping[str, Path], now: float | None = None) -> dict[str, obj
         report["sync_lag_seconds"] = None if oldest is None else round(max(0.0, now - oldest), 1)
         report["sync_persistent_failures"] = int(failed)
         if failed:
-            problems.append(f"{failed} Notion sync(s) failed after retries; the changes stand in the registry")
+            history.append(f"{failed} Notion sync(s) failed after retries; the changes stand in the registry")
     failed_jobs = report.get("queue", {})
     if isinstance(failed_jobs, dict) and failed_jobs.get("failed_jobs"):
-        problems.append(f"{failed_jobs['failed_jobs']} queue job(s) failed after their attempts")
+        history.append(f"{failed_jobs['failed_jobs']} queue job(s) failed after their attempts")
+    if count_history:
+        problems.extend(history)
     report["problems"] = problems
+    report["history"] = history
     report["ok"] = not problems
     return report
