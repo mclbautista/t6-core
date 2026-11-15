@@ -13,14 +13,66 @@ from t6.worker.client import QueueClient, Transport
 from t6.domain.events import JsonValue
 
 
+class OutsideShares(ValueError):
+    """A folder is not inside one of the worker's configured shares."""
+
+
+def load_shares(path: str | None) -> dict[str, str]:
+    """Read the share-name to mount-point mapping; every fault is a start-up configuration error."""
+    if not path:
+        raise ValueError('T6_TRANSCRIBE_SHARES is required: the path of a JSON file mapping share names to mount points')
+    try:
+        data = json.loads(Path(path).read_text(encoding='utf-8'))
+    except (OSError, ValueError) as error:
+        raise ValueError(f'T6_TRANSCRIBE_SHARES file cannot be read as JSON: {error.__class__.__name__}') from error
+    if not isinstance(data, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in data.items()):
+        raise ValueError('T6_TRANSCRIBE_SHARES must be a JSON object of share names to mount point strings')
+    if not data:
+        raise ValueError('T6_TRANSCRIBE_SHARES is empty: map at least one share')
+    if any(not k or not Path(v).is_absolute() for k, v in data.items()):
+        raise ValueError('T6_TRANSCRIBE_SHARES names must be non-empty and mount points must be absolute paths')
+    return data
+
+
+def resolve_share_folder(ref: object, shares: Mapping[str, str]) -> Path:
+    """Map `/Volumes/<share>/<folders>` to its folder under the share's mount point, or refuse."""
+    parts = ref.split('/') if isinstance(ref, str) else []
+    if len(parts) < 3 or parts[:2] != ['', 'Volumes'] or not parts[2] or parts[2] not in shares:
+        raise OutsideShares('Folder is not inside a configured share')
+    try:
+        mount = Path(shares[parts[2]]).resolve(strict=True)
+    except OSError as error:
+        raise OutsideShares('Share mount point is not available') from error
+    folder = mount.joinpath(*[p for p in parts[3:] if p]).resolve()
+    if not folder.is_relative_to(mount):
+        raise OutsideShares('Folder is outside its share')
+    return folder
+
+
+def _refusing(method: Callable[[Any, WorkerJob], None]) -> Callable[[Any, WorkerJob], None]:
+    """Report `outside_shares` when the job's folder fails the share check; nothing has been read by then."""
+    def wrapped(self: 'TranscriptWorker', job: WorkerJob) -> None:
+        try:
+            method(self, job)
+        except OutsideShares:
+            self.report(job, 'failed', {'rule': 'outside_shares'})
+    wrapped.__name__ = method.__name__
+    return wrapped
+
+
 class TranscriptWorker:
-    def __init__(self, client: Any, report: Callable[[WorkerJob, str, dict[str, Any]], None], *, queue: Any = None) -> None:
+    def __init__(self, client: Any, report: Callable[[WorkerJob, str, dict[str, Any]], None], *, shares: Mapping[str, str], queue: Any = None) -> None:
         self.client, self.report = client, report
         self.queue = queue
+        self.shares = dict(shares)
+
+    def _root(self, job: WorkerJob) -> Path:
+        """The job's audio folder on this host; it must exist and lie inside its share."""
+        return resolve_share_folder(job.payload.get('audio_folder'), self.shares).resolve(strict=True)
 
     def _translate_plan(self, job: WorkerJob) -> tuple[list[tuple[Path, Any]], dict[str, Any]]:
         from t6.transcribe.translate import parse_srt
-        root = Path(str(job.payload['audio_folder'])).resolve(strict=True)
+        root = self._root(job)
         output = root / '_transcripts'
         if output.is_symlink() or not output.resolve().is_relative_to(root):
             raise ValueError('Transcript output escapes audio folder')
@@ -41,10 +93,12 @@ class TranscriptWorker:
                        'estimated_tokens': sum((len(cue.text.encode('utf-8')) + 3) // 4 for _, cues in clips for cue in cues),
                        'snapshot': digest.hexdigest()}
 
+    @_refusing
     def translate_preview(self, job: WorkerJob) -> None:
         _, plan = self._translate_plan(job)
         self.report(job, 'preview', plan)
 
+    @_refusing
     def translate_run(self, job: WorkerJob) -> None:
         from t6.transcribe.docx import render_docx
         from t6.transcribe.folder import _write
@@ -62,7 +116,7 @@ class TranscriptWorker:
             value = result['result']['output'].get('text')
             return value if isinstance(value, str) else None
 
-        output = Path(str(job.payload['audio_folder'])).resolve() / '_transcripts'
+        output = self._root(job) / '_transcripts'
         rendered = []
         try:
             for path, cues in clips:
@@ -79,7 +133,7 @@ class TranscriptWorker:
 
     def _plan(self, job: WorkerJob) -> tuple[FolderPreview, dict[str, Any]]:
         data: dict[str, Any] = dict(job.payload)
-        root = Path(str(data['audio_folder'])).resolve(strict=True)
+        root = self._root(job)
         output_path = root / '_transcripts'
         output = output_path.resolve()
         if output_path.is_symlink() or not output.is_relative_to(root) or output == root:
@@ -111,10 +165,12 @@ class TranscriptWorker:
                   'snapshot': digest.hexdigest()}
         return plan, result
 
+    @_refusing
     def preview(self, job: WorkerJob) -> None:
         _, plan = self._plan(job)
         self.report(job, 'preview', plan)
 
+    @_refusing
     def run(self, job: WorkerJob) -> None:
         from t6.transcribe.adapter import transcribe
         plan, current = self._plan(job)
@@ -135,7 +191,7 @@ class TranscriptWorker:
     def _speakers_plan(self, job: WorkerJob) -> tuple[list[tuple[Path, str, dict[str, Any]]], dict[str, Any]]:
         from t6.transcribe.folder import _load_transcript, _output
         from t6.transcribe.speakers import parse_speaker_map, speaker_name
-        root = Path(str(job.payload['audio_folder'])).resolve(strict=True)
+        root = self._root(job)
         output = root / '_transcripts'
         if output.is_symlink() or not output.resolve().is_relative_to(root):
             raise ValueError('Transcript output escapes audio folder')
@@ -164,10 +220,12 @@ class TranscriptWorker:
                     changes.append({'source': source, 'speaker': speaker, 'from': before, 'to': after})
         return clips, {'changes': changes, 'snapshot': digest.hexdigest()}
 
+    @_refusing
     def speakers_preview(self, job: WorkerJob) -> None:
         _, plan = self._speakers_plan(job)
         self.report(job, 'preview', plan)
 
+    @_refusing
     def speakers_run(self, job: WorkerJob) -> None:
         import tempfile
         from t6.transcribe.docx import render_docx
@@ -178,7 +236,7 @@ class TranscriptWorker:
         if plan['snapshot'] != job.payload.get('snapshot'):
             self.report(job, 'failed', {'rule': 'input_changed'})
             return
-        output = Path(str(job.payload['audio_folder'])).resolve() / '_transcripts'
+        output = self._root(job) / '_transcripts'
         speaker_map = parse_speaker_map(str(job.payload['csv']))
         offset = str(job.payload.get('start_timecode') or '00:00:00:00')
         rendered = []
@@ -222,6 +280,7 @@ def configured(environ: Mapping[str, str], queue: TranscribeQueue) -> dict[str, 
     key = environ.get('ELEVENLABS_API_KEY')
     if not key:
         raise ValueError('Transcribe worker key is required')
+    shares = load_shares(environ.get('T6_TRANSCRIBE_SHARES'))
     from elevenlabs.client import ElevenLabs
-    worker = TranscriptWorker(ElevenLabs(api_key=key), queue.report, queue=queue)
+    worker = TranscriptWorker(ElevenLabs(api_key=key), queue.report, shares=shares, queue=queue)
     return {'transcript.preview': worker.preview, 'transcript.run': worker.run, 'transcript.speakers.preview': worker.speakers_preview, 'transcript.speakers.run': worker.speakers_run, 'transcript.translate.preview': worker.translate_preview, 'transcript.translate.run': worker.translate_run}

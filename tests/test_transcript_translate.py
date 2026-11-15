@@ -140,7 +140,7 @@ class TranslateFlowTests(unittest.TestCase):
         self.identifier = str(T6Id.mint(EntityKind.TRANSCRIPT))
         with self.registry._transaction() as db:
             db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', NULL, 0, 1)", (person,))
-            db.execute("INSERT INTO media_locations VALUES (?, ?, ?, 'nas-path', ?, 'master', 1, NULL)", (media, self.project, self.project, str(self.root)))
+            db.execute("INSERT INTO media_locations VALUES (?, ?, ?, 'nas-path', ?, 'master', 1, NULL)", (media, self.project, self.project, '/Volumes/Studio/audio'))
             db.execute("INSERT INTO transcripts VALUES (?, ?, NULL, ?, '{}', 'done', '{}', '{}')", (self.identifier, media, self.project))
         self.api = VerbAPI(People(self.registry, PreviewTokens('signing')), JobQueue(Path(directory.name) / 'queue'),
                            {'person-secret': person, 'worker-secret': 'transcribe', 'other': 'worker'}, lambda _: None,
@@ -155,7 +155,7 @@ class TranslateFlowTests(unittest.TestCase):
         self.Request = Request
         self.transport = InProcess()
         queue = TranscribeQueue(self.transport, 'worker-secret')
-        worker = TranscriptWorker(None, queue.report, queue=queue)
+        worker = TranscriptWorker(None, queue.report, queue=queue, shares={'Studio': directory.name})
         self.runner = Worker(queue, 'transcribe', {'transcript.translate.preview': worker.translate_preview, 'transcript.translate.run': worker.translate_run})
 
     def fake(self, *replies: str, retention: Any = 'zdr_enforced', registry: Registry | None = None) -> FakeProvider:
@@ -274,6 +274,18 @@ class TranslateFlowTests(unittest.TestCase):
         for secret in ('person-secret', 'other', 'worker-secret'):
             with self.subTest(secret=secret):
                 self.assertEqual(self.api(self.Request('POST', '/v1/transcribe/llm', {'Authorization': f'Bearer {secret}'}, json.dumps(body).encode())).status, 403)
+
+
+    def test_unmapped_share_through_the_api_is_refused_with_outside_shares(self) -> None:
+        self.source()
+        self.fake('Hello', 'Fine')
+        with self.registry._transaction() as db:
+            db.execute("UPDATE media_locations SET ref='/Volumes/Unlisted/audio'")
+        job_id = self.translate()['result']['job_id']
+        self.assertTrue(self.runner.run_once())
+        outcome = self.request('/v1/transcript/get', {'transcript': str(job_id)})
+        self.assertEqual((outcome['outcome'], outcome['rule']), ('refused', 'outside_shares'))
+        self.assertEqual(sorted(p.name for p in self.root.rglob('*') if p.is_file()), ['one.srt'])
 
 
 if __name__ == '__main__':

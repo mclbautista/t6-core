@@ -346,6 +346,12 @@ class VerbAPI:
                 kind, data = body.get('kind'), body.get('data')
                 if action != 'report' or not isinstance(data, dict):
                     return Response(400)
+                if row[0] in ('transcript.preview', 'transcript.speakers.preview', 'transcript.translate.preview') and kind == 'failed':
+                    if data != {'rule': 'outside_shares'}:
+                        return Response(400)
+                    refusal = {'outcome': 'refused', 'rule': 'outside_shares', 'reason': 'Folder is outside the worker shares'}
+                    db.execute("UPDATE internal_jobs SET state='done', result=?, lease_token=NULL, lease_until=NULL WHERE id=?", (json.dumps(refusal), job_id))
+                    return Response(200, {'accepted': True})
                 if row[0] == 'transcript.translate.preview' and kind == 'preview':
                     if set(data) != {'clips', 'cue_count', 'estimated_tokens', 'snapshot'} or not isinstance(data['clips'], list) or not all(isinstance(x, str) for x in data['clips']) or any(type(data[k]) is not int or data[k] < 0 for k in ('cue_count', 'estimated_tokens')) or not isinstance(data['snapshot'], str) or len(data['snapshot']) != 64:
                         return Response(400)
@@ -358,7 +364,7 @@ class VerbAPI:
                     db.execute("UPDATE internal_jobs SET state='done', result=?, lease_token=NULL, lease_until=NULL WHERE id=?", (json.dumps(preview.model_dump(mode='json')), job_id))
                     return Response(200, {'accepted': True})
                 if row[0] == 'transcript.translate.run' and kind in ('complete', 'failed'):
-                    if data not in ({}, {'rule': 'input_changed'}, {'rule': 'translation'}):
+                    if data not in ({}, {'rule': 'input_changed'}, {'rule': 'translation'}, {'rule': 'outside_shares'}):
                         return Response(400)
                     if kind == 'complete':
                         from t6.transcript import TranscriptStore
@@ -384,7 +390,7 @@ class VerbAPI:
                     db.execute("UPDATE internal_jobs SET state='done', result=?, lease_token=NULL, lease_until=NULL WHERE id=?", (json.dumps(preview.model_dump(mode='json')), job_id))
                     return Response(200, {'accepted': True})
                 if row[0] == 'transcript.speakers.run' and kind in ('complete', 'failed'):
-                    if (kind == 'complete' and data != {}) or (kind == 'failed' and data != {'rule': 'input_changed'}):
+                    if (kind == 'complete' and data != {}) or (kind == 'failed' and data not in ({'rule': 'input_changed'}, {'rule': 'outside_shares'})):
                         return Response(400)
                     if kind == 'complete':
                         from t6.transcript import TranscriptStore
@@ -392,7 +398,7 @@ class VerbAPI:
                         TranscriptStore(self.people.registry)._entry(db, payload['transcript'], project[0], 'speakers changed', payload['actor'], payload['csv'])
                         result = {'outcome': 'done', 'result': {'job_id': job_id, 'transcript_id': payload['transcript']}}
                     else:
-                        result = {'outcome': 'refused', 'rule': 'input_changed', 'reason': 'Transcript inputs changed'}
+                        result = {'outcome': 'refused', 'rule': data['rule'], 'reason': 'Transcript inputs changed' if data['rule'] == 'input_changed' else 'Folder is outside the worker shares'}
                     db.execute("UPDATE internal_jobs SET state='done', result=?, lease_token=NULL, lease_until=NULL WHERE id=?", (json.dumps(result), job_id))
                     return Response(200, {'accepted': True})
                 if kind == 'preview' and row[0] == 'transcript.preview':
@@ -421,7 +427,7 @@ class VerbAPI:
                         db.execute('UPDATE transcripts SET progress=? WHERE id=?', (json.dumps(safe), identifier))
                     else:
                         safe = {k: data[k] for k in ('clips_done', 'failed', 'skipped', 'audio_hours', 'estimated_cost', 'rule') if k in data}
-                        if set(safe) != set(data) or (kind == 'complete' and 'rule' in safe) or ('rule' in safe and safe['rule'] != 'input_changed') or any(not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v) or v < 0 for k, v in safe.items() if k != 'rule'):
+                        if set(safe) != set(data) or (kind == 'complete' and 'rule' in safe) or ('rule' in safe and safe['rule'] not in ('input_changed', 'outside_shares')) or any(not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v) or v < 0 for k, v in safe.items() if k != 'rule'):
                             return Response(400, {'error': 'invalid summary'})
                         state = 'failed' if kind == 'failed' else 'done'
                         db.execute('UPDATE transcripts SET state=?, summary=? WHERE id=?', (state, json.dumps(safe), identifier))

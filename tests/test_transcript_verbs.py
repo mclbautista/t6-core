@@ -136,7 +136,7 @@ class TranscriptVerbTests(unittest.TestCase):
             wav(root / 'one.WAV')
             with registry._transaction() as db:
                 db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', NULL, 0, 1)", (person,))
-                db.execute("INSERT INTO media_locations VALUES (?, ?, ?, 'nas-path', ?, 'master', 1, NULL)", (media, project.project.id, project.project.id, str(root)))
+                db.execute("INSERT INTO media_locations VALUES (?, ?, ?, 'nas-path', ?, 'master', 1, NULL)", (media, project.project.id, project.project.id, '/Volumes/Studio/audio'))
             api = VerbAPI(People(registry, PreviewTokens('signing')), JobQueue(Path(directory) / 'queue'), {'person-secret': person, 'worker-secret': 'transcribe'}, lambda _: None)
             class InProcess:
                 def send(self, method: str, path: str, headers: Any, body: bytes) -> tuple[int, dict[str, Any]]:
@@ -152,7 +152,7 @@ class TranscriptVerbTests(unittest.TestCase):
                 queue.report(job, kind, data)
                 if kind == 'progress':
                     progress.append(request('/v1/transcript/get', {'transcript': job.payload['transcript_id']}))
-            worker = TranscriptWorker(client, report)
+            worker = TranscriptWorker(client, report, shares={'Studio': directory})
             runner = Worker(queue, 'transcribe', {'transcript.preview': worker.preview, 'transcript.run': worker.run, 'transcript.speakers.preview': worker.speakers_preview, 'transcript.speakers.run': worker.speakers_run})
             def preview() -> dict[str, Any]:
                 job_id = request('/v1/transcript/create', {'media': media, 'formats': ['srt']})['result']['job_id']
