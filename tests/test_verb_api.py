@@ -75,7 +75,7 @@ class VerbAPITests(unittest.TestCase):
     def test_delivery_api_uses_configured_spec_and_authenticated_actor(self) -> None:
         from t6.notion.testing import FakeNotion, package_spec_properties
         fake = FakeNotion()
-        fake.add_data_source('specs')
+        fake.add_snapshot_data_source('specs', 'package_specs')
         fake.add_page('specs', package_spec_properties(package_kind='delivery', version='1', advisory_items=('Reference',)))
         self.api.open_notion = lambda _: fake.client()
         self.api.data_sources['package_specs'] = 'specs'
