@@ -155,12 +155,12 @@ class TranscriptVerbTests(unittest.TestCase):
             worker = TranscriptWorker(client, report, shares={'Studio': directory})
             runner = Worker(queue, 'transcribe', {'transcript.preview': worker.preview, 'transcript.run': worker.run, 'transcript.speakers.preview': worker.speakers_preview, 'transcript.speakers.run': worker.speakers_run})
             def preview() -> dict[str, Any]:
-                job_id = request('/v1/transcript/create', {'media': media, 'formats': ['srt']})['result']['job_id']
+                job_id = request('/v1/transcript/create', {'media': media, 'formats': ['srt', 'docx']})['result']['job_id']
                 self.assertTrue(runner.run_once())
                 return request('/v1/transcript/get', {'transcript': str(job_id)})
             first = preview()
             api.transcribe_rate = 0.5
-            confirmed = request('/v1/transcript/create', {'media': media, 'formats': ['srt'], 'confirm': first['token']})
+            confirmed = request('/v1/transcript/create', {'media': media, 'formats': ['srt', 'docx'], 'confirm': first['token']})
             identifier = confirmed['result']['transcript_id']
             self.assertTrue(runner.run_once())
             self.assertEqual(progress[0]['result']['transcript']['state'], 'running')
@@ -195,7 +195,7 @@ class TranscriptVerbTests(unittest.TestCase):
             self.assertEqual(len(client.calls), 1)
             second = preview()
             self.assertEqual(second['plan']['already_done'], 1)
-            again = request('/v1/transcript/create', {'media': media, 'formats': ['srt'], 'confirm': second['token']})
+            again = request('/v1/transcript/create', {'media': media, 'formats': ['srt', 'docx'], 'confirm': second['token']})
             self.assertEqual(again['result']['transcript_id'], identifier)
             self.assertTrue(runner.run_once())
             self.assertEqual(len(client.calls), 1)
@@ -204,7 +204,7 @@ class TranscriptVerbTests(unittest.TestCase):
             wav(root / 'two.wav')
             client.outcomes.append(RuntimeError('synthetic failure'))
             third = preview()
-            request('/v1/transcript/create', {'media': media, 'formats': ['srt'], 'confirm': third['token']})
+            request('/v1/transcript/create', {'media': media, 'formats': ['srt', 'docx'], 'confirm': third['token']})
             self.assertTrue(runner.run_once())
             result = request('/v1/transcript/get', {'transcript': identifier})['result']['transcript']
             self.assertEqual(result['state'], 'failed')
@@ -212,7 +212,7 @@ class TranscriptVerbTests(unittest.TestCase):
             self.assertEqual(registry.activity(project.project.id)[0].action, 'transcript_failed')
             changed = preview()
             wav(root / 'two.wav', 2)
-            queued = request('/v1/transcript/create', {'media': media, 'formats': ['srt'], 'confirm': changed['token']})
+            queued = request('/v1/transcript/create', {'media': media, 'formats': ['srt', 'docx'], 'confirm': changed['token']})
             self.assertTrue(runner.run_once())
             result = request('/v1/transcript/get', {'transcript': str(queued['result']['job_id'])})
             self.assertEqual(result['rule'], 'input_changed')

@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from t6.transcribe.folder import FolderPreview, preview_folder, run_folder
+from t6.transcribe.folder import FolderPreview, OverHoursCap, UnreadableClips, preview_folder, run_folder
 from t6.transcribe.srt import _offset_seconds
 from t6.worker.client import WorkerJob
 from t6.worker.client import QueueClient, Transport
@@ -156,7 +156,8 @@ class TranscriptWorker:
             digest.update(Path(manifest).read_bytes())
         for clip in plan.clips:
             path = root / clip.source
-            digest.update(json.dumps([str(clip.source), clip.seconds, clip.done], separators=(',', ':')).encode())
+            # Not clip.done: a resumed run has more clips done than the preview saw.
+            digest.update(json.dumps([str(clip.source), clip.seconds], separators=(',', ':')).encode())
             with path.open('rb') as audio:
                 for block in iter(lambda: audio.read(1024 * 1024), b''):
                     digest.update(block)
@@ -167,7 +168,14 @@ class TranscriptWorker:
 
     @_refusing
     def preview(self, job: WorkerJob) -> None:
-        _, plan = self._plan(job)
+        try:
+            _, plan = self._plan(job)
+        except OverHoursCap as over:
+            self.report(job, 'failed', {'rule': 'max_hours', 'hours_found': over.hours, 'estimated_cost': over.cost, 'max_hours': over.cap})
+            return
+        except UnreadableClips as unreadable:
+            self.report(job, 'failed', {'rule': 'unreadable_clip', 'clips': unreadable.clips})
+            return
         self.report(job, 'preview', plan)
 
     @_refusing
@@ -177,13 +185,16 @@ class TranscriptWorker:
         if current['snapshot'] != job.payload.get('snapshot'):
             self.report(job, 'failed', {'rule': 'input_changed'})
             return
+        from t6.transcribe.speakers import parse_speaker_map
         counts = {'completed': 0, 'failed': 0}
+        csv = job.payload.get('speaker_map')
+        speaker_map = parse_speaker_map(str(csv)) if csv else None
         def progress(event: dict[str, Any]) -> None:
             counts.update(completed=event['completed'], failed=event['failed'])
             event['current_clip'] = str(event['current_clip'])
             self.report(job, 'progress', event)
         run_folder(plan, lambda path: transcribe(path, self.client, language=str(job.payload.get('language', 'fil')), diarize=not bool(job.payload.get('no_diarize', False))),
-                   progress=progress, offset=str(job.payload.get('start_timecode') or '00:00:00:00'))
+                   progress=progress, speaker_map=speaker_map, offset=str(job.payload.get('start_timecode') or '00:00:00:00'))
         self.report(job, 'failed' if counts['failed'] else 'complete', {'clips_done': counts['completed'], 'failed': counts['failed'],
                                       'skipped': plan.already_done, 'audio_hours': plan.pending_hours,
                                       'estimated_cost': plan.estimated_cost})
@@ -200,10 +211,19 @@ class TranscriptWorker:
         digest = hashlib.sha256(str(job.payload.get('previous_map', '')).encode())
         clips = []
         changes = []
+        sources = []
         for audio in sorted(root.rglob('*')):
-            if not audio.is_file() or audio.suffix.lower() != '.wav' or not audio.resolve().is_relative_to(root) or output in audio.parents:
-                continue
-            source = str(audio.relative_to(root))
+            if audio.is_file() and audio.suffix.lower() == '.wav' and audio.resolve().is_relative_to(root) and output not in audio.parents:
+                sources.append(str(audio.relative_to(root)))
+        # A stored transcript whose audio is gone is still re-rendered from its JSON, and reported.
+        known = {source.lower() for source in sources}
+        missing = []
+        for stored in sorted(output.rglob('*.json')):
+            relative = stored.relative_to(output)
+            guess = str(relative.with_suffix('.wav'))
+            if stored.is_file() and not stored.is_symlink() and not any(part.startswith('.') for part in relative.parts) and guess.lower() not in known:
+                missing.append(guess)
+        for source in sorted([*sources, *missing]):
             path = _output(output, Path(source), '.json')
             if not path.exists():
                 continue
@@ -218,7 +238,7 @@ class TranscriptWorker:
                 before, after = speaker_name(speaker, source, old), speaker_name(speaker, source, new)
                 if before != after:
                     changes.append({'source': source, 'speaker': speaker, 'from': before, 'to': after})
-        return clips, {'changes': changes, 'snapshot': digest.hexdigest()}
+        return clips, {'changes': changes, 'missing_audio': missing, 'snapshot': digest.hexdigest()}
 
     @_refusing
     def speakers_preview(self, job: WorkerJob) -> None:
@@ -239,11 +259,14 @@ class TranscriptWorker:
         output = self._root(job) / '_transcripts'
         speaker_map = parse_speaker_map(str(job.payload['csv']))
         offset = str(job.payload.get('start_timecode') or '00:00:00:00')
+        stored = job.payload.get('formats')
+        formats = stored if isinstance(stored, list) else ['srt', 'docx']
         rendered = []
         with tempfile.TemporaryDirectory() as directory:
             for _, source, transcript in clips:
-                for suffix, content in (('.srt', render_srt(transcript, speaker_map=speaker_map, source=source, offset=offset).encode()),
-                                        ('.docx', render_docx(transcript, speaker_map=speaker_map, source=source, offset=offset))):
+                outputs = {'srt': lambda: render_srt(transcript, speaker_map=speaker_map, source=source, offset=offset).encode(),
+                           'docx': lambda: render_docx(transcript, speaker_map=speaker_map, source=source, offset=offset)}
+                for suffix, content in ((f'.{fmt}', outputs[fmt]()) for fmt in ('srt', 'docx') if fmt in formats):
                     staged = Path(directory) / ('output' + suffix)
                     staged.write_bytes(content)
                     if not _valid_output(staged, suffix):

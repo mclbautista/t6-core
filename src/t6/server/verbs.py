@@ -207,10 +207,13 @@ class VerbAPI:
                 outcome = refusal
             elif entry.verb == 'translate' and not self.translate_enabled:
                 outcome = Refused(rule='translate_disabled', reason='Transcript translation is disabled')
-            elif entry.verb == 'translate':
-                outcome = self._transcript_translate(inputs, actor)
             else:
-                outcome = self._transcript_create(inputs, actor) if entry.verb == 'create' else self._transcript_speakers(inputs, actor)
+                from t6.transcript import TranscriptStore
+                transcripts, values = TranscriptStore(self.people.registry), inputs.model_dump(exclude={'idempotency_key'})
+                outcome = transcripts.replay(entry.verb, actor, values, inputs.idempotency_key)
+                if outcome is None:
+                    outcome = {'translate': self._transcript_translate, 'create': self._transcript_create, 'speakers': self._transcript_speakers}[entry.verb](inputs, actor)
+                    transcripts.remember(entry.verb, actor, values, inputs.idempotency_key, outcome)
         elif (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'flags'), ('project', 'resolve'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find'), ('version', 'get')}:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._typed_read(entry.noun, entry.verb, inputs)
@@ -309,6 +312,8 @@ class VerbAPI:
                     return Response(403)
                 queue = InternalJobQueue(self.people.registry, clock=self.people.registry._clock)
                 claim = queue.claim('transcribe', 300)
+                from t6.transcript import TranscriptStore
+                TranscriptStore(self.people.registry).fail_dead_runs()
                 job = None if claim is None else {'job_id': claim.job_id, 'kind': claim.kind, 'payload': dict(claim.payload), 'dedupe_key': claim.dedupe_key, 'token': claim.token, 'attempt': claim.attempt}
                 return Response(200, {'job': cast(JsonValue, job)})
             if action == 'llm':
@@ -353,9 +358,10 @@ class VerbAPI:
                 if action != 'report' or not isinstance(data, dict):
                     return Response(400)
                 if row[0] in ('transcript.preview', 'transcript.speakers.preview', 'transcript.translate.preview') and kind == 'failed':
-                    if data != {'rule': 'outside_shares'}:
+                    from t6.transcript import failure_refusal
+                    refusal = failure_refusal(row[0], data)
+                    if refusal is None:
                         return Response(400)
-                    refusal = {'outcome': 'refused', 'rule': 'outside_shares', 'reason': 'Folder is outside the worker shares'}
                     db.execute("UPDATE internal_jobs SET state='done', result=?, lease_token=NULL, lease_until=NULL WHERE id=?", (json.dumps(refusal), job_id))
                     return Response(200, {'accepted': True})
                 if row[0] == 'transcript.translate.preview' and kind == 'preview':
@@ -382,13 +388,13 @@ class VerbAPI:
                     db.execute("UPDATE internal_jobs SET state='done', result=?, lease_token=NULL, lease_until=NULL WHERE id=?", (json.dumps(result), job_id))
                     return Response(200, {'accepted': True})
                 if row[0] == 'transcript.speakers.preview' and kind == 'preview':
-                    changes, snapshot = data.get('changes'), data.get('snapshot')
-                    if set(data) != {'changes', 'snapshot'} or not isinstance(changes, list) or not isinstance(snapshot, str) or len(snapshot) != 64:
+                    changes, snapshot, missing = data.get('changes'), data.get('snapshot'), data.get('missing_audio')
+                    if set(data) != {'changes', 'missing_audio', 'snapshot'} or not isinstance(changes, list) or not isinstance(snapshot, str) or len(snapshot) != 64 or not isinstance(missing, list) or not all(isinstance(x, str) for x in missing):
                         return Response(400)
                     if any(not isinstance(c, dict) or set(c) != {'source', 'speaker', 'from', 'to'} or not all(isinstance(v, str) for v in c.values()) for c in changes):
                         return Response(400)
                     values = {'transcript': payload['transcript'], 'csv': payload['csv']}
-                    preview = self.people.tokens.create('transcript speakers', payload['actor'], values, {'changes': changes})
+                    preview = self.people.tokens.create('transcript speakers', payload['actor'], values, {'changes': changes, 'missing_audio': missing})
                     nonce = self.people.tokens.verify(preview.token, 'transcript speakers', payload['actor'], values)
                     if not isinstance(nonce, str):
                         return Response(400)
@@ -484,7 +490,7 @@ class VerbAPI:
             parse_speaker_map(inputs.csv)
         except ValueError as error:
             return Refused(rule='speaker_map', reason=str(error))
-        values = inputs.model_dump(exclude={'confirm'})
+        values = inputs.model_dump(exclude={'confirm', 'idempotency_key'})
         nonce = self.people.tokens.verify(inputs.confirm, 'transcript speakers', actor, values) if inputs.confirm else None
         if isinstance(nonce, Refused):
             return nonce
@@ -496,7 +502,7 @@ class VerbAPI:
                 return Refused(rule='transcript_running', reason='Transcript is running')
             previous = db.execute('SELECT m.csv FROM transcript_speaker_maps m JOIN transcript_history h ON h.id=m.history_id WHERE h.transcript_id=? ORDER BY h.id DESC LIMIT 1', (inputs.transcript,)).fetchone()
             previous_map = previous[0] if previous else ''
-            payload = {**values, 'actor': actor, 'audio_folder': row[0], 'previous_map': previous_map, 'start_timecode': json.loads(row[1]).get('start_timecode')}
+            payload = {**values, 'actor': actor, 'audio_folder': row[0], 'previous_map': previous_map, 'start_timecode': json.loads(row[1]).get('start_timecode'), 'formats': json.loads(row[1]).get('formats')}
             kind = 'transcript.speakers.preview'
             if nonce:
                 if db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce=?', (nonce,)).fetchone():
@@ -519,7 +525,7 @@ class VerbAPI:
     def _transcript_create(self, inputs: Any, actor: str) -> Any:
         import secrets
         from t6.transcript import TranscriptStore
-        values = inputs.model_dump(exclude={'confirm'})
+        values = inputs.model_dump(exclude={'confirm', 'idempotency_key'})
         nonce = self.people.tokens.verify(inputs.confirm, 'transcript create', actor, values) if inputs.confirm else None
         if isinstance(nonce, Refused):
             return nonce
@@ -547,7 +553,7 @@ class VerbAPI:
                     transcript = TranscriptStore(self.people.registry).start(inputs.media, inputs.deliverable, {**values, 'rate': snapshot['rate']}, actor=actor, _db=db)
                 except ValueError as error:
                     return Refused(rule='transcript', reason=str(error))
-                payload = {**values, 'actor': actor, 'audio_folder': media[0], 'rate': snapshot['rate'], 'snapshot': snapshot['snapshot'], 'transcript_id': transcript}
+                payload = {**values, 'actor': actor, 'audio_folder': media[0], 'rate': snapshot['rate'], 'snapshot': snapshot['snapshot'], 'transcript_id': transcript, 'speaker_map': TranscriptStore(self.people.registry).speaker_map(transcript, _db=db)}
                 now = self.people.registry._clock()
                 row = db.execute("INSERT INTO internal_jobs (queue, kind, dedupe_key, payload, run_at, state, created_at) VALUES ('transcribe', 'transcript.run', ?, ?, ?, 'queued', ?)", (secrets.token_urlsafe(24), json.dumps(payload), now, now))
                 db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))

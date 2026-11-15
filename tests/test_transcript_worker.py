@@ -66,10 +66,13 @@ class TranscriptWorkerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             wav(root / 'one.wav')
-            worker = TranscriptWorker(FakeElevenLabs([]), lambda job, kind, data: None, shares={'Studio': str(root)})
+            reports: list[tuple[str, dict[str, Any]]] = []
+            worker = TranscriptWorker(FakeElevenLabs([]), lambda job, kind, data: reports.append((kind, data)), shares={'Studio': str(root)})
             job = WorkerJob(1, 'transcribe', 'transcript.preview', '1', {'audio_folder': '/Volumes/Studio', 'max_hours': 0}, 'lease', 1)
-            with self.assertRaisesRegex(ValueError, 'exceeds'):
-                worker.preview(job)
+            worker.preview(job)
+            self.assertEqual(reports[0][0], 'failed')
+            self.assertEqual(reports[0][1]['rule'], 'max_hours')
+            self.assertEqual(reports[0][1]['max_hours'], 0)
 
     def test_changed_manifest_is_refused_before_call(self) -> None:
         from t6.transcribe.worker import TranscriptWorker

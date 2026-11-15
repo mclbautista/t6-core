@@ -2,11 +2,36 @@
 from __future__ import annotations
 
 import json
+import math
 from contextlib import nullcontext
 from typing import Any
 
 from t6.ids import EntityKind, T6Id
 from t6.registry.sqlite import SqliteProjectRegistry
+from t6.verbs import Done, Outcome, Refused
+
+
+def _number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
+
+
+def failure_refusal(kind: str, data: dict[str, Any]) -> dict[str, Any] | None:
+    """The Refused result for a worker's `failed` report on a preview job, or None when the report is not valid.
+
+    A preview job ends in a refusal for a rule the worker found while measuring: the folder is outside its
+    shares, the pending audio is over the person's hours cap, or a clip has no readable length.
+    """
+    if data == {'rule': 'outside_shares'}:
+        return {'outcome': 'refused', 'rule': 'outside_shares', 'reason': 'Folder is outside the worker shares'}
+    if kind != 'transcript.preview':
+        return None
+    if set(data) == {'rule', 'hours_found', 'estimated_cost', 'max_hours'} and data['rule'] == 'max_hours' and all(_number(data[k]) for k in ('hours_found', 'estimated_cost', 'max_hours')):
+        reason = f"Pending audio is {data['hours_found']:.3f} h (estimated cost {data['estimated_cost']:.4f} USD), over the cap of {data['max_hours']:.3f} h"
+        return {'outcome': 'refused', 'rule': 'max_hours', 'reason': reason}
+    clips = data.get('clips')
+    if set(data) == {'rule', 'clips'} and data['rule'] == 'unreadable_clip' and isinstance(clips, list) and clips and all(isinstance(c, str) for c in clips):
+        return {'outcome': 'refused', 'rule': 'unreadable_clip', 'reason': 'Cannot read the length of: ' + ', '.join(clips)}
+    return None
 
 
 class TranscriptStore:
@@ -58,3 +83,49 @@ class TranscriptStore:
                 raise ValueError('Transcript not found')
             db.execute("UPDATE transcripts SET state='failed' WHERE id=?", (identifier,))
             self._entry(db, identifier, row[0], 'failed', actor)
+
+    def speaker_map(self, identifier: str, *, _db: Any = None) -> str:
+        """The latest speaker map applied to this Transcript, or an empty string."""
+        with (self.registry._transaction() if _db is None else nullcontext(_db)) as db:
+            row = db.execute('SELECT m.csv FROM transcript_speaker_maps m JOIN transcript_history h ON h.id=m.history_id WHERE h.transcript_id=? ORDER BY h.id DESC LIMIT 1', (identifier,)).fetchone()
+            return str(row[0]) if row else ''
+
+    def fail_dead_runs(self) -> None:
+        """Mark failed every Transcript whose run job is dead (its lease expired too often), so later work is not blocked."""
+        with self.registry._transaction() as db:
+            for job_id, payload in db.execute("SELECT id, payload FROM internal_jobs WHERE kind='transcript.run' AND state='dead'").fetchall():
+                job = json.loads(payload)
+                if db.execute("SELECT 1 FROM internal_jobs WHERE kind='transcript.run' AND id>? AND json_extract(payload, '$.transcript_id')=?", (job_id, job['transcript_id'])).fetchone():
+                    continue  # a later run of this Transcript was queued: the dead one is old news
+                row = db.execute("SELECT project_id FROM transcripts WHERE id=? AND state='running'", (job['transcript_id'],)).fetchone()
+                if row:
+                    db.execute("UPDATE transcripts SET state='failed' WHERE id=?", (job['transcript_id'],))
+                    self._entry(db, job['transcript_id'], row[0], 'failed', job['actor'])
+
+    @staticmethod
+    def _request(verb: str, actor: str, values: dict[str, Any], key: str) -> tuple[str, str]:
+        phase = 'confirm' if values.get('confirm') else 'preview'
+        return f'transcript {verb}:{phase}:{key}', json.dumps({'verb': verb, 'phase': phase, 'actor': actor, **values}, sort_keys=True, separators=(',', ':'))
+
+    def replay(self, verb: str, actor: str, values: dict[str, Any], key: str | None) -> Outcome | None:
+        """The first result of a request retried with the same key; Refused when the key was used for another request."""
+        if key is None:
+            return None
+        if not key.strip():
+            return Refused(rule='idempotency_key', reason='A nonblank idempotency key is required')
+        name, fingerprint = self._request(verb, actor, values, key)
+        with self.registry._transaction() as db:
+            row = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key=?', (name,)).fetchone()
+        if row is None:
+            return None
+        if row[0] != fingerprint:
+            return Refused(rule='idempotency_key', reason='Idempotency key was used for a different request')
+        return Done(result=json.loads(row[1]))
+
+    def remember(self, verb: str, actor: str, values: dict[str, Any], key: str | None, outcome: Outcome) -> None:
+        """Keep a Done result under its key, so a retry returns it instead of acting again."""
+        if key is None or not isinstance(outcome, Done):
+            return
+        name, fingerprint = self._request(verb, actor, values, key)
+        with self.registry._transaction() as db:
+            db.execute('INSERT OR IGNORE INTO verb_requests VALUES (?, ?, ?)', (name, fingerprint, json.dumps(outcome.model_dump(mode='json')['result'])))

@@ -1465,17 +1465,20 @@ class TranscriptCreateInput(BaseModel):
     formats: list[str] = Field(default_factory=lambda: ['srt', 'docx'])
     start_timecode: str | None = None
     max_hours: float | None = None
+    idempotency_key: str | None = None
     confirm: str | None = None
 
 
 class TranscriptSpeakersInput(BaseModel):
     transcript: str
     csv: str
+    idempotency_key: str | None = None
     confirm: str | None = None
 
 
 class TranscriptTranslateInput(BaseModel):
     transcript: str
+    idempotency_key: str | None = None
     confirm: str | None = None
 
 
@@ -1707,6 +1710,8 @@ def add_parsers(commands: Any) -> None:
                     parser.add_argument('csv')
                 if entry.verb in ('speakers', 'translate'):
                     parser.add_argument('--confirm')
+            if entry.verb != 'get':
+                parser.add_argument('--idempotency-key')
             parser.add_argument('--json', action='store_true')
             parser.set_defaults(registered_verb=entry)
             continue
