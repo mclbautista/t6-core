@@ -6,6 +6,7 @@ import io
 import threading
 import unittest
 
+from t6.domain.events import JsonValue
 from t6.worker import QueueClient, WorkerJob
 from t6.worker.__main__ import main
 from t6.worker.runner import Handler
@@ -95,6 +96,23 @@ class LoopTests(ServerTestCase):
         self.assertEqual([job.payload for job in seen], [{"n": 1}])
         self.assertEqual(submitter.result("main", job_id), ("ok", {"n": 2}))
         self.assertEqual(stop.waits, [7.0])
+
+    def test_the_main_worker_with_the_t6_database_handles_share_views(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        submitter = QueueClient(InProcess(self.app), WORKER_SECRET)
+        body: dict[str, JsonValue] = {"type": "share.viewed", "resource": {"id": "share-nobody-delivered", "type": "share"}}
+        job_id = submitter.submit("main", "frameio.share_viewed", "edge:/webhook/frameio/shares:event-1", body)
+        with tempfile.TemporaryDirectory() as folder:
+            code, _ = run_main(
+                {**ENVIRON, "T6_DATABASE": str(Path(folder) / "t6.sqlite")},
+                None,  # type: ignore[arg-type]
+                transport=InProcess(self.app),
+                stop=RecordingStop(),
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(submitter.result("main", job_id), ("ok", {"recorded": False}))
 
     def test_a_stop_before_the_first_poll_claims_nothing(self) -> None:
         submitter = QueueClient(InProcess(self.app), WORKER_SECRET)

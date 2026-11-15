@@ -1,9 +1,12 @@
 """Record views of shares attached to Deliveries."""
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
+from t6.domain.events import JsonValue
 from t6.registry.sqlite import SqliteProjectRegistry
+from t6.worker.client import WorkerJob
+from t6.worker.runner import Handler, Refused
 
 
 class DeliveryShareViews:
@@ -30,3 +33,23 @@ class DeliveryShareViews:
                     (row[0], row[1], self._clock(), 'frameio', 'delivery_share_viewed', 'client viewed the delivery share'),
                 )
             return True
+
+
+def share_viewed_handler(views: DeliveryShareViews) -> Handler:
+    """The main worker's handler for `frameio.share_viewed`.
+
+    The edge queues the Frame.io webhook body as it arrived: the share is
+    `resource.id`, and the job's dedupe key names the event, so a redelivery
+    writes nothing. Only the API and the main worker open the t6 database, so
+    this never runs on the Frame.io worker.
+    """
+    def handle(job: WorkerJob) -> JsonValue:
+        kind = job.payload.get('type')
+        if kind is not None and kind != 'share.viewed':
+            return {'ignored': str(kind)}
+        resource = job.payload.get('resource')
+        share_id = resource.get('id') if isinstance(resource, Mapping) else None
+        if not isinstance(share_id, str) or not share_id.strip():
+            raise Refused('share viewed job without a share id')
+        return {'recorded': views.record(job.dedupe_key, share_id)}
+    return handle
