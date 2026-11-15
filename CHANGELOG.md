@@ -4,12 +4,27 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-16
+
+Phase 3 of the t6-core shape (#178) and transcription (#180): Bays, Media locations, Drives, Timelines, Project Start, Google Calendar, MCP and Transcripts. Released by #279.
+
 ### Added
 
-- `project start` (#267): one verb with a previewed plan, a preview by job. The main worker builds the plan (it needs `T6_PREVIEW_SIGNING_KEY` and `T6_NOTION_TOKEN`); confirm creates the Approval (new gate `project start`), the Deliverables with the milestone template of the Project Type, the Media locations and the initial Bookings once each. The plan lists the manual steps (NAS folders, the Resolve project, the Resolve timelines with their stamps) and Activity records them.
-- Frame.io read API route `GET /frameio/files/<id>/location` and `FrameioReader.file_location`: the main worker records Versions from Frame.io `file.versioned` and `file.upload.completed` events live (#360). It needs `T6_FRAMEIO_READ_URL` and `T6_FRAMEIO_READ_SECRET`; without them that handler is off and the start-up log says so. `UnwiredReader` is gone.
-
-- Unlinked Frame.io activity and the Link Frame.io project button (#272). Review activity on a Frame.io project no show holds is held in the t6 database (migration 41, `frameio_held_activity`) and one operator card per Frame.io project asks a coordinator for the show; tapping it runs `frameio project link` and the held activity is released once, also when the project is linked another way. The `/project` card gets Link Frame.io project for any active staff Person: the T6 account's projects not held by a show, most recently updated first, with search. The API needs `T6_FRAMEIO_READ_URL` and `T6_FRAMEIO_READ_SECRET` for it. New allowed-tapper rule `role:staff`.
+- Bays and Bookings in t6: `bay book`, `booking move`, `extend`, `cancel`, `get` and `list`, with overlap refused unless forced, and `admin bay migrate` for the Notion Bays rows (#255).
+- Google Calendar: every Booking change writes its event to the Bay calendar (#260). A change made in Google Calendar runs through the booking rules, and a clash is reverted with a note (#270). Who can edit a Bay calendar follows the `bookings` permission, with a daily reconcile (#271). `t6 admin calendar resync` queues a sync for every Booking that is not cancelled and has not ended (#361).
+- Media locations: `media link`, `unlink` and `list`, and `admin media migrate` for the Notion External Links database (#256). Frame.io reads, Resolve `map_projects`, Instagantt linking and the review message read them instead of External Links (#261).
+- Frame.io project links: `frameio project link` and `unlink`, open to any staff Person, with one Frame.io project for one Project (#262).
+- The Drive store on the t6 database, with custody events that are append-only, an exception queue and source rows (#257). Drive verbs: `drive receive`, `release`, `return`, `retire`, `assign` and `unassign` (#264).
+- Swing Drives: `swing assign`, `unassign`, `return` and `overdue`, an optional return date, and `t6 admin drive import --swing` for the Notion Swing Drives database (#273).
+- Transcripts: the Transcript entity and `transcript create` (#210), `transcript speakers` (#211), `transcript translate` with eval cases (#212) and `transcript get`. The transcribe worker reads only inside the NAS shares in `T6_TRANSCRIBE_SHARES` (#356). Translate is off by default (see below).
+- Versions are recorded from Frame.io `file.versioned` and upload events (#265). The main worker finds the file's folder through the new Frame.io read route `GET /frameio/files/<id>/location` and `FrameioReader.file_location`, and needs `T6_FRAMEIO_READ_URL` and `T6_FRAMEIO_READ_SECRET`; without them that handler is off and the start-up log says so (#360).
+- Timelines: `timeline link` and `timeline list`, with the stamp written by hand in Resolve (#266).
+- `project start` (#267): one verb with a previewed plan, a preview by job. The main worker builds the plan (it needs `T6_PREVIEW_SIGNING_KEY` and `T6_NOTION_TOKEN`); confirm creates the Approval (new gate `project start`), the Deliverables with the milestone template of the Project Type, the Media locations and the initial Bookings once each. The plan lists the manual steps (NAS folders, the Resolve project, the Resolve timelines with their stamps) and Activity records them. Confirm also creates the Frame.io project and a folder per Deliverable through the `frameio` queue (#275).
+- Unlinked Frame.io activity and the Link Frame.io project button (#272). Review activity on a Frame.io project no show holds is held in the t6 database (migration 41) and one operator card per Frame.io project asks a coordinator for the show; tapping it runs `frameio project link` and the held activity is released once, also when the project is linked another way. The `/project` card gets Link Frame.io project for any active staff Person; the API needs `T6_FRAMEIO_READ_URL` and `T6_FRAMEIO_READ_SECRET` for it. New allowed-tapper rule `role:staff`.
+- Derived reads `deliverable bangko`, `hand-to-mouth` and `sabit` (#268).
+- A read-only MCP server on the t6 API, `python -m t6.mcp`, with one tool for each read-only verb: 37 in all (#258).
+- `t6 health` reports `waiting_jobs`: due jobs that nothing has taken for more than 15 minutes, and dead internal jobs (#359, #361).
+- Optional extras `google` (adds `cryptography`) and `lookup` are installed in the container image (#359).
 
 ### Changed
 
@@ -18,10 +33,60 @@ All notable changes to this project are documented here, following [Keep a Chang
 - The Frame.io worker's briefing feed reads Media locations from the t6 API on Sixto: it needs `T6_API_URL` and `T6_REGISTRY_READ_SECRET` (the API's read-only registry grant), both or neither; it no longer uses `T6_SERVER_URL` or `T6_WORKER_SECRET` for this. The `frameio` queue grant gets no registry read. `T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE` is no longer read by any worker.
 - The main worker reads Media locations for the review message from the t6 database when `T6_DATABASE` is set (the queue server it polls is the VPS edge and has no registry); HTTP only without `T6_DATABASE`.
 - New Media location kind `instagantt-project` (ref = the Instagantt project ID as exported, one Project at a time). Instagantt linking reads it, `external-link find` maps Instagantt rows to it and the External Links migration imports active Instagantt rows as it. Kind `timeline` stays for `t6t_` Timelines only.
+- The main worker reaches the registry through the t6 API at `T6_API_URL`; `T6_SERVER_URL` carries queue calls only. The jobs the API starts itself go to the internal job table in the t6 database (#358).
+- Workers claim only the job kinds they have a handler for: `/queue/claim` takes `kinds`. A job a worker cannot run stays queued until one that can starts (#361).
+- A job whose lease ran out with all its tries used is marked dead at once, also when no worker polls (#361).
+- The Deliverables T6 ID property ID is in the schema snapshot and the generated model, so `deliverable.sync` no longer refuses for a missing ID (#227, #353).
+- Review messages for a Frame.io project with no link are held until it is linked, instead of going to the default review chat (#272).
+- Drive verbs use the Drive store; a duplicate Assignment is refused (#359).
 
 ### Removed
 
 - `t6.notion.external_links`. Only the migration's one-off row read remains, in `t6.media_migration`.
+- `UnwiredReader` in the Frame.io reads (#360).
+
+### Fixed
+
+- Delivery share views are recorded by the main worker, because the Frame.io worker cannot open the t6 database (#354, #355).
+- Transcript runs resume, a failed run unblocks the Transcript, confirms are idempotent and refusals say why; translate keeps unlabelled colon lines and records failures; dead runs are swept on checks (#357, #359).
+- The MCP server stays read-only, reports the package version and masks by caller (#357).
+- A Media location deactivated by hand goes to review in the migration; the Frame.io project retry is safe (#357, #359).
+- The booking sync handler, the real Google Calendar adapter and the event content (#359). Calendar deletes after a Bay change, a token change at start, sharing lookups and non-user writers (#361).
+- Project Start retries and the release of held Frame.io activity; a begun Start keeps its own Approval (#361).
+- One kasado rule for `package get` and the floor reads, and bangko reads the delivery Package only (#361).
+- Swing import follows the live Swing Drives schema (#273).
+
+### Off by default
+
+- `transcript translate`. The API returns Refused (`translate_disabled`) until `T6_TRANSCRIPT_TRANSLATE=true` is set on it. It stays off until the live run (#213) is recorded.
+
+### Upgrade notes
+
+1. Back up the t6 database before upgrading. Migrations 33 to 41 run on open; none is forward-only.
+2. Deploy the queue server (VPS) before the workers. Workers now claim by job kind: `/queue/claim` takes `kinds`.
+3. The main worker needs `T6_API_URL` when `T6_DATABASE` is set. `T6_SERVER_URL` stays for queue calls only. Without `T6_API_URL` the worker refuses to start.
+4. The API needs `T6_FRAMEIO_QUEUE_URL` and `T6_FRAMEIO_QUEUE_SECRET` for Project Start, which creates the Frame.io project through the `frameio` queue. The Frame.io worker needs `T6_FRAMEIO_ACCOUNT_ID`, and `T6_FRAMEIO_WORKSPACE_ID` when the account has more than one workspace.
+5. Review messages for a Frame.io project with no link are held until it is linked.
+6. Three more reads are MCP tools (37 in all): `concern list`, `concern changes` and `project notes`.
+7. `t6 health` reports due jobs waiting over 15 minutes.
+8. The image now has the `google` and `lookup` extras. To give the Bookings that already exist their calendar events when the calendar goes live, run `t6 admin calendar resync`. `t6 admin drive import --swing` imports the Notion Swing Drives database once.
+9. The Deliverables T6 ID property is in the snapshot (#353), so step 4 of the 0.5.0 go-live list is done.
+
+### t6 database migrations
+
+Migrations run on open.
+
+| Version | Change | Forward-only |
+| --- | --- | --- |
+| 33 | Bays and Bookings | No |
+| 34 | Media locations (history append-only) | No |
+| 35 | Drive store (custody events append-only, exception queue, source rows) | No |
+| 36 | Transcripts (history append-only) | No |
+| 37 | Transcript speaker maps | No |
+| 38 | Drive previews and Delivery drive links | No |
+| 39 | Timelines | No |
+| 40 | Calendar channels, sync tokens and event versions | No |
+| 41 | Held Frame.io activity | No |
 
 ## [0.5.0] - 2026-11-15
 
