@@ -46,6 +46,14 @@ def main() -> int:
         config = replace(config, edge_routes=routes)
     queue = JobQueue(environ.get("T6_QUEUE_DB", "t6-queue.sqlite"))
     registry = None if mode == "edge" else SqliteProjectRegistry(environ.get("T6_REGISTRY_DB", "t6-registry.sqlite"))
+    inside = None
+    if registry is not None:
+        # ADR 0006: work that starts inside T6 uses the job table in the t6 database, which the main worker polls.
+        from t6.server.handover import hand_over_inside_jobs
+        from t6.worker.internal_queue import InternalJobQueue
+
+        inside = InternalJobQueue(registry)
+        hand_over_inside_jobs(queue, inside, lambda line: print(line, file=sys.stderr, flush=True))
     signing_key = environ.get("T6_PREVIEW_SIGNING_KEY") or secrets.token_urlsafe(32)
     operator = None
     if registry is not None and config.operator_ids:
@@ -53,7 +61,7 @@ def main() -> int:
         operator = OperatorService(registry, store, config.operator_ids, people=People(registry, PreviewTokens(signing_key)), ttl=config.operator_ttl_seconds)
     app = WebhookApp(queue, config, on_notion_verification=lambda token: print(
         f"Notion verification token: {token}", file=sys.stderr, flush=True
-    ), registry=registry, operator=operator)
+    ), registry=registry, operator=operator, inside=inside)
     if registry is not None:
         sources, privacy_registry = read_config_from_env(environ)
         api = VerbAPI(People(registry, PreviewTokens(signing_key),

@@ -31,7 +31,7 @@ import time
 
 from t6.domain.events import JsonValue
 
-__all__ = ["Claim", "JobQueue", "JobResult", "QueueError", "Submitted"]
+__all__ = ["Claim", "JobQueue", "JobResult", "QueueError", "Submitted", "Waiting"]
 
 MAIN_QUEUE = "main"
 FRAMEIO_QUEUE = "frameio"
@@ -107,6 +107,16 @@ class JobResult:
     value: JsonValue = None
 
 
+@dataclass(frozen=True, slots=True)
+class Waiting:
+    """A job nobody has finished and nobody holds a live lease on."""
+
+    job_id: int
+    kind: str
+    dedupe_key: str
+    payload: Mapping[str, JsonValue]
+
+
 class JobQueue:
     def __init__(
         self,
@@ -167,6 +177,33 @@ class JobQueue:
         now = self._clock()
         with self._transaction() as db:
             return _insert_job(db, queue, kind, dedupe_key, payload or {}, run_at or now, now)
+
+    def waiting(self, queue: str) -> list[Waiting]:
+        """The jobs on `queue` that are waiting to be claimed (pending, or claimed with a lease that ran out)."""
+        _require_name(queue, "queue")
+        now = self._clock()
+        with self._transaction() as db:
+            rows = db.execute(
+                "SELECT id, kind, dedupe_key, payload FROM jobs WHERE queue = ? AND "
+                "(state = 'pending' OR (state = 'claimed' AND lease_until <= ?)) ORDER BY id",
+                (queue, now),
+            ).fetchall()
+        return [Waiting(row[0], row[1], row[2], json.loads(row[3])) for row in rows]
+
+    def hand_over(self, job_id: int, destination: str) -> bool:
+        """Retire a waiting job that now lives in `destination`, so no claim here finds it again.
+
+        The job keeps its row, so its dedupe key stays taken. False when it is no longer waiting.
+        """
+        with self._transaction() as db:
+            return (
+                db.execute(
+                    "UPDATE jobs SET state = 'done', lease_token = NULL, lease_until = NULL, result = ? "
+                    "WHERE id = ? AND (state = 'pending' OR state = 'claimed')",
+                    (json.dumps({"status": "ok", "value": {"handed_over_to": destination}}), job_id),
+                ).rowcount
+                == 1
+            )
 
     def owns(self, job_id: int, queue: str) -> bool:
         with self._transaction() as db:

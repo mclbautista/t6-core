@@ -19,7 +19,7 @@ class NotionHandshakeTest(unittest.TestCase):
             routes.write_text('- {path: /events/notion, verifier: notion, secret_env: NOTION, job_kind: notion.event, queue: main}')
             for mode in ("full", "edge"):
                 with self.subTest(mode=mode):
-                    env = {"T6_SERVER_MODE": mode, "T6_ROUTES_FILE": str(routes), "T6_NOTION_BOOTSTRAP": "1", "T6_QUEUE_DB": ":memory:", "T6_REGISTRY_DB": ":memory:"}
+                    env = {"T6_SERVER_MODE": mode, "T6_ROUTES_FILE": str(routes), "T6_NOTION_BOOTSTRAP": "1", "T6_QUEUE_DB": str(Path(directory) / "queue.sqlite"), "T6_REGISTRY_DB": ":memory:"}
                     stderr = io.StringIO()
                     with patch.dict(os.environ, env, clear=True), patch("t6.server.__main__.serve") as serve, patch("t6.server.__main__.make_server") as make_server, patch("t6.server.__main__.threading.Thread"), contextlib.redirect_stderr(stderr):
                         self.assertEqual(main(), 0)
@@ -37,7 +37,7 @@ class TranslateSwitchTest(unittest.TestCase):
             routes.write_text('- {path: /events/notion, verifier: notion, secret_env: NOTION, job_kind: notion.event, queue: main}')
             for value, expected in ((None, False), ("false", False), ("true", True)):
                 with self.subTest(value=value):
-                    env = {"T6_SERVER_MODE": "full", "T6_ROUTES_FILE": str(routes), "T6_QUEUE_DB": ":memory:", "T6_REGISTRY_DB": ":memory:"}
+                    env = {"T6_SERVER_MODE": "full", "T6_ROUTES_FILE": str(routes), "T6_QUEUE_DB": str(Path(directory) / "queue.sqlite"), "T6_REGISTRY_DB": ":memory:"}
                     if value is not None:
                         env["T6_TRANSCRIPT_TRANSLATE"] = value
                     with patch.dict(os.environ, env, clear=True), patch("t6.server.__main__.serve"), patch("t6.server.__main__.make_server"), patch("t6.server.__main__.threading.Thread"), patch("t6.server.__main__.VerbAPI") as api, contextlib.redirect_stderr(io.StringIO()):

@@ -115,7 +115,7 @@ Mac mini. Both use only the standard library.
 | `T6_FRAMEIO_TOKEN_FILE` | Frame.io worker: required, where the token is kept, on a volume only this worker mounts |
 | `T6_FRAMEIO_ACCOUNT_ID` | Frame.io worker: optional, the Frame.io account ID; needed only when the sign-in sees more than one account |
 | `T6_API_URL`, `T6_REGISTRY_READ_SECRET` | Frame.io worker: turn on the briefing feed from Media locations. `T6_API_URL` is the t6 API on Sixto, not the queue server; the secret is the API's read-only registry grant. Needed together, used for this client only; the worker's own `T6_WORKER_SECRET` and its `frameio` grant stay without registry read |
-| `T6_SERVER_URL`, `T6_WORKER_SECRET` (the secret needs registry read) | main worker: resolve review messages to Project Chat links. With `T6_DATABASE` set it reads Media locations from that database, not over HTTP |
+| `T6_SERVER_URL`, `T6_WORKER_SECRET` (the secret needs registry read) | main worker: `T6_SERVER_URL` is for queue calls only. With `T6_DATABASE` set it reads Media locations from that database, not over HTTP, and needs `T6_API_URL` (the t6 API) for every registry and operator call, or it refuses to start |
 | `T6_FRAMEIO_READ_BIND`, `T6_FRAMEIO_READ_SECRET` | Frame.io worker: optional, turn on the [read API](#frameio): `host:port` on the LAN or tailnet address (never a public one) and the bearer secret callers send. Both are needed together |
 | `T6_FRAMEIO_READ_URL`, `T6_FRAMEIO_READ_SECRET` | t6 API: Frame.io worker read API URL and bearer secret, needed for `version add` to resolve the file and stack. |
 

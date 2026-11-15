@@ -31,7 +31,7 @@ import hashlib
 import hmac
 import json
 import time
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import parse_qs, urlsplit
 
 from t6.domain.events import (
@@ -63,7 +63,7 @@ from t6.registry import (
     Shown,
 )
 from t6.server.routes import Route
-from t6.server.queue import DIAGNOSTIC_QUEUE, FRAMEIO_QUEUE, MAIN_QUEUE, JobQueue
+from t6.server.queue import DIAGNOSTIC_QUEUE, FRAMEIO_QUEUE, MAIN_QUEUE, JobQueue, Submitted
 from t6.server.signatures import WebhookRejected, verify_frameio, verify_notion
 
 REVIEW_QUIET_SECONDS = 15 * 60.0
@@ -206,6 +206,14 @@ def _bearer(request: Request) -> str:
     return value[7:] if value.lower().startswith("bearer ") else ""
 
 
+class Submitter(Protocol):
+    """Where a job goes: the queue file, or the internal job table in the t6 database."""
+
+    def submit(
+        self, queue: str, kind: str, dedupe_key: str, payload: Mapping[str, JsonValue] | None = None, run_at: float | None = None
+    ) -> Submitted: ...
+
+
 class WebhookApp:
     def __init__(
         self,
@@ -215,10 +223,18 @@ class WebhookApp:
         on_notion_verification: Callable[[str], None] = lambda token: None,
         registry: ProjectRegistry | None = None,
         operator: OperatorService | None = None,
+        inside: Submitter | None = None,
     ) -> None:
+        """`inside` takes the `main` jobs this server starts itself (the four sync kinds, card delivery, taps and reconcile).
+
+        The full-mode server passes the internal job table in the t6 database (ADR 0006), which the main
+        worker polls. Without it those jobs go to `queue`, as in a one-server setup that has no t6 database.
+        Outside events (webhooks) and the Frame.io jobs always go to `queue`.
+        """
         self._registry = registry
         self._operator = operator
         self._queue = queue
+        self._inside: Submitter = inside if inside is not None else queue
         self._config = config
         self._clock = clock
         self._on_notion_verification = on_notion_verification
@@ -453,7 +469,7 @@ class WebhookApp:
         try:
             intents = self._registry.undispatched_sync()
             for intent in intents:
-                self._queue.submit(
+                self._inside.submit(
                     MAIN_QUEUE,
                     JobKind.REGISTRY_SYNC.value,
                     f"registry.sync:{intent.id}",
@@ -461,13 +477,13 @@ class WebhookApp:
                 )
             deliverable_intents = self._registry.undispatched_deliverable_sync()
             for intent in deliverable_intents:
-                self._queue.submit(MAIN_QUEUE, 'deliverable.sync', f'deliverable.sync:{intent.id}', {'intent_id': intent.id})
+                self._inside.submit(MAIN_QUEUE, 'deliverable.sync', f'deliverable.sync:{intent.id}', {'intent_id': intent.id})
             jo_intents = self._registry.undispatched_jo_sync()
             for intent in jo_intents:
-                self._queue.submit(MAIN_QUEUE, JobKind.JO_SYNC.value, f"jo.sync:{intent.id}", {"intent_id": intent.id})
+                self._inside.submit(MAIN_QUEUE, JobKind.JO_SYNC.value, f"jo.sync:{intent.id}", {"intent_id": intent.id})
             status_intents = self._registry.undispatched_status_sync()
             for intent in status_intents:
-                self._queue.submit(MAIN_QUEUE, 'project.status_sync', f'project.status_sync:{intent.id}', {'intent_id': intent.id})
+                self._inside.submit(MAIN_QUEUE, 'project.status_sync', f'project.status_sync:{intent.id}', {'intent_id': intent.id})
             self._registry.mark_dispatched(intent.id for intent in (*intents, *jo_intents, *status_intents, *deliverable_intents))
         except RegistryUnavailable:
             return
@@ -513,7 +529,7 @@ class WebhookApp:
                 "project_id": self._project_of_tap(data),
             },
         )
-        made = self._queue.submit(MAIN_QUEUE, job.kind.value, job.dedupe_key, job.payload)
+        made = self._inside.submit(MAIN_QUEUE, job.kind.value, job.dedupe_key, job.payload)
         return Response(200, {"job_id": made.job_id, "created": made.created})
 
     def _project_of_tap(self, data: str) -> str | None:
@@ -569,7 +585,7 @@ class WebhookApp:
         return Response(200, {"outcome": result.outcome})
 
     def _deliver(self, token: str, version: int) -> None:
-        self._queue.submit(
+        self._inside.submit(
             MAIN_QUEUE,
             JobKind.OPERATOR_DELIVER.value,
             f"operator.deliver:{token}:{version}",
@@ -990,7 +1006,7 @@ class WebhookApp:
             key = request.header("idempotency-key")
             if not key.strip():
                 return Response(400, {"error": "idempotency key is required"})
-            made = self._queue.submit(
+            made = self._inside.submit(
                 MAIN_QUEUE,
                 JobKind.NOTION_PAGE_CHANGED.value,
                 f"registry.reconcile:{key}",

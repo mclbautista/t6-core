@@ -95,6 +95,22 @@ def _whole_number(environ: Mapping[str, str], name: str, *, required: bool) -> i
         raise ConfigError(f"{name} must be a Telegram ID (a whole number)") from None
 
 
+def registry_transport(environ: Mapping[str, str], queue_transport: Transport) -> Transport:
+    """Where the main worker sends registry and operator calls: the t6 API at `T6_API_URL`.
+
+    The queue server (`T6_SERVER_URL`) is the VPS edge in production and has no registry: it answers 404,
+    which `RegistryClient` reads as "no such row". So with `T6_DATABASE` set (the worker sits with the t6
+    database, next to the API) a missing `T6_API_URL` is a `ConfigError`, never a fall back to the queue
+    server. Without `T6_DATABASE` the worker is in a one-server setup, where the queue server is the API.
+    """
+    url = (environ.get("T6_API_URL") or "").strip()
+    if url:
+        return HttpTransport(url)
+    if environ.get("T6_DATABASE"):
+        raise ConfigError("missing environment variable: T6_API_URL (the t6 API; the queue server has no registry)")
+    return queue_transport
+
+
 def configured_handlers(
     environ: Mapping[str, str], settings: WorkerSettings, transport: Transport
 ) -> dict[str, dict[str, Handler]]:
@@ -108,12 +124,16 @@ def configured_handlers(
     The gateway settings also give it `frameio.review_done` (a message to the
     review chat when a person goes quiet on a Frame.io file), which needs
     `T6_REVIEW_CHAT` (and may have `T6_REVIEW_TOPIC`).
+
+    `transport` (`T6_SERVER_URL`) is for queue calls only. Every registry and operator call goes to
+    the API (`registry_transport`).
     """
     if settings.queue != "main":
         return {}
+    api = registry_transport(environ, transport)
     handlers: dict[str, Handler] = {}
     gateway_url, gateway_secret = environ.get("T6_GATEWAY_URL"), environ.get("T6_GATEWAY_SECRET")
-    operator = OperatorClient(transport, settings.secret)
+    operator = OperatorClient(api, settings.secret)
     if gateway_url and gateway_secret:
         gateway = GatewayClient(HttpTransport(gateway_url), gateway_secret)
         handlers.update(CardDelivery(operator, gateway).handlers())
@@ -128,7 +148,7 @@ def configured_handlers(
 
         offer = operator.offer_unbound_page if gateway_url and gateway_secret else None
         projection = ProjectProjection(
-            NotionClient(token), RegistryClient(transport, settings.secret), projects, offer=offer
+            NotionClient(token), RegistryClient(api, settings.secret), projects, offer=offer
         )
         handlers.update(projection.handlers())
     job_orders = environ.get("T6_NOTION_JOB_ORDERS_DATA_SOURCE")
@@ -136,7 +156,7 @@ def configured_handlers(
         from t6.notion import NotionClient
         from t6.notion.jo_projection import JobOrderProjection
         from t6.worker.registry import RegistryClient
-        jo_projection = JobOrderProjection(NotionClient(token), RegistryClient(transport, settings.secret), job_orders)
+        jo_projection = JobOrderProjection(NotionClient(token), RegistryClient(api, settings.secret), job_orders)
         project_reconcile = handlers.get("notion.page_changed")
         handlers.update(jo_projection.handlers())
         if project_reconcile is not None:
@@ -151,7 +171,7 @@ def configured_handlers(
         from t6.notion import NotionClient
         from t6.notion.deliverable_projection import DeliverableProjection
         from t6.worker.registry import RegistryClient
-        deliverable_projection = DeliverableProjection(NotionClient(token), RegistryClient(transport, settings.secret), deliverables)
+        deliverable_projection = DeliverableProjection(NotionClient(token), RegistryClient(api, settings.secret), deliverables)
         handlers['deliverable.sync'] = deliverable_projection.sync
         prior_reconcile = handlers.get('notion.page_changed')
         if prior_reconcile is None:
@@ -171,7 +191,7 @@ def configured_handlers(
         queue = QueueClient(transport, settings.secret)
         from t6.worker.registry import RegistryClient
 
-        review_registry = RegistryClient(transport, settings.secret)
+        review_registry = RegistryClient(api, settings.secret)
         from t6.worker.review_target import ReviewTarget
 
         target = ReviewTarget(review_media_links(environ, review_registry), review_registry)

@@ -26,7 +26,7 @@ Server: `T6_FRAMEIO_WEBHOOK_SECRET`, `T6_NOTION_WEBHOOK_TOKEN`, `T6_TAP_SECRET`
 (the gateway's `T6CORE_SECRET`), one secret per grant (`T6_WORKER_SECRET`,
 `T6_REGISTRY_SECRET`, `T6_REGISTRY_READ_SECRET`), `T6_OPERATOR_IDS` (Telegram user
 IDs; the first receives cards), the `*_DB` paths and the two binds. Worker:
-`T6_SERVER_URL` (the tailnet address), `T6_WORKER_SECRET`, `T6_WORKER_QUEUE=main`,
+`T6_SERVER_URL` (the tailnet address, for queue calls only), `T6_API_URL` (the t6 API, for every registry and operator call; required when `T6_DATABASE` is set), `T6_WORKER_SECRET`, `T6_WORKER_QUEUE=main`,
 `T6_NOTION_TOKEN`, `T6_NOTION_PROJECTS_DATA_SOURCE`, `T6_NOTION_JOB_ORDERS_DATA_SOURCE`, `T6_GATEWAY_URL`,
 `T6_GATEWAY_SECRET`. Keep secrets in the host's secret store or a root-only env
 file, never in the image or this repository. Prefer separate secrets per grant so
@@ -153,5 +153,11 @@ handshake is acknowledged without queuing, as in full mode. The server prints th
 token to standard error for the operator to store. For initial edge setup, set
 `T6_NOTION_BOOTSTRAP=1` to allow an unset Notion route secret. That route serves only the unsigned Notion verification handshake and logs its bootstrap status at startup; ordinary events are rejected. All other unset route secrets still prevent startup. Store the token, unset bootstrap, and restart.
 Unsigned events remain rejected. Full mode remains the default.
+
+### The main worker with the API on Sixto (full mode API, edge VPS)
+
+The VPS server runs in edge mode: it serves `/health` and `/queue/*` and answers 404 to the rest, so it has no registry. The registry is in the t6 database behind the t6 API on Sixto. The main worker therefore has two addresses. `T6_SERVER_URL` is the VPS queue server and carries queue calls only (claim, extend, ack, fail, and the `frameio` queue asks). `T6_API_URL` is the t6 API (on Sixto the API and the main worker share a network namespace, so this is the API on loopback) and carries every `/registry/*` and `/operator/*` call: the Project, Job Order and Deliverable projections, the review Version and review chat links, and operator cards. With `T6_DATABASE` set and no `T6_API_URL`, the main worker refuses to start with a `ConfigError` that names `T6_API_URL`; a registry call never falls back to the queue server. Without `T6_DATABASE` (one server that is both queue and API) it keeps using `T6_SERVER_URL`.
+
+The `main` jobs the API starts itself go to the internal job table in the t6 database (ADR 0006), not to `T6_QUEUE_DB`: `registry.sync`, `deliverable.sync`, `jo.sync`, `project.status_sync`, `operator.deliver`, the `/tap` job and the reconcile `notion.page_changed`. Outside events (Notion and Frame.io webhooks) keep using the VPS queue. When the API starts it moves the waiting `main` jobs of the four sync kinds from its queue file into the internal job table (same kind, same dedupe key; running it twice moves nothing twice) and logs, by kind, the other waiting jobs it leaves in the queue file (`t6.server: waiting jobs left in the queue file: ...`). Read that count before deciding what to do with them.
 
 Workers can also poll internal jobs by setting `T6_DATABASE` to the local t6 SQLite database path. The worker polls that job table and its configured VPS queue in turn; the database must be shared with internal job submitters. Back up the database before upgrading. The main worker also requires `T6_GATEWAY_URL` and `T6_GATEWAY_SECRET` for linked-chat subscriptions and pulls; the secret must authenticate the `t6core` module. It reconciles subscriptions on startup and each worker poll, and retries gateway failures on a later poll. It stores message IDs and flags, and member IDs and presence, but no message content.
