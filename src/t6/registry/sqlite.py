@@ -210,6 +210,17 @@ _MIGRATIONS = (
         id TEXT PRIMARY KEY, gate TEXT NOT NULL, target TEXT NOT NULL, requester TEXT NOT NULL,
         tapper_rule TEXT NOT NULL, state TEXT NOT NULL, decided_by TEXT, decided_at REAL, reason TEXT
     )"""),
+    (15, False, """CREATE TABLE concerns (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+        owner_id TEXT NOT NULL REFERENCES persons(id), waiting_on TEXT NOT NULL,
+        anchor TEXT NOT NULL, as_of TEXT NOT NULL, opened_at REAL NOT NULL,
+        evidence_at REAL NOT NULL, state TEXT NOT NULL, manual_override INTEGER NOT NULL DEFAULT 0,
+        settles_id TEXT, revision INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE concern_notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, concern_id TEXT NOT NULL REFERENCES concerns(id),
+        text TEXT NOT NULL, actor TEXT NOT NULL, at REAL NOT NULL
+    )"""),
 )
 
 
@@ -229,6 +240,10 @@ def _migrate(db: sqlite3.Connection) -> None:
                     for operation in ("UPDATE", "DELETE"):
                         db.execute(f"CREATE TRIGGER {table}_no_{operation.lower()} BEFORE {operation} ON {table} "
                                    f"BEGIN SELECT RAISE(ABORT, '{table} is append-only'); END")
+            if version == 15:
+                for operation in ("UPDATE", "DELETE"):
+                    db.execute(f"CREATE TRIGGER concern_notes_no_{operation.lower()} BEFORE {operation} ON concern_notes "
+                               f"BEGIN SELECT RAISE(ABORT, 'concern_notes is append-only'); END")
             if version == 10:
                 for operation in ("UPDATE", "DELETE"):
                     db.execute(f"CREATE TRIGGER job_order_notes_no_{operation.lower()} BEFORE {operation} ON job_order_notes "
