@@ -2,6 +2,40 @@
 
 All notable changes to this project are documented here, following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - 2026-11-15
+
+### Added
+
+- Deliverable entity and its Notion Deliverables rows (#227).
+- Package Spec reader and spec versions (#228).
+- Approval request, grant and deny with named gates (#229).
+- Concern record and verbs (#230).
+- Project archive and person assign / unassign (#232).
+
+### Changed
+
+- The bundled Notion schema snapshot carries the live property IDs of the Job Order **T6 ID** and **T6 Notes** properties, so Job Order projection (`jo.sync`) no longer refuses for missing IDs (#313).
+
+### Fixed
+
+- In edge mode, an unsigned or badly signed request to the Frame.io comment route or the Notion page route answers 401 instead of dropping the connection (#311).
+- Resolve refuses unverified project server schemas (#306).
+
+### Before go-live
+
+- Deliverable projection needs a **T6 ID** text property in the Notion Deliverables database and a new schema snapshot; until then the bundled snapshot has no ID for it.
+
+### t6 database migrations
+
+Migrations run on open. None is marked forward-only; take a backup before upgrading regardless.
+
+| Version | Change | Forward-only |
+| --- | --- | --- |
+| 13 | Deliverables, Deliverable sync intents and migration receipts | No |
+| 14 | Approvals | No |
+| 15 | Concerns and append-only Concern notes | No |
+| 16 | Project archives and project person roles | No |
+
 ## [0.4.0] - 2026-11-14
 
 ### Added
