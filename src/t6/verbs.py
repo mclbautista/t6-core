@@ -1373,7 +1373,40 @@ def media_list(inputs: MediaListInput, open_notion: Callable[..., Any]) -> Outco
     people = _people()
     return Done(result={'locations': MediaStore(people.registry, people.tokens).list(inputs.owner)})
 
+
+class TranscriptCreateInput(BaseModel):
+    media: str
+    deliverable: str | None = None
+    manifest: str | None = None
+    language: str = 'fil'
+    no_diarize: bool = False
+    formats: list[str] = Field(default_factory=lambda: ['srt', 'docx'])
+    start_timecode: str | None = None
+    max_hours: float | None = None
+    confirm: str | None = None
+
+
+class TranscriptGetInput(BaseModel):
+    transcript: str
+
+
+class TranscriptCreateOutput(BaseModel):
+    job_id: int
+    transcript_id: str | None = None
+
+
+class TranscriptGetOutput(BaseModel):
+    transcript: dict[str, Any]
+
+
+def transcript_get(inputs: TranscriptGetInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.transcript import TranscriptStore
+    result = TranscriptStore(_people().registry).get(inputs.transcript)
+    return Done(result={'transcript': result}) if result else Refused(rule='transcript', reason='Transcript not found')
+
 VERBS = (
+    Verb('transcript', 'create', 'Create a Transcript', (), TranscriptCreateInput, TranscriptCreateOutput, 'reader', 'Preview and confirm a transcription job.', api_read),
+    Verb('transcript', 'get', 'Get a Transcript', (), TranscriptGetInput, TranscriptGetOutput, 'reader', 'Read progress and summary.', transcript_get),
     Verb('media', 'link', 'Link a Media location', (), MediaLinkInput, MediaWriteOutput, 'coordinator', 'Preview and confirm the link.', media_write),
     Verb('media', 'unlink', 'Unlink a Media location', (), MediaUnlinkInput, MediaWriteOutput, 'coordinator', 'Preview and confirm the unlink.', media_write),
     Verb('media', 'list', 'List Media locations', (), MediaListInput, MediaListOutput, 'reader', 'Read Media locations.', media_list),
@@ -1558,6 +1591,20 @@ def add_parsers(commands: Any) -> None:
                 parser = commands.add_parser(entry.noun, help=("[verb] " if not entry.verb else "") + entry.description)
                 nouns[entry.noun] = parser.add_subparsers(dest=f"{entry.noun}_verb", required=True) if entry.verb else parser
         parser = nouns[entry.noun]
+        if entry.noun == 'transcript':
+            parser = parser.add_parser(entry.verb, help=entry.description)
+            if entry.verb == 'create':
+                parser.add_argument('media')
+                for name in ('deliverable', 'manifest', 'language', 'start-timecode', 'confirm'):
+                    parser.add_argument('--' + name, default='fil' if name == 'language' else None)
+                parser.add_argument('--formats', nargs='+', default=['srt', 'docx'])
+                parser.add_argument('--no-diarize', action='store_true')
+                parser.add_argument('--max-hours', type=float)
+            else:
+                parser.add_argument('transcript')
+            parser.add_argument('--json', action='store_true')
+            parser.set_defaults(registered_verb=entry)
+            continue
         if entry.handler is approval_write and entry.verb == 'request':
             for alias in entry.aliases:
                 name = alias.split(' ', 1)[1]

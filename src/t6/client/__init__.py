@@ -15,6 +15,7 @@ from t6.verbs import (
     Ambiguous, Done, NeedsPerson, Outcome, Preview, Refused,
     VersionAddInput, VersionLockInput, VersionFindInput, VersionGetInput,
     MediaLinkInput, MediaUnlinkInput, MediaListInput, MediaMigrateInput,
+    TranscriptCreateInput, TranscriptGetInput,
     BayBookInput, BookingMoveInput, BookingExtendInput, BookingCancelInput, BookingGetInput, BookingListInput,
     DeliverableDeliverInput, PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
@@ -44,6 +45,12 @@ _outcome: TypeAdapter[Outcome] = TypeAdapter(Outcome)
 
 
 class Client:
+    def transcript_create(self, inputs: TranscriptCreateInput) -> Result:
+        return self.call('transcript', 'create', inputs)
+
+    def transcript_get(self, inputs: TranscriptGetInput) -> Result:
+        return self.call('transcript', 'get', inputs)
+
     def __init__(self, base_url: str | None = None, secret: str | None = None, *, timeout: float = 10,
                  telegram_user_id: int | None = None, mcp: bool = False) -> None:
         self.base_url = (base_url or os.environ.get('T6_API_URL', '')).rstrip('/')

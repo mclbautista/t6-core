@@ -354,6 +354,15 @@ def main(
         transport = transport or HttpTransport(settings.server_url)
         table = handlers if handlers is not None else {**HANDLERS, **configured_handlers(environ, settings, transport)}
         queue_handlers = table.get(settings.queue)
+        transcribe_client = None
+        if settings.queue == 'transcribe':
+            from t6.transcribe.worker import TranscribeQueue, configured
+            transcribe_client = TranscribeQueue(transport, settings.secret)
+            if handlers is None:
+                try:
+                    queue_handlers = configured(environ, transcribe_client)
+                except (ValueError, ImportError) as error:
+                    raise ConfigError(str(error)) from error
         if settings.queue == FRAMEIO_QUEUE and handlers is None:
             frameio = frameio or frameio_worker(
                 environ, *frameio_backend(environ), timers=ReviewTimerClient(transport, settings.secret).arm
@@ -371,9 +380,9 @@ def main(
         stop = threading.Event()
         for signum in (signal.SIGTERM, signal.SIGINT):
             signal.signal(signum, lambda _signum, _frame: stop.set())
-    client = QueueClient(transport, settings.secret)
+    client = transcribe_client if transcribe_client is not None else QueueClient(transport, settings.secret)
     internal_client = None
-    if environ.get("T6_DATABASE"):
+    if settings.queue == 'main' and environ.get("T6_DATABASE"):
         from t6.worker.internal_queue import InternalJobQueue, InternalQueueClient
 
         internal_client = InternalQueueClient(InternalJobQueue(environ["T6_DATABASE"]))

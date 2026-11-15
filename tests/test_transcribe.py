@@ -11,6 +11,14 @@ from t6.transcribe.testing import FakeElevenLabs
 
 
 class AdapterTests(unittest.TestCase):
+    def test_diarization_can_be_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            wav = Path(directory) / 'input.wav'
+            wav.write_bytes(b'synthetic')
+            client = FakeElevenLabs([{'words': []}])
+            transcribe(wav, client, diarize=False)
+            self.assertFalse(client.calls[0]['diarize'])
+
     def test_retries_and_parameters(self) -> None:
         data = {"text": "Hi", "words": []}
         for failure in (ApiError(status_code=429), ApiError(status_code=500), httpx.ConnectError("offline")):

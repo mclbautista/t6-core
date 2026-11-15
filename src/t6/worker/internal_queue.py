@@ -14,11 +14,11 @@ from t6.worker.client import QueueRejected, WorkerJob
 
 
 class InternalJobQueue:
-    def __init__(self, path: str | Path, clock: Callable[[], float] = time.time,
+    def __init__(self, path: str | Path | SqliteProjectRegistry, clock: Callable[[], float] = time.time,
                  max_attempts: int = DEFAULT_MAX_ATTEMPTS) -> None:
         if max_attempts < 1:
             raise ValueError("max_attempts must be positive")
-        self._db = SqliteProjectRegistry(path)
+        self._db = path if isinstance(path, SqliteProjectRegistry) else SqliteProjectRegistry(path)
         self._clock = clock
         self._max_attempts = max_attempts
 
