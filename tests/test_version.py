@@ -62,4 +62,4 @@ class VersionTests(unittest.TestCase):
         self.assertEqual([m['milestone'] for m in deliverable['milestones']], ['piclock', 'piclock'])
         with self.registry._transaction() as db:
             self.assertEqual(db.execute('SELECT version_id FROM version_locks').fetchone()[0], ids[1])
-        self.assertEqual({v['verb'] for v in catalogue() if v['noun'] == 'version'}, {'add', 'lock', 'find'})
+        self.assertEqual({v['verb'] for v in catalogue() if v['noun'] == 'version'}, {'add', 'lock', 'find', 'get'})
