@@ -26,7 +26,7 @@ import hmac
 import urllib.parse
 
 from t6.domain.events import JsonValue
-from t6.frameio.requests import Approvals, BriefingFeed, Comments, FrameioProjects, FrameioRequest, ShareLinks
+from t6.frameio.requests import Approvals, BriefingFeed, Comments, FrameioProjects, FrameioRequest, ShareLinks, Versions
 from t6.frameio.worker import FrameioWorker, SignInRequired
 from t6.server.app import Request, Response
 
@@ -70,6 +70,8 @@ class ReadApi:
             return Comments(file_id=route[1])
         if len(route) == 3 and route[0] == "files" and route[2] == "approvals":
             return Approvals(file_id=route[1])
+        if len(route) == 3 and route[0] == "files" and route[2] == "versions":
+            return Versions(file_id=route[1])
         if route == ["briefing"]:
             since = params.get("since", [""])[0]
             try:

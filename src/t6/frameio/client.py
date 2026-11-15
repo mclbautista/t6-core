@@ -20,8 +20,8 @@ from typing import Any, cast
 import urllib.parse
 
 from t6.domain.events import JsonValue
-from t6.frameio.model import Approval, BriefingShow, Comment, FrameioProject, ShareLink, decode
-from t6.frameio.requests import Approvals, BriefingFeed, Comments, Failed, FrameioProjects, ShareLinks
+from t6.frameio.model import Approval, BriefingShow, Comment, FrameioProject, ShareLink, Version, decode
+from t6.frameio.requests import Approvals, BriefingFeed, Comments, Failed, FrameioProjects, ShareLinks, Versions
 from t6.worker.client import Transport
 
 SIGN_IN_REQUIRED = "sign_in_required"
@@ -58,6 +58,9 @@ class FrameioReader:
 
     def comments(self, file_id: str) -> tuple[Comment, ...] | Failed:
         return cast('tuple[Comment, ...] | Failed', self._decoded(Comments, self._get(f"/frameio/files/{_id(file_id)}/comments")))
+
+    def versions(self, file_id: str) -> tuple[Version, ...] | Failed:
+        return cast("tuple[Version, ...] | Failed", self._decoded(Versions, self._get(f"/frameio/files/{_id(file_id)}/versions")))
 
     def approvals(self, file_id: str) -> tuple[Approval, ...] | Failed:
         return cast('tuple[Approval, ...] | Failed', self._decoded(Approvals, self._get(f"/frameio/files/{_id(file_id)}/approvals")))

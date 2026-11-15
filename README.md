@@ -116,6 +116,7 @@ Mac mini. Both use only the standard library.
 | `T6_FRAMEIO_ACCOUNT_ID` | Frame.io worker: optional, the Frame.io account ID; needed only when the sign-in sees more than one account |
 | `T6_NOTION_TOKEN`, `T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE` | Frame.io worker: optional, turn on the briefing feed and External Links rows; main worker: resolve review messages to Project Chat links |
 | `T6_FRAMEIO_READ_BIND`, `T6_FRAMEIO_READ_SECRET` | Frame.io worker: optional, turn on the [read API](#frameio): `host:port` on the LAN or tailnet address (never a public one) and the bearer secret callers send. Both are needed together |
+| `T6_FRAMEIO_READ_URL`, `T6_FRAMEIO_READ_SECRET` | t6 API: Frame.io worker read API URL and bearer secret, needed for `version add` to resolve the file and stack. |
 
 | Variable | Use |
 | --- | --- |

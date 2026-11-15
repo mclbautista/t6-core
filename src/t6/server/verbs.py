@@ -119,7 +119,7 @@ class VerbAPI:
             inputs = entry.input_model.model_validate(data)
         except ValidationError as error:
             return Response(422, {'errors': cast(JsonValue, error.errors(include_url=False, include_context=False, include_input=False))})
-        if (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'resolve'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'get'), ('meeting-notes', 'list')}:
+        if (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'resolve'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find')}:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._typed_read(entry.noun, entry.verb, inputs)
             if isinstance(outcome, Done) and entry.noun in {'project', 'jo', 'person', 'camera', 'deliverable', 'meeting-notes', 'external-link', 'studio'} and self.people.authorize(actor, 'operator'):
@@ -266,6 +266,9 @@ class VerbAPI:
             from t6.domain.studio_people import standing_cc
             page = standing_cc()
             return Done(result={'standing_cc': (self.people.registry.bound_entity('notion', page) or page) if page else None})
+        if noun == 'version':
+            from t6.version import VersionStore
+            return Done(result={'version': VersionStore(self.people.registry, self.people.tokens).for_file(inputs.frameio_file)})
         if noun == 'deliverable':
             from t6.deliverable import DeliverableStore
             store = DeliverableStore(self.people.registry, self.people.tokens)
