@@ -6,7 +6,8 @@ import builtins
 import secrets
 from datetime import date, datetime
 from t6.domain.studio_time import MANILA
-from typing import Any
+from t6.deliverable_templates import FILM_PIPELINE as FILM_PIPELINE, FILM_TRACKS, PROJECT_TYPES, TEMPLATES, stage, status
+from typing import Any, Callable
 
 from t6.ids import EntityKind, T6Id
 from t6.preview import PreviewTokens
@@ -16,18 +17,23 @@ from t6.verbs import Done, Outcome, Refused
 
 
 MILESTONES = ("ingested", "synced", "piclock", "conform done", "color delivered",
-              "VFX approved", "printmaster in", "master approved", "QC passed", "delivered", "archived")
-# Tracks are separate from the main pipeline: completing one never advances another.
-FILM_PIPELINE = ("ingested", "synced", "piclock", "conform done", "master approved", "QC passed", "delivered", "archived")
-FILM_TRACKS = {"color": "color delivered", "VFX": "VFX approved", "GFX/titles": None,
-               "sound": "printmaster in", "music": None, "captions": None}
+              "VFX approved", "printmaster in", "master approved", "QC passed", "delivered", "archiving", "archived")
 
 
 def film_stage(facts: list[dict[str, Any]]) -> dict[str, Any]:
-    recorded = {fact['milestone'] for fact in facts}
-    return {"template": "film", "position": next((m for m in reversed(FILM_PIPELINE) if m in recorded), None),
-            "tracks": {track: "complete" if milestone and milestone in recorded else "pending"
-                       for track, milestone in FILM_TRACKS.items()}}
+    return stage('film', facts)
+
+
+def deliverable_status(db: Any, identifier: str) -> str:
+    chosen = db.execute('SELECT template FROM deliverable_templates WHERE deliverable_id=?', (identifier,)).fetchone()
+    facts = [{'milestone': row[0]} for row in db.execute('SELECT milestone FROM milestones WHERE deliverable_id=?', (identifier,))]
+    return status(chosen[0] if chosen else 'film', facts)
+
+
+def intend_status_change(db: Any, identifier: str, before: str, now: float) -> None:
+    if deliverable_status(db, identifier) != before:
+        _intend_sync(db, identifier, 1, now)
+        db.execute('INSERT INTO deliverable_sync_intents (intent_id) VALUES (last_insert_rowid())')
 
 
 def write_milestone(db: Any, deliverable: str, name: str, on: str, actor: str, now: float) -> str:
@@ -42,8 +48,8 @@ def write_milestone(db: Any, deliverable: str, name: str, on: str, actor: str, n
 
 
 class DeliverableStore:
-    def __init__(self, registry: SqliteProjectRegistry, tokens: PreviewTokens) -> None:
-        self.registry, self.tokens = registry, tokens
+    def __init__(self, registry: SqliteProjectRegistry, tokens: PreviewTokens, project_type: Callable[[str], str | None] | None = None) -> None:
+        self.registry, self.tokens, self.project_type = registry, tokens, project_type
 
     def get(self, ref: str) -> dict[str, Any] | None:
         with self.registry._transaction() as db:
@@ -55,7 +61,8 @@ class DeliverableStore:
             result['bindings'] = [dict(page_id=b[0], active=bool(b[1])) for b in db.execute("SELECT page_id, active FROM bindings WHERE system = 'notion' AND project_id = ? ORDER BY bound_at, page_id", (row[0],))]
             result['milestones'] = [dict(zip(('id', 'milestone', 'on', 'actor', 'recorded_at'), fact))
                                     for fact in db.execute('SELECT id, milestone, occurred_on, actor, recorded_at FROM milestones WHERE deliverable_id=? ORDER BY rowid', (row[0],))]
-            result['stage'] = film_stage(result['milestones'])
+            template = db.execute('SELECT template FROM deliverable_templates WHERE deliverable_id=?', (row[0],)).fetchone()
+            result['stage'] = stage(template[0] if template else 'film', result['milestones'])
             return result
 
     def list(self, project: str) -> list[dict[str, Any]]:
@@ -105,19 +112,31 @@ class DeliverableStore:
                 return Refused(rule='project', reason='Project not found')
             if db.execute('SELECT 1 FROM project_archives WHERE project_id = ?', (project_id,)).fetchone():
                 return Refused(rule='project_archived', reason='Project is archived')
-            plan = {'action': 'define', **values, 'project_id': project_id, 'idempotency_key': key}
+            template = values.get('template')
+            if template is not None:
+                if not isinstance(template, str) or template.lower() not in TEMPLATES:
+                    return Refused(rule='template', reason='Unknown template')
+                template = template.lower()
+            else:
+                binding = db.execute("SELECT page_id FROM bindings WHERE system='notion' AND project_id=? AND active=1", (project_id,)).fetchone()
+                project_type = self.project_type(binding[0]) if binding and self.project_type else None
+                template = PROJECT_TYPES.get(project_type or '')
+                if not template:
+                    return Refused(rule='template', reason='Project Type has no template; choose --template')
+            plan = {'action': 'define', **values, 'template': template, 'project_id': project_id, 'idempotency_key': key}
             if nonce is None:
                 preview = self.tokens.create('deliverable define', actor, inputs, plan)
                 preview_nonce = self.tokens.verify(preview.token, 'deliverable define', actor, inputs)
                 assert isinstance(preview_nonce, str)
-                db.execute('INSERT INTO jo_state_previews VALUES (?, ?)', (preview_nonce, project_id))
+                db.execute('INSERT INTO jo_state_previews VALUES (?, ?)', (preview_nonce, json.dumps([project_id, template])))
                 return preview
             observed = db.execute('SELECT state FROM jo_state_previews WHERE nonce = ?', (nonce,)).fetchone()
-            if not observed or observed[0] != project_id:
+            if not observed or observed[0] != json.dumps([project_id, template]):
                 return Refused(rule='project_changed', reason='Project changed since preview; preview again')
             identifier = str(T6Id.mint(EntityKind.DELIVERABLE))
             now = self.registry._clock()
             db.execute('INSERT INTO deliverables VALUES (?, ?, ?, ?, ?, ?)', (identifier, project_id, values['code'], values.get('episode'), values.get('due'), values.get('air')))
+            db.execute('INSERT INTO deliverable_templates VALUES (?, ?)', (identifier, template))
             result = {**plan, 'deliverable_id': identifier}
             cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, NULL, ?)', (identifier, 'deliverable_define', actor, now, json.dumps(values)))
             db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (project_id, identifier, now, actor, 'deliverable_define', 'deliverable defined', cursor.lastrowid))
@@ -131,8 +150,6 @@ class DeliverableStore:
         name = values.get('milestone')
         if not actor.strip() or not values.get('deliverable'):
             return Refused(rule='input', reason='Deliverable and actor are required')
-        if name not in MILESTONES:
-            return Refused(rule='milestone', reason='Unknown milestone')
         if (idempotency_key is not None and not idempotency_key.strip()) or (confirm and not idempotency_key):
             return Refused(rule='idempotency_key', reason='A nonblank idempotency key is required')
         if values.get('on'):
@@ -162,6 +179,11 @@ class DeliverableStore:
             row = db.execute("SELECT id, project_id FROM deliverables WHERE id=? OR id=(SELECT project_id FROM bindings WHERE system='notion' AND page_id=?)", (ref, normalize_page_id(ref))).fetchone()
             if not row:
                 return Refused(rule='deliverable', reason='Deliverable not found')
+            chosen = db.execute('SELECT template FROM deliverable_templates WHERE deliverable_id=?', (row[0],)).fetchone()
+            template = chosen[0] if chosen else 'film'
+            allowed = set(TEMPLATES[template]) | (set(FILM_TRACKS.values()) if template == 'film' else set())
+            if not isinstance(name, str) or name not in allowed:
+                return Refused(rule='milestone', reason='Milestone does not belong to this template')
             if nonce is None:
                 plan = {'deliverable_id': row[0], 'project_id': row[1], 'milestone': name,
                         'on': values.get('on') or datetime.fromtimestamp(self.registry._clock(), MANILA).date().isoformat(), 'idempotency_key': key}
@@ -177,7 +199,9 @@ class DeliverableStore:
             if plan['deliverable_id'] != row[0]:
                 return Refused(rule='deliverable_changed', reason='Deliverable changed since preview')
             now = self.registry._clock()
+            before = deliverable_status(db, row[0])
             identifier = write_milestone(db, row[0], name, plan['on'], actor, now)
+            intend_status_change(db, row[0], before, now)
             result = {**plan, 'milestone_id': identifier}
             cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, NULL, ?)', (row[0], 'milestone_record', actor, now, json.dumps(result)))
             db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (row[1], row[0], now, actor, 'milestone_record', f'milestone recorded: {name}', cursor.lastrowid))

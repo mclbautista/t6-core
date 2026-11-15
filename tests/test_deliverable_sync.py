@@ -20,7 +20,7 @@ class DeliverableSyncTests(SyncTestCase):
         self.notion.add_snapshot_data_source('deliverables', 'deliverables')
         self.notion.add_property('deliverables', 'T6 ID', 'rich_text')
         store = DeliverableStore(self.registry, PreviewTokens('secret'))
-        values = {'project': project['id'], 'code': 'Ep01', 'episode': None, 'due': '2026-12-01', 'air': None}
+        values = {'template': 'film', 'project': project['id'], 'code': 'Ep01', 'episode': None, 'due': '2026-12-01', 'air': None}
         preview = store.define(values, actor='alice', idempotency_key='define')
         assert isinstance(preview, Preview)
         result = store.define(values, actor='alice', idempotency_key='define', confirm=preview.token)
@@ -56,7 +56,7 @@ class DeliverableSyncTests(SyncTestCase):
         prop_id = self.notion._data_sources['deliverables']['properties']['T6 ID']['id']
         self.notion.rename_property('deliverables', 'T6 ID', 'Renamed identity')
         store = DeliverableStore(self.registry, PreviewTokens('secret'))
-        values = {'project': project['id'], 'code': 'Ep01', 'episode': None, 'due': None, 'air': None}
+        values = {'template': 'film', 'project': project['id'], 'code': 'Ep01', 'episode': None, 'due': None, 'air': None}
         preview = store.define(values, actor='alice', idempotency_key='define')
         assert isinstance(preview, Preview)
         done = store.define(values, actor='alice', idempotency_key='define', confirm=preview.token)
