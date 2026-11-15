@@ -1229,7 +1229,96 @@ def api_read(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
     return Refused(rule="api", reason="Reads run on the t6 API")
 
 
+
+class BayBookInput(BaseModel):
+    bay: str
+    person: str
+    project: str
+    start: str
+    end: str | None = None
+    shift: Literal['day', 'night'] | None = None
+    force: bool = False
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class BookingMoveInput(BaseModel):
+    booking: str
+    start: str
+    end: str
+    bay: str | None = None
+    force: bool = False
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class BookingExtendInput(BaseModel):
+    booking: str
+    end: str
+    force: bool = False
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class BookingCancelInput(BaseModel):
+    booking: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class BookingGetInput(BaseModel):
+    booking: str
+
+
+class BookingListInput(BaseModel):
+    pass
+
+
+class BookingOutput(BaseModel):
+    booking_id: str
+    bay_id: str
+    person_id: str
+    project_id: str
+    start: str
+    end: str
+    forced: bool
+    cancelled: bool
+    idempotency_key: str
+
+
+class BookingGetOutput(BaseModel):
+    booking: dict[str, Any]
+
+
+class BookingListOutput(BaseModel):
+    bookings: list[dict[str, Any]]
+
+
+def booking_write(inputs: BayBookInput | BookingMoveInput | BookingExtendInput | BookingCancelInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.bay import BookingStore
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    people = _people()
+    verb = 'book' if isinstance(inputs, BayBookInput) else 'move' if isinstance(inputs, BookingMoveInput) else 'extend' if isinstance(inputs, BookingExtendInput) else 'cancel'
+    return BookingStore(people.registry, people.tokens).write(verb, inputs.model_dump(exclude={'idempotency_key', 'confirm'}), actor=_actor.get(), idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
+def booking_read(inputs: BookingGetInput | BookingListInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.bay import BookingStore
+    people = _people()
+    store = BookingStore(people.registry, people.tokens)
+    if isinstance(inputs, BookingListInput):
+        return Done(result={'bookings': store.list()})
+    booking = store.get(inputs.booking)
+    return Done(result={'booking': booking}) if booking else Refused(rule='booking', reason='Booking not found')
+
 VERBS = (
+    Verb('bay', 'book', 'Book a Bay', (), BayBookInput, BookingOutput, 'bookings', 'Overlaps require force.', booking_write),
+    Verb('booking', 'move', 'Move a Booking', (), BookingMoveInput, BookingOutput, 'bookings', 'Overlaps require force.', booking_write),
+    Verb('booking', 'extend', 'Extend a Booking', (), BookingExtendInput, BookingOutput, 'bookings', 'Overlaps require force.', booking_write),
+    Verb('booking', 'cancel', 'Cancel a Booking', (), BookingCancelInput, BookingOutput, 'bookings', 'Cancel an active Booking.', booking_write),
+    Verb('booking', 'get', 'Get a Booking', (), BookingGetInput, BookingGetOutput, 'reader', 'Read a Booking.', booking_read),
+    Verb('booking', 'list', 'List Bookings', (), BookingListInput, BookingListOutput, 'reader', 'Read Bookings.', booking_read),
     Verb("version", "get", "Get a Version", (), VersionGetInput, VersionFindOutput, "reader", "Read a Version and its Approvals.", api_read),
     Verb("version", "find", "Find a Version by Frame.io file", (), VersionFindInput, VersionFindOutput, "reader", "Resolve a review file to its Version.", api_read),
     Verb("version", "add", "Add a Version", (), VersionAddInput, VersionOutput, "coordinator", "Preview and confirm a Frame.io file.", version_write),
@@ -1344,6 +1433,9 @@ def catalogue() -> list[dict[str, Any]]:
     entries.append({'noun': 'admin deliverable', 'verb': 'migrate', 'description': 'Migrate Notion Deliverables',
                     'aliases': [], 'role': 'admin', 'rule': 'Preview before applying.', 'local_only': True,
                     'input_schema': DeliverableMigrateInput.model_json_schema(), 'output_schema': DeliverableMigrateOutput.model_json_schema()})
+    entries.append({'noun': 'admin bay', 'verb': 'migrate', 'description': 'Migrate Notion Bays',
+                    'aliases': [], 'role': 'admin', 'rule': 'Preview before applying.', 'local_only': True,
+                    'input_schema': DeliverableMigrateInput.model_json_schema(), 'output_schema': DeliverableMigrateOutput.model_json_schema()})
     return entries
 
 
@@ -1410,6 +1502,28 @@ def add_parsers(commands: Any) -> None:
                 alias_parser.add_argument('--idempotency-key')
                 alias_parser.add_argument('--confirm')
                 alias_parser.set_defaults(registered_verb=entry, gate=gate)
+        if entry.handler in (booking_write, booking_read):
+            parser = parser.add_parser(entry.verb, help=entry.description)
+            if entry.verb == 'book':
+                for name in ('bay', 'person', 'project'):
+                    parser.add_argument(name)
+                parser.add_argument('--start', required=True)
+                parser.add_argument('--end')
+                parser.add_argument('--shift', choices=('day', 'night'))
+            elif entry.verb != 'list':
+                parser.add_argument('booking')
+                if entry.verb == 'move':
+                    parser.add_argument('--bay')
+                    parser.add_argument('--start', required=True)
+                if entry.verb in ('move', 'extend'):
+                    parser.add_argument('--end', required=True)
+            if entry.verb in ('book', 'move', 'extend'):
+                parser.add_argument('--force', action='store_true')
+            if entry.handler is booking_write:
+                parser.add_argument('--idempotency-key')
+                parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
         if entry.handler is version_write:
             parser = parser.add_parser(entry.verb, help=entry.description)
             if entry.verb == 'add':

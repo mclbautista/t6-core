@@ -14,6 +14,7 @@ from pydantic import BaseModel, TypeAdapter
 from t6.verbs import (
     Ambiguous, Done, NeedsPerson, Outcome, Preview, Refused,
     VersionAddInput, VersionLockInput, VersionFindInput, VersionGetInput,
+    BayBookInput, BookingMoveInput, BookingExtendInput, BookingCancelInput, BookingGetInput, BookingListInput,
     DeliverableDeliverInput, PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
     ConcernForMessageInput, ConcernRecordMessageInput, ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
@@ -102,6 +103,24 @@ class Client:
     def tap(self, payload: dict[str, Any], *, idempotency_key: str) -> dict[str, Any] | Unavailable:
         """Deliver a gateway tap with its retry key and configured Telegram identity."""
         return cast(dict[str, Any] | Unavailable, self._request('/tap', payload, idempotency_key=idempotency_key))
+
+    def bay_book(self, inputs: BayBookInput) -> Result:
+        return self.call('bay', 'book', inputs)
+
+    def booking_move(self, inputs: BookingMoveInput) -> Result:
+        return self.call('booking', 'move', inputs)
+
+    def booking_extend(self, inputs: BookingExtendInput) -> Result:
+        return self.call('booking', 'extend', inputs)
+
+    def booking_cancel(self, inputs: BookingCancelInput) -> Result:
+        return self.call('booking', 'cancel', inputs)
+
+    def booking_get(self, inputs: BookingGetInput) -> Result:
+        return self.call('booking', 'get', inputs)
+
+    def booking_list(self, inputs: BookingListInput) -> Result:
+        return self.call('booking', 'list', inputs)
 
     def llm_run(self, inputs: LLMRunInput) -> Result:
         return self.call('llm', 'run', inputs)

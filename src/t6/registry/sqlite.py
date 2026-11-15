@@ -297,6 +297,10 @@ _MIGRATIONS = (
     (28, False, """CREATE TABLE linked_chat_topics (chat_id INTEGER NOT NULL, topic_id INTEGER NOT NULL, name TEXT NOT NULL, PRIMARY KEY (chat_id, topic_id));
     CREATE TABLE linked_chat_notices (key TEXT PRIMARY KEY, text TEXT NOT NULL);
     CREATE TABLE linked_chat_sends (ref INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL, topic_id INTEGER NOT NULL, links TEXT NOT NULL)"""),
+    (29, False, """CREATE TABLE bays (id TEXT PRIMARY KEY);
+    CREATE TABLE bay_migration_receipts (digest TEXT PRIMARY KEY, snapshot TEXT NOT NULL, entries TEXT NOT NULL);
+    CREATE TABLE bookings (id TEXT PRIMARY KEY, bay_id TEXT NOT NULL REFERENCES bays(id), person_id TEXT NOT NULL REFERENCES persons(id), project_id TEXT NOT NULL REFERENCES projects(id), start TEXT NOT NULL, end TEXT NOT NULL, forced INTEGER NOT NULL, cancelled INTEGER NOT NULL);
+    CREATE TABLE booking_previews (nonce TEXT PRIMARY KEY, plan TEXT NOT NULL)"""),
 )
 
 
@@ -332,6 +336,8 @@ def _migrate(db: sqlite3.Connection) -> None:
 
     jo_filter = ("NOT EXISTS (SELECT 1 FROM job_orders WHERE job_orders.id = audit.project_id) AND "
                  if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'job_orders'").fetchone() else "")
+    jo_filter += "NOT EXISTS (SELECT 1 FROM bookings WHERE bookings.id = audit.project_id) AND " if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bookings'").fetchone() else ""
+    jo_filter += "NOT EXISTS (SELECT 1 FROM bays WHERE bays.id = audit.project_id) AND " if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bays'").fetchone() else ""
     jo_filter += "NOT EXISTS (SELECT 1 FROM deliverables WHERE deliverables.id = audit.project_id) AND " if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'deliverables'").fetchone() else ""
     db.execute("INSERT INTO activity (project_id, at, actor, action, summary, audit_id) "
                "SELECT project_id, at, actor, action, REPLACE(action, '_', ' '), id FROM audit "
