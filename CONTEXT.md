@@ -21,15 +21,24 @@ Modelled in `t6.drives`.
   Assignments, custody history, shipment membership and derived status.
 - **Needs review** and a general **review note** represent other doubts; they
   impose no additional workflow restrictions. There is no automatic merge.
-- A Drive is not a Notion entity; it has no Notion row. Its owner is T6 or a
-  Studio (a Notion page ID).
+- A Drive is not a Notion entity; it has no Notion row. Its owner is T6, a
+  Studio (a Notion page ID) or unknown. Unknown is not T6; the workbook
+  importers record it because a sheet row gives no evidence of ownership.
 - "Drive" never means Google Drive. Always write **Google Drive** in full for
   the cloud storage service.
 - The **OCF Drive Planner** keeps its name. It plans storage for original
   camera files and is not about Drive records.
-- **DriveStore**: the interface where Drive records live. The custodian's web
-  app (spec: mclbautista/t6-drives#1) implements it; `t6.drives.testing.InMemoryDriveStore` is the fake for
-  tests.
+- **DriveStore**: the interface where Drive records live. The t6 database
+  implements it as `t6.drives.sqlite.SqliteDriveStore`; the custodian's web
+  app (spec: mclbautista/t6-drives#1) is a consumer, and
+  `t6.drives.testing.InMemoryDriveStore` is the fake for tests. Both pass the
+  same contract tests.
+- **Source row**: the workbook, sheet and row an imported Drive came from. The
+  store keeps it for traceability, and a repeated import of a row changes
+  nothing.
+- **Exception queue**: the durable, private store of workbook rows the importer
+  found unsafe, unreadable or unattached, each with its source row and reason.
+  Nothing in it is guessed or merged. Its evidence stays out of the repository.
 - **Custody event**: one entry in a Drive's append-only custody log: received,
   released, returned or retired, with date, the Contact or Studio involved, the
   Project and who logged it. The date and the party are blank when they were
@@ -43,11 +52,60 @@ Modelled in `t6.drives`.
 - **Status**: where a Drive stands (in custody, released or retired), always
   derived from the last custody event and never stored. No events, no status.
 - **Assignment**: one stretch of a Drive's life on one Project: label, Project
-  (a Notion page ID, or text when unresolved), role (master, backup, offline,
-  swing, archive), start, end and remarks. Role and start are blank when they
-  were never recorded. No end means open, and "which drives
+  (a registered T6 Project ID, or text when unresolved), role (master, backup,
+  offline, swing, archive), start, end and remarks. The label, role and start
+  are blank when they were never recorded. No end means open, and "which drives
   are out for show X" is a query over open Assignments. A reused Drive gets a new
   Assignment; old ones stay as its history.
+
+## Bays and Bookings
+
+A **Bay** (`t6b_`) is a bookable place, today a row of the Notion Bays
+database. t6 owns its identity only: the Notion Bays row, bound by page ID, keeps the typed fields.
+Migration registers a Bay per unbound row, never matches by name, and is safe to
+run twice.
+A Machine's record is the same kind of row (see Fleet).
+
+A **Booking** (`t6g_`) is one Person in one Bay on one Project from a start to
+an end, both with a time zone, kept in Manila time. `--shift day|night` takes
+the times from the Person's shift pattern. Booking verbs (`bay book`,
+`booking move`, `booking extend`, `booking cancel`) preview, then confirm.
+- **Overlap**: a Booking that overlaps an active Booking in the same Bay is
+  refused unless forced. A forced Booking is recorded as **forced**.
+- **Cancelled**: a cancelled Booking stays on record and no longer counts for
+  overlap.
+
+## Media locations
+
+A **Media location** (`t6m_`) is a typed link from a Project or Deliverable (its
+**owner**) to where material lives. It replaces the Notion External Links
+database; its migration maps rows by page ID only and sends rows it cannot
+classify to a review list.
+
+- **Kind**: what the `ref` points to: drive (a `t6d_` Drive ID), timeline (a
+  `t6t_` Timeline ID), nas-path, frameio-project, frameio-folder or
+  resolve-project.
+- **Role**: what the location is for: master, backup, review, working or
+  frameio-project. These are not Drive Assignment roles.
+- A Frame.io project belongs to one Project at a time. A frameio-folder belongs
+  to a Deliverable with role review.
+- **Unlink** makes a Media location inactive; it is never deleted. Linking the
+  same owner, kind, ref and role again reactivates it. Its history is
+  append-only: link and unlink, with actor and time.
+
+## Transcripts
+
+A **Transcript** (`t6x_`) is the record of transcribing the audio in one active
+nas-path Media location, with at most one Deliverable of the same Project. It
+holds settings, a state (running, done or failed), progress and the last run
+summary (clips done, failed and skipped, audio hours, estimated cost). It
+keeps no audio and no transcript text. Running again on the same Media location
+reuses the Transcript.
+
+- **Transcript history**: the append-only entries of a Transcript: created,
+  re-run, failed, translated and speakers changed, each with actor and time. A
+  speakers entry keeps the speaker map as given. Each entry shows in Activity
+  for the Project.
 
 ## Contact matching
 
