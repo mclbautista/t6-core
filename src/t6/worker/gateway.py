@@ -52,9 +52,12 @@ class GatewayClient:
         body = {"message_ref": message_ref, "text": text, "format": "html", "buttons": buttons, "idempotency_key": key}
         return int(self._call("POST", "/edit", body)["message_ref"])
 
+    def status(self, message_ref: int) -> dict[str, Any]:
+        return self._call("GET", f"/notify/{message_ref}")
+
     def state(self, message_ref: int) -> tuple[str, int | None]:
         """`(queued|sent|failed, Telegram message id)` of a send or edit."""
-        answer = self._call("GET", f"/notify/{message_ref}")
+        answer = self.status(message_ref)
         mid = answer.get("telegram_message_id")
         return str(answer["state"]), mid if isinstance(mid, int) else None
 

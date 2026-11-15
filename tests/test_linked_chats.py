@@ -81,3 +81,49 @@ class LinkedChatTests(unittest.TestCase):
             fake.refuse_put = False
             worker.tick()
             self.assertEqual(fake.subscriptions, [{'chat': -100, 'topic': None}])
+
+    def test_move_names_and_dead_topic_notifications(self) -> None:
+        from test_person import MemoryRegistry
+        registry = MemoryRegistry()
+        self.addCleanup(registry.db.close)
+        registry._new_id = lambda: 't6p_' + '1' * 24
+        project = registry.register(actor='test', idempotency_key='project')
+        assert isinstance(project, Registered)
+        with registry._transaction() as db:
+            db.execute("INSERT INTO chat_links VALUES ('link', ?, -100, 7, 'active')", (project.project.id,))
+        class Gateway(FakeGateway):
+            def __init__(self) -> None:
+                super().__init__()
+                self.notices: dict[str, str] = {}
+                self.status = {'state': 'failed', 'error': 'thread_not_found'}
+            def send(self, method: str, path: str, headers: Mapping[str, str], body: bytes) -> tuple[int, dict[str, Any]]:
+                if path == '/notify':
+                    data = json.loads(body)
+                    self.notices[data['idempotency_key']] = data['text']
+                    return 200, {'message_ref': 1}
+                if path.startswith('/notify/'):
+                    return 200, self.status
+                return super().send(method, path, headers, body)
+        fake = Gateway()
+        fake.items = [
+            {'seq': 1, 'kind': 'event', 'event': 'topic_created', 'chat': -100, 'topic': 7, 'name': 'ABC123 - Edit'},
+            {'seq': 2, 'kind': 'event', 'event': 'chat_migrated', 'old_chat': -100, 'new_chat': -200},
+            {'seq': 3, 'kind': 'update', 'chat': -200, 'topic': 7, 'topic_name': 'ABC123 - New', 'message_id': 1},
+        ]
+        worker = LinkedChats(registry, GatewayClient(fake, 'secret'), (42,))
+        worker.tick()
+        worker.tick()
+        with registry._transaction() as db:
+            self.assertEqual(db.execute('SELECT chat_id, state FROM chat_links').fetchone(), (-200, 'active'))
+            self.assertEqual(db.execute('SELECT name FROM linked_chat_topics').fetchone()[0], 'ABC123 - New')
+        self.assertEqual(len(fake.notices), 1)
+        worker.track_send(20, -200, 7)
+        worker.tick()
+        worker.tick()
+        with registry._transaction() as db:
+            self.assertEqual(db.execute('SELECT state FROM chat_links').fetchone()[0], 'inactive')
+            db.execute("UPDATE chat_links SET state = 'active'")
+        self.assertEqual(len(fake.notices), 2)
+        worker.track_send(21, -200, 7)
+        worker.tick()
+        self.assertEqual(len(fake.notices), 3)
