@@ -21,7 +21,7 @@ from t6.verbs import (
     DeliverableDeliverInput, PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
     ConcernForMessageInput, ConcernRecordMessageInput, ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
-    JoListInput, JoFindInput, DeliverableListInput, DeliverableGetInput, DeliverableDefineInput, DeliverableRebindInput, DeliverableMissInput, DeliverableDelayInput, MilestoneRecordInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, ProjectFlagsInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
+    JoListInput, JoFindInput, DeliverableListInput, FloorReadInput, DeliverableGetInput, DeliverableDefineInput, DeliverableRebindInput, DeliverableMissInput, DeliverableDelayInput, MilestoneRecordInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, ProjectFlagsInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
     JoSubmitInput, JoCloseInput, JoBlockInput, JoUnblockInput, JoDelayInput, JoCancelInput,
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
     LLMRunInput, PersonAddInput, PersonFindInput,
@@ -277,6 +277,15 @@ class Client:
 
     def deliverable_list(self, inputs: DeliverableListInput) -> Result:
         return self.call('deliverable', 'list', inputs)
+
+    def deliverable_bangko(self, inputs: FloorReadInput) -> Result:
+        return self.call('deliverable', 'bangko', inputs)
+
+    def deliverable_hand_to_mouth(self, inputs: FloorReadInput) -> Result:
+        return self.call('deliverable', 'hand-to-mouth', inputs)
+
+    def deliverable_sabit(self, inputs: FloorReadInput) -> Result:
+        return self.call('deliverable', 'sabit', inputs)
 
     def meeting_notes_list(self, inputs: MeetingNotesListInput) -> Result:
         return self.call('meeting-notes', 'list', inputs)

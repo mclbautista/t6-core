@@ -96,6 +96,20 @@ classify to a review list.
   same owner, kind, ref and role again reactivates it. Its history is
   append-only: link and unlink, with actor and time.
 
+## Floor reads
+
+Three derived reads over Deliverables, Milestones, Packages and dates, per Project
+or studio-wide. Nothing is stored; dates are Asia/Manila days. A Deliverable is
+ready on the earlier of its `delivered` Milestone date and the day its Package
+became kasado.
+
+- **Bangko**: a Deliverable ready at least the configured margin (default 3 days)
+  before its air date.
+- **Hand-to-mouth**: a Deliverable ready within the configured margin (default 1
+  day) before its air date, with no buffer.
+- **Sabit**: a Deliverable that missed its date (a recorded miss). A date moved
+  with a reason is delayed, not sabit.
+
 ## Transcripts
 
 A **Transcript** (`t6x_`) is the record of transcribing the audio in one active

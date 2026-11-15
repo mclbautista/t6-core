@@ -1107,6 +1107,43 @@ class DeliverableListInput(ReadInput):
     project: str
 
 
+class FloorReadInput(ReadInput):
+    project: str | None = None
+
+
+class FloorReadOutput(BaseModel):
+    margin_days: int | None = None
+    deliverables: list[dict[str, Any]]
+
+
+def _floor(read: str, inputs: FloorReadInput) -> Outcome:
+    from t6.floor import FloorMargins, FloorReads
+    try:
+        margins = FloorMargins.from_environ(os.environ)
+        reads = FloorReads(_people().registry, margins)
+        if read == 'sabit':
+            return Done(result={'deliverables': reads.sabit(inputs.project)})
+        if read == 'bangko':
+            return Done(result={'margin_days': margins.bangko_days, 'deliverables': reads.bangko(inputs.project)})
+        return Done(result={'margin_days': margins.hand_to_mouth_days, 'deliverables': reads.hand_to_mouth(inputs.project)})
+    except ValueError as error:
+        return Refused(rule='config', reason=str(error))
+    except LookupError as error:
+        return Refused(rule='project', reason=str(error))
+
+
+def floor_bangko(inputs: FloorReadInput, open_notion: Callable[..., Any]) -> Outcome:
+    return _floor('bangko', inputs)
+
+
+def floor_hand_to_mouth(inputs: FloorReadInput, open_notion: Callable[..., Any]) -> Outcome:
+    return _floor('hand-to-mouth', inputs)
+
+
+def floor_sabit(inputs: FloorReadInput, open_notion: Callable[..., Any]) -> Outcome:
+    return _floor('sabit', inputs)
+
+
 class MeetingNotesListInput(ReadInput):
     project: str | None = None
     since: str | None = None
@@ -1570,6 +1607,9 @@ VERBS = (
     Verb("deliverable", "rebind", "Bind a replacement Deliverables page", (), DeliverableRebindInput, DeliverableDefineOutput, "operator", "Retain the old page as a legacy binding.", deliverable_rebind),
     Verb("deliverable", "get", "Get a Deliverable", (), DeliverableGetInput, DeliverableGetOutput, "reader", "Read from t6.", api_read, read_only=True),
     Verb("deliverable", "list", "List Project Deliverables", (), DeliverableListInput, DeliverableListOutput, "reader", "Read from t6.", api_read, read_only=True),
+    Verb("deliverable", "bangko", "List Deliverables ready ahead of air", (), FloorReadInput, FloorReadOutput, "reader", "Ready (kasado or delivered) at least the configured days before air; optional project.", floor_bangko, read_only=True),
+    Verb("deliverable", "hand-to-mouth", "List Deliverables ready at the last moment", (), FloorReadInput, FloorReadOutput, "reader", "Ready within the configured days of air; optional project.", floor_hand_to_mouth, read_only=True),
+    Verb("deliverable", "sabit", "List missed Deliverables", (), FloorReadInput, FloorReadOutput, "reader", "A recorded miss, not a delay; optional project.", floor_sabit, read_only=True),
     Verb("meeting-notes", "list", "List Project Meeting Notes", (), MeetingNotesListInput, MeetingNotesListOutput, "reader", "Read from Notion.", api_read, read_only=True),
     Verb("project", "list", "List Projects", (), ProjectListInput, ProjectListOutput, "reader", "Read Projects.", api_read, read_only=True),
     Verb("llm", "run", "Run an LLM task on the API", (), LLMRunInput, LLMRunOutput, "llm", "Server policy and masking apply.", llm_api_only),

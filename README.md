@@ -1688,6 +1688,25 @@ Transcribe worker variables (`python -m t6.worker` with `T6_WORKER_QUEUE=transcr
 | `ELEVENLABS_API_KEY` | the transcribe worker only | The ElevenLabs key. No other process holds it. |
 | `T6_TRANSCRIBE_RATE` | the API server (`python -m t6.server`) | Price per audio hour used for previews, default `0.4` USD. The worker never reads it. |
 
+### Floor reads: bangko, hand-to-mouth, sabit
+
+`t6 deliverable bangko`, `t6 deliverable hand-to-mouth` and `t6 deliverable sabit`
+are read verbs (role reader, read-only, so they may appear as MCP tools). Each takes
+an optional `--project` (T6 ID, Notion page ID or code); without it the read is
+studio-wide. Nothing is stored. Dates are Asia/Manila days. A Deliverable is ready on
+the earlier of its `delivered` Milestone date and the day its Package became kasado
+(every blocking checklist item ticked, Package not rejected). Deliverables without
+an air date are skipped.
+
+| Variable | Read by | Meaning |
+| --- | --- | --- |
+| `T6_BANGKO_DAYS` | the API server | Bangko: ready at least this many days before air. Default `3`. |
+| `T6_HAND_TO_MOUTH_DAYS` | the API server | Hand-to-mouth: ready 0 to this many days before air. Default `1`. |
+
+Both must be whole numbers of days, zero or more; otherwise the read is Refused
+(`config`). Sabit lists Deliverables with a recorded miss (`deliverable miss`). A
+date moved with a reason (`deliverable delay`) is delayed and is not sabit.
+
 A `nas-path` Media location is read as `/Volumes/<share name>/<folders>`. The worker
 maps it to `<mount point>/<folders>` and resolves symlinks. When the share is not in
 the mapping, the ref has another form, or the resolved folder is outside the mount
