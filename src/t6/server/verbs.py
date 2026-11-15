@@ -153,9 +153,15 @@ class VerbAPI:
             if entry.input_model.model_config.get('extra') != 'forbid':
                 data.pop('registry_db', None)
             response = self._dispatch(entry, data, actor)
-            if request.header('x-t6-mcp') == '1' and entry.role == 'reader' and self.people.authorize(actor, 'operator'):
+            if entry.read_only and self._masked_for(actor, request.header('x-t6-mcp') == '1'):
                 return self._mask_mcp(response)
             return response
+
+    def _masked_for(self, actor: str, mcp_header: bool) -> bool:
+        """Mask unless the secret is bound to an operator Person; the `mcp` service is always masked."""
+        if actor in SERVICES:
+            return actor == 'mcp' or mcp_header
+        return mcp_header and self.people.authorize(actor, 'operator') is not None
 
     def _mask_mcp(self, response: Response) -> Response:
         if self.privacy_registry is None:
@@ -196,9 +202,9 @@ class VerbAPI:
                 return Response(200, Done(result={'job_id': int(inputs.transcript), 'state': 'pending'}).model_dump(mode='json'))
             return Response(200, cast(Mapping[str, JsonValue], value))
         if (entry.noun, entry.verb) in {('transcript', 'create'), ('transcript', 'speakers'), ('transcript', 'translate')}:
-            person = self.people.get(actor)
-            if not person or not person['active'] or person['kind'] != 'staff':
-                outcome = Refused(rule='person', reason='An active staff Person is required')
+            refusal = self.people.authorize(actor, entry.role)
+            if refusal:
+                outcome = refusal
             elif entry.verb == 'translate' and not self.translate_enabled:
                 outcome = Refused(rule='translate_disabled', reason='Transcript translation is disabled')
             elif entry.verb == 'translate':

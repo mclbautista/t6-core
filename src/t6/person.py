@@ -45,6 +45,9 @@ class People:
             return self._authorize(db, actor, role)
 
     def _authorize(self, db: Any, actor: str, role: str) -> Refused | None:
+        if role == 'staff':
+            person = None if actor in SERVICES else db.execute("SELECT kind, active FROM persons WHERE id = ?", (actor,)).fetchone()
+            return None if person and person[1] and person[0] == 'staff' else Refused(rule='permission', reason='needs active staff Person')
         if actor in SERVICES:
             service_grants = self.service_permissions.get(actor, frozenset())
             if role == 'reader' or role in service_grants or (role in ('operator', 'coordinator') and 'admin' in service_grants) or (role == 'coordinator' and 'operator' in service_grants):

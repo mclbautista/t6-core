@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+from importlib.metadata import version
 from typing import Any
 
 from t6.client import APIError, Client, Result, Unavailable
@@ -14,7 +15,7 @@ class MCPServer:
         self.client = client
         if client is not None:
             client.mcp = True
-        self.entries = {self._name(v.noun, v.verb): v for v in VERBS if v.role == 'reader'}
+        self.entries = {self._name(v.noun, v.verb): v for v in VERBS if v.read_only}
 
     @staticmethod
     def _name(noun: str, verb: str) -> str:
@@ -32,7 +33,7 @@ class MCPServer:
         try:
             if method == 'initialize':
                 result: Any = {'protocolVersion': '2024-11-05', 'capabilities': {'tools': {}},
-                               'serverInfo': {'name': 't6', 'version': '0.4.1'}}
+                               'serverInfo': {'name': 't6', 'version': version('t6')}}
             elif method == 'tools/list':
                 result = {'tools': self.tools()}
             elif method == 'tools/call':
