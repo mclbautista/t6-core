@@ -38,13 +38,18 @@ class VerbTests(unittest.TestCase):
             match = re.search(r"\{([^{}]+)\}", help_text(noun.split()))
             self.assertIsNotNone(match)
             assert match is not None
-            from_help.update((noun, verb) for verb in match.group(1).split(",") if verb not in aliases or (noun, verb) in pairs)
+            for verb in match.group(1).split(","):
+                nested = [v for n, v in noun_pairs if v.startswith(verb + " ")]
+                if nested:
+                    from_help.update((noun, v) for v in nested)
+                elif verb not in aliases or (noun, verb) in pairs:
+                    from_help.add((noun, verb))
         self.assertEqual(from_help, pairs)
 
         for noun, verb in pairs:
             output = io.StringIO()
             with contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as exit:
-                main([*noun.split(), verb, "--help"] if verb else [*noun.split(), "--help"])
+                main([*noun.split(), *verb.split(), "--help"] if verb else [*noun.split(), "--help"])
             self.assertEqual(exit.exception.code, 0)
 
     def test_write_and_formatter_catalogue_outputs_are_described(self) -> None:

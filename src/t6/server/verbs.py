@@ -34,7 +34,7 @@ class VerbAPI:
         self.llm_service = llm_service
         self.data_sources = dict(data_sources or {})
         self.privacy_registry = privacy_registry
-        self.routes = {f'/v1/{v.noun}' + (f'/{v.verb}' if v.verb else ''): v for v in VERBS}
+        self.routes = {f'/v1/{v.noun}' + ('/' + v.verb.replace(' ', '/') if v.verb else ''): v for v in VERBS}
         for verb in VERBS:
             if verb.noun == 'approval':
                 for alias in verb.aliases:
