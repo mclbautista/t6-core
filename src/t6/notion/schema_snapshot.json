@@ -1,6 +1,6 @@
 {
   "snapshot_version": 1,
-  "captured": "2026-11-13",
+  "captured": "2026-11-15",
   "notion_version": "2026-03-11",
   "databases": {
     "projects": {
@@ -1101,11 +1101,13 @@
         },
         {
           "name": "T6 ID",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "U%7BGE"
         },
         {
           "name": "T6 Notes",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "toyB"
         }
       ],
       "named_options": {

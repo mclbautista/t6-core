@@ -20,8 +20,17 @@ class JoSyncTests(SyncTestCase):
         from t6.worker.client import WorkerJob
         projection = JobOrderProjection(self.client, RegistryClient(InProcess(self.app), WORKER_SECRET), 'job-orders')
         job = WorkerJob(job_id=1, queue='main', token='token', kind='jo.sync', dedupe_key='test', payload={'intent_id': 1}, attempt=1)
-        with self.assertRaisesRegex(Refused, 'schema-snapshot'):
-            projection.sync(job)
+        # The bundled snapshot now has the live IDs; simulate one captured before the properties existed.
+        from unittest.mock import patch
+        from t6.notion.generated import JobOrdersRow
+        with patch.object(JobOrdersRow, 'notion_id', return_value=None):
+            with self.assertRaisesRegex(Refused, 'schema-snapshot'):
+                projection.sync(job)
+
+    def test_the_bundled_snapshot_has_the_job_order_projection_ids(self) -> None:
+        from t6.notion.jo_projection import projection_ids
+        t6_id, notes = projection_ids()
+        self.assertTrue(t6_id and notes and t6_id != notes)
 
     def test_conflicting_notion_status_keeps_intent_pending(self) -> None:
         from unittest.mock import MagicMock, patch
