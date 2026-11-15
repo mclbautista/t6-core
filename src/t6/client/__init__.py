@@ -18,6 +18,7 @@ from t6.verbs import (
     MediaLinkInput, MediaUnlinkInput, TimelineLinkInput, TimelineListInput, FrameioProjectInput, MediaListInput, MediaMigrateInput,
     TranscriptCreateInput, TranscriptGetInput, TranscriptSpeakersInput, TranscriptTranslateInput,
     DriveReceiveInput, DriveReleaseInput, DriveReturnInput, DriveRetireInput, DriveAssignInput, DriveUnassignInput,
+    DriveAddInput, DriveEditInput, DrivePromoteSerialInput, DriveListInput, DriveGetInput, DriveFindInput, DriveShipmentsInput, DriveShipmentInput, DriveExceptionsInput,
     SwingAssignInput, SwingUnassignInput, SwingReturnInput, SwingOverdueInput,
     BayBookInput, BookingMoveInput, BookingExtendInput, BookingCancelInput, BookingGetInput, BookingListInput,
     DeliverableDeliverInput, PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput,
@@ -144,6 +145,33 @@ class Client:
 
     def drive_unassign(self, inputs: DriveUnassignInput) -> Result:
         return self.call('drive', 'unassign', inputs)
+
+    def drive_add(self, inputs: DriveAddInput) -> Result:
+        return self.call('drive', 'add', inputs)
+
+    def drive_edit(self, inputs: DriveEditInput) -> Result:
+        return self.call('drive', 'edit', inputs)
+
+    def drive_promote_serial(self, inputs: DrivePromoteSerialInput) -> Result:
+        return self.call('drive', 'promote-serial', inputs)
+
+    def drive_list(self, inputs: DriveListInput) -> Result:
+        return self.call('drive', 'list', inputs)
+
+    def drive_get(self, inputs: DriveGetInput) -> Result:
+        return self.call('drive', 'get', inputs)
+
+    def drive_find(self, inputs: DriveFindInput) -> Result:
+        return self.call('drive', 'find', inputs)
+
+    def drive_shipments(self, inputs: DriveShipmentsInput) -> Result:
+        return self.call('drive', 'shipments', inputs)
+
+    def drive_shipment(self, inputs: DriveShipmentInput) -> Result:
+        return self.call('drive', 'shipment', inputs)
+
+    def drive_exceptions(self, inputs: DriveExceptionsInput) -> Result:
+        return self.call('drive', 'exceptions', inputs)
 
     def swing_assign(self, inputs: SwingAssignInput) -> Result:
         return self.call('swing', 'assign', inputs)

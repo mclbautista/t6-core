@@ -8,7 +8,8 @@ from datetime import date
 from typing import Any
 from unittest.mock import patch
 
-from t6.drives import Assignment, Drive, DriveStatus, Role
+from t6.drives import Assignment, Drive, DriveStatus, FormFactor, Role, SourceRow
+from t6.drives.importer import ReviewItem
 from t6.drives.sqlite import SqliteDriveStore
 from t6.ids import EntityKind, T6Id
 from t6.person import People
@@ -76,6 +77,135 @@ class DriveVerbTests(unittest.TestCase):
         result = self.call('drive', verb, {**values, 'idempotency_key': key, 'confirm': preview.token})
         self.assertIsInstance(result, Done)
         return result
+
+    def read(self, verb: str, values: dict[str, Any] | None = None, actor: str = 'reader') -> Any:
+        done = self.call('drive', verb, values or {}, actor=actor)
+        self.assertIsInstance(done, Done, done)
+        return done.result
+
+    def seed_inventory(self) -> None:
+        """Drive 0 is in custody, flagged and out for the first Project; 1 is released and out for the second; 2 is untouched."""
+        a, b, _ = self.drives
+        one, two = self.projects
+        self.store.set_review(a, needs_review=True, note='check serial')
+        self.store.set_suspected_serial(a, 'MAYBE-9')
+        self.write('receive', {'drive': a, 'project': one, 'on': '2026-11-01'})
+        self.write('assign', {'drive': a, 'project': one, 'label': 'A1', 'role': 'master', 'start': '2026-11-01'})
+        self.write('release', {'drives': [b], 'project': two, 'party': 'Invented Studio', 'party_kind': 'studio', 'on': '2026-11-02'})
+        self.write('assign', {'drive': b, 'project': two, 'label': 'B1', 'role': 'backup', 'start': '2026-11-01'})
+
+    def test_drive_list_shows_each_drive_with_its_derived_status(self) -> None:
+        self.seed_inventory()
+        listed = self.read('list')['drives']
+        self.assertEqual([(d['id'], d['status']) for d in listed], list(zip(self.drives, ('in custody', 'released', 'unknown'))))
+        first = listed[0]
+        self.assertEqual((first['label'], first['serial'], first['suspected_serial'], first['needs_review'], first['review_note']),
+                         ('Synthetic 0', 'SYNTH-0', 'MAYBE-9', True, 'check serial'))
+
+    def test_drive_list_filters_are_the_inventory_screen_filters_and_combine_with_and(self) -> None:
+        self.seed_inventory()
+        a, b, c = self.drives
+        one, two = self.projects
+
+        def ids(**values: Any) -> list[str]:
+            return [d['id'] for d in self.read('list', values)['drives']]
+        self.assertEqual(ids(q='maybe'), [a])  # suspected serial
+        self.assertEqual(ids(q='SYNTHETIC 1'), [b])  # label, any case
+        self.assertEqual(ids(q=b), [b])  # Drive ID
+        self.assertEqual(ids(q='synthetic'), [a, b, c])
+        self.assertEqual(ids(q='check serial'), [])  # the review note is not searched
+        self.assertEqual(ids(serial=' synth-1 '), [b])
+        self.assertEqual(ids(serial='MAYBE-9'), [])  # exact serial is accepted serials only
+        self.assertEqual(ids(needs_review=True), [a])
+        self.assertEqual(ids(needs_review=False), [b, c])
+        self.assertEqual(ids(project=one), [a])
+        self.assertEqual(ids(project=two), [b])
+        self.assertEqual(ids(status='unknown'), [c])
+        self.assertEqual(ids(status='released'), [b])
+        self.assertEqual(ids(needs_review=False, status='released'), [b])
+        self.assertEqual(ids(q='synthetic', project=two, status='in custody'), [])
+        self.write('unassign', {'drive': a, 'project': one, 'end': '2026-11-10'})
+        self.assertEqual(ids(project=one), [])  # an ended Assignment is not open use
+
+    def test_drive_get_shows_the_facts_status_events_numbered_assignments_sources_and_deliveries(self) -> None:
+        drive, one, two = self.drives[0], *self.projects
+        self.write('receive', {'drive': drive, 'project': one, 'party': CONTACT, 'party_kind': 'contact', 'on': '2026-11-01'})
+        self.write('release', {'drives': [drive], 'project': one, 'party': 'Invented Studio', 'party_kind': 'studio', 'on': '2026-11-02'})
+        self.write('assign', {'drive': drive, 'project': one, 'label': 'A1', 'role': 'master', 'start': '2026-11-01'})
+        self.write('assign', {'drive': drive, 'project': two, 'label': 'A2', 'role': 'backup', 'start': '2026-11-03'})
+        self.write('unassign', {'drive': drive, 'project': one, 'end': '2026-11-10'})
+        self.store.import_row('row-1', Drive(serial='SYNTH-0'), None, [], source=SourceRow('book.xlsx', 'Sheet1', 7))
+        self.store.link_delivery('t6g_1', [drive])
+        got = self.read('get', {'drive': drive})
+        self.assertEqual((got['drive']['id'], got['drive']['serial'], got['drive']['status']), (drive, 'SYNTH-0', 'released'))
+        self.assertEqual([e['kind'] for e in got['events']], ['received', 'released'])
+        self.assertEqual(got['events'][0]['party'], {'kind': 'contact', 'ref': {'page_id': CONTACT, 'text': None}})
+        self.assertEqual(got['events'][1]['party']['ref'], {'page_id': None, 'text': 'Invented Studio'})
+        self.assertEqual((got['events'][0]['on'], got['events'][0]['project']), ('2026-11-01', {'page_id': one, 'text': None}))
+        self.assertEqual([(a['number'], a['label'], a['role'], a['end'], a['open']) for a in got['assignments']],
+                         [(1, 'A1', 'master', '2026-11-10', False), (2, 'A2', 'backup', None, True)])
+        self.assertEqual(got['assignments'][1]['project'], {'page_id': two, 'text': None})
+        self.assertEqual(got['sources'], [{'workbook': 'book.xlsx', 'sheet': 'Sheet1', 'row': 7}])
+        self.assertEqual(got['deliveries'], ['t6g_1'])
+        missing = self.call('drive', 'get', {'drive': 't6d_' + '0' * 32}, actor='reader')
+        self.assertIsInstance(missing, Refused)
+        self.assertEqual(missing.rule, 'drive')
+
+    def test_drive_find_matches_an_accepted_or_a_suspected_serial_in_any_spelling(self) -> None:
+        a, b, c = self.drives
+        self.store.set_suspected_serial(b, 'SYNTH-0')
+        self.store.set_suspected_serial(c, 'maybe-1 (old)')
+        found = self.read('find', {'serial': ' synth-0 '})
+        self.assertEqual([(m['id'], m['match']) for m in found['matches']], [(a, 'accepted'), (b, 'suspected')])
+        self.assertEqual([(m['id'], m['match']) for m in self.read('find', {'serial': 'MAYBE-1'})['matches']], [(c, 'suspected')])
+        self.assertEqual(self.read('find', {'serial': 'nothing'})['matches'], [])
+
+    def test_drive_shipments_lists_each_shipment_and_drive_shipment_shows_its_drives_and_release_events(self) -> None:
+        one, two = self.projects
+        first = self.write('release', {'drives': self.drives[:2], 'project': one, 'party': 'Invented Studio', 'party_kind': 'studio', 'on': '2026-11-02'}).result['shipment_id']
+        second = self.write('release', {'drives': self.drives[2:], 'project': two, 'party': CONTACT, 'party_kind': 'contact', 'on': '2026-11-05'}).result['shipment_id']
+        listed = self.read('shipments')['shipments']
+        self.assertEqual([(s['shipment_id'], s['on'], s['drive_count']) for s in listed], [(first, '2026-11-02', 2), (second, '2026-11-05', 1)])
+        self.assertEqual(listed[0]['party'], {'kind': 'studio', 'ref': {'page_id': None, 'text': 'Invented Studio'}})
+        self.assertEqual(listed[0]['project'], {'page_id': one, 'text': None})
+        got = self.read('shipment', {'shipment': first})
+        self.assertEqual(got['shipment_id'], first)
+        self.assertEqual([r['drive']['id'] for r in got['releases']], self.drives[:2])
+        self.assertEqual([(r['event']['kind'], r['event']['on'], r['drive']['status']) for r in got['releases']], [('released', '2026-11-02', 'released')] * 2)
+        unknown = self.call('drive', 'shipment', {'shipment': 'shipment-none'}, actor='reader')
+        self.assertIsInstance(unknown, Refused)
+        self.assertEqual(unknown.rule, 'shipment')
+
+    def test_drive_exceptions_lists_the_import_review_queue(self) -> None:
+        self.assertEqual(self.read('exceptions'), {'exceptions': []})
+        self.store.record_exceptions([ReviewItem(sheet='Sheet1', row=3, reason='unreadable', detail='(unreadable)', workbook='book.xlsx')])
+        self.assertEqual(self.read('exceptions')['exceptions'],
+                         [{'workbook': 'book.xlsx', 'sheet': 'Sheet1', 'row': 3, 'reason': 'unreadable', 'detail': '(unreadable)'}])
+
+    def test_the_reads_are_open_reader_verbs_and_the_fact_writes_need_the_drives_permission(self) -> None:
+        for verb in ('list', 'get', 'find', 'shipments', 'shipment', 'exceptions'):
+            entry = next(e for e in VERBS if (e.noun, e.verb) == ('drive', verb))
+            self.assertEqual((entry.role, entry.read_only), ('reader', True), verb)
+        for verb in ('add', 'edit', 'promote-serial'):
+            entry = next(e for e in VERBS if (e.noun, e.verb) == ('drive', verb))
+            self.assertEqual((entry.role, entry.read_only), ('drives', False), verb)
+        for verb, values in (('add', {'label': 'X'}), ('edit', {'drive': self.drives[0], 'label': 'X'}), ('promote-serial', {'drive': self.drives[0]})):
+            refused = self.call('drive', verb, values, actor='reader')
+            self.assertIsInstance(refused, Refused)
+            self.assertIn('drives', refused.reason)
+        self.assertEqual(len(self.store.list_drives()), 3)
+
+    def test_the_drive_reads_call_the_store_only_through_the_drive_store_protocol(self) -> None:
+        import ast
+        import inspect
+        import re
+        from t6 import drive_reads
+        from t6.drives import DriveStore
+        protocol = {name for name in dir(DriveStore) if not name.startswith('_')}
+        tree = ast.parse(inspect.getsource(drive_reads))
+        used = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == 'store'}
+        self.assertEqual(sorted(used - protocol), [])
+        self.assertFalse([n for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str) and re.match(r'\s*(SELECT|INSERT|UPDATE|DELETE)', n.value)])
 
     def test_custody_sequence_derives_status_and_retire_is_not_terminal(self) -> None:
         drive, project = self.drives[0], self.projects[0]
@@ -190,6 +320,105 @@ class DriveVerbTests(unittest.TestCase):
             self.assertEqual(entry.after['delivery_id'], 't6g_1')
         self.assertEqual(self.registry.activity(project)[0].action, 'drive_release')
 
+    def test_drive_add_registers_a_drive_with_its_facts_after_preview_and_confirm(self) -> None:
+        values = {'label': 'M07', 'serial': 'new-1', 'brand': 'Acme', 'capacity_tb': 4.0, 'form_factor': 'portable', 'purchase_date': '2026-01-05',
+                  'needs_review': True, 'review_note': 'check label', 'idempotency_key': 'add-1'}
+        preview = self.call('drive', 'add', values)
+        self.assertIsInstance(preview, Preview)
+        self.assertEqual(len(self.store.list_drives()), 3)
+        done = self.call('drive', 'add', {**values, 'confirm': preview.token})
+        self.assertIsInstance(done, Done)
+        (added,) = done.result['drive_ids']
+        drive = self.store.get_drive(added)
+        assert drive is not None
+        self.assertEqual((drive.label, drive.serial, drive.brand, drive.capacity_tb, drive.form_factor, drive.purchase_date, drive.needs_review, drive.review_note),
+                         ('M07', 'NEW-1', 'Acme', 4.0, FormFactor.PORTABLE, date(2026, 1, 5), True, 'check label'))
+        self.assertEqual(self.read('get', {'drive': added})['drive']['status'], 'unknown')
+        (entry,) = self.registry.audit(added)
+        self.assertEqual((entry.action, entry.actor, entry.before, entry.after['serial']), ('drive_add', 'keeper', None, 'NEW-1'))
+        self.assertEqual([(a.action, a.actor) for a in self.registry.activity(added)], [('drive_add', 'keeper')])
+
+    def test_drive_add_refuses_a_recorded_serial_naming_the_holder_and_a_missing_label(self) -> None:
+        refused = self.call('drive', 'add', {'label': 'Copy', 'serial': ' synth-1 '})
+        self.assertIsInstance(refused, Refused)
+        self.assertEqual(refused.rule, 'serial')
+        self.assertIn(self.drives[1], refused.reason)
+        self.assertEqual(self.call('drive', 'add', {'label': ' '}).rule, 'input')
+        self.assertEqual(self.call('drive', 'add', {'label': 'X', 'purchase_date': 'soon'}).rule, 'input')
+        self.assertEqual(self.call('drive', 'add', {'label': 'X', 'serial': '(old)'}).rule, 'input')
+        self.assertEqual(len(self.store.list_drives()), 3)
+
+    def test_drive_add_is_idempotent_by_key(self) -> None:
+        values = {'label': 'M08', 'serial': 'N-8', 'idempotency_key': 'add-same'}
+        first = self.write('add', {'label': 'M08', 'serial': 'N-8'}, 'add-same')
+        replay = self.call('drive', 'add', values)
+        self.assertIsInstance(replay, Preview)
+        self.assertEqual(self.call('drive', 'add', {**values, 'confirm': replay.token}), first)
+        self.assertEqual(len(self.store.list_drives()), 4)
+        self.assertEqual(self.call('drive', 'add', {'label': 'M09', 'serial': 'N-9', 'idempotency_key': 'add-same'}).rule, 'idempotency_key')
+
+    def test_drive_edit_changes_only_the_named_facts_and_an_empty_value_clears(self) -> None:
+        drive = self.drives[0]
+        self.write('edit', {'drive': drive, 'label': 'M01', 'form_factor': 'powered desktop', 'serial': 'fixed-1', 'suspected_serial': 'maybe-2',
+                            'needs_review': True, 'review_note': 'look again'})
+        found = self.store.get_drive(drive)
+        assert found is not None
+        self.assertEqual((found.label, found.form_factor, found.serial, found.suspected_serial, found.needs_review, found.review_note),
+                         ('M01', FormFactor.POWERED_DESKTOP, 'FIXED-1', 'MAYBE-2', True, 'look again'))
+        self.write('edit', {'drive': drive, 'review_note': 'resolved'})
+        found = self.store.get_drive(drive)
+        assert found is not None
+        self.assertEqual((found.label, found.needs_review, found.review_note), ('M01', True, 'resolved'))
+        self.write('edit', {'drive': drive, 'suspected_serial': '', 'form_factor': '', 'review_note': '', 'needs_review': False})
+        found = self.store.get_drive(drive)
+        assert found is not None
+        self.assertEqual((found.suspected_serial, found.form_factor, found.review_note, found.needs_review, found.serial), (None, None, None, False, 'FIXED-1'))
+        entries = self.registry.audit(drive)
+        self.assertEqual([e.action for e in entries], ['drive_edit'] * 3)
+        self.assertEqual(((entries[0].before or {})['label'], entries[0].after['label']), ('Synthetic 0', 'M01'))
+        self.assertEqual([a.action for a in self.registry.activity(drive)], ['drive_edit'] * 3)
+
+    def test_drive_edit_refuses_what_the_drive_rules_or_the_store_would_refuse_and_changes_nothing(self) -> None:
+        drive = self.drives[0]
+        self.assertEqual(self.call('drive', 'edit', {'drive': drive}).rule, 'input')
+        self.assertEqual(self.call('drive', 'edit', {'drive': 't6d_' + '0' * 32, 'label': 'X'}).rule, 'drive')
+        held = self.call('drive', 'edit', {'drive': drive, 'serial': 'synth-1'})
+        self.assertIsInstance(held, Refused)
+        self.assertEqual(held.rule, 'serial')
+        self.assertIn(self.drives[1], held.reason)
+        only = self.write('add', {'label': 'Only label'}).result['drive_ids'][0]
+        self.assertEqual(self.call('drive', 'edit', {'drive': only, 'label': ''}).rule, 'input')
+        self.assertEqual(self.call('drive', 'edit', {'drive': drive, 'serial': '', 'label': ''}).rule, 'input')
+        self.assertEqual([d.label for d in self.store.list_drives()], ['Synthetic 0', 'Synthetic 1', 'Synthetic 2', 'Only label'])
+        self.assertEqual(self.store.get_drive(drive).serial, 'SYNTH-0')  # type: ignore[union-attr]
+
+    def test_drive_edit_confirm_is_refused_when_the_drive_changed_after_the_preview(self) -> None:
+        drive = self.drives[0]
+        values = {'drive': drive, 'label': 'M01', 'idempotency_key': 'edit-late'}
+        preview = self.call('drive', 'edit', values)
+        self.assertIsInstance(preview, Preview)
+        self.store.set_label(drive, 'Changed elsewhere')
+        self.assertEqual(self.call('drive', 'edit', {**values, 'confirm': preview.token}).rule, 'drive_changed')
+        self.assertEqual(self.store.get_drive(drive).label, 'Changed elsewhere')  # type: ignore[union-attr]
+
+    def test_drive_promote_serial_accepts_the_suspected_serial_once_it_is_unique(self) -> None:
+        a, b, c = self.drives
+        self.assertEqual(self.call('drive', 'promote-serial', {'drive': a}).rule, 'serial')
+        self.assertEqual(self.call('drive', 'promote-serial', {'drive': 't6d_' + '0' * 32}).rule, 'drive')
+        self.store.set_suspected_serial(b, 'SYNTH-2')
+        held = self.call('drive', 'promote-serial', {'drive': b})
+        self.assertIsInstance(held, Refused)
+        self.assertEqual(held.rule, 'serial')
+        self.assertIn(c, held.reason)
+        self.store.set_suspected_serial(a, 'new-7')
+        self.write('promote-serial', {'drive': a})
+        promoted = self.store.get_drive(a)
+        assert promoted is not None
+        self.assertEqual((promoted.serial, promoted.suspected_serial), ('NEW-7', None))
+        (entry,) = self.registry.audit(a)
+        self.assertEqual((entry.action, (entry.before or {})['serial'], (entry.before or {})['suspected_serial'], entry.after['serial']), ('drive_promote_serial', 'SYNTH-0', 'NEW-7', 'NEW-7'))
+        self.assertEqual([x.action for x in self.registry.activity(a)], ['drive_promote_serial'])
+
     def test_the_verbs_use_the_drive_store_interface_only(self) -> None:
         import ast
         import inspect
@@ -247,12 +476,17 @@ class DriveVerbTests(unittest.TestCase):
         from t6.cli import main
         names = {(e['noun'], e['verb']) for e in catalogue()}
         self.assertTrue({('drive', verb) for verb in ('receive', 'release', 'return', 'retire', 'assign', 'unassign')} <= names)
-        self.assertEqual({e['role'] for e in catalogue() if e['noun'] == 'drive'}, {'drives'})
+        self.assertEqual({e['role'] for e in catalogue() if e['noun'] == 'drive' and not e['read_only']}, {'drives'})
         out = io.StringIO()
         with patch.dict(os.environ, {'T6_PERSON_ID': 'keeper', 'T6_PREVIEW_SIGNING_KEY': 'test'}), patch('t6.cli._open_registry', return_value=self.registry), client_patch(lambda _: None), redirect_stdout(out):
             status = main(['drive', 'retire', self.drives[0], self.projects[0], '--reason', 'dead'])
         self.assertEqual(status, 0)
         self.assertEqual(json.loads(out.getvalue())['outcome'], 'preview')
+        out = io.StringIO()
+        with patch.dict(os.environ, {'T6_PERSON_ID': 'reader', 'T6_PREVIEW_SIGNING_KEY': 'test'}), patch('t6.cli._open_registry', return_value=self.registry), client_patch(lambda _: None), redirect_stdout(out):
+            status = main(['drive', 'get', '--drive', self.drives[0]])
+        self.assertEqual(status, 0)
+        self.assertEqual(json.loads(out.getvalue())['result']['drive']['serial'], 'SYNTH-0')
 
 
 if __name__ == '__main__':

@@ -1,4 +1,4 @@
-"""Drive custody, assignment and swing verbs on the t6 database.
+"""Drive custody, assignment, swing and fact verbs on the t6 database.
 
 Custody is an append-only event log and status is derived from it. An
 Assignment carries its label, Project (none for a swing held by a Person alone), role and dates; unassign ends it and
@@ -14,19 +14,22 @@ import hashlib
 import json
 import re
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import date, datetime
 from typing import Any, NamedTuple
 
 from t6 import verbflow
 from t6.domain.studio_time import MANILA
-from t6.drives import Assignment, CustodyEvent, CustodyKind, DriveStore, Party, PartyKind, Ref, Role, open_duplicate
+from t6.drives import Assignment, CustodyEvent, CustodyKind, Drive, DriveStore, FormFactor, Party, PartyKind, Ref, Role, open_duplicate
 from t6.drives.sqlite import SqliteDriveStore, audit_json
 from t6.preview import PreviewTokens
 from t6.registry.core import normalize_page_id
 from t6.registry.sqlite import SqliteProjectRegistry
 from t6.verbs import Ambiguous, Outcome, Refused
 
-WRITE_VERBS = ('receive', 'release', 'return', 'retire', 'assign', 'unassign', 'swing_assign', 'swing_unassign', 'swing_return')
+FACT_VERBS = ('add', 'edit', 'promote_serial')
+WRITE_VERBS = ('receive', 'release', 'return', 'retire', 'assign', 'unassign', 'swing_assign', 'swing_unassign', 'swing_return', *FACT_VERBS)
+_EDITABLE = ('label', 'form_factor', 'serial', 'suspected_serial', 'needs_review', 'review_note')
 _KINDS = {'receive': CustodyKind.RECEIVED, 'release': CustodyKind.RELEASED, 'return': CustodyKind.RETURNED, 'retire': CustodyKind.RETIRED}
 _PAGE = re.compile(r'[0-9a-f]{32}')
 
@@ -35,8 +38,8 @@ Change = tuple[str, dict[str, Any] | None, dict[str, Any] | None]
 
 
 def verb_name(verb: str) -> str:
-    """The registered verb: `drive assign`, or `swing assign` for the swing verbs."""
-    return verb.replace('_', ' ') if verb.startswith('swing_') else 'drive ' + verb
+    """The registered verb: `drive assign`, `drive promote-serial`, or `swing assign` for the swing verbs."""
+    return verb.replace('_', ' ') if verb.startswith('swing_') else 'drive ' + verb.replace('_', '-')
 
 
 class Plan(NamedTuple):
@@ -73,7 +76,7 @@ class DriveVerbs:
         if invalid:
             return invalid
         name = verb_name(verb)
-        action = name.replace(' ', '_')
+        action = name.replace(' ', '_').replace('-', '_')
         request = verbflow.begin(self.tokens, name, actor, values, idempotency_key, confirm)
         if isinstance(request, Refused):
             return request
@@ -108,6 +111,8 @@ class DriveVerbs:
     def _validate(self, verb: str, values: dict[str, Any]) -> Refused | None:
         if verb.startswith('swing_'):
             return self._validate_swing(verb, values)
+        if verb in FACT_VERBS:
+            return self._validate_fact(verb, values)
         drives = values.get('drives') if verb == 'release' else [values.get('drive')]
         if not isinstance(drives, list) or not drives or not all(isinstance(d, str) for d in drives):
             return Refused(rule='input', reason='At least one Drive is required')
@@ -136,6 +141,17 @@ class DriveVerbs:
                 return Refused(rule='input', reason='An Assignment needs a label')
             if values.get('role') not in {role.value for role in Role}:
                 return Refused(rule='input', reason='role must be one of ' + ', '.join(role.value for role in Role))
+        return None
+
+    @staticmethod
+    def _validate_fact(verb: str, values: dict[str, Any]) -> Refused | None:
+        if verb == 'add':
+            if not (values.get('label') or '').strip():
+                return Refused(rule='input', reason='A Drive needs a label')
+        elif not isinstance(values.get('drive'), str):
+            return Refused(rule='input', reason='A Drive is required')
+        elif verb == 'edit' and not any(name in values for name in _EDITABLE):
+            return Refused(rule='input', reason='Name at least one fact to change: ' + ', '.join(_EDITABLE))
         return None
 
     @staticmethod
@@ -173,6 +189,77 @@ class DriveVerbs:
             {'drive_id': drive.id, 'serial': drive.serial, 'label': a.label, 'project_id': a.project.page_id if a.project else None, 'holder': a.holder,
              'start': a.start.isoformat() if a.start else None, 'return_date': a.return_date.isoformat() if a.return_date else None,
              'days_overdue': (today - a.return_date).days if a.return_date else 0} for drive, a in found]}
+
+    @staticmethod
+    def _serial_clash(store: DriveStore, drive_id: str, serial: str | None) -> Refused | None:
+        held = store.find_by_serial(serial) if serial else None
+        if held is not None and held.id != drive_id:
+            return Refused(rule='serial', reason=f'Serial {held.serial} is already recorded on Drive {held.id}')
+        return None
+
+    def _plan_fact(self, store: DriveStore, verb: str, values: dict[str, Any], key: str) -> Plan | Refused:
+        plan: dict[str, Any] = {'action': 'drive_' + verb, 'idempotency_key': key}
+        if verb == 'add':
+            facts = {**values, 'id': 't6d_' + hashlib.sha256(key.encode()).hexdigest()[:32]}
+            try:
+                if 'form_factor' in facts:
+                    facts['form_factor'] = FormFactor(facts['form_factor'])
+                if 'purchase_date' in facts:
+                    facts['purchase_date'] = date.fromisoformat(facts['purchase_date'])
+                added = Drive(**facts)
+            except ValueError as error:
+                return Refused(rule='input', reason=str(error))
+            clash = self._serial_clash(store, added.id, added.serial)
+            if clash is not None:
+                return clash
+            plan.update(drive_ids=[added.id], facts=audit_json(added))
+            return Plan(plan, [], lambda store_: self._add(store_, added))
+        drive = store.get_drive(values['drive'])
+        if drive is None:
+            return Refused(rule='drive', reason=f"Drive {values['drive']} not found")
+        if verb == 'promote_serial':
+            if drive.suspected_serial is None:
+                return Refused(rule='serial', reason='The Drive has no suspected serial to promote')
+            clash = self._serial_clash(store, drive.id, drive.suspected_serial)
+            if clash is not None:
+                return clash
+            plan.update(drive_ids=[drive.id], facts=audit_json(replace(drive, serial=drive.suspected_serial, suspected_serial=None)))
+            return Plan(plan, [audit_json(drive)], lambda store_: self._promote(store_, drive))
+        changes: dict[str, Any] = {name: values[name].strip() or None for name in ('label', 'serial', 'suspected_serial', 'review_note') if name in values}
+        if 'form_factor' in values:
+            changes['form_factor'] = FormFactor(values['form_factor']) if values['form_factor'] else None
+        if 'needs_review' in values:
+            changes['needs_review'] = values['needs_review']
+        try:
+            edited = replace(drive, **changes)
+        except ValueError as error:
+            return Refused(rule='input', reason=str(error))
+        clash = self._serial_clash(store, drive.id, edited.serial) if 'serial' in changes else None
+        if clash is not None:
+            return clash
+        plan.update(drive_ids=[drive.id], facts=audit_json(edited))
+        return Plan(plan, [audit_json(drive)], lambda store_: self._edit(store_, drive, changes))
+
+    @staticmethod
+    def _add(store: DriveStore, drive: Drive) -> list[Change]:
+        store.add_drive(drive)
+        return [(drive.id, None, audit_json(drive))]
+
+    @staticmethod
+    def _promote(store: DriveStore, drive: Drive) -> list[Change]:
+        return [(drive.id, audit_json(drive), audit_json(store.promote_suspected_serial(drive.id)))]
+
+    @staticmethod
+    def _edit(store: DriveStore, drive: Drive, changes: dict[str, Any]) -> list[Change]:
+        setters: dict[str, Callable[[str, Any], Drive]] = {'label': store.set_label, 'form_factor': store.set_form_factor, 'serial': store.set_serial, 'suspected_serial': store.set_suspected_serial}
+        for name in sorted((name for name in changes if name in setters), key=lambda name: changes[name] is None):  # set before clearing
+            setters[name](drive.id, changes[name])
+        if 'needs_review' in changes or 'review_note' in changes:
+            store.set_review(drive.id, needs_review=changes.get('needs_review', drive.needs_review),
+                             note=changes['review_note'] if 'review_note' in changes else drive.review_note)
+        edited = store.get_drive(drive.id)
+        assert edited is not None
+        return [(drive.id, audit_json(drive), audit_json(edited))]
 
     def _plan_swing(self, store: DriveStore, verb: str, values: dict[str, Any], key: str) -> Plan | Refused | Ambiguous:
         drive_id = values['drive']
@@ -235,6 +322,8 @@ class DriveVerbs:
     def _plan(self, store: DriveStore, verb: str, values: dict[str, Any], key: str, actor: str) -> Plan | Refused | Ambiguous:
         if verb.startswith('swing_'):
             return self._plan_swing(store, verb, values, key)
+        if verb in FACT_VERBS:
+            return self._plan_fact(store, verb, values, key)
         ids = list(dict.fromkeys(values['drives'])) if verb == 'release' else [values['drive']]
         for drive_id in ids:
             if store.get_drive(drive_id) is None:

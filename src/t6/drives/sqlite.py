@@ -124,6 +124,10 @@ class SqliteDriveStore:
             row = db.execute('SELECT data FROM drives WHERE id=?', (drive_id,)).fetchone()
             return _drive(row[0]) if row else None
 
+    def list_drives(self) -> tuple[Drive, ...]:
+        with self._tx() as db:
+            return tuple(_drive(row[0]) for row in db.execute('SELECT data FROM drives ORDER BY rowid'))
+
     def find_by_serial(self, serial: str) -> Drive | None:
         with self._tx() as db:
             row = db.execute('SELECT data FROM drives WHERE serial=?', (normalize_serial(serial),)).fetchone()
@@ -153,6 +157,12 @@ class SqliteDriveStore:
             drive = replace(old, serial=old.suspected_serial, suspected_serial=None)
             self._save(db, drive)
             return drive
+
+    def set_label(self, drive_id: str, label: str | None) -> Drive:
+        return self._edit(drive_id, label=label)
+
+    def set_form_factor(self, drive_id: str, form_factor: FormFactor | None) -> Drive:
+        return self._edit(drive_id, form_factor=form_factor)
 
     def set_review(self, drive_id: str, *, needs_review: bool, note: str | None = None) -> Drive:
         return self._edit(drive_id, needs_review=needs_review, review_note=note)
@@ -226,6 +236,10 @@ class SqliteDriveStore:
     def shipment_events(self, shipment_id: str) -> tuple[tuple[Drive, CustodyEvent], ...]:
         with self._tx() as db:
             return tuple((_drive(row[0]), _event(row[1])) for row in db.execute('SELECT drives.data, drive_events.data FROM drive_events JOIN drives ON drives.id=drive_events.drive_id WHERE shipment_id=? ORDER BY drive_events.id', (shipment_id,)))
+
+    def list_shipments(self) -> tuple[str, ...]:
+        with self._tx() as db:
+            return tuple(row[0] for row in db.execute('SELECT shipment_id FROM drive_events WHERE shipment_id IS NOT NULL GROUP BY shipment_id ORDER BY MIN(id)'))
 
     def check_project(self, project: Ref) -> None:
         with self._tx() as db:
@@ -301,6 +315,11 @@ class SqliteDriveStore:
     def delivery_drives(self, delivery_id: str) -> tuple[str, ...]:
         with self._tx() as db:
             return tuple(row[0] for row in db.execute('SELECT drive_id FROM delivery_drives WHERE package_id=? ORDER BY drive_id', (delivery_id,)))
+
+    def drive_deliveries(self, drive_id: str) -> tuple[str, ...]:
+        with self._tx() as db:
+            self._get(db, drive_id)
+            return tuple(row[0] for row in db.execute('SELECT package_id FROM delivery_drives WHERE drive_id=? ORDER BY package_id', (drive_id,)))
 
     def delivery_carrier(self, delivery_id: str) -> tuple[str, str] | None:
         with self._tx() as db:

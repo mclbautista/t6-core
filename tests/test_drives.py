@@ -749,3 +749,59 @@ class VerbSupportTests(unittest.TestCase):
         with self.assertRaises(UnknownDrive):
             store.link_delivery("t6g_1", ["t6d_" + "0" * 32])
         self.assertIsNone(store.delivery_carrier("t6g_unknown"))
+
+
+class InventoryReadSupportTests(unittest.TestCase):
+    """What the Drive reads and fact edits need from the store: one contract for every store."""
+
+    def test_drives_are_listed_in_the_order_they_were_added(self) -> None:
+        store = make_store()
+        self.assertEqual(store.list_drives(), ())
+        ids = [store.add_drive(Drive(serial=serial)).id for serial in ("D2", "D1", "D3")]
+        self.assertEqual([d.id for d in store.list_drives()], ids)
+        store.set_serial(ids[0], "D9")
+        self.assertEqual([d.serial for d in store.list_drives()], ["D9", "D1", "D3"])
+
+    def test_shipments_are_listed_once_each_in_the_order_they_were_first_released(self) -> None:
+        store = store_with_drives("D1", "D2", "D3")
+        self.assertEqual(store.list_shipments(), ())
+        first = release(store, "D1", "D2", day=10)
+        second = release(store, "D3", day=11)
+        store.append_event(drive_id(store, "D3"), event(CustodyKind.RECEIVED, 12))
+        store.append_event(drive_id(store, "D1"), event(CustodyKind.RELEASED, 13, shipment_id=first))
+        self.assertEqual(store.list_shipments(), (first, second))
+
+    def test_a_label_and_a_form_factor_can_be_corrected_and_cleared(self) -> None:
+        store = make_store()
+        drive = store.add_drive(Drive(serial="D1", label="M01"))
+        self.assertEqual(store.set_label(drive.id, "M02").label, "M02")
+        self.assertIs(store.set_form_factor(drive.id, FormFactor.PORTABLE).form_factor, FormFactor.PORTABLE)
+        found = store.get_drive(drive.id)
+        assert found is not None
+        self.assertEqual((found.label, found.form_factor, found.serial), ("M02", FormFactor.PORTABLE, "D1"))
+        self.assertIsNone(store.set_label(drive.id, None).label)
+        self.assertIsNone(store.set_form_factor(drive.id, None).form_factor)
+
+    def test_the_only_identifying_detail_cannot_be_cleared_and_an_unknown_drive_is_refused(self) -> None:
+        store = make_store()
+        drive = store.add_drive(Drive(label="M01"))
+        with self.assertRaises(ValueError):
+            store.set_label(drive.id, None)
+        found = store.get_drive(drive.id)
+        assert found is not None
+        self.assertEqual(found.label, "M01")
+        with self.assertRaises(UnknownDrive):
+            store.set_label("t6d_" + "0" * 32, "X")
+        with self.assertRaises(UnknownDrive):
+            store.set_form_factor("t6d_" + "0" * 32, None)
+
+    def test_a_drive_reads_back_the_deliveries_it_is_linked_to(self) -> None:
+        store = store_with_drives("D1", "D2")
+        one, two = drive_id(store, "D1"), drive_id(store, "D2")
+        self.assertEqual(store.drive_deliveries(one), ())
+        store.link_delivery("t6g_2", [one, two])
+        store.link_delivery("t6g_1", [one])
+        self.assertEqual(store.drive_deliveries(one), ("t6g_1", "t6g_2"))
+        self.assertEqual(store.drive_deliveries(two), ("t6g_2",))
+        with self.assertRaises(UnknownDrive):
+            store.drive_deliveries("t6d_" + "0" * 32)
