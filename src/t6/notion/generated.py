@@ -183,7 +183,7 @@ class DeliverablesRow(NotionModel):
     ocp_intake_source: str | None = notion("OCP Intake Source", "rich_text", id="%3Bb~w")
     playdate: dt.date | dt.datetime | None = notion("Playdate", "date", id="%3FQ~%3D")
     status: str | None = notion("Status", "select", id="N%3B%5Bs")
-    t6_id: str | None = notion("T6 ID", "rich_text")
+    t6_id: str | None = notion("T6 ID", "rich_text", id="rIyP")
     tasks: tuple[str, ...] = notion("Tasks", "relation", id="awZv", default=())
     coordinator: tuple[str, ...] = notion("\U0001f5c2\U0000fe0f Coordinator", "relation", id="C%7D%40%40", default=())
     editor: tuple[str, ...] = notion("\U0001f5c2\U0000fe0f Editor", "relation", id="%7DIx%5E", default=())

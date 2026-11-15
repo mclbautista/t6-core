@@ -1223,7 +1223,8 @@
         },
         {
           "name": "T6 ID",
-          "type": "rich_text"
+          "type": "rich_text",
+          "id": "rIyP"
         },
         {
           "name": "Tasks",
