@@ -145,6 +145,14 @@ authenticated `/queue/*` routes. Configure the existing worker secrets for the
 queues workers need to claim. The callback still requires a Frame.io worker
 claim grant. Edge mode does not open the registry or operator databases.
 
+The Frame.io file route (`job_kind: frameio.file_versioned`) must use `queue: main`, not `frameio`: the
+job opens the t6 database, which only the API and the main worker do, and the Frame.io worker never does.
+Subscribe it to `file.versioned` and `file.upload.completed`; the job carries the raw webhook body. The main
+worker with `T6_DATABASE` set records one Version for a file in a Deliverable's `frameio-folder` Media location
+(role review), once per job dedupe key. It finds the file's folder through the Frame.io read API
+(`T6_FRAMEIO_READ_URL`, `T6_FRAMEIO_READ_SECRET`); until that API answers file locations the job fails with
+that reason and is retried.
+
 Frame.io and Notion jobs contain the verified JSON object. Google jobs contain
 `headers` with the `x-goog-*` notification headers except the channel token.
 Jobs are deduplicated by route and provider event ID (or body hash when absent);

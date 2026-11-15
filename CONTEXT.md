@@ -97,6 +97,9 @@ classify to a review list.
 - A Frame.io project, and an Instagantt project, belongs to one Project at a
   time. A frameio-folder belongs
   to a Deliverable with role review.
+- A file that lands in a Deliverable's frameio-folder records a Version (`t6r_`) from the
+  `file.versioned` or upload event, run by the main worker, once per event. A file in
+  no T6 folder is ignored.
 - **Unlink** makes a Media location inactive; it is never deleted. Linking the
   same owner, kind, ref and role again reactivates it. Its history is
   append-only: link and unlink, with actor and time.

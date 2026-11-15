@@ -13,7 +13,7 @@ import sys
 import threading
 from urllib.error import URLError
 
-from t6.domain.events import JsonValue
+from t6.domain.events import JobKind, JsonValue
 from t6.frameio.readapi import ReadApi
 from t6.frameio.requests import FrameioRequest, ShareLinks, ask
 from t6.media_links import MediaLinks
@@ -213,7 +213,23 @@ def configured_handlers(
         handlers.update(review.handlers())
     if environ.get("T6_DATABASE"):
         handlers["booking.calendar_sync"] = booking_calendar_handler(environ)
+        handlers[JobKind.FRAMEIO_FILE_VERSIONED.value] = file_versions_handler(environ)
     return {"main": handlers} if handlers else {}
+
+
+def file_versions_handler(environ: Mapping[str, str]) -> Handler:
+    """`frameio.file_versioned`: records a Version for a file landing in a Deliverable's T6 Frame.io folder (#265).
+
+    It opens the t6 database, so it is the main worker's. The folder of the file comes from the Frame.io worker's
+    read API; until that API answers file locations the job fails with a clear reason and is retried.
+    """
+    from t6.frameio.file_versions import FrameioFileVersions, UnwiredReader
+    from t6.registry.sqlite import SqliteProjectRegistry
+
+    def handle(job: WorkerJob) -> JsonValue:
+        return FrameioFileVersions(SqliteProjectRegistry(environ["T6_DATABASE"]), UnwiredReader()).handle(job)
+
+    return handle
 
 
 def booking_calendar_handler(environ: Mapping[str, str]) -> Handler:

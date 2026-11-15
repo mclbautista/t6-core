@@ -134,6 +134,8 @@ class JobKind(str, Enum):
     """A Frame.io comment was created. The Frame.io worker reads it to learn the file and the author."""
     FRAMEIO_SHARE_VIEWED = "frameio.share_viewed"
     """A Frame.io share was viewed; carries event_id and share_id."""
+    FRAMEIO_FILE_VERSIONED = "frameio.file_versioned"
+    """A Frame.io file event (file.versioned or an upload) as the edge received it. The main worker records a Version."""
     FRAMEIO_SIGN_IN = "frameio.sign_in"
     """A person signed in to Adobe. Carries the authorization code and state for the Frame.io worker to exchange."""
     TAP = "tap"
