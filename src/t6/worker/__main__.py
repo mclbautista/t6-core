@@ -13,7 +13,7 @@ import sys
 import threading
 from urllib.error import URLError
 
-from t6.domain.events import JsonValue
+from t6.domain.events import JobKind, JsonValue
 from t6.frameio.readapi import ReadApi
 from t6.frameio.requests import FrameioRequest, ShareLinks, ask
 from t6.frameio.worker import ArmReviewTimer, FrameioWorker, Run, Tokens
@@ -281,13 +281,7 @@ def frameio_worker(
     def notify(text: str, key: str) -> None:
         gateway.notify(chat, html.escape(text, quote=False), [], key, topic)
 
-    record_share_view = None
-    if environ.get("T6_DATABASE"):
-        from t6.frameio.share_views import DeliveryShareViews
-        from t6.registry.sqlite import SqliteProjectRegistry
-
-        record_share_view = DeliveryShareViews(SqliteProjectRegistry(environ["T6_DATABASE"])).record
-    return FrameioWorker(tokens, run, notify, arm_review_timer=timers, record_share_view=record_share_view)
+    return FrameioWorker(tokens, run, notify, arm_review_timer=timers)
 
 
 def read_api_server(environ: Mapping[str, str], frameio: FrameioWorker) -> ThreadingHTTPServer | None:
@@ -394,7 +388,11 @@ def main(
                 raise ValueError('Invalid Concern close payload')
             concerns.apply_pending(project)
             return True
-        queue_handlers = {**queue_handlers, "concern_silence": concern_silence, "concern_pm_close": concern_pm_close}
+        from t6.frameio.share_views import DeliveryShareViews, share_viewed_handler
+
+        share_viewed = share_viewed_handler(DeliveryShareViews(SqliteProjectRegistry(environ["T6_DATABASE"])))
+        queue_handlers = {**queue_handlers, "concern_silence": concern_silence, "concern_pm_close": concern_pm_close,
+                          JobKind.FRAMEIO_SHARE_VIEWED.value: share_viewed}
         def unavailable_abang_nudge(job: WorkerJob) -> bool:
             raise RuntimeError('Abang nudge needs a configured gateway')
         def unavailable_subscriptions(job: WorkerJob) -> bool:

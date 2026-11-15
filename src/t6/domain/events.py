@@ -133,7 +133,7 @@ class JobKind(str, Enum):
     FRAMEIO_RESOLVE_COMMENT = "frameio.resolve_comment"
     """A Frame.io comment was created. The Frame.io worker reads it to learn the file and the author."""
     FRAMEIO_SHARE_VIEWED = "frameio.share_viewed"
-    """A Frame.io share was viewed; carries event_id and share_id."""
+    """A Frame.io share was viewed. Carries the webhook body; the main worker records it against a Delivery."""
     FRAMEIO_SIGN_IN = "frameio.sign_in"
     """A person signed in to Adobe. Carries the authorization code and state for the Frame.io worker to exchange."""
     TAP = "tap"

@@ -71,15 +71,12 @@ class FrameioWorker:
         notify: Notify,
         clock: Callable[[], float] = time.time,
         arm_review_timer: ArmReviewTimer | None = None,
-        record_share_view: Callable[[str, str], bool] | None = None,
     ) -> None:
         self._tokens = tokens
         self._run = run
         self._notify = notify
         self._clock = clock
         self._arm_review_timer = arm_review_timer
-        self._record_share_view = record_share_view
-        self.ignored_share_views = 0
         self._lock = threading.Lock()  # the read API runs on other threads; Adobe rotates the refresh token on each use
         self._signed_in = True
         self._alert_pending = False
@@ -90,7 +87,6 @@ class FrameioWorker:
             **{kind: self._request for kind in REQUEST_KINDS},
             JobKind.FRAMEIO_RESOLVE_COMMENT.value: self._resolve_comment,
             JobKind.FRAMEIO_SIGN_IN.value: self._sign_in,
-            JobKind.FRAMEIO_SHARE_VIEWED.value: self._share_viewed,
         }
 
     def tick(self) -> None:
@@ -195,16 +191,6 @@ class FrameioWorker:
             raise Refused(f"unusable comment: {error}") from error
         self._arm_review_timer(comment)
         return {"file_id": comment.file_id, "author_id": comment.author_id}
-
-    def _share_viewed(self, job: WorkerJob) -> JsonValue:
-        event_id, share_id = job.payload.get("event_id"), job.payload.get("share_id")
-        if not isinstance(event_id, str) or not event_id.strip() or not isinstance(share_id, str) or not share_id.strip():
-            raise Refused("share viewed job needs event_id and share_id")
-        if self._record_share_view is None:
-            raise RuntimeError("this Frame.io worker has no delivery share store")
-        if not self._record_share_view(event_id, share_id):
-            self.ignored_share_views += 1
-        return None
 
     def _sign_in(self, job: WorkerJob) -> JsonValue:
         code, state = job.payload.get("code"), job.payload.get("state")
