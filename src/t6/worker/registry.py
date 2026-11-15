@@ -37,6 +37,11 @@ class RegistryClient:
         answer = self._call("GET", f"/registry/projects/{project_id}")
         return None if answer is None else answer["project"]
 
+    def review_chat_links(self, page_id: str) -> list[dict[str, Any]]:
+        from urllib.parse import quote
+        answer = self._call("GET", f"/registry/review-chat/{quote(page_id, safe='')}")
+        return [] if answer is None else answer["links"]
+
     def report_sync(
         self, project_id: str, revision: int, *, ok: bool, detail: str = "", attempt: int = 1, final: bool = False
     ) -> None:
