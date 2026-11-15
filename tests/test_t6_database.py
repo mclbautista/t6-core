@@ -123,11 +123,12 @@ class MigrationTests(unittest.TestCase):
             registry = SqliteProjectRegistry(path)
             project = registry.register(actor='setup', idempotency_key='setup')
             assert isinstance(project, Registered)
+            from media_seed import link_media
+            media = link_media(registry, project.project.id, '/media')
             with registry._transaction() as db:
-                db.execute("INSERT INTO media_locations VALUES ('media', ?, ?, 'nas-path', '/media', 'master', 1, NULL)", (project.project.id, project.project.id))
-                db.execute("INSERT INTO audit (project_id, action, actor, at, before, after) VALUES ('media', 'media_link', 'person', 1, NULL, '{}')")
+                db.execute("INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, 'media_link', 'person', 1, NULL, '{}')", (media,))
             reopened = SqliteProjectRegistry(path)
-            self.assertEqual(reopened.activity('media'), ())
+            self.assertEqual(reopened.activity(media), ())
 
     def test_newer_schema_compatibility(self) -> None:
         from t6.registry import RegistryError

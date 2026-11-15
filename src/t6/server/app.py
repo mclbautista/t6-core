@@ -67,6 +67,7 @@ from t6.registry.sqlite import SqliteProjectRegistry
 from t6.server.routes import Route
 from t6.server.queue import DIAGNOSTIC_QUEUE, FRAMEIO_QUEUE, MAIN_QUEUE, JobQueue, Submitted
 from t6.server.signatures import WebhookRejected, verify_frameio, verify_notion
+from t6.verbs import Done, Outcome
 
 REVIEW_QUIET_SECONDS = 15 * 60.0
 REVIEW_LOOP_ALLOWANCE_SECONDS = 8 * 60.0
@@ -502,6 +503,19 @@ class WebhookApp:
             return HeldActivity(self._registry).release_linked(self._inside.submit)
         except RegistryUnavailable:
             return 0
+
+    def after_verb(self, noun: str, verb: str, outcome: Outcome) -> None:
+        """The effects a verb has outside the t6 database, once it is `Done`: they follow the verb, not the API that ran it.
+
+        A linked Frame.io project releases the review activity that waited for it (#272); a confirmed Project Start gives
+        the Approval it created its card (#267).
+        """
+        if not isinstance(outcome, Done):
+            return
+        if (noun, verb) == ("frameio", "project link"):
+            self.release_held_activity()
+        if (noun, verb) == ("project", "start") and outcome.result.get("approval_id"):
+            self._redeliver_cards()
 
     def _redeliver_cards(self) -> None:
         """Queue delivery again for cards Telegram never confirmed (a restore may have lost the job)."""

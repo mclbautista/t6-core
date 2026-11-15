@@ -149,6 +149,7 @@ class TranslateFlowTests(unittest.TestCase):
         from t6.server.verbs import VerbAPI
         from t6.transcribe.worker import TranscribeQueue, TranscriptWorker
         from t6.worker.runner import Worker
+        from media_seed import link_media
         from test_person import MemoryRegistry
         self.registry = MemoryRegistry()
         self.addCleanup(self.registry.db.close)
@@ -157,7 +158,6 @@ class TranslateFlowTests(unittest.TestCase):
         assert isinstance(project, Registered)
         self.project = project.project.id
         person = str(T6Id.mint(EntityKind.PERSON))
-        media = str(T6Id.mint(EntityKind.MEDIA_LOCATION))
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name) / 'audio'
@@ -165,7 +165,8 @@ class TranslateFlowTests(unittest.TestCase):
         self.identifier = str(T6Id.mint(EntityKind.TRANSCRIPT))
         with self.registry._transaction() as db:
             db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', NULL, 0, 1)", (person,))
-            db.execute("INSERT INTO media_locations VALUES (?, ?, ?, 'nas-path', ?, 'master', 1, NULL)", (media, self.project, self.project, '/Volumes/Studio/audio'))
+        media = link_media(self.registry, self.project, '/Volumes/Studio/audio')
+        with self.registry._transaction() as db:
             db.execute("INSERT INTO transcripts VALUES (?, ?, NULL, ?, '{}', 'done', '{}', '{}')", (self.identifier, media, self.project))
         self.api = VerbAPI(People(self.registry, PreviewTokens('signing')), JobQueue(Path(directory.name) / 'queue'),
                            {'person-secret': person, 'worker-secret': 'transcribe', 'other': 'worker'}, lambda _: None,

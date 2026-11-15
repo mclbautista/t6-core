@@ -257,6 +257,19 @@ class ApprovalCardTests(unittest.TestCase):
         self.assertEqual(self.gateway.sends, 1)
         self.assertEqual((len(fake.projects), done['result']['frameio_project_id'] in fake.projects, len(fake.posts), fake.shares_created), (1, True, 1, 0))
 
+    def test_after_verb_gives_a_started_projects_approval_its_card_and_does_nothing_for_other_outcomes(self) -> None:
+        from t6.verbs import Done, Refused
+        values = {'gate': 'grade', 'target': 'cut', 'tapper_rule': 'person:' + self.actor, 'idempotency_key': 'hook'}
+        preview = self.send('/v1/approval/request', values)
+        self.send('/v1/approval/request', {**values, 'confirm': preview['token']})
+        delivered: list[tuple[str, int]] = []
+        self.app._deliver = lambda token, version: delivered.append((token, version))  # type: ignore[method-assign]
+        for noun, verb, outcome in (('project', 'start', Refused(rule='x', reason='y')), ('project', 'start', Done(result={})), ('project', 'list', Done(result={'approval_id': 'a'}))):
+            self.app.after_verb(noun, verb, outcome)
+            self.assertEqual(delivered, [], (noun, verb))
+        self.app.after_verb('project', 'start', Done(result={'approval_id': 'a'}))
+        self.assertEqual(len(delivered), 1)
+
     def test_card_denial_records_selected_reason(self) -> None:
         values = {'gate': 'grade', 'target': 'cut', 'tapper_rule': 'person:' + self.actor, 'idempotency_key': 'denial'}
         preview = self.send('/v1/approval/request', values)

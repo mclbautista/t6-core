@@ -6,6 +6,9 @@ from t6.registry import Registered
 from test_person import MemoryRegistry
 
 
+from media_seed import link_media
+
+
 class TranscriptStoreTests(unittest.TestCase):
     def test_history_and_project_activity(self) -> None:
         from t6.transcript import TranscriptStore
@@ -14,9 +17,7 @@ class TranscriptStoreTests(unittest.TestCase):
         registry._new_id = lambda: str(T6Id.mint(EntityKind.PROJECT))
         project = registry.register(actor='setup', idempotency_key='setup')
         assert isinstance(project, Registered)
-        media = str(T6Id.mint(EntityKind.MEDIA_LOCATION))
-        with registry._transaction() as db:
-            db.execute("INSERT INTO media_locations VALUES (?, ?, ?, 'nas-path', '/audio', 'master', 1, NULL)", (media, project.project.id, project.project.id))
+        media = link_media(registry, project.project.id, '/audio')
         store = TranscriptStore(registry)
         transcript = store.start(media, None, {'language': 'fil'}, actor='person')
         self.assertTrue(transcript.startswith('t6x_'))

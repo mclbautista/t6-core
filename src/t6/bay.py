@@ -5,6 +5,7 @@ import hashlib
 import json
 from typing import Any, Iterable
 
+from t6 import verbflow
 from t6.google.sync import enqueue
 from t6.preview import PreviewTokens
 from t6.verbs import Outcome
@@ -65,30 +66,18 @@ class BookingStore:
             return [dict(zip(('id', 'bay_id', 'person_id', 'project_id', 'start', 'end', 'forced', 'cancelled'), (*row[:6], bool(row[6]), bool(row[7])))) for row in rows]
 
     def write(self, verb: str, values: dict[str, Any], *, actor: str, idempotency_key: str | None, confirm: str | None, note: str | None = None) -> Outcome:
-        import secrets
         from datetime import date, datetime, time, timedelta
         from t6.domain.studio_time import MANILA
-        from t6.verbs import Done, NeedsPerson, Refused
-        if (confirm and not idempotency_key) or (idempotency_key is not None and not idempotency_key.strip()):
-            return Refused(rule='idempotency_key', reason='A nonblank idempotency key is required')
-        key = idempotency_key or secrets.token_hex(16)
-        inputs = {**values, 'idempotency_key': key}
+        from t6.verbs import NeedsPerson, Refused
         name = 'bay book' if verb == 'book' else 'booking ' + verb
-        fingerprint = json.dumps({'verb': name, 'actor': actor, **inputs}, sort_keys=True, separators=(',', ':'))
-        nonce = self.tokens.verify(confirm, name, actor, inputs) if confirm else None
-        if isinstance(nonce, Refused):
-            return nonce
+        request = verbflow.begin(self.tokens, name, actor, values, idempotency_key, confirm)
+        if isinstance(request, Refused):
+            return request
+        key, nonce = request.key, request.nonce
         with self.registry._transaction() as db:
-            if nonce and db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce=?', (nonce,)).fetchone():
-                return Refused(rule='token_used', reason='Preview token has already been used')
-            previous = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key=?', (key,)).fetchone()
-            if previous and previous[0] != fingerprint:
-                return Refused(rule='idempotency_key', reason='Idempotency key was used for a different request')
-            if previous:
-                if nonce:
-                    db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
-                    return Done(result=json.loads(previous[1]))
-                return self.tokens.create(name, actor, inputs, json.loads(previous[1]))
+            settled = verbflow.settle(db, self.tokens, request)
+            if settled:
+                return settled
             if verb == 'book':
                 def resolve(table: str, value: str) -> str | None:
                     page = normalize_page_id(value)
@@ -141,8 +130,7 @@ class BookingStore:
                 return Refused(rule='overlap', reason='Bay already has an overlapping Booking')
             plan = {'booking_id': old[0] if old else None, 'bay_id': bay, 'person_id': person, 'project_id': project, 'start': start, 'end': end, 'forced': bool(old[6]) if verb == 'cancel' and old else overlap and bool(values.get('force')), 'cancelled': verb == 'cancel', 'idempotency_key': key}
             if not nonce:
-                preview = self.tokens.create(name, actor, inputs, plan)
-                preview_nonce = self.tokens.verify(preview.token, name, actor, inputs)
+                preview, preview_nonce = verbflow.issue(self.tokens, request, plan)
                 db.execute('INSERT INTO booking_previews VALUES (?, ?)', (preview_nonce, json.dumps({'plan': plan, 'old': old})))
                 return preview
             saved = db.execute('SELECT plan FROM booking_previews WHERE nonce=?', (nonce,)).fetchone()
@@ -155,7 +143,6 @@ class BookingStore:
             action = 'booking_' + verb
             cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)', (identifier, action, actor, now, json.dumps(old), json.dumps(plan)))
             db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (project, identifier, now, actor, action, f'{name}: {note}' if note else name, cursor.lastrowid))
-            db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
-            db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(plan)))
+            done = verbflow.finish(db, request, plan)
             enqueue(db, identifier, old[1] if old else None, key, now)
-            return Done(result=plan)
+            return done

@@ -18,7 +18,8 @@ from t6.frameio.api import RATE_LIMIT_TRIES, FrameioApi, FrameioError
 from t6.frameio.model import Approval, BriefingShow, Comment, FrameioProject, ShareLink, Version, decode
 from t6.frameio.reads import FrameioReads
 from t6.frameio.testing import FakeFrameio, StaticTokens
-from t6.media_links import MediaLink, StaticMediaLinks
+from t6.media_links import MediaLink
+from t6.testing import StaticMediaLinks
 
 NOW = datetime(2026, 11, 8, 8, 0, tzinfo=timezone.utc)
 SINCE = datetime(2026, 11, 1, 8, 0, tzinfo=timezone.utc)

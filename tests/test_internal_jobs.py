@@ -98,3 +98,46 @@ class MixedWorkerTests(ServerTestCase):
             worker = Worker(QueueClient(Down(), WORKER_SECRET), 'main', {'x': lambda job: seen.append(job.kind)}, internal_client=InternalQueueClient(local))
             self.assertTrue(worker.run_once())
             self.assertEqual(seen, ['x'])
+
+
+class JobLookupTests(unittest.TestCase):
+    """`get`, `find`, `finish` and `settle`: what callers need so they never read the jobs table themselves."""
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.now = [100.0]
+        self.queue = InternalJobQueue(directory.name + '/db', clock=lambda: self.now[0], max_attempts=1)
+
+    def test_get_returns_the_job_only_for_the_kind_and_queue_asked_for(self) -> None:
+        job = self.queue.submit('q', 'a.kind', 'k1', {'who': 'x'})
+        record = self.queue.get(job.job_id, kind='a.kind', queue='q')
+        assert record is not None
+        self.assertEqual((record.payload, record.state, record.lease_token, record.result), ({'who': 'x'}, 'queued', None, None))
+        self.assertIsNone(self.queue.get(job.job_id, kind='other'))
+        self.assertIsNone(self.queue.get(job.job_id, queue='other'))
+        self.assertIsNone(self.queue.get(999))
+
+    def test_find_narrows_by_state_later_id_and_payload(self) -> None:
+        first = self.queue.submit('q', 'a.kind', 'k1', {'t': '1'}).job_id
+        second = self.queue.submit('q', 'a.kind', 'k2', {'t': '2'}).job_id
+        self.queue.submit('q', 'b.kind', 'k3', {'t': '1'})
+        self.assertEqual([j.job_id for j in self.queue.find('a.kind')], [first, second])
+        self.assertEqual([j.job_id for j in self.queue.find('a.kind', payload={'t': '2'})], [second])
+        self.assertEqual([j.job_id for j in self.queue.find('a.kind', after=first)], [second])
+        self.assertEqual(self.queue.find('a.kind', states=['dead']), [])
+
+    def test_finish_stores_the_result_as_given_and_settle_is_once_only_for_a_dead_job(self) -> None:
+        job = self.queue.submit('q', 'a.kind', 'k1').job_id
+        self.queue.finish(job, {'outcome': 'done'})
+        record = self.queue.get(job)
+        assert record is not None
+        self.assertEqual((record.state, record.result), ('done', {'outcome': 'done'}))
+        self.assertFalse(self.queue.settle(job))  # not dead
+        dead = self.queue.submit('q', 'a.kind', 'k2').job_id
+        self.queue.claim('q', 10)  # the finished job is not claimable, so this takes `dead`
+        self.now[0] += 20
+        self.queue.claim('q', 10)  # its lease expired at the last allowed attempt: dead
+        self.assertEqual([j.job_id for j in self.queue.find('a.kind', states=['dead'])], [dead])
+        self.assertTrue(self.queue.settle(dead))
+        self.assertFalse(self.queue.settle(dead))

@@ -25,6 +25,7 @@ from types import UnionType
 
 from pydantic import BaseModel, Field, ConfigDict
 from t6.domain import Project, JobOrder, Deliverable, MeetingNote, Contact, Camera, ExternalRef
+from t6.vocabulary import DRIVE_ROLES, DriveRole, MediaKind, MediaRole
 from t6.llm.api import Done as Done, LLMRunInput as LLMRunInput, LLMRunOutput as LLMRunOutput
 
 if TYPE_CHECKING:
@@ -165,9 +166,9 @@ class ProjectStartDeliverable(BaseModel):
 
 
 class ProjectStartMedia(BaseModel):
-    kind: Literal['drive', 'nas-path', 'frameio-project', 'frameio-folder', 'resolve-project', 'timeline', 'instagantt-project']
+    kind: MediaKind
     ref: str
-    role: Literal['master', 'backup', 'review', 'working', 'frameio-project']
+    role: MediaRole
 
 
 class ProjectStartBooking(BaseModel):
@@ -1430,9 +1431,9 @@ class MediaMigrateOutput(BaseModel):
 
 class MediaLinkInput(BaseModel):
     owner: str
-    kind: Literal['drive', 'nas-path', 'frameio-project', 'frameio-folder', 'resolve-project', 'timeline', 'instagantt-project']
+    kind: MediaKind
     ref: str
-    role: Literal['master', 'backup', 'review', 'working', 'frameio-project']
+    role: MediaRole
     idempotency_key: str | None = None
     confirm: str | None = None
 
@@ -1579,7 +1580,7 @@ class DriveAssignInput(BaseModel):
     drive: str
     project: str
     label: str
-    role: Literal['master', 'backup', 'offline', 'swing', 'archive']
+    role: DriveRole
     start: str | None = None
     end: str | None = None
     idempotency_key: str | None = None
@@ -1590,7 +1591,7 @@ class DriveUnassignInput(BaseModel):
     drive: str
     project: str
     label: str | None = None
-    role: Literal['master', 'backup', 'offline', 'swing', 'archive'] | None = None
+    role: DriveRole | None = None
     assignment: int | None = None
     end: str | None = None
     idempotency_key: str | None = None
@@ -1985,11 +1986,11 @@ def add_parsers(commands: Any) -> None:
                 parser.add_argument('--reason', required=True)
             if entry.verb == 'assign':
                 parser.add_argument('--label', required=True)
-                parser.add_argument('--role', required=True, choices=('master', 'backup', 'offline', 'swing', 'archive'))
+                parser.add_argument('--role', required=True, choices=DRIVE_ROLES)
                 parser.add_argument('--start')
             if entry.verb == 'unassign':
                 parser.add_argument('--label')
-                parser.add_argument('--role', choices=('master', 'backup', 'offline', 'swing', 'archive'))
+                parser.add_argument('--role', choices=DRIVE_ROLES)
                 parser.add_argument('--assignment', type=int)
             if entry.verb in ('assign', 'unassign'):
                 parser.add_argument('--end')

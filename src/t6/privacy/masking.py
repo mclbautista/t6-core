@@ -380,3 +380,21 @@ def _map_strings(value: object, path: str, fn: Callable[[str, str], str]) -> obj
         update = {name: _map_strings(getattr(value, name), _join(path, name), fn) for name in model_fields}
         return value.model_copy(update=update)
     return value
+
+
+def mask_reply(session: Session, value: Any, key: str = "") -> Any:
+    """A reply with every string masked. Identifier fields (`id`, `*_id`, `*_ids`, `telegram_key`) are kept as they are.
+
+    Raises ValueError when a registry name occurs inside an identifier: such a reply cannot be masked.
+    """
+    if key == "id" or key.endswith(("_id", "_ids")) or key == "telegram_key":
+        if session.leaks(value):
+            raise ValueError("Client name occurs in an identifier")
+        return value
+    if isinstance(value, str):
+        return session.mask(value).text
+    if isinstance(value, list):
+        return [mask_reply(session, item) for item in value]
+    if isinstance(value, dict):
+        return {name: mask_reply(session, item, name) for name, item in value.items()}
+    return value

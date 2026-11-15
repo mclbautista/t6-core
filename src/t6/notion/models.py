@@ -26,6 +26,25 @@ class ProjectsProperties:
     STUDIO: Final = "Studio"  # relation to Studios
 
 
+class ExternalLinksProperties:
+    """Notion property names on the retired External Links data source."""
+
+    NAME: Final = "Name"  # title
+    SYSTEM: Final = "System"  # select
+    KIND: Final = "Kind"  # select
+    EXTERNAL_ID: Final = "External ID"  # rich text
+    INTERNAL_ID: Final = "Internal ID"  # rich text
+    URL: Final = "URL"  # url
+    ACTIVE: Final = "Active"  # checkbox, set by people only
+    LAST_ACTIVITY: Final = "Last Activity"  # date
+    PROJECTS: Final = "Projects"  # relation
+    DELIVERABLES: Final = "Deliverables"  # relation
+    CONTACTS: Final = "Contacts"  # relation
+    BAYS: Final = "Bays"  # relation
+    STORAGE: Final = "Storage"  # relation
+    CAMERAS: Final = "Cameras"  # relation
+
+
 def project_from_page(page: JSON) -> Project:
     """Build a domain Project from a Projects page. Unknown properties are ignored."""
     props: JSON = page.get("properties") or {}

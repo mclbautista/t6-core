@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import TYPE_CHECKING, Iterable, Protocol, Sequence
 
+from t6.vocabulary import DRIVE_ROLES
+
 if TYPE_CHECKING:
     from t6.drives.importer import ReviewItem
 
@@ -285,6 +287,9 @@ class Role(enum.Enum):
     OFFLINE = "offline"
     SWING = "swing"
     ARCHIVE = "archive"
+
+
+assert tuple(role.value for role in Role) == DRIVE_ROLES, "Drive roles are listed once, in t6.vocabulary"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -1,8 +1,12 @@
 """Internal jobs in the t6 database, with the worker queue interface."""
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
+from contextlib import AbstractContextManager, nullcontext
+from dataclasses import dataclass
 import json
+import sqlite3
+from typing import Any
 from pathlib import Path
 import secrets
 import time
@@ -11,6 +15,31 @@ from t6.domain.events import JsonValue
 from t6.registry.sqlite import SqliteProjectRegistry
 from t6.server.queue import Claim, DEFAULT_MAX_ATTEMPTS, JobResult, Submitted, _require_name
 from t6.worker.client import QueueRejected, WorkerJob
+
+
+@dataclass(frozen=True)
+class JobRecord:
+    """One internal job as stored: its payload, its state and the lease it holds, if any."""
+    job_id: int
+    queue: str
+    kind: str
+    dedupe_key: str
+    payload: dict[str, JsonValue]
+    state: str
+    attempts: int
+    lease_token: str | None
+    lease_until: float | None
+    result: JsonValue
+
+
+_COLUMNS = "id, queue, kind, dedupe_key, payload, state, attempts, lease_token, lease_until, result"
+
+
+def _record(row: Any) -> JobRecord:
+    job_id, queue, kind, key, payload, state, attempts, token, until, result = row
+    return JobRecord(int(job_id), str(queue), str(kind), str(key), json.loads(str(payload)), str(state), int(attempts),
+                     None if token is None else str(token), None if until is None else float(until),
+                     json.loads(str(result)) if result else None)
 
 
 class InternalJobQueue:
@@ -22,19 +51,64 @@ class InternalJobQueue:
         self._clock = clock
         self._max_attempts = max_attempts
 
+    def _within(self, db: sqlite3.Connection | None) -> AbstractContextManager[sqlite3.Connection]:
+        """The caller's open transaction, or a new one: lets a caller change jobs and its own rows together."""
+        return self._db._transaction() if db is None else nullcontext(db)
+
+    def get(self, job_id: int, *, kind: str | None = None, queue: str | None = None,
+            db: sqlite3.Connection | None = None) -> JobRecord | None:
+        """One job by id (None when it is missing, or is not of the kind or queue asked for)."""
+        with self._within(db) as conn:
+            row = conn.execute(f"SELECT {_COLUMNS} FROM internal_jobs WHERE id = ? AND (? IS NULL OR kind = ?) AND (? IS NULL OR queue = ?)",
+                               (job_id, kind, kind, queue, queue)).fetchone()
+        return None if row is None else _record(row)
+
+    def find(self, kind: str, *, states: Iterable[str] | None = None, after: int | None = None,
+             payload: Mapping[str, str] | None = None, db: sqlite3.Connection | None = None) -> list[JobRecord]:
+        """Jobs of one kind in id order, narrowed by state, by id greater than `after`, and by top-level payload fields."""
+        wanted = tuple(states) if states is not None else None
+        clauses, args = ['kind = ?'], [kind]
+        if wanted is not None:
+            clauses.append('state IN (' + ', '.join('?' * len(wanted)) + ')')
+            args.extend(wanted)
+        if after is not None:
+            clauses.append('id > ?')
+            args.append(str(after))
+        for name, value in (payload or {}).items():
+            clauses.append("json_extract(payload, ?) = ?")
+            args.extend((f'$.{name}', value))
+        with self._within(db) as conn:
+            rows = conn.execute(f"SELECT {_COLUMNS} FROM internal_jobs WHERE " + ' AND '.join(clauses) + ' ORDER BY id', args).fetchall()
+        return [_record(row) for row in rows]
+
+    def finish(self, job_id: int, outcome: JsonValue, *, state: str = 'done', db: sqlite3.Connection | None = None) -> None:
+        """End a job with a result the caller stores as it is: `done` or `failed`; the lease is dropped."""
+        if state not in ('done', 'failed'):
+            raise ValueError('state must be done or failed')
+        with self._within(db) as conn:
+            conn.execute("UPDATE internal_jobs SET state = ?, result = ?, lease_token = NULL, lease_until = NULL WHERE id = ?",
+                         (state, json.dumps(outcome), job_id))
+
+    def settle(self, job_id: int, *, db: sqlite3.Connection | None = None) -> bool:
+        """Mark a dead job as dealt with; true only the first time, so a follow-up is written once however often it is looked for."""
+        with self._within(db) as conn:
+            return bool(conn.execute("UPDATE internal_jobs SET result = json_set(COALESCE(result, '{}'), '$.settled', json('true')) "
+                                     "WHERE id = ? AND state = 'dead' AND json_extract(COALESCE(result, '{}'), '$.settled') IS NULL", (job_id,)).rowcount)
+
     def submit(self, queue: str, kind: str, dedupe_key: str,
-               payload: Mapping[str, JsonValue] | None = None, run_at: float | None = None) -> Submitted:
+               payload: Mapping[str, JsonValue] | None = None, run_at: float | None = None,
+               db: sqlite3.Connection | None = None) -> Submitted:
         for value, name in ((queue, 'queue'), (kind, 'kind'), (dedupe_key, 'dedupe_key')):
             _require_name(value, name)
         now = self._clock()
-        with self._db._transaction() as db:
-            cursor = db.execute(
+        with self._within(db) as conn:
+            cursor = conn.execute(
                 "INSERT INTO internal_jobs (queue, kind, dedupe_key, payload, run_at, state, created_at) "
                 "VALUES (?, ?, ?, ?, ?, 'queued', ?) ON CONFLICT (kind, dedupe_key) DO NOTHING",
                 (queue, kind, dedupe_key, json.dumps(dict(payload or {})), now if run_at is None else run_at, now))
             if cursor.rowcount:
                 return Submitted(int(cursor.lastrowid or 0), True)
-            row = db.execute("SELECT id FROM internal_jobs WHERE kind = ? AND dedupe_key = ?", (kind, dedupe_key)).fetchone()
+            row = conn.execute("SELECT id FROM internal_jobs WHERE kind = ? AND dedupe_key = ?", (kind, dedupe_key)).fetchone()
             return Submitted(row[0], False)
 
     def claim(self, queue: str, lease_seconds: float = 60.0) -> Claim | None:

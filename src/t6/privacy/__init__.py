@@ -19,6 +19,7 @@ from t6.privacy.masking import (
     Registry,
     Session,
     Unresolved,
+    mask_reply,
     pseudonymize,
 )
 from t6.privacy.scrub import REDACTED, Scrubber, ScrubbingFormatter
@@ -43,5 +44,6 @@ __all__ = [
     "Unresolved",
     "Withheld",
     "pseudonymize",
+    "mask_reply",
     "withhold",
 ]

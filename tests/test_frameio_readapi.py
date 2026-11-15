@@ -20,7 +20,7 @@ from t6.frameio.readapi import ReadApi
 from t6.frameio.reads import FrameioReads
 from t6.frameio.requests import FileNotFound
 from t6.frameio.testing import FakeFrameio, StaticTokens
-from t6.media_links import StaticMediaLinks
+from t6.testing import StaticMediaLinks
 from t6.server.app import Request
 from t6.server.http import make_server
 from t6.worker.__main__ import ConfigError, read_api_server

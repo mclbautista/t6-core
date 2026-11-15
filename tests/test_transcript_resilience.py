@@ -16,6 +16,7 @@ from t6.transcribe.testing import FakeElevenLabs
 from t6.transcribe.worker import TranscribeQueue, TranscriptWorker
 from t6.worker.client import WorkerJob
 from t6.worker.runner import Worker
+from media_seed import link_media
 from test_person import MemoryRegistry
 from test_transcribe_folder import wav
 
@@ -67,15 +68,14 @@ class Flow:
         assert isinstance(project, Registered)
         self.project = project.project.id
         person = str(T6Id.mint(EntityKind.PERSON))
-        self.media = str(T6Id.mint(EntityKind.MEDIA_LOCATION))
         directory = tempfile.TemporaryDirectory()
         test.addCleanup(directory.cleanup)
         self.root = Path(directory.name) / 'audio'
         self.root.mkdir()
         self.formats = formats or ['srt', 'docx']
+        self.media = link_media(self.registry, self.project, '/Volumes/Studio/audio')
         with self.registry._transaction() as db:
             db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', NULL, 0, 1)", (person,))
-            db.execute("INSERT INTO media_locations VALUES (?, ?, ?, 'nas-path', ?, 'master', 1, NULL)", (self.media, self.project, self.project, '/Volumes/Studio/audio'))
         self.api = VerbAPI(People(self.registry, PreviewTokens('signing')), JobQueue(Path(directory.name) / 'queue'), {'person-secret': person, 'worker-secret': 'transcribe'}, lambda _: None, translate_enabled=True)
         flow = self
 
@@ -142,6 +142,27 @@ class DeadAndFailedJobTests(unittest.TestCase):
         self.assertEqual(again['outcome'], 'done')
         flow.request('/v1/transcribe/claim', {}, 'worker-secret')
         self.assertEqual(flow.transcript(identifier)['state'], 'running')
+    def test_an_expired_lease_is_reclaimed_through_the_api_and_only_the_new_holder_may_report(self) -> None:
+        flow = Flow(self, ['srt'])
+        wav(flow.root / 'one.wav')
+        now = [1_000_000.0]
+        flow.registry._clock = lambda: now[0]
+        identifier = flow.create(confirm=flow.preview()['token'])['result']['transcript_id']
+        first = flow.request('/v1/transcribe/claim', {}, 'worker-secret')['job']
+        self.assertEqual((first['kind'], first['attempt']), ('transcript.run', 1))
+        self.assertEqual(flow.request('/v1/transcribe/claim', {}, 'worker-secret')['job'], None)
+        now[0] += 301
+        second = flow.request('/v1/transcribe/claim', {}, 'worker-secret')['job']
+        self.assertEqual((second['job_id'], second['attempt']), (first['job_id'], 2))
+        self.assertNotEqual(second['token'], first['token'])
+        summary = {'clips_done': 1, 'failed': 0, 'skipped': 0, 'audio_hours': 0.0, 'estimated_cost': 0.0}
+        stale = flow.api(Request('POST', '/v1/transcribe/report', {'Authorization': 'Bearer worker-secret'}, json.dumps({'job_id': first['job_id'], 'token': first['token'], 'kind': 'complete', 'data': summary}).encode()))
+        self.assertEqual(stale.status, 409)
+        self.assertEqual(flow.transcript(identifier)['state'], 'running')
+        flow.request('/v1/transcribe/report', {'job_id': second['job_id'], 'token': second['token'], 'kind': 'complete', 'data': summary}, 'worker-secret')
+        self.assertEqual(flow.transcript(identifier)['state'], 'done')
+        self.assertEqual([e['action'] for e in flow.transcript(identifier)['history']], ['created'])
+
     def kill_run(self, flow: Flow, now: list[float]) -> None:
         """Let a run job's lease expire until it is dead, without the claim-time sweep."""
         from t6.worker.internal_queue import InternalJobQueue
@@ -181,6 +202,32 @@ class DeadAndFailedJobTests(unittest.TestCase):
             self.assertFalse(store.is_running(transcript=identifier, _db=db))
             self.assertFalse(store.is_running(media=flow.media, _db=db))
         self.assertEqual([e['action'] for e in flow.transcript(identifier)['history']], ['created', 'failed'])
+        self.assertEqual([e.action for e in flow.registry.activity(flow.project)].count('transcript_failed'), 1)
+
+    def test_a_translate_job_that_ends_dead_gets_one_failed_entry_however_often_it_is_looked_for(self) -> None:
+        from t6.transcript import TranscriptStore
+        from t6.worker.internal_queue import InternalJobQueue
+        flow = Flow(self, ['srt'])
+        wav(flow.root / 'one.wav')
+        flow.client.outcomes.append(WORDS)
+        identifier = flow.transcribe()
+        now = [1_000_000.0]
+        flow.registry._clock = lambda: now[0]
+        queue = InternalJobQueue(flow.registry, clock=flow.registry._clock)
+        queue.submit('transcribe', 'transcript.translate.run', 'dead-translate', {'transcript': identifier, 'actor': 'setup', 'snapshot': 'a' * 64})
+        for _ in range(6):
+            queue.claim('transcribe', 300)
+            now[0] += 400
+        self.assertEqual([e['action'] for e in flow.transcript(identifier)['history']], ['created'])
+        store = TranscriptStore(flow.registry)
+        with flow.registry._transaction() as db:
+            self.assertFalse(store.is_running(transcript=identifier, _db=db))
+            self.assertFalse(store.is_running(transcript=identifier, _db=db))
+        flow.request('/v1/transcribe/claim', {}, 'worker-secret')
+        flow.request('/v1/transcribe/claim', {}, 'worker-secret')
+        result = flow.transcript(identifier)
+        self.assertEqual([e['action'] for e in result['history']], ['created', 'failed'])
+        self.assertEqual(result['state'], 'done')
         self.assertEqual([e.action for e in flow.registry.activity(flow.project)].count('transcript_failed'), 1)
 
     def test_job_that_fails_for_any_reason_marks_the_transcript_failed(self) -> None:
@@ -236,6 +283,38 @@ class IdempotencyTests(unittest.TestCase):
         retry = flow.request('/v1/transcript/create', {'media': flow.media, 'formats': flow.formats, 'confirm': token}, headers={'Idempotency-Key': 'k2'})
         self.assertEqual(retry, first)
         self.assertEqual(flow.create(confirm=token)['rule'], 'token_used')
+        with flow.registry._transaction() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM internal_jobs WHERE kind='transcript.run'").fetchone()[0], 1)
+
+    def test_a_crash_between_the_job_insert_and_the_remembered_key_leaves_no_job_behind(self) -> None:
+        flow = Flow(self)
+        wav(flow.root / 'one.wav')
+        with flow.registry._transaction() as db:
+            db.execute("CREATE TRIGGER crash BEFORE INSERT ON verb_requests BEGIN SELECT RAISE(ABORT, 'synthetic crash'); END")
+        with self.assertRaises(Exception):
+            flow.create(idempotency_key='k-crash')
+        with flow.registry._transaction() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM internal_jobs WHERE kind='transcript.preview'").fetchone()[0], 0)
+            db.execute('DROP TRIGGER crash')
+        first = flow.create(idempotency_key='k-crash')
+        self.assertEqual(flow.create(idempotency_key='k-crash'), first)
+        with flow.registry._transaction() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM internal_jobs WHERE kind='transcript.preview'").fetchone()[0], 1)
+
+    def test_a_confirm_that_crashed_before_its_key_was_kept_can_be_retried_with_the_same_token(self) -> None:
+        flow = Flow(self)
+        wav(flow.root / 'one.wav')
+        token = flow.preview()['token']
+        with flow.registry._transaction() as db:
+            db.execute("CREATE TRIGGER crash BEFORE INSERT ON verb_requests BEGIN SELECT RAISE(ABORT, 'synthetic crash'); END")
+        with self.assertRaises(Exception):
+            flow.create(confirm=token, idempotency_key='k-crash2')
+        with flow.registry._transaction() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM internal_jobs WHERE kind='transcript.run'").fetchone()[0], 0)
+            db.execute('DROP TRIGGER crash')
+        retry = flow.create(confirm=token, idempotency_key='k-crash2')
+        self.assertEqual(retry['outcome'], 'done')
+        self.assertEqual(flow.create(confirm=token, idempotency_key='k-crash2'), retry)
         with flow.registry._transaction() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM internal_jobs WHERE kind='transcript.run'").fetchone()[0], 1)
 

@@ -6,7 +6,8 @@ import sqlite3
 import unittest
 
 from t6.domain import ExternalRef
-from t6.media_links import MediaLink, StaticMediaLinks
+from t6.media_links import MediaLink
+from t6.testing import StaticMediaLinks
 from t6.resolve import (
     SCHEMAS,
     ProjectServer,

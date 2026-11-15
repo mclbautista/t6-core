@@ -5,36 +5,20 @@ locations replace it). The migration still has to read its rows once to turn
 them into Media locations or into the review list, so this module holds that
 read and nothing else. It never writes to Notion and it never builds a domain
 object from a row; it hands the raw fields to `MediaStore.migrate`. Delete this
-module when the migration has run and the database is archived.
+module when the migration has run and the database is archived. The property
+names it reads (`ExternalLinksProperties`) stay in `t6.notion.models`, which the
+registry migration and the Notion test fakes use too.
 """
 
 from __future__ import annotations
 
-from typing import Any, Final
+from typing import Any
 
 from t6.notion import codec
+from t6.notion.models import ExternalLinksProperties
 from t6.notion.sync import NotionClient
 
 JSON = dict[str, Any]
-
-
-class ExternalLinksProperties:
-    """Notion property names on the retired External Links data source."""
-
-    NAME: Final = "Name"  # title
-    SYSTEM: Final = "System"  # select
-    KIND: Final = "Kind"  # select
-    EXTERNAL_ID: Final = "External ID"  # rich text
-    INTERNAL_ID: Final = "Internal ID"  # rich text
-    URL: Final = "URL"  # url
-    ACTIVE: Final = "Active"  # checkbox, set by people only
-    LAST_ACTIVITY: Final = "Last Activity"  # date
-    PROJECTS: Final = "Projects"  # relation
-    DELIVERABLES: Final = "Deliverables"  # relation
-    CONTACTS: Final = "Contacts"  # relation
-    BAYS: Final = "Bays"  # relation
-    STORAGE: Final = "Storage"  # relation
-    CAMERAS: Final = "Cameras"  # relation
 
 
 _P = ExternalLinksProperties

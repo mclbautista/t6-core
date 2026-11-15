@@ -6,22 +6,24 @@ from contextlib import nullcontext
 import hashlib
 import json
 import re
-import secrets
 from typing import Any
 
+from t6 import verbflow
 from t6.ids import EntityKind, T6Id
 from t6.media_links import MediaLink
 from t6.preview import PreviewTokens
 from t6.registry.sqlite import SqliteProjectRegistry
 from t6.registry.core import normalize_page_id
-from t6.verbs import Done, Outcome, Refused
+from t6.verbs import Outcome, Refused
+from t6.vocabulary import MEDIA_KINDS, MEDIA_ROLES
 
-KINDS = {'drive', 'nas-path', 'frameio-project', 'frameio-folder', 'resolve-project', 'timeline', 'instagantt-project'}
+KINDS = set(MEDIA_KINDS)
 # Kinds whose `ref` one Project holds at a time: the rule name and what the Refused reason calls it.
 ONE_PROJECT_KINDS = {'frameio-project': ('frameio_project', 'Frame.io project'), 'instagantt-project': ('instagantt_project', 'Instagantt project')}
 # A Frame.io project ID: one token of letters, digits, `-` and `_` (real ones are UUIDs). Trimmed before the check.
 _FRAMEIO_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}')
-ROLES = {'master', 'backup', 'review', 'working', 'frameio-project'}
+_MIGRATE_KEY = 'Actor and nonblank idempotency key are required'
+ROLES = set(MEDIA_ROLES)
 
 
 # What the retired External Links rows called their System and Kind, and the Media location kind each became.
@@ -64,26 +66,15 @@ class MediaStore:
                 return Refused(rule='ref', reason='Reference must be a T6 ID of the expected kind')
         if verb == 'unlink' and not isinstance(values.get('media'), str):
             return Refused(rule='input', reason='A media location is required')
-        if (idempotency_key is not None and not idempotency_key.strip()) or (confirm and not idempotency_key):
-            return Refused(rule='idempotency_key', reason='A nonblank idempotency key is required')
-        key = idempotency_key or secrets.token_hex(16)
-        inputs = {**values, 'idempotency_key': key}
         name = noun + ' ' + verb
-        fingerprint = json.dumps({'verb': name, 'actor': actor, **inputs}, sort_keys=True, separators=(',', ':'))
-        nonce = self.tokens.verify(confirm, name, actor, inputs) if confirm else None
-        if isinstance(nonce, Refused):
-            return nonce
+        request = verbflow.begin(self.tokens, name, actor, values, idempotency_key, confirm)
+        if isinstance(request, Refused):
+            return request
+        key, nonce = request.key, request.nonce
         with self.registry._transaction() as db:
-            if nonce and db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce=?', (nonce,)).fetchone():
-                return Refused(rule='token_used', reason='Preview token has already been used')
-            previous = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key=?', (key,)).fetchone()
-            if previous and previous[0] != fingerprint:
-                return Refused(rule='idempotency_key', reason='Idempotency key was used for a different request')
-            if previous:
-                if nonce:
-                    db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
-                    return Done(result=json.loads(previous[1]))
-                return self.tokens.create(name, actor, inputs, json.loads(previous[1]))
+            settled = verbflow.settle(db, self.tokens, request)
+            if settled:
+                return settled
             if verb == 'link':
                 owner = values['owner']
                 project = db.execute('SELECT id FROM projects WHERE id=? UNION ALL SELECT project_id FROM deliverables WHERE id=?', (owner, owner)).fetchone()
@@ -105,8 +96,7 @@ class MediaStore:
                     return Refused(rule='media', reason='Media location not found')
                 plan = {'media_id': values['media'], 'project_id': row[0], 'idempotency_key': key}
             if not nonce:
-                preview = self.tokens.create(name, actor, inputs, plan)
-                preview_nonce = self.tokens.verify(preview.token, name, actor, inputs)
+                preview, preview_nonce = verbflow.issue(self.tokens, request, plan)
                 db.execute('INSERT INTO media_previews VALUES (?, ?)', (preview_nonce, json.dumps({'plan': plan, 'state': list(existing) if verb == 'link' and existing else list(row) if verb == 'unlink' else None})))
                 return preview
             saved = db.execute('SELECT snapshot FROM media_previews WHERE nonce=?', (nonce,)).fetchone()
@@ -128,9 +118,7 @@ class MediaStore:
             db.execute('INSERT INTO media_history (media_id, action, actor, at) VALUES (?, ?, ?, ?)', (plan['media_id'], verb, actor, now))
             audit = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, NULL, ?)', (plan['media_id'], name.replace(' ', '_'), actor, now, json.dumps(plan)))
             db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (plan['project_id'], plan['media_id'], now, actor, name.replace(' ', '_'), name, audit.lastrowid))
-            db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
-            db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(plan)))
-            return Done(result=plan)
+            return verbflow.finish(db, request, plan)
 
     def frameio_project_write(self, verb: str, values: dict[str, Any], *, actor: str, idempotency_key: str | None = None, confirm: str | None = None) -> Outcome:
         """`frameio project link` and `unlink`: the Media location rules for one Frame.io project of one Project."""
@@ -237,40 +225,27 @@ class MediaStore:
 
     def migrate_write(self, rows: builtins.list[dict[str, Any]], *, actor: str,
                       idempotency_key: str | None, confirm: str | None) -> Outcome:
-        if not actor or (confirm and not idempotency_key) or (idempotency_key is not None and not idempotency_key.strip()):
-            return Refused(rule='idempotency_key', reason='Actor and nonblank idempotency key are required')
-        key = idempotency_key or secrets.token_hex(16)
-        inputs = {'idempotency_key': key, 'rows': sorted(rows, key=lambda r: r['page_id'])}
-        name = 'admin media migrate'
-        fingerprint = json.dumps({'verb': name, 'actor': actor, **inputs}, sort_keys=True, separators=(',', ':'))
-        nonce = self.tokens.verify(confirm, name, actor, inputs) if confirm else None
-        if isinstance(nonce, Refused):
-            return nonce
+        if not actor:
+            return Refused(rule='idempotency_key', reason=_MIGRATE_KEY)
+        request = verbflow.begin(self.tokens, 'admin media migrate', actor, {'rows': sorted(rows, key=lambda r: r['page_id'])}, idempotency_key, confirm, key_reason=_MIGRATE_KEY)
+        if isinstance(request, Refused):
+            return request
+        key, nonce = request.key, request.nonce
         with self.registry._transaction() as db:
-            if nonce and db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce=?', (nonce,)).fetchone():
-                return Refused(rule='token_used', reason='Preview token has already been used')
-            previous = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key=?', (key,)).fetchone()
-            if previous and previous[0] != fingerprint:
-                return Refused(rule='idempotency_key', reason='Idempotency key was used for another request')
-            if previous:
-                if nonce:
-                    db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
-                    return Done(result=json.loads(previous[1]))
-                return self.tokens.create(name, actor, inputs, json.loads(previous[1]))
+            settled = verbflow.settle(db, self.tokens, request, reused='Idempotency key was used for another request')
+            if settled:
+                return settled
             report = self.migrate(rows, actor=actor, _db=db)
             if not nonce:
                 plan = {**report, 'idempotency_key': key}
-                preview = self.tokens.create(name, actor, inputs, plan)
-                preview_nonce = self.tokens.verify(preview.token, name, actor, inputs)
+                preview, preview_nonce = verbflow.issue(self.tokens, request, plan)
                 db.execute('INSERT INTO media_previews VALUES (?, ?)', (preview_nonce, report['digest']))
                 return preview
             saved = db.execute('SELECT snapshot FROM media_previews WHERE nonce=?', (nonce,)).fetchone()
             if not saved or saved[0] != report['digest']:
                 return Refused(rule='migration_changed', reason='External Links or bindings changed since preview')
             result = {**self.migrate(rows, actor=actor, apply=True, digest=saved[0], _db=db), 'idempotency_key': key}
-            db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
-            db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(result)))
-            return Done(result=result)
+            return verbflow.finish(db, request, result)
 
 
 def active_links(registry: SqliteProjectRegistry, kind: str, role: str | None = None) -> tuple[MediaLink, ...]:

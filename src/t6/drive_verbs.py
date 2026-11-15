@@ -13,18 +13,18 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import secrets
 from collections.abc import Callable
 from datetime import date, datetime
 from typing import Any, NamedTuple
 
+from t6 import verbflow
 from t6.domain.studio_time import MANILA
 from t6.drives import Assignment, CustodyEvent, CustodyKind, DriveStore, Party, PartyKind, Ref, Role, open_duplicate
 from t6.drives.sqlite import SqliteDriveStore, audit_json
 from t6.preview import PreviewTokens
 from t6.registry.core import normalize_page_id
 from t6.registry.sqlite import SqliteProjectRegistry
-from t6.verbs import Ambiguous, Done, Outcome, Refused
+from t6.verbs import Ambiguous, Outcome, Refused
 
 WRITE_VERBS = ('receive', 'release', 'return', 'retire', 'assign', 'unassign', 'swing_assign', 'swing_unassign', 'swing_return')
 _KINDS = {'receive': CustodyKind.RECEIVED, 'release': CustodyKind.RELEASED, 'return': CustodyKind.RETURNED, 'retire': CustodyKind.RETIRED}
@@ -66,38 +66,29 @@ class DriveVerbs:
               confirm: str | None = None) -> Outcome:
         if not actor.strip() or verb not in WRITE_VERBS:
             return Refused(rule='input', reason='A valid actor and verb are required')
-        if (idempotency_key is not None and not idempotency_key.strip()) or (confirm and not idempotency_key):
-            return Refused(rule='idempotency_key', reason='A nonblank idempotency key is required')
+        refusal = verbflow.check_key(idempotency_key, confirm)
+        if refusal:
+            return refusal
         invalid = self._validate(verb, values)
         if invalid:
             return invalid
-        key = idempotency_key or secrets.token_hex(16)
-        inputs = {**values, 'idempotency_key': key}
         name = verb_name(verb)
         action = name.replace(' ', '_')
-        fingerprint = json.dumps({'verb': name, 'actor': actor, **inputs}, sort_keys=True, separators=(',', ':'))
-        nonce = self.tokens.verify(confirm, name, actor, inputs) if confirm else None
-        if isinstance(nonce, Refused):
-            return nonce
+        request = verbflow.begin(self.tokens, name, actor, values, idempotency_key, confirm)
+        if isinstance(request, Refused):
+            return request
+        key, nonce = request.key, request.nonce
         with self.registry._transaction() as db:
             store = self.store.within(db)
-            if nonce and db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce=?', (nonce,)).fetchone():
-                return Refused(rule='token_used', reason='Preview token has already been used')
-            previous = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key=?', (key,)).fetchone()
-            if previous and previous[0] != fingerprint:
-                return Refused(rule='idempotency_key', reason='Idempotency key was used for a different request')
-            if previous:
-                if nonce:
-                    db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
-                    return Done(result=json.loads(previous[1]))
-                return self.tokens.create(name, actor, inputs, json.loads(previous[1]))
+            settled = verbflow.settle(db, self.tokens, request)
+            if settled:
+                return settled
             planned = self._plan(store, verb, values, key, actor)
             if isinstance(planned, (Refused, Ambiguous)):
                 return planned
             plan, state, apply = planned
             if not nonce:
-                preview = self.tokens.create(name, actor, inputs, plan)
-                preview_nonce = self.tokens.verify(preview.token, name, actor, inputs)
+                preview, preview_nonce = verbflow.issue(self.tokens, request, plan)
                 store.save_preview(str(preview_nonce), json.dumps({'plan': plan, 'state': state}))
                 return preview
             saved = store.preview(nonce)
@@ -112,9 +103,7 @@ class DriveVerbs:
                                    (drive_id, action, actor, now, json.dumps(before), json.dumps(after)))
                 db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
                            (plan.get('project_id') or drive_id, drive_id, now, actor, action, name, audit.lastrowid))
-            db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
-            db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(plan)))
-            return Done(result=plan)
+            return verbflow.finish(db, request, plan)
 
     def _validate(self, verb: str, values: dict[str, Any]) -> Refused | None:
         if verb.startswith('swing_'):

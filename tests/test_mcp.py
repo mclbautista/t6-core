@@ -1,7 +1,21 @@
 """Read-only MCP tools follow the command catalogue."""
 import unittest
 
+from media_seed import link_media
 from t6.mcp import MCPServer
+from t6.registry import Registered
+from t6.registry.sqlite import SqliteProjectRegistry
+
+
+def seeded_project(registry: SqliteProjectRegistry) -> str:
+    """A Project whose NAS Media location (linked through `media link`) and one Activity entry name a client."""
+    project = registry.register(actor='setup', idempotency_key='project')
+    assert isinstance(project, Registered)
+    link_media(registry, project.project.id, 'Client Corp')
+    with registry._transaction() as db:
+        audit = db.execute("INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, 'note', 'setup', 5, NULL, '{}')", (project.project.id,))
+        db.execute("INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, 5, 'setup', 'note', 'Client Corp visit', ?)", (project.project.id, project.project.id, audit.lastrowid))
+    return str(project.project.id)
 
 
 class MCPTests(unittest.TestCase):
@@ -29,13 +43,12 @@ class MCPTests(unittest.TestCase):
         from t6.registry.sqlite import SqliteProjectRegistry
         from t6.server.app import Request
         from t6.server.verbs import VerbAPI
-        from t6.verbs import Done
-        from unittest.mock import patch
 
         import tempfile
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         registry = SqliteProjectRegistry(tmp.name + '/registry')
+        project = seeded_project(registry)
         operator = 't6n_' + '1' * 32
         with registry._transaction() as db:
             db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', NULL, 0, 1)", (operator,))
@@ -43,12 +56,11 @@ class MCPTests(unittest.TestCase):
         api = VerbAPI(People(registry, PreviewTokens('test')), None,
                       {'reader-secret': 'mcp', 'operator-secret': operator}, lambda _: None,
                       privacy_registry=Registry(people=[Person(name='Client Corp')]))
-        with patch('t6.server.verbs.invoke', return_value=Done(result={'locations': [{'label': 'Client Corp'}]})):
-            def call(secret: str) -> str:
-                response = api(Request('POST', '/v1/media/list', {'Authorization': 'Bearer ' + secret, 'X-T6-MCP': '1'}, json.dumps({'owner': 't6p_test'}).encode()))
-                return json.dumps(response.body)
-            self.assertNotIn('Client Corp', call('reader-secret'))
-            self.assertIn('Client Corp', call('operator-secret'))
+        def call(secret: str) -> str:
+            response = api(Request('POST', '/v1/media/list', {'Authorization': 'Bearer ' + secret, 'X-T6-MCP': '1'}, json.dumps({'owner': project}).encode()))
+            return json.dumps(response.body)
+        self.assertNotIn('Client Corp', call('reader-secret'))
+        self.assertIn('Client Corp', call('operator-secret'))
 
     TOOL_NAMES = [
         'booking__get', 'booking__list', 'camera__get', 'concern__for-message', 'concern__get', 'deliverable__bangko',
@@ -71,17 +83,15 @@ class MCPTests(unittest.TestCase):
     def test_project_activity_read_is_masked_for_the_mcp_service_and_a_non_operator_person(self) -> None:
         import json
         import tempfile
-        from unittest.mock import patch
         from t6.person import People
         from t6.preview import PreviewTokens
         from t6.privacy import Person, Registry
-        from t6.registry.sqlite import SqliteProjectRegistry
         from t6.server.app import Request
         from t6.server.verbs import VerbAPI
-        from t6.verbs import Done
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         registry = SqliteProjectRegistry(tmp.name + '/registry')
+        project = seeded_project(registry)
         operator, staff = ('t6n_' + c * 32 for c in '15')
         with registry._transaction() as db:
             db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', NULL, 0, 1)", (operator,))
@@ -90,8 +100,8 @@ class MCPTests(unittest.TestCase):
         api = VerbAPI(People(registry, PreviewTokens('test')), None,
                       {'mcp-secret': 'mcp', 'operator-secret': operator, 'staff-secret': staff}, lambda _: None,
                       privacy_registry=Registry(people=[Person(name='Client Corp')]))
-        for path, body in (('/v1/project/activity', {'project': 'P-1'}),):
-            with self.subTest(path), patch('t6.server.verbs.invoke', return_value=Done(result={'items': [{'summary': 'Client Corp'}]})):
+        for path, body in (('/v1/project/activity', {'project': project}),):
+            with self.subTest(path):
                 def call(secret: str, header: bool, path: str = path, body: dict[str, str] = body) -> str:
                     headers = {'Authorization': 'Bearer ' + secret, **({'X-T6-MCP': '1'} if header else {})}
                     return json.dumps(api(Request('POST', path, headers, json.dumps(body).encode())).body)
@@ -138,17 +148,15 @@ class MCPTests(unittest.TestCase):
     def test_mcp_service_is_masked_without_the_mcp_header(self) -> None:
         import json
         import tempfile
-        from unittest.mock import patch
         from t6.person import People
         from t6.preview import PreviewTokens
         from t6.privacy import Person, Registry
-        from t6.registry.sqlite import SqliteProjectRegistry
         from t6.server.app import Request
         from t6.server.verbs import VerbAPI
-        from t6.verbs import Done
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         registry = SqliteProjectRegistry(tmp.name + '/registry')
+        project = seeded_project(registry)
         operator = 't6n_' + '1' * 32
         with registry._transaction() as db:
             db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', NULL, 0, 1)", (operator,))
@@ -156,14 +164,13 @@ class MCPTests(unittest.TestCase):
         api = VerbAPI(People(registry, PreviewTokens('test'), service_permissions={'mcp': frozenset({'operator'})}), None,
                       {'mcp-secret': 'mcp', 'operator-secret': operator}, lambda _: None,
                       privacy_registry=Registry(people=[Person(name='Client Corp')]))
-        with patch('t6.server.verbs.invoke', return_value=Done(result={'locations': [{'label': 'Client Corp'}]})):
-            def call(secret: str, headers: dict[str, str]) -> str:
-                response = api(Request('POST', '/v1/media/list', {'Authorization': 'Bearer ' + secret, **headers}, json.dumps({'owner': 't6p_test'}).encode()))
-                return json.dumps(response.body)
-            self.assertNotIn('Client Corp', call('mcp-secret', {}))
-            self.assertNotIn('Client Corp', call('mcp-secret', {'X-T6-MCP': '1'}))
-            self.assertIn('Client Corp', call('operator-secret', {}))
-            self.assertIn('Client Corp', call('operator-secret', {'X-T6-MCP': '1'}))
+        def call(secret: str, headers: dict[str, str]) -> str:
+            response = api(Request('POST', '/v1/media/list', {'Authorization': 'Bearer ' + secret, **headers}, json.dumps({'owner': project}).encode()))
+            return json.dumps(response.body)
+        self.assertNotIn('Client Corp', call('mcp-secret', {}))
+        self.assertNotIn('Client Corp', call('mcp-secret', {'X-T6-MCP': '1'}))
+        self.assertIn('Client Corp', call('operator-secret', {}))
+        self.assertIn('Client Corp', call('operator-secret', {'X-T6-MCP': '1'}))
 
     def test_server_reports_the_package_version(self) -> None:
         from unittest.mock import patch
@@ -182,17 +189,14 @@ class MCPTests(unittest.TestCase):
     def test_missing_privacy_registry_refuses_mcp_read(self) -> None:
         import json
         import tempfile
-        from unittest.mock import patch
         from t6.person import People
         from t6.preview import PreviewTokens
-        from t6.registry.sqlite import SqliteProjectRegistry
         from t6.server.app import Request
         from t6.server.verbs import VerbAPI
-        from t6.verbs import Done
 
         with tempfile.TemporaryDirectory() as directory:
-            api = VerbAPI(People(SqliteProjectRegistry(directory + '/db'), PreviewTokens('test')),
-                          None, {'secret': 'mcp'}, lambda _: None)
-            with patch('t6.server.verbs.invoke', return_value=Done(result={'locations': []})):
-                response = api(Request('POST', '/v1/media/list', {'Authorization': 'Bearer secret', 'X-T6-MCP': '1'}, json.dumps({'owner': 't6p_test'}).encode()))
+            registry = SqliteProjectRegistry(directory + '/db')
+            project = seeded_project(registry)
+            api = VerbAPI(People(registry, PreviewTokens('test')), None, {'secret': 'mcp'}, lambda _: None)
+            response = api(Request('POST', '/v1/media/list', {'Authorization': 'Bearer secret', 'X-T6-MCP': '1'}, json.dumps({'owner': project}).encode()))
             self.assertEqual(response.body['rule'], 'masking')

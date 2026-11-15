@@ -226,10 +226,26 @@ summary (clips done, failed and skipped, audio hours, estimated cost). It
 keeps no audio and no transcript text. Running again on the same Media location
 reuses the Transcript.
 
+- **NAS share**: a mounted network volume (`/Volumes/<name>`) that the transcribe
+  worker may read, named in that worker's own configuration. A folder outside
+  every NAS share is refused (`outside_shares`) before anything is read.
 - **Transcript history**: the append-only entries of a Transcript: created,
   re-run, failed, translated and speakers changed, each with actor and time. A
   speakers entry keeps the speaker map as given. Each entry shows in Activity
   for the Project.
+
+## Delivery links and the staff role
+
+A **Delivery link** is how a Delivery reaches the client: its carrier, one of a
+Drive, a Frame.io share or a transfer link, kept with its reference. When the
+carrier is a Frame.io share, a client's view of it is recorded in the Project's
+Activity.
+
+The **staff role** is the role table's lowest write role: an active Person whose
+kind is staff. Clients, vendors, inactive Persons, services and internal actors
+do not have it. Verbs that need no named permission use it (`transcript create`,
+`transcript speakers`, `transcript translate`, `frameio project link`); the
+`reader` role is for reads only, never for a write.
 
 ## Contact matching
 
@@ -388,7 +404,7 @@ fields, read from Notion) and `t6.registry` (identity).
 - **Classify**: to decide an unclassified Project is in or out of rotation.
   Only a person decides; Status never does.
 - **Legacy reference**: a page ID that still names a Project in a Job Order,
-  Deliverable, External Link, Drive Assignment or event. It resolves to the
+  Deliverable, Drive Assignment or event. It resolves to the
   Project through its binding, including a replaced page's binding.
 - **Projection**: the registry-owned values a Notion page displays: T6 ID,
   Project Code and Rotation. Notion shows them; it does not own them. An edit

@@ -100,9 +100,8 @@ class ProjectStartStore:
 
     def _job(self, job_id: int, field: str) -> Any:
         """One field of a Project Start job's payload; None for any other job."""
-        with self.registry._transaction() as db:
-            row = db.execute('SELECT payload FROM internal_jobs WHERE id=? AND kind=?', (job_id, JOB_KIND)).fetchone()
-        return json.loads(row[0]).get(field) if row else None
+        job = self.queue.get(job_id, kind=JOB_KIND)
+        return job.payload.get(field) if job else None
 
     # The job, worker side
 

@@ -48,6 +48,7 @@ class TranscriptVerbTests(unittest.TestCase):
         from t6.server.app import Request
         from t6.server.queue import JobQueue
         from t6.server.verbs import VerbAPI
+        from media_seed import link_media
         from test_person import MemoryRegistry
         registry = MemoryRegistry()
         self.addCleanup(registry.db.close)
@@ -55,10 +56,9 @@ class TranscriptVerbTests(unittest.TestCase):
         project = registry.register(actor='setup', idempotency_key='project')
         assert isinstance(project, Registered)
         person = str(T6Id.mint(EntityKind.PERSON))
-        media = str(T6Id.mint(EntityKind.MEDIA_LOCATION))
         with registry._transaction() as db:
             db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', NULL, 0, 1)", (person,))
-            db.execute("INSERT INTO media_locations VALUES (?, ?, ?, 'nas-path', '/synthetic', 'master', 1, NULL)", (media, project.project.id, project.project.id))
+        media = link_media(registry, project.project.id, '/synthetic')
         with tempfile.TemporaryDirectory() as directory:
             api = VerbAPI(People(registry, PreviewTokens('signing')), JobQueue(Path(directory) / 'queue'), {'secret': person}, lambda _: None)
             response: Any = api(Request('POST', '/v1/transcript/create', {'Authorization': 'Bearer secret'}, json.dumps({'media': media}).encode()))
@@ -79,6 +79,7 @@ class TranscriptVerbTests(unittest.TestCase):
         from t6.server.app import Request
         from t6.server.queue import JobQueue
         from t6.server.verbs import VerbAPI
+        from media_seed import link_media
         from test_person import MemoryRegistry
         registry = MemoryRegistry()
         self.addCleanup(registry.db.close)
@@ -86,10 +87,9 @@ class TranscriptVerbTests(unittest.TestCase):
         project = registry.register(actor='setup', idempotency_key='project')
         assert isinstance(project, Registered)
         person = str(T6Id.mint(EntityKind.PERSON))
-        media = str(T6Id.mint(EntityKind.MEDIA_LOCATION))
         with registry._transaction() as db:
             db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', NULL, 0, 1)", (person,))
-            db.execute("INSERT INTO media_locations VALUES (?, ?, ?, 'nas-path', '/synthetic', 'master', 1, NULL)", (media, project.project.id, project.project.id))
+        media = link_media(registry, project.project.id, '/synthetic')
         with tempfile.TemporaryDirectory() as directory:
             api = VerbAPI(People(registry, PreviewTokens('signing')), JobQueue(Path(directory) / 'queue'), {'person-secret': person, 'worker-secret': 'transcribe'}, lambda _: None)
             def call(path: str, data: dict, secret: str = 'person-secret') -> dict:  # type: ignore[type-arg]
@@ -121,6 +121,7 @@ class TranscriptVerbTests(unittest.TestCase):
         from t6.transcribe.testing import FakeElevenLabs
         from t6.transcribe.worker import TranscribeQueue, TranscriptWorker
         from t6.worker.runner import Worker
+        from media_seed import link_media
         from test_person import MemoryRegistry
         from test_transcribe_folder import wav
         registry = MemoryRegistry()
@@ -129,14 +130,13 @@ class TranscriptVerbTests(unittest.TestCase):
         project = registry.register(actor='setup', idempotency_key='project')
         assert isinstance(project, Registered)
         person = str(T6Id.mint(EntityKind.PERSON))
-        media = str(T6Id.mint(EntityKind.MEDIA_LOCATION))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'audio'
             root.mkdir()
             wav(root / 'one.WAV')
             with registry._transaction() as db:
                 db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', NULL, 0, 1)", (person,))
-                db.execute("INSERT INTO media_locations VALUES (?, ?, ?, 'nas-path', ?, 'master', 1, NULL)", (media, project.project.id, project.project.id, '/Volumes/Studio/audio'))
+            media = link_media(registry, project.project.id, '/Volumes/Studio/audio')
             api = VerbAPI(People(registry, PreviewTokens('signing')), JobQueue(Path(directory) / 'queue'), {'person-secret': person, 'worker-secret': 'transcribe'}, lambda _: None)
             class InProcess:
                 def send(self, method: str, path: str, headers: Any, body: bytes) -> tuple[int, dict[str, Any]]:

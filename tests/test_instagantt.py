@@ -5,7 +5,8 @@ from datetime import date
 from pathlib import Path
 
 from t6.instagantt import InstaganttError, Task, link_timelines, parse_export, read_export
-from t6.media_links import MediaLink, StaticMediaLinks
+from t6.media_links import MediaLink
+from t6.testing import StaticMediaLinks
 
 FIXTURE = Path(__file__).parent / "fixtures" / "instagantt_export.csv"
 
