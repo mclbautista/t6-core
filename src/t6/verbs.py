@@ -596,6 +596,98 @@ def concern_get(inputs: ConcernGetInput, open_notion: Callable[..., Any]) -> Out
     return Done(result={'concern': record}) if record else Refused(rule='concern', reason='Concern not found')
 
 
+class PackagePrepareInput(BaseModel):
+    deliverable: str
+    kind: str
+    to: str
+    recipient: str
+    data_sources: Path
+    client_spec: str | None = None
+    note: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class PackageCheckInput(BaseModel):
+    package: str
+    item: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class PackageHandoffInput(BaseModel):
+    package: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class PackageAcceptInput(PackageHandoffInput):
+    pass
+
+
+class PackageRejectInput(PackageHandoffInput):
+    reason: str = ''
+
+
+class PackageListInput(BaseModel):
+    missing: bool = False
+
+
+class PackageGetInput(BaseModel):
+    package: str
+
+
+class PackageOutput(BaseModel):
+    package_id: str
+    project_id: str
+    action: str
+    idempotency_key: str
+
+
+class PackageListOutput(BaseModel):
+    packages: list[dict[str, Any]]
+
+
+class PackageGetOutput(BaseModel):
+    package: dict[str, Any]
+
+
+def package_write(inputs: PackagePrepareInput | PackageCheckInput | PackageHandoffInput | PackageAcceptInput | PackageRejectInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.package import PackageStore
+    from t6.preview import PreviewTokens
+    from t6.cli import TOKEN_VARIABLE, _read_data_sources
+    from t6.notion import NotionError
+    key = os.environ.get('T6_PREVIEW_SIGNING_KEY', '')
+    if not key:
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    verb = {PackagePrepareInput: 'prepare', PackageCheckInput: 'check', PackageHandoffInput: 'handoff', PackageAcceptInput: 'accept', PackageRejectInput: 'reject'}[type(inputs)]
+    values = inputs.model_dump(exclude={'idempotency_key', 'confirm', 'data_sources'})
+    store = PackageStore(_people().registry, PreviewTokens(key))
+    try:
+        if isinstance(inputs, PackagePrepareInput):
+            from t6.notion.package_specs import PackageSpecReader
+            token = os.environ.get(TOKEN_VARIABLE)
+            if not token:
+                return Refused(rule='credentials', reason=f'set {TOKEN_VARIABLE}')
+            with open_notion(token) as client:
+                store.specs = PackageSpecReader(client, _read_data_sources(inputs.data_sources)['package_specs'])
+                return store.write(verb, values, actor=_actor.get(), idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+        return store.write(verb, values, actor=_actor.get(), idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+    except (OSError, ValueError, KeyError, NotionError) as error:
+        return Refused(rule='spec', reason=str(error))
+
+
+def package_list(inputs: PackageListInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.package import PackageStore
+    return Done(result={'packages': PackageStore(_people().registry, _people().tokens).list(inputs.missing)})
+
+
+def package_get(inputs: PackageGetInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.package import PackageStore
+    record = PackageStore(_people().registry, _people().tokens).get(inputs.package)
+    return Done(result={'package': record}) if record else Refused(rule='package', reason='Package not found')
+
+
 class JoFormatInput(BaseModel):
     file: Path
     date: str | None = None
@@ -981,6 +1073,13 @@ VERBS = (
          "operator", "Only a held Project can be resumed.", project_resume),
     Verb("project", "activity", "Show Project activity, newest first", (),
          ActivityInput, ActivityOutput, "reader", "Activity is append-only.", project_activity),
+    Verb('package', 'list', 'List open Packages', (), PackageListInput, PackageListOutput, 'reader', 'Filter to Packages with missing items.', package_list),
+    Verb('package', 'get', 'Get a Package', (), PackageGetInput, PackageGetOutput, 'reader', 'Read a Package and its checklist.', package_get),
+    Verb('package', 'prepare', 'Prepare a Package', (), PackagePrepareInput, PackageOutput, 'person', 'Copy the Package Spec.', package_write),
+    Verb('package', 'check', 'Check a Package item', (), PackageCheckInput, PackageOutput, 'person', 'Record who checked the item and when.', package_write),
+    Verb('package', 'handoff', 'Hand off a Package', (), PackageHandoffInput, PackageOutput, 'person', 'Blocking items must be checked.', package_write),
+    Verb('package', 'accept', 'Accept a Package', (), PackageAcceptInput, PackageOutput, 'person', 'The recipient accepts.', package_write),
+    Verb('package', 'reject', 'Reject a Package', (), PackageRejectInput, PackageOutput, 'person', 'The recipient gives a reason.', package_write),
     Verb("concern", "get", "Get a Concern", (), ConcernGetInput, ConcernGetOutput, "reader", "Read a Concern and its age.", concern_get),
     Verb("concern", "raise", "Raise a Concern", (), ConcernRaiseInput, ConcernOutput, "coordinator", "Record a line waiting on a party.", concern_write),
     Verb("concern", "note", "Add a Concern note", (), ConcernNoteInput, ConcernOutput, "coordinator", "Notes are append-only.", concern_write),
@@ -1011,8 +1110,8 @@ def invoke(entry: Verb, inputs: BaseModel, *, actor: str, people: People,
            open_notion: Callable[..., Any],
            legacy: Callable[[], int] | None = None) -> Outcome:
     """Authorize an authenticated Person before invoking a registered verb."""
-    refusal = (None if entry.noun == 'approval' and (person := people.get(actor)) and person['active'] else
-               Refused(rule='person', reason='An active Person is required') if entry.noun == 'approval' else
+    refusal = (None if entry.noun in ('approval', 'package') and entry.role == 'person' and (person := people.get(actor)) and person['active'] else
+               Refused(rule='person', reason='An active Person is required') if entry.noun in ('approval', 'package') and entry.role == 'person' else
                people.authorize(actor, entry.role))
     if refusal:
         return refusal
@@ -1123,6 +1222,27 @@ def add_parsers(commands: Any) -> None:
                     parser.add_argument('--reason', required=True)
             parser.add_argument('--idempotency-key')
             parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.handler in (package_write, package_get, package_list):
+            if entry.verb == 'prepare':
+                parser.add_argument('deliverable')
+                parser.add_argument('kind')
+                for name in ('to', 'recipient', 'data-sources'):
+                    parser.add_argument('--' + name, required=True, type=Path if name == 'data-sources' else str)
+                for name in ('client-spec', 'note'):
+                    parser.add_argument('--' + name)
+            elif entry.verb == 'list':
+                parser.add_argument('--missing', action='store_true')
+            else:
+                parser.add_argument('package')
+                if entry.verb == 'check':
+                    parser.add_argument('item')
+                if entry.verb == 'reject':
+                    parser.add_argument('--reason', default='')
+            if entry.handler is package_write:
+                parser.add_argument('--idempotency-key')
+                parser.add_argument('--confirm')
             parser.set_defaults(registered_verb=entry)
             continue
         if entry.handler is deliverable_rebind:

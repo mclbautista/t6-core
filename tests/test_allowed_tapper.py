@@ -1,6 +1,7 @@
 """Action rules are stored with cards and checked against current Person records."""
 import json
 import sqlite3
+from contextlib import closing
 import tempfile
 import unittest
 from pathlib import Path
@@ -40,7 +41,7 @@ class AllowedTapperTests(unittest.TestCase):
         rule = f'person:{self.freelancer}'
         action = self.action(rule)
         self.assertEqual(self.tap(action, 1, 'one').outcome, 'rejected')
-        with sqlite3.connect(self.store._path) as db:
+        with closing(sqlite3.connect(self.store._path)) as db, db:
             self.assertEqual(json.loads(db.execute('SELECT rule FROM rejections').fetchone()[0]), rule)
         self.assertEqual(self.tap(action, 2, 'two').outcome, 'skipped')
         self.assertEqual(self.tap(action, 2, 'three').outcome, 'already_handled')
@@ -64,7 +65,7 @@ class AllowedTapperTests(unittest.TestCase):
 
     def test_existing_database_defaults_old_cards_to_operator(self) -> None:
         action = self.action('permission:operator')
-        with sqlite3.connect(self.store._path) as db:
+        with closing(sqlite3.connect(self.store._path)) as db, db:
             db.execute('ALTER TABLE actions DROP COLUMN allowed_tapper')
             db.execute('ALTER TABLE rejections DROP COLUMN rule')
         reopened = ActionStore(self.store._path)

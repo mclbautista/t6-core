@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 from pydantic import BaseModel, TypeAdapter
 from t6.verbs import (
     Ambiguous, Done, NeedsPerson, Outcome, Preview, Refused,
+    PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
     ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
     JoListInput, JoFindInput, DeliverableListInput, DeliverableGetInput, DeliverableDefineInput, DeliverableRebindInput, MilestoneRecordInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
@@ -196,6 +197,27 @@ class Client:
 
     def project_activity(self, inputs: ActivityInput) -> Result:
         return self.call('project', 'activity', inputs)
+
+    def package_prepare(self, inputs: PackagePrepareInput) -> Result:
+        return self.call("package", "prepare", inputs)
+
+    def package_check(self, inputs: PackageCheckInput) -> Result:
+        return self.call("package", "check", inputs)
+
+    def package_handoff(self, inputs: PackageHandoffInput) -> Result:
+        return self.call("package", "handoff", inputs)
+
+    def package_accept(self, inputs: PackageAcceptInput) -> Result:
+        return self.call("package", "accept", inputs)
+
+    def package_reject(self, inputs: PackageRejectInput) -> Result:
+        return self.call("package", "reject", inputs)
+
+    def package_list(self, inputs: PackageListInput) -> Result:
+        return self.call("package", "list", inputs)
+
+    def package_get(self, inputs: PackageGetInput) -> Result:
+        return self.call("package", "get", inputs)
 
     def concern_get(self, inputs: ConcernGetInput) -> Result:
         return self.call("concern", "get", inputs)
