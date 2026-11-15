@@ -153,7 +153,8 @@ class LinkedChats:
                 if row:
                     db.execute("UPDATE abang_requests SET state = 'forwarding', reply_id = ? WHERE id = ?", (item['message_id'], row[0]))
                     record(db, self.registry, row[0], 'forwarding', 'worker')
-                elif reply is None:
+                else:
+                    # Any file or link from the freelancer that is not a reply to the request is a candidate.
                     rows = db.execute("SELECT r.id FROM abang_requests r JOIN persons p ON p.id = r.person_id WHERE r.state = 'requested' AND r.source_chat = ? AND (r.source_topic IS NULL OR r.source_topic = ?) AND p.telegram_id = ?", (chat, topic, sender.get('id'))).fetchall()
                     for (request_id,) in rows:
                         db.execute("INSERT OR IGNORE INTO abang_candidates (id, request_id, message_id, state) VALUES (?, ?, ?, 'pending')", (secrets.token_hex(8), request_id, item['message_id']))

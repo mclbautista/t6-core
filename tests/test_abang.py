@@ -110,6 +110,15 @@ class AbangTests(unittest.TestCase):
         self.assertFalse(any(call[1] == '/forward' for call in self.gateway.calls))
         self.assertTrue(cards[0]['buttons'][0][0]['payload'].startswith('abang:'))
 
+    def test_a_file_replying_to_another_message_is_a_candidate(self) -> None:
+        self.write('request', {'person': 'vendor', 'destination': '-200', 'note': None}, 'other-reply')
+        self.worker.tick()
+        self.gateway.items = [{'seq': 1, 'kind': 'update', 'chat': -100, 'message_id': 106, 'reply_to_message_id': 555, 'from': {'id': 42}, 'has_file': True}]
+        self.worker.tick()
+        cards = [call[2] for call in self.gateway.calls if call[1] == '/notify' and call[2]['text'].startswith('Is this it?')]
+        self.assertEqual(len(cards), 1)
+        self.assertFalse(any(call[1] == '/forward' for call in self.gateway.calls))
+
     def test_candidate_taps_allow_only_freelancer_and_forward_once(self) -> None:
         from t6.person import People
         from t6.server import Request, ServerConfig, WebhookApp

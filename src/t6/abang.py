@@ -140,12 +140,13 @@ def start_draft(registry: Any, actor: str, person: str, chat: int, topic: int | 
         if not projects:
             return Refused(rule='chat', reason='This chat or topic is not linked to a Project')
         marks = ','.join('?' * len(projects))
-        options = [(c, t) for c, t in db.execute(f"SELECT DISTINCT chat_id, topic_id FROM chat_links WHERE state = 'active' AND project_id IN ({marks}) ORDER BY rowid", projects) if (c, t) != (chat, topic)]
+        options = [(c, t, codes) for c, t, codes in db.execute(f"SELECT l.chat_id, l.topic_id, GROUP_CONCAT(DISTINCT p.code) FROM chat_links l LEFT JOIN projects p ON p.id = l.project_id WHERE l.state = 'active' AND l.project_id IN ({marks}) GROUP BY l.chat_id, l.topic_id ORDER BY MIN(l.rowid)", projects) if (c, t) != (chat, topic)]
         if not options:
             return Refused(rule='destination', reason='No other linked chat or topic to send the file to')
         db.execute("INSERT INTO abang_drafts (id, actor, person_id, source_chat, source_topic, note, state) VALUES (?, ?, ?, ?, ?, ?, 'open')", (draft, actor, person, chat, topic, note))
-        for n, (c, t) in enumerate(options):
+        for n, (c, t, codes) in enumerate(options):
             named = db.execute('SELECT name FROM linked_chat_topics WHERE chat_id = ? AND topic_id = ?', (c, t)).fetchone() if t is not None else None
-            label = named[0] if named else f'Chat {c}' + (f', topic {t}' if t is not None else '')
+            parts = [part for part in (codes.replace(',', '/') if codes else None, named[0] if named else None) if part]
+            label = ' · '.join(parts) or f'Chat {c}' + (f', topic {t}' if t is not None else '')
             db.execute('INSERT INTO abang_draft_options VALUES (?, ?, ?, ?, ?)', (draft, n, c, t, label))
     return Done(result={'draft': draft})

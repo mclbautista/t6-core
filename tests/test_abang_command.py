@@ -43,7 +43,8 @@ class AbangCommandTests(unittest.TestCase):
             db.execute("INSERT INTO linked_chat_members VALUES (-100, 42, ?, 1)", (VENDOR,))
             for link, project, chat, topic in (('src', 'p1', -100, None), ('dst', 'p1', -200, 5), ('dst2', 'p1', -300, None), ('other', 'p2', -400, None)):
                 db.execute("INSERT INTO chat_links VALUES (?, ?, ?, ?, 'active')", (link, project, chat, topic))
-            db.execute("INSERT INTO linked_chat_topics VALUES (-200, 5, 'ABC123 - Edit')")
+            db.execute("INSERT INTO linked_chat_topics VALUES (-200, 5, 'Editorial')")
+            db.execute("INSERT INTO projects (id, revision, code, code_form, rotation, created_at) VALUES ('p1', 1, 'ABC123', 'abc123', 'in', 0)")
             from t6.registry.core import normalize_page_id
             db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, 0, 1)", (normalize_page_id(page['id']), VENDOR))
         queue = JobQueue(tmp.name + '/queue')
@@ -68,13 +69,13 @@ class AbangCommandTests(unittest.TestCase):
         self.assertEqual(self.command(7, '@freelancer graded trailer', 'cmd-1').body['outcome'], 'accepted')
         self.assertEqual(len(self.state()), 1)
         with self.registry._transaction() as db:
-            self.assertEqual(db.execute('SELECT chat, topic, label FROM abang_draft_options ORDER BY n').fetchall(), [(-200, 5, 'ABC123 - Edit'), (-300, None, 'Chat -300')])
+            self.assertEqual(db.execute('SELECT chat, topic, label FROM abang_draft_options ORDER BY n').fetchall(), [(-200, 5, 'ABC123 · Editorial'), (-300, None, 'ABC123')])
             self.assertEqual(db.execute('SELECT COUNT(*) FROM abang_requests').fetchone()[0], 0)
         self.worker.tick()
         sent = [call[2] for call in self.gateway.calls if call[1] == '/notify']
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0]['to'], -100)
-        self.assertEqual([row[0]['text'] for row in sent[0]['buttons']], ['ABC123 - Edit', 'Chat -300'])
+        self.assertEqual([row[0]['text'] for row in sent[0]['buttons']], ['ABC123 · Editorial', 'ABC123'])
 
     def test_only_the_coordinator_who_typed_it_can_tap_and_the_tap_confirms(self) -> None:
         self.command(7, '@freelancer graded trailer', 'cmd-2')
