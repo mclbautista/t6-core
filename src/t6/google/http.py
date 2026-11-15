@@ -220,16 +220,27 @@ class GoogleCalendar:
             raise self._fail(status, 'stop channel')
 
     def list_acl(self, calendar: str) -> list[dict[str, str]]:
+        """Every ACL rule as `scope` (user, group, domain or default), `email` (the scope's value; empty for default) and `role`."""
         status, answer = self._call('GET', f'/calendars/{quote(calendar, safe="")}/acl')
         if status != 200 or not isinstance(answer, dict):
             raise self._fail(status, 'ACL list')
-        return [{'email': item['scope']['value'], 'role': item['role']} for item in answer.get('items', []) if item.get('scope', {}).get('type') == 'user']
+        rules: list[dict[str, str]] = []
+        for item in answer.get('items', []):
+            scope = item.get('scope', {}) if isinstance(item, dict) else {}
+            if isinstance(scope, dict) and isinstance(scope.get('type'), str) and isinstance(item.get('role'), str):
+                rules.append({'scope': scope['type'], 'email': str(scope.get('value') or ''), 'role': item['role']})
+        return rules
 
-    def set_acl(self, calendar: str, email: str, role: str) -> None:
+    def set_acl(self, calendar: str, email: str, role: str, scope: str = 'user') -> None:
         path = f'/calendars/{quote(calendar, safe="")}/acl'
-        rule = {'role': role, 'scope': {'type': 'user', 'value': email}}
-        status, _ = self._call('POST', path, rule, query='?sendNotifications=false')
-        if status == 409:
-            status, _ = self._call('PUT', f'{path}/{quote("user:" + email, safe="")}', rule, query='?sendNotifications=false')
+        rule = {'role': role, 'scope': {'type': scope, 'value': email} if scope != 'default' else {'type': scope}}
+        rule_id = 'default' if scope == 'default' else f'{scope}:{email}'
+        if scope == 'user':
+            status, _ = self._call('POST', path, rule, query='?sendNotifications=false')
+            if status != 409:
+                if status != 200:
+                    raise self._fail(status, 'ACL set')
+                return
+        status, _ = self._call('PUT', f'{path}/{quote(rule_id, safe="")}', rule, query='?sendNotifications=false')  # a rule that exists: change its role
         if status != 200:
             raise self._fail(status, 'ACL set')

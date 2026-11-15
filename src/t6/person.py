@@ -281,6 +281,7 @@ class People:
                 before = {'page_id': current[0] if current else None}
                 db.execute("UPDATE bindings SET active = 0 WHERE system = 'notion' AND project_id = ?", (person_id,))
                 db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, ?, 1) ON CONFLICT(system, page_id) DO UPDATE SET active = 1", (page, person_id, now))
+                enqueue_sharing(db, str(person_id), verb, key, now)  # the Person's Google email comes from the bound page
             elif verb == 'shift':
                 current = db.execute('SELECT pattern, start, end FROM person_shifts WHERE person_id = ?', (person_id,)).fetchone()
                 before = dict(zip(('pattern', 'start', 'end'), current)) if current else None
@@ -288,6 +289,7 @@ class People:
             elif verb == 'classify':
                 before = {'kind': db.execute('SELECT kind FROM persons WHERE id = ?', (person_id,)).fetchone()[0]}
                 db.execute('UPDATE persons SET kind = ? WHERE id = ?', (values['kind'], person_id))
+                enqueue_sharing(db, str(person_id), verb, key, now)  # only active staff may hold calendar edit
             elif verb in ('grant', 'revoke'):
                 permission = values['permission']
                 held = db.execute('SELECT 1 FROM person_permissions WHERE person_id = ? AND permission = ?', (person_id, permission)).fetchone() is not None

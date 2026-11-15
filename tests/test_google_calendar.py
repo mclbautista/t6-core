@@ -184,11 +184,19 @@ class BookingCalendarSyncTests(unittest.TestCase):
         self.assertEqual(state, 'done')
         self.assertIn('no calendar configured', result)
 
+    def test_the_fake_answers_a_deleted_event_like_google_and_an_unknown_one_with_none(self) -> None:
+        self.calendar.insert_event('cal-one', 'e1', {'summary': 's', 'start': '2026-11-20T10:00:00+08:00', 'end': '2026-11-20T12:00:00+08:00'})
+        self.calendar.delete_event('cal-one', 'e1')
+        deleted = self.calendar.get_event('cal-one', 'e1')
+        assert deleted is not None
+        self.assertEqual((deleted['id'], deleted['status']), ('e1', 'cancelled'))
+        self.assertIsNone(self.calendar.get_event('cal-one', 'never-existed'))
+
     def test_fake_acl_list_and_set(self) -> None:
         self.assertEqual(self.calendar.list_acl('cal-one'), [])
         self.calendar.set_acl('cal-one', 'person@example.invalid', 'reader')
         self.calendar.set_acl('cal-one', 'person@example.invalid', 'writer')
-        self.assertEqual(self.calendar.list_acl('cal-one'), [{'email': 'person@example.invalid', 'role': 'writer'}])
+        self.assertEqual(self.calendar.list_acl('cal-one'), [{'email': 'person@example.invalid', 'role': 'writer', 'scope': 'user'}])
 
 
 class MainWorkerHandlerTests(unittest.TestCase):

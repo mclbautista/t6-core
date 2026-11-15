@@ -201,6 +201,110 @@ class ReconcileTests(SharingCase):
         self.assertEqual(self.jobs(RECONCILE_KIND), 3)
 
 
+class LookupFailureTests(SharingCase):
+    def reconcile(self) -> Any:
+        return self.sharing.handle_reconcile(_job())
+
+    def test_one_failed_email_lookup_is_counted_and_skipped_and_the_run_goes_on(self) -> None:
+        self.calendar.acl['cal-one']['ana@example.invalid'] = 'writer'
+        self.identities.fail_next(1)  # the first Person read is ana
+        result = self.reconcile()
+        self.assertEqual(result['lookup_failed'], 1)
+        for calendar in ('cal-one', 'cal-two'):
+            self.assertEqual(self.roles(calendar).get('ben@example.invalid'), 'reader')
+            self.assertEqual(self.roles(calendar).get('cy@example.invalid'), 'reader')
+        self.assertEqual(self.roles('cal-one')['ana@example.invalid'], 'writer')  # unknown this run: left as it was, not lowered as a stranger
+
+    def test_a_run_with_a_failed_lookup_lowers_no_unknown_writer(self) -> None:
+        self.calendar.acl['cal-one']['stranger@example.invalid'] = 'writer'
+        self.identities.fail_next(1)
+        result = self.reconcile()
+        self.assertEqual(self.roles('cal-one')['stranger@example.invalid'], 'writer')
+        self.assertEqual(result['unmanaged'], 1)
+        self.assertEqual(self.reconcile()['lookup_failed'], 0)  # the next run has all emails and lowers it
+        self.assertEqual(self.roles('cal-one')['stranger@example.invalid'], 'reader')
+
+    def test_emails_are_read_only_for_active_staff(self) -> None:
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES ('cli', 'client', '[]', '[]', NULL, 0, 1)")
+            db.execute("INSERT INTO persons VALUES ('gone', 'staff', '[]', '[]', NULL, 0, 0)")
+        self.reconcile()
+        self.assertEqual(sorted(set(self.identities.lookups)), ['ana', 'ben', 'cy', 'op'])
+        self.assertEqual(len(self.identities.lookups), 4)  # once each, not once per calendar
+
+    def test_a_client_or_inactive_person_with_edit_is_still_lowered(self) -> None:
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES ('cli', 'client', '[]', '[]', NULL, 0, 1)")
+        self.identities.emails['cli'] = 'cli@example.invalid'
+        self.calendar.acl['cal-one']['cli@example.invalid'] = 'writer'
+        self.reconcile()
+        self.assertEqual(self.roles('cal-one')['cli@example.invalid'], 'reader')
+
+    def test_a_grant_job_whose_lookup_fails_still_retries(self) -> None:
+        self.identities.fail_next(1)
+        self.permission('grant', 'ben')
+        self.drain()
+        self.assertNotIn('ben@example.invalid', self.roles())
+        self.assertEqual(self.jobs(SHARING_KIND), 1)  # the one Person's job is not dropped: it retries
+
+
+class PersonChangesQueueSharingTests(SharingCase):
+    def person_verb(self, verb: str, values: dict[str, Any]) -> Any:
+        from t6.verbs import VERBS, Done, Preview, invoke
+        entry = next(e for e in VERBS if (e.noun, e.verb) == ('person', verb))
+        def call(data: dict[str, Any]) -> Any:
+            return invoke(entry, entry.input_model.model_validate(data), actor='op', people=self.people, open_notion=lambda _: None)
+        preview = call(values)
+        assert isinstance(preview, Preview), preview
+        done = call({**values, 'idempotency_key': preview.plan['idempotency_key'], 'confirm': preview.token})
+        assert isinstance(done, Done), done
+        return done
+
+    def test_reclassifying_a_person_queues_the_sharing_job_and_the_worker_lowers_edit(self) -> None:
+        self.calendar.acl['cal-one']['ana@example.invalid'] = 'writer'
+        self.person_verb('classify', {'person_id': 'ana', 'kind': 'vendor'})
+        self.assertEqual(self.jobs(SHARING_KIND), 1)
+        self.drain()
+        self.assertEqual(self.roles('cal-one')['ana@example.invalid'], 'reader')
+
+    def test_rebinding_a_person_queues_the_sharing_job(self) -> None:
+        self.person_verb('rebind', {'person_id': 'ana', 'page_id': 'a' * 32})
+        self.assertEqual(self.jobs(SHARING_KIND), 1)
+
+    def test_a_refused_classify_queues_nothing(self) -> None:
+        from t6.verbs import VERBS, Refused, invoke
+        entry = next(e for e in VERBS if (e.noun, e.verb) == ('person', 'classify'))
+        outcome = invoke(entry, entry.input_model.model_validate({'person_id': 'ana', 'kind': 'robot'}), actor='op', people=self.people, open_notion=lambda _: None)
+        self.assertIsInstance(outcome, Refused)
+        self.assertEqual(self.jobs(SHARING_KIND), 0)
+
+
+class NonUserWriterTests(SharingCase):
+    def reconcile(self) -> Any:
+        return self.sharing.handle_reconcile(_job())
+
+    def test_a_writer_group_domain_or_public_rule_is_lowered_like_a_hand_added_writer_and_logged_by_hash(self) -> None:
+        self.calendar.acl['cal-one'].update({'group:staff@example.invalid': 'writer', 'domain:example.invalid': 'writer', 'default': 'writer'})
+        with self.assertLogs('t6.google.sharing', 'INFO') as logs:
+            result = self.reconcile()
+        acl = self.roles('cal-one')
+        self.assertEqual((acl['group:staff@example.invalid'], acl['domain:example.invalid'], acl['default']), ('reader', 'reader', 'reader'))
+        self.assertEqual(result['unmanaged'], 0)
+        text = '\n'.join(logs.output) + str(result)
+        self.assertNotIn('staff@example.invalid', text)
+        self.assertIn(short_hash('group:staff@example.invalid'), text)
+        self.assertEqual(len([f for f in result['fixed'] if f['change'] == 'writer->reader']), 3)
+
+    def test_a_non_writer_group_is_left_and_counted_and_owners_are_never_touched(self) -> None:
+        self.calendar.acl['cal-one'].update({'group:readers@example.invalid': 'reader', 'domain:example.invalid': 'owner'})
+        result = self.reconcile()
+        self.assertEqual(self.roles('cal-one')['group:readers@example.invalid'], 'reader')
+        self.assertEqual(self.roles('cal-one')['domain:example.invalid'], 'owner')
+        self.assertEqual(result['unmanaged'], 1)
+        self.assertEqual(self.roles('cal-one')[OWNER], 'owner')
+        self.assertEqual(self.roles('cal-one')[SERVICE], 'owner')
+
+
 class NoCalendarTests(unittest.TestCase):
     def test_both_jobs_finish_skipped_when_no_calendar_is_configured(self) -> None:
         from t6.google.sharing import sharing_handlers

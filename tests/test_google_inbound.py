@@ -161,6 +161,23 @@ class EditsBecomeVerbs(InboundCase):
         self.assertEqual(self.audit('booking_cancel'), [(booking, 'writer')])
         self.assertEqual(self.calendar.events, {})
 
+    def test_a_delete_cancels_the_booking_after_it_changed_bay(self) -> None:
+        booking = self.book()
+        self.notify()
+        start, end = '2026-11-20T10:00:00+08:00', '2026-11-20T12:00:00+08:00'
+        self.write('booking', 'move', {'booking': booking, 'bay': self.bays[1], 'start': start, 'end': end})
+        self.drain()
+        self.write('booking', 'move', {'booking': booking, 'bay': self.bays[0], 'start': start, 'end': end})
+        self.drain()
+        self.notify('chan-1')
+        self.notify('chan-2')  # cal-two now holds only a deleted copy, which Google still answers with status cancelled
+        self.assertEqual(list(self.calendar.events), [('cal-one', event_id(booking))])
+        self.assertEqual(self.calendar.get_event('cal-two', event_id(booking)), {'id': event_id(booking), 'status': 'cancelled', 'etag': self.calendar.meta[('cal-two', event_id(booking))]['etag'], 'editor': None})
+        self.calendar.external_delete('cal-one', event_id(booking), editor=WRITER)
+        self.notify('chan-1')
+        self.assertTrue(self.booking(booking)['cancelled'])
+        self.assertEqual(self.audit('booking_cancel'), [(booking, 'writer')])
+
     def test_an_edit_is_applied_once_per_event_version(self) -> None:
         booking = self.book()
         self.notify()
@@ -471,6 +488,69 @@ class ChannelRenewalTests(InboundCase):
         from t6.worker.client import WorkerJob
         result: Any = NoInbound().handle(WorkerJob(1, 'main', CHANGED_KIND, 'k', {}, 't', 1))
         self.assertEqual(result['event'], 'skipped')
+
+
+class DailyCatchUpTests(InboundCase):
+    def with_catch_up(self) -> None:
+        """The wiring `inbound_handlers` makes: the renewal run applies what each calendar lists since its sync token."""
+        self.renewal = ChannelRenewal(self.registry, self.calendar, self.calendars, address=ADDRESS, token=TOKEN, clock=self.clock, new_id=self.new_channel, catch_up=self.inbound.catch_up)
+        self.worker = Worker(InternalQueueClient(self.queue), 'main', {BOOKING_SYNC_KIND: self.sync.handle, CHANGED_KIND: self.inbound.handle, RENEW_KIND: self.renewal.handle}, internal_client=None)
+
+    def test_a_change_whose_notification_was_lost_is_applied_by_the_next_daily_run(self) -> None:
+        self.with_catch_up()
+        booking = self.book()
+        self.notify()
+        self.calendar.external_edit('cal-one', event_id(booking), editor=WRITER, end='2026-11-20T14:00:00+08:00')  # no notification arrives
+        self.clock.advance(DAY)
+        self.renew()
+        self.assertEqual(self.booking(booking)['end'], '2026-11-20T14:00:00.000000+08:00')
+        self.assertEqual(self.audit('booking_extend'), [(booking, 'writer')])
+
+    def test_the_catch_up_reads_every_bay_calendar_and_a_later_notification_does_not_apply_it_twice(self) -> None:
+        self.with_catch_up()
+        one, two = self.book(), self.book(bay=1)
+        self.notify('chan-1')
+        self.notify('chan-2')
+        self.calendar.external_edit('cal-one', event_id(one), editor=WRITER, end='2026-11-20T13:00:00+08:00')
+        self.calendar.external_delete('cal-two', event_id(two), editor=WRITER)
+        self.clock.advance(DAY)
+        self.renew()
+        self.assertEqual((self.audit('booking_extend'), self.audit('booking_cancel')), ([(one, 'writer')], [(two, 'writer')]))
+        self.notify('chan-1')
+        self.notify('chan-2')
+        self.assertEqual((self.audit('booking_extend'), self.audit('booking_cancel')), ([(one, 'writer')], [(two, 'writer')]))
+
+    def test_a_calendar_that_cannot_be_read_retries_the_run_after_the_other_calendars_were_caught_up(self) -> None:
+        self.with_catch_up()
+        two = self.book(bay=1)
+        self.notify('chan-2')
+        self.calendar.external_delete('cal-two', event_id(two), editor=WRITER)
+        self.clock.advance(DAY)
+        self.calendar.fail_reads(1)  # cal-one is listed first and fails
+        self.queue.submit('main', RENEW_KIND, 'renew:retry', {})
+        self.worker.run_once()
+        self.assertTrue(self.booking(two)['cancelled'])
+        with self.registry._transaction() as db:
+            state = db.execute("SELECT state FROM internal_jobs WHERE dedupe_key = 'renew:retry'").fetchone()[0]
+        self.assertEqual(state, 'queued')  # retried later, not dead
+
+
+class TokenChangeAtStartTests(InboundCase):
+    def test_a_new_token_at_worker_start_queues_a_run_on_the_same_day(self) -> None:
+        self.renewal.schedule(self.queue)
+        self.drain()  # today's run, with the old token
+        self.assertEqual({c['token'] for c in self.calendar.channels.values()}, {TOKEN})
+        restarted = ChannelRenewal(self.registry, self.calendar, self.calendars, address=ADDRESS, token='another-secret-value', clock=self.clock, new_id=self.new_channel)
+        queued = restarted.schedule(self.queue)
+        self.assertTrue(queued.created)
+        self.worker = Worker(InternalQueueClient(self.queue), 'main', {RENEW_KIND: restarted.handle}, internal_client=None)
+        self.drain()
+        self.assertEqual({c['token'] for c in self.calendar.channels.values()}, {'another-secret-value'})
+
+    def test_a_restart_with_the_same_token_queues_nothing_more_that_day(self) -> None:
+        first = self.renewal.schedule(self.queue)
+        again = ChannelRenewal(self.registry, self.calendar, self.calendars, address=ADDRESS, token=TOKEN, clock=self.clock, new_id=self.new_channel).schedule(self.queue)
+        self.assertEqual((again.job_id, again.created), (first.job_id, False))
 
 
 class ConfigTests(unittest.TestCase):

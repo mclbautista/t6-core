@@ -105,13 +105,13 @@ the times from the Person's shift pattern. Booking verbs (`bay book`,
   that already equals its Booking is our own write coming back and is ignored. **Calendar sharing is
   the permission check for inbound edits**, and the daily reconcile job keeps it true.
 - **Notification channel**: the Google channel that sends changes of one Bay
-  calendar to the edge. The daily `google.renew_channels` job replaces it before it expires.
+  calendar to the edge. The daily `google.renew_channels` job replaces it before it expires, and it is also the **daily catch-up**: it lists every Bay calendar from its sync token and applies what it finds, so a lost notification is caught within a day. A changed channel token queues a run at the next worker start.
 - **Calendar sharing**: who can edit a Bay calendar follows the `bookings` permission.
   `person grant` or `person revoke` of `bookings` queues a `booking.calendar_sharing` job in the
   same transaction; it gives the Person (found by the email on their Notion Contact) edit
   (`writer`) or view (`reader`) on every Bay calendar. Every other active staff Person has view.
   The daily `google.reconcile_sharing` job compares each calendar's ACL with t6 and fixes
-  drift (t6 wins), logging each fix by a short hash. A writer whose email is no Person's (added by hand) is lowered to view. Manager entries (the calendar owner and the
+  drift (t6 wins), logging each fix by a short hash. A writer whose email is no Person's (added by hand), and any group, domain or public writer entry, is lowered to view. The reconcile reads emails only for active staff, and one failed email lookup is counted and skipped. `person classify` and `person rebind` queue the sharing job too. Manager entries (the calendar owner and the
   service account) are never changed. Revoke sets view; it does not
   delete the entry.
 

@@ -134,12 +134,16 @@ class EventTests(AdapterCase):
 
 
 class AclTests(AdapterCase):
-    def test_list_acl_returns_user_rules_as_email_and_role(self) -> None:
+    def test_list_acl_returns_every_rule_with_its_scope_type_value_and_role(self) -> None:
         self.http.answer('GET', f'{BASE}/acl', 200, {'items': [
             {'id': 'user:a@example.invalid', 'role': 'writer', 'scope': {'type': 'user', 'value': 'a@example.invalid'}},
+            {'id': 'group:g@example.invalid', 'role': 'writer', 'scope': {'type': 'group', 'value': 'g@example.invalid'}},
+            {'id': 'domain:example.invalid', 'role': 'writer', 'scope': {'type': 'domain', 'value': 'example.invalid'}},
             {'id': 'default', 'role': 'reader', 'scope': {'type': 'default'}},
         ]})
-        self.assertEqual(self.calendar.list_acl(CALENDAR), [{'email': 'a@example.invalid', 'role': 'writer'}])
+        self.assertEqual(self.calendar.list_acl(CALENDAR), [
+            {'scope': 'user', 'email': 'a@example.invalid', 'role': 'writer'}, {'scope': 'group', 'email': 'g@example.invalid', 'role': 'writer'},
+            {'scope': 'domain', 'email': 'example.invalid', 'role': 'writer'}, {'scope': 'default', 'email': '', 'role': 'reader'}])
         self.assertEqual((self.api_calls()[0].method, self.api_calls()[0].url), ('GET', f'{BASE}/acl'))
 
     def test_set_acl_inserts_a_user_rule_without_sending_a_notification(self) -> None:
@@ -156,6 +160,16 @@ class AclTests(AdapterCase):
         call = self.api_calls()[-1]
         self.assertEqual((call.method, call.url), ('PUT', f'{BASE}/acl/user%3Aa%40example.invalid?sendNotifications=false'))
         self.assertEqual(json.loads(call.body), {'role': 'reader', 'scope': {'type': 'user', 'value': 'a@example.invalid'}})
+
+    def test_set_acl_lowers_a_group_a_domain_and_the_public_rule_by_their_rule_id(self) -> None:
+        for scope, value, rule, body_scope in (('group', 'g@example.invalid', 'group%3Ag%40example.invalid', {'type': 'group', 'value': 'g@example.invalid'}),
+                                               ('domain', 'example.invalid', 'domain%3Aexample.invalid', {'type': 'domain', 'value': 'example.invalid'}),
+                                               ('default', '', 'default', {'type': 'default'})):
+            self.http.answer('PUT', f'{BASE}/acl/{rule}', 200, {})
+            self.calendar.set_acl(CALENDAR, value, 'reader', scope)
+            call = self.api_calls()[-1]
+            self.assertEqual((call.method, call.url), ('PUT', f'{BASE}/acl/{rule}?sendNotifications=false'))
+            self.assertEqual(json.loads(call.body), {'role': 'reader', 'scope': body_scope})
 
 
 class ReadAndWatchTests(AdapterCase):

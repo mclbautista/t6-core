@@ -81,7 +81,8 @@ class FakeCalendar:
 
     def get_event(self, calendar: str, event: str) -> dict[str, Any] | None:
         self._read()
-        return self._flat(calendar, event) if (calendar, event) in self.events else None
+        known = (calendar, event) in self.events or (calendar, event) in self.meta
+        return self._flat(calendar, event) if known else None  # a deleted event is still answered, with status cancelled, as Google does
 
     def list_changes(self, calendar: str, sync_token: str | None) -> Changes:
         self._read()
@@ -138,11 +139,20 @@ class FakeCalendar:
         del self.events[(calendar, event)]
         self._changed(calendar, event)
 
-    def list_acl(self, calendar: str) -> list[dict[str, str]]:
-        return [{'email': email, 'role': role} for email, role in sorted(self.acl.get(calendar, {}).items())]
+    @staticmethod
+    def _rule(key: str) -> tuple[str, str]:
+        """The scope type and value of an ACL key: a bare email is a user; `group:x`, `domain:x` and `default` are Google's own rule ids."""
+        if key == 'default':
+            return 'default', ''
+        scope, _, value = key.partition(':')
+        return (scope, value) if scope in ('group', 'domain') and value else ('user', key)
 
-    def set_acl(self, calendar: str, email: str, role: str) -> None:
-        self.acl.setdefault(calendar, {})[email] = role
+    def list_acl(self, calendar: str) -> list[dict[str, str]]:
+        return [{'scope': self._rule(key)[0], 'email': self._rule(key)[1], 'role': role} for key, role in sorted(self.acl.get(calendar, {}).items())]
+
+    def set_acl(self, calendar: str, email: str, role: str, scope: str = 'user') -> None:
+        key = email if scope == 'user' else (f'{scope}:{email}' if email else scope)
+        self.acl.setdefault(calendar, {})[key] = role
 
 
 class FakeNames:
@@ -174,11 +184,13 @@ class FakeIdentities:
 
     def __init__(self, emails: dict[str, str]) -> None:
         self.emails, self._failures = emails, 0
+        self.lookups: list[str] = []
 
     def fail_next(self, count: int) -> None:
         self._failures = count
 
     def email(self, person: str) -> str | None:
+        self.lookups.append(person)
         if self._failures > 0:
             self._failures -= 1
             raise CalendarError('email lookup failed')

@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from t6.domain.events import JsonValue
-from t6.google.calendar import Calendar
+from t6.google.calendar import Calendar, CalendarError
 from t6.google.config import CALENDARS_VARIABLE, bay_calendars, credential_path
 from t6.registry.sqlite import SqliteProjectRegistry
 from t6.worker.client import WorkerJob
@@ -102,9 +102,17 @@ class SharingSync:
 
     def _run(self, only: list[str] | None) -> JsonValue:
         wanted: dict[str, tuple[str, bool]] = {}  # email (lowercase) -> (role, active staff)
-        no_email = 0
+        no_email = lookup_failed = 0
         for person, staff, holds in self._people(only):
-            email = self.identities.email(person)  # a failed lookup raises CalendarError: the job retries
+            if only is None and not staff:
+                continue  # the reconcile needs an email only for active staff: any writer it does not know is lowered anyway
+            try:
+                email = self.identities.email(person)
+            except CalendarError:
+                if only is not None:
+                    raise  # a grant or revoke job for one Person retries: the change must not be lost
+                lookup_failed += 1  # the reconcile counts it and goes on; the next daily run reads that Person again
+                continue
             if not email or not email.strip():
                 no_email += 1
                 continue
@@ -112,17 +120,21 @@ class SharingSync:
         fixed: list[dict[str, str]] = []
         unmanaged = 0
         for calendar in self.calendars:
-            current = {e['email'].strip().casefold(): e['role'] for e in self.calendar.list_acl(calendar)}
+            entries = [(e.get('scope', 'user'), e['email'].strip(), e['role']) for e in self.calendar.list_acl(calendar)]
+            current = {value.casefold(): role for scope, value, role in entries if scope == 'user'}
             roles = {email: role for email, role in current.items() if role != MANAGER and email != self.service_account}
             if only is None:
-                for email, listed in roles.items():
-                    if email in wanted:
+                for scope, value, listed in entries:
+                    email = value.casefold()
+                    if listed == MANAGER or (scope == 'user' and (email == self.service_account or email in wanted)):
                         continue
-                    if listed != EDIT:
+                    if listed != EDIT or lookup_failed:  # with a failed lookup a writer may be a Person this run could not read: leave it
                         unmanaged += 1
                         continue
-                    self.calendar.set_acl(calendar, email, VIEW)  # a hand-added writer who is no Person
-                    change = {'calendar': short_hash(calendar), 'identity': short_hash(email), 'change': f'{listed}->{VIEW}'}
+                    self.calendar.set_acl(calendar, email if scope == 'user' else value, VIEW, scope)  # a hand-added writer: a user who is no Person, a group, a domain, or everyone
+                    change = {'calendar': short_hash(calendar), 'identity': short_hash(email if scope == 'user' else f'{scope}:{value}'), 'change': f'{listed}->{VIEW}'}
+                    if scope != 'user':
+                        change['scope'] = scope
                     fixed.append(change)
                     log.info('calendar sharing fix: calendar=%s identity=%s role %s', change['calendar'], change['identity'], change['change'])
             for email, (role, staff) in wanted.items():
@@ -143,6 +155,7 @@ class SharingSync:
                                         'fixed': [dict(f) for f in fixed], 'no_email': no_email}
         if only is None:
             result['unmanaged'] = unmanaged
+            result['lookup_failed'] = lookup_failed
         return result
 
 

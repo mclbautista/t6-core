@@ -86,7 +86,14 @@ class InboundEdits:
             return {'ignored': 'unknown channel'}
         if state == 'sync':
             return {'ignored': 'sync message'}
-        calendar = str(row[0])
+        outcome = self.catch_up(str(row[0]))
+        return {'channel': channel, **outcome}
+
+    def catch_up(self, calendar: str) -> dict[str, JsonValue]:
+        """List what changed on one Bay calendar since its stored sync token, apply it, and store the next token.
+
+        A notification runs this for its calendar; the daily renewal run runs it for every calendar, so a lost notification is caught within a day.
+        """
         with self.registry._transaction() as db:
             stored = db.execute('SELECT sync_token FROM calendar_sync_tokens WHERE calendar = ?', (calendar,)).fetchone()
         try:
@@ -100,7 +107,7 @@ class InboundEdits:
             outcomes[outcome] = outcomes.get(outcome, 0) + 1
         with self.registry._transaction() as db:
             db.execute('INSERT INTO calendar_sync_tokens VALUES (?, ?) ON CONFLICT (calendar) DO UPDATE SET sync_token = excluded.sync_token', (calendar, changes.next_token))
-        return {'channel': channel, 'events': len(changes.events), 'outcomes': dict(sorted(outcomes.items()))}
+        return {'events': len(changes.events), 'outcomes': dict(sorted(outcomes.items()))}
 
     def _event(self, calendar: str, event: Mapping[str, Any], booking: dict[str, Any] | None) -> str:
         if booking is None:
@@ -126,7 +133,7 @@ class InboundEdits:
             return 'ignored'
         name = event_id(booking['id'])
         if event.get('status') == 'cancelled':
-            if calendar != mine or any(other != calendar and self.calendar.get_event(other, name) is not None for other in bays):
+            if calendar != mine or any(other != calendar and self._live(other, name) for other in bays):
                 return 'ignored'  # a stale copy, or the event moved to another Bay calendar (that calendar's change says so)
             verb, values = 'cancel', {'booking': booking['id']}
         else:
@@ -161,6 +168,11 @@ class InboundEdits:
         if isinstance(outcome, Done):
             return 'applied'
         return self._revert(calendar, mine, booking, getattr(outcome, 'reason', None) or 'the booking rules refused the change')
+
+    def _live(self, calendar: str, name: str) -> bool:
+        """Whether a copy of the event is alive there. Google answers a deleted event with status `cancelled`: that is no move."""
+        copy = self.calendar.get_event(calendar, name)
+        return copy is not None and copy.get('status') != 'cancelled'
 
     def _actor(self, editor: object) -> str | None:
         """The Person whose Notion email is the editor's and who holds `bookings`; None for an unknown editor."""
@@ -198,28 +210,40 @@ class ChannelRenewal:
     """The `google.renew_channels` handler: every Bay calendar keeps a live notification channel, replaced before it expires."""
 
     def __init__(self, registry: SqliteProjectRegistry, calendar: Calendar, calendars: Mapping[str, str], *, address: str, token: str,
-                 clock: Callable[[], float] = time.time, new_id: Callable[[], str] | None = None) -> None:
+                 clock: Callable[[], float] = time.time, new_id: Callable[[], str] | None = None,
+                 catch_up: Callable[[str], dict[str, JsonValue]] | None = None) -> None:
         self.registry, self.calendar, self.calendars, self.address, self.token, self.clock = registry, calendar, dict(calendars), address, token, clock
+        self.catch_up = catch_up  # applies what one calendar lists since its sync token (`InboundEdits.catch_up`); None: channels only
         self.new_id = new_id or (lambda: 't6ch-' + secrets.token_hex(12))
 
+    @property
+    def fingerprint(self) -> str:
+        return hashlib.sha256(self.token.encode()).hexdigest()  # the token itself is never stored
+
     def schedule(self, queue: InternalJobQueue | None = None, run_at: float | None = None) -> Submitted:
-        """Queue one renewal run, once per day: the key is the day it is due."""
+        """Queue one renewal run, once per day and token: the key is the day it is due and the token's fingerprint.
+
+        A worker that starts with a changed `T6_GOOGLE_CHANNEL_TOKEN` gets a new key, so its run is queued at once, not at the next daily run.
+        """
         queue = queue or InternalJobQueue(self.registry, clock=self.clock)
         due = self.clock() if run_at is None else run_at
-        return queue.submit(QUEUE, RENEW_KIND, f'renew:{int(due // 86400)}', {}, run_at=due)
+        return queue.submit(QUEUE, RENEW_KIND, f'renew:{int(due // 86400)}:{self.fingerprint[:16]}', {}, run_at=due)
 
     def handle(self, job: WorkerJob) -> JsonValue:
         now = self.clock()
         self.schedule(run_at=now + RENEW_EVERY)  # first, so a failed run does not end the chain
-        fingerprint = hashlib.sha256(self.token.encode()).hexdigest()  # the token itself is never stored
+        fingerprint = self.fingerprint
         with self.registry._transaction() as db:
             db.execute('UPDATE calendar_channels SET active = 0 WHERE active = 1 AND expires_at <= ?', (now,))
         renewed: list[str] = []
         kept = 0
+        listed: list[str] = []  # calendars that already had a stored sync token: the catch-up below lists them
         for calendar in dict.fromkeys(self.calendars.values()):
             with self.registry._transaction() as db:
                 rows = db.execute('SELECT channel_id, resource_id, expires_at, token_hash FROM calendar_channels WHERE calendar = ? AND active = 1', (calendar,)).fetchall()
                 baseline = db.execute('SELECT 1 FROM calendar_sync_tokens WHERE calendar = ?', (calendar,)).fetchone()
+            if baseline is not None:
+                listed.append(calendar)
             if any(r[2] - now >= RENEW_BEFORE and r[3] == fingerprint for r in rows):
                 kept += 1
                 continue
@@ -239,7 +263,18 @@ class ChannelRenewal:
                     pass  # it expires by itself
                 with self.registry._transaction() as db:
                     db.execute('UPDATE calendar_channels SET active = 0 WHERE channel_id = ?', (old_channel,))
-        return {'event': 'renewed', 'new_channels': [*renewed], 'kept': kept}
+        caught_up: dict[str, JsonValue] = {}
+        failure: CalendarError | None = None
+        catch_up = self.catch_up
+        if catch_up is not None:
+            for calendar in listed:  # a lost notification is caught here: every calendar is listed from its sync token, every day
+                try:
+                    caught_up[hashlib.sha256(calendar.encode()).hexdigest()[:8]] = catch_up(calendar)
+                except CalendarError as error:
+                    failure = failure or error  # the other calendars are still caught up; the job then retries
+        if failure is not None:
+            raise failure
+        return {'event': 'renewed', 'new_channels': [*renewed], 'kept': kept, 'caught_up': caught_up}
 
 
 def inbound_handlers(
@@ -266,6 +301,7 @@ def inbound_handlers(
     registry = open_registry()
     calendar = GoogleCalendar(account, http or UrllibHttp())
     names = open_names(registry)
-    renewal = ChannelRenewal(registry, calendar, calendars, address=address, token=token)
+    inbound = InboundEdits(registry, calendar, calendars, names, names)
+    renewal = ChannelRenewal(registry, calendar, calendars, address=address, token=token, catch_up=inbound.catch_up)
     renewal.schedule()
-    return {CHANGED_KIND: InboundEdits(registry, calendar, calendars, names, names).handle, RENEW_KIND: renewal.handle}
+    return {CHANGED_KIND: inbound.handle, RENEW_KIND: renewal.handle}
