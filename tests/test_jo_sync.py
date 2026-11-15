@@ -24,7 +24,7 @@ class JoSyncTests(SyncTestCase):
         from unittest.mock import patch
         from t6.notion.generated import JobOrdersRow
         with patch.object(JobOrdersRow, 'notion_id', return_value=None):
-            with self.assertRaisesRegex(Refused, 'schema-snapshot'):
+            with self.assertRaisesRegex(Refused, 'admin snapshot'):
                 projection.sync(job)
 
     def test_the_bundled_snapshot_has_the_job_order_projection_ids(self) -> None:
