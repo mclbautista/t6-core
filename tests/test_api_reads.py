@@ -96,6 +96,27 @@ class ReadTests(unittest.TestCase):
         self.assertEqual(changes.result['changes'][0]['quote'], 'Waiting on Client Corp')
         self.assertNotIn('Client Corp', str(provider.calls[0].messages))
 
+    def test_concern_raise_owner_must_coordinate_the_project(self) -> None:
+        from t6.registry import Registered
+        from t6.verbs import ConcernRaiseInput
+        page = self.notion.add_page('projects', {'Name': title('Raise')})
+        project = self.registry.register(actor='setup', idempotency_key='raise-project', notion_page_id=page['id'])
+        assert isinstance(project, Registered)
+        owner, other = 't6n_' + '1' * 32, 't6n_' + '2' * 32
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', NULL, 0, 1)", (other,))
+            db.execute("INSERT INTO project_person_roles VALUES (?, ?, 'coordinator')", (project.project.id, owner))
+        operator = Client(self.client.base_url, 'operator')
+
+        def raised(person: str) -> object:
+            return operator.concern_raise(ConcernRaiseInput(project=project.project.id, owner=person, waiting_on='client', anchor='Waiting on client', as_of='2026-11-01', idempotency_key='raise-' + person))
+
+        refused = raised(other)
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'owner')
+        with patch.dict(os.environ, {'T6_PREVIEW_SIGNING_KEY': 'key'}):
+            self.assertIsInstance(raised(owner), Preview)
+
     def test_project_flags_are_read_without_ids_or_age(self) -> None:
         from t6.verbs import ProjectFlagsInput
         result = self.client.project_flags(ProjectFlagsInput(project=self.project['id']))
