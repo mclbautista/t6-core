@@ -382,6 +382,7 @@ class ApprovalRequestInput(BaseModel):
     gate: str
     target: str
     tapper_rule: str | dict[str, Any] | None = None
+    version: str | None = None
     idempotency_key: str | None = None
     confirm: str | None = None
 
@@ -950,6 +951,10 @@ class VersionAddInput(BaseModel):
     confirm: str | None = None
 
 
+class VersionGetInput(BaseModel):
+    version: str
+
+
 class VersionFindInput(BaseModel):
     frameio_file: str
 
@@ -1209,6 +1214,7 @@ def api_read(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
 
 
 VERBS = (
+    Verb("version", "get", "Get a Version", (), VersionGetInput, VersionFindOutput, "reader", "Read a Version and its Approvals.", api_read),
     Verb("version", "find", "Find a Version by Frame.io file", (), VersionFindInput, VersionFindOutput, "reader", "Resolve a review file to its Version.", api_read),
     Verb("version", "add", "Add a Version", (), VersionAddInput, VersionOutput, "coordinator", "Preview and confirm a Frame.io file.", version_write),
     Verb("version", "lock", "Lock a Version", (), VersionLockInput, VersionOutput, "coordinator", "Record picture lock.", version_write),
@@ -1384,6 +1390,7 @@ def add_parsers(commands: Any) -> None:
                 gate = name.removeprefix('request-')
                 alias_parser = parser.add_parser(name, help='Request a ' + gate + ' Approval')
                 alias_parser.add_argument('target')
+                alias_parser.add_argument('--version')
                 alias_parser.add_argument('--tapper-rule', type=lambda value: json.loads(value) if value.startswith('{') else value)
                 alias_parser.add_argument('--idempotency-key')
                 alias_parser.add_argument('--confirm')
@@ -1417,6 +1424,7 @@ def add_parsers(commands: Any) -> None:
             if entry.verb == 'request':
                 parser.add_argument('gate')
                 parser.add_argument('target')
+                parser.add_argument('--version')
                 parser.add_argument('--tapper-rule', type=lambda value: json.loads(value) if value.startswith('{') else value)
             else:
                 parser.add_argument('approval')
