@@ -57,6 +57,14 @@ Modelled in `t6.drives`.
   are blank when they were never recorded. No end means open, and "which drives
   are out for show X" is a query over open Assignments. A reused Drive gets a new
   Assignment; old ones stay as its history.
+- **Swing drive**: a Drive with a `swing` Assignment, lent to a Project, and
+  optionally to a Person (the holder). The Assignment may have a **return
+  date**, the day it is due back. `swing return` ends the swing and clears the
+  date; `swing unassign` ends it and keeps the date in history. A swing is
+  **overdue** when it is still open and its return date is before today (Manila
+  time). The Notion Swing Drives database is imported once, by page ID and
+  serial only, and then retired; rows that cannot be placed go to the exception
+  queue.
 
 ## Bays and Bookings
 

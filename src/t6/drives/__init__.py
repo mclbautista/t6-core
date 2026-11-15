@@ -296,6 +296,10 @@ class Assignment:
     still out for that Project. The same label may be on different Drives in
     different Projects. `role` and `start` are None when they were never
     recorded, as in rows imported from the old workbooks.
+
+    A swing lent out has a `return_date`, the day it is due back; it is cleared
+    when the swing is returned. `holder` is the T6 Person ID of the Person who
+    has the Drive, when a Person (and not only the Project) holds it.
     """
 
     label: str | None
@@ -304,11 +308,16 @@ class Assignment:
     start: date | None
     end: date | None = None
     remarks: str | None = None
+    return_date: date | None = None
+    holder: str | None = None
 
     def __post_init__(self) -> None:
         label = _blank_to_none(self.label)
         if self.end is not None and self.start is not None and self.end < self.start:
             raise ValueError(f"an Assignment cannot end ({self.end}) before it starts ({self.start})")
+        if self.return_date is not None and self.start is not None and self.return_date < self.start:
+            raise ValueError(f"an Assignment cannot be due back ({self.return_date}) before it starts ({self.start})")
+        object.__setattr__(self, "holder", _blank_to_none(self.holder))
         object.__setattr__(self, "label", label)
         object.__setattr__(self, "remarks", _blank_to_none(self.remarks))
 
@@ -524,6 +533,30 @@ class DriveStore(Protocol):
 
         Unresolved text is always accepted. An ID must be a T6 Project ID, and
         a store on the t6 database also needs the Project to be registered.
+        """
+        ...
+
+    def drop_return_date(self, drive_id: str, number: int) -> Assignment:
+        """Clear the return date of the Assignment with this number and return it.
+
+        Raises ValueError if there is no such Assignment; UnknownDrive if the ID
+        is not recorded. Clearing an Assignment with no return date changes nothing.
+        """
+        ...
+
+    def overdue_returns(self, today: date) -> list[tuple[Drive, Assignment]]:
+        """The Drives still out whose open Assignment was due back before `today`.
+
+        Ordered by return date, then label, then Drive ID. An ended Assignment,
+        or one with no return date, is never overdue.
+        """
+        ...
+
+    def check_person(self, person_id: str) -> None:
+        """Raise ValueError unless `person_id` can be the holder of an Assignment.
+
+        An ID must be a T6 Person ID, and a store on the t6 database also needs
+        the Person to be registered.
         """
         ...
 

@@ -17,6 +17,7 @@ from t6.verbs import (
     MediaLinkInput, MediaUnlinkInput, TimelineLinkInput, TimelineListInput, FrameioProjectInput, MediaListInput, MediaMigrateInput,
     TranscriptCreateInput, TranscriptGetInput, TranscriptSpeakersInput, TranscriptTranslateInput,
     DriveReceiveInput, DriveReleaseInput, DriveReturnInput, DriveRetireInput, DriveAssignInput, DriveUnassignInput,
+    SwingAssignInput, SwingUnassignInput, SwingReturnInput, SwingOverdueInput,
     BayBookInput, BookingMoveInput, BookingExtendInput, BookingCancelInput, BookingGetInput, BookingListInput,
     DeliverableDeliverInput, PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
@@ -142,6 +143,18 @@ class Client:
 
     def drive_unassign(self, inputs: DriveUnassignInput) -> Result:
         return self.call('drive', 'unassign', inputs)
+
+    def swing_assign(self, inputs: SwingAssignInput) -> Result:
+        return self.call('swing', 'assign', inputs)
+
+    def swing_unassign(self, inputs: SwingUnassignInput) -> Result:
+        return self.call('swing', 'unassign', inputs)
+
+    def swing_return(self, inputs: SwingReturnInput) -> Result:
+        return self.call('swing', 'return', inputs)
+
+    def swing_overdue(self, inputs: SwingOverdueInput) -> Result:
+        return self.call('swing', 'overdue', inputs)
 
     def media_link(self, inputs: MediaLinkInput) -> Result:
         return self.call('media', 'link', inputs)

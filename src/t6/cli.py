@@ -364,6 +364,33 @@ def _drives_import_dry_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _import_swing(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
+    from t6.drives.sqlite import SqliteDriveStore
+    from t6.notion import NotionError
+    from t6.notion.swing_drives import read_swing_drives
+    from t6.registry import SqliteProjectRegistry
+    from t6.swing_import import import_swing_drives
+    token = os.environ.get(TOKEN_VARIABLE)
+    if not token:
+        return _fail(f"set {TOKEN_VARIABLE} to a Notion integration token")
+    if args.apply and not args.preview:
+        return _fail("--apply needs --preview FILE")
+    if not args.data_sources:
+        return _fail("--swing needs --data-sources FILE")
+    try:
+        data_source = _read_data_sources(args.data_sources).get("swing_drives")
+        if not data_source:
+            return _fail("--data-sources has no 'swing_drives' entry")
+        with open_notion(token) as client:
+            rows = read_swing_drives(client, data_source)
+        digest = json.loads(args.preview.read_text(encoding="utf-8"))["digest"] if args.apply else None
+        report = import_swing_drives(rows, SqliteDriveStore(SqliteProjectRegistry(args.registry_db)), apply=args.apply, digest=digest)
+    except (OSError, ValueError, KeyError, NotionError) as error:
+        return _fail(str(error))
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
 def _database_paths() -> dict[str, Path]:
     """The server's three database files, from the same variables and defaults it uses."""
     return {
@@ -555,9 +582,14 @@ def main(
         help="Import the legacy drive workbooks into memory and print the review report",
         description="Nothing is written anywhere: the import runs into an in-memory store that is thrown away.",
     )
-    dry_run.add_argument("workbook", type=Path, help="the per-project drive workbook (.xlsx)")
+    dry_run.add_argument("workbook", type=Path, nargs="?", help="the per-project drive workbook (.xlsx); not used with --swing")
     dry_run.add_argument("--log-sheet", type=Path, metavar="FILE", help="also import the drive log sheet workbook (.xlsx) into the same store")
     dry_run.add_argument("--projects", type=Path, metavar="FILE", help="JSON list of {\"page_id\", \"name\"} to resolve Project names against; without it every Project is unresolved")
+    dry_run.add_argument("--swing", action="store_true", help="import the Notion Swing Drives database into the t6 database: a preview, unless --apply")
+    dry_run.add_argument("--data-sources", type=Path, metavar="FILE", help="with --swing: JSON of database key to data source ID, with a swing_drives entry")
+    dry_run.add_argument("--registry-db", type=Path, default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)), help="with --swing: the t6 database")
+    dry_run.add_argument("--apply", action="store_true", help="with --swing: carry out the import; needs --preview FILE")
+    dry_run.add_argument("--preview", type=Path, metavar="FILE", help="with --swing --apply: the JSON a preview printed")
     consumer = commands.add_parser(
         "check-consumer",
         help="Check app imports, credentials and direct calls against ADR 0002",
@@ -728,6 +760,10 @@ def main(
     if args.command == "check-consumer":
         return _check_consumer(args)
     if args.command == "drives-import-dry-run":
+        if args.swing:
+            return _import_swing(args, open_notion)
+        if args.workbook is None:
+            return _fail("give the per-project drive workbook, or --swing")
         return _drives_import_dry_run(args)
     if args.command in {"health", "backup", "restore"}:
         return _ops(args)

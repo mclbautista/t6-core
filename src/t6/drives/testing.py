@@ -215,6 +215,21 @@ class InMemoryDriveStore:
         assigned[number - 1] = ended
         return ended
 
+    def drop_return_date(self, drive_id: str, number: int) -> Assignment:
+        assigned = self._assigned(drive_id)
+        if not 1 <= number <= len(assigned):
+            raise ValueError(f"the Drive has no Assignment number {number}")
+        assigned[number - 1] = replace(assigned[number - 1], return_date=None)
+        return assigned[number - 1]
+
+    def overdue_returns(self, today: date) -> list[tuple[Drive, Assignment]]:
+        found = [(self._drives[key], a) for key, items in self._assignments.items() for a in items
+                 if a.is_open and a.return_date is not None and a.return_date < today]
+        return sorted(found, key=lambda pair: (pair[1].return_date or date.min, pair[1].label or "", pair[0].key))
+
+    def check_person(self, person_id: str) -> None:
+        T6Id.parse(person_id, EntityKind.PERSON)
+
     def link_delivery(self, delivery_id: str, drive_ids: Iterable[str]) -> None:
         keys = list(dict.fromkeys(drive_ids))
         for key in keys:

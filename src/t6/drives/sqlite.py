@@ -26,7 +26,12 @@ def _dump(value: Any) -> str:
         if isinstance(item, date):
             return item.isoformat()
         return item.value
-    return json.dumps(asdict(value), default=encode, sort_keys=True)
+    fields = asdict(value)
+    if isinstance(value, Assignment):  # keep rows written before swing fields byte-equal
+        for name in ('return_date', 'holder'):
+            if fields[name] is None:
+                del fields[name]
+    return json.dumps(fields, default=encode, sort_keys=True)
 
 
 def audit_json(value: Any) -> dict[str, Any]:
@@ -50,6 +55,7 @@ def _assignment(data: str) -> Assignment:
     value = json.loads(data)
     value['project'] = Ref(**value['project'])
     value['start'], value['end'] = _date(value['start']), _date(value['end'])
+    value['return_date'] = _date(value.get('return_date'))
     if value['role']:
         value['role'] = Role(value['role'])
     return Assignment(**value)
@@ -263,6 +269,29 @@ class SqliteDriveStore:
             ended = replace(held, end=end)
             db.execute('UPDATE drive_assignments SET data=? WHERE id=?', (_dump(ended), rows[number - 1][0]))
             return ended
+
+    def drop_return_date(self, drive_id: str, number: int) -> Assignment:
+        with self._tx() as db:
+            self._get(db, drive_id)
+            rows = db.execute('SELECT id, data FROM drive_assignments WHERE drive_id=? ORDER BY id', (drive_id,)).fetchall()
+            if not 1 <= number <= len(rows):
+                raise ValueError(f'the Drive has no Assignment number {number}')
+            cleared = replace(_assignment(rows[number - 1][1]), return_date=None)
+            db.execute('UPDATE drive_assignments SET data=? WHERE id=?', (_dump(cleared), rows[number - 1][0]))
+            return cleared
+
+    def overdue_returns(self, today: date) -> list[tuple[Drive, Assignment]]:
+        with self._tx() as db:
+            rows = db.execute('SELECT drives.data, drive_assignments.data FROM drive_assignments JOIN drives ON drives.id=drive_assignments.drive_id').fetchall()
+            pairs = [(_drive(d), _assignment(a)) for d, a in rows]
+            return sorted((p for p in pairs if p[1].is_open and p[1].return_date is not None and p[1].return_date < today),
+                          key=lambda p: (p[1].return_date or date.min, p[1].label or '', p[0].id))
+
+    def check_person(self, person_id: str) -> None:
+        with self._tx() as db:
+            T6Id.parse(person_id, EntityKind.PERSON)
+            if not db.execute('SELECT 1 FROM persons WHERE id=?', (person_id,)).fetchone():
+                raise ValueError('the holder must be a registered t6 Person')
 
     def link_delivery(self, delivery_id: str, drive_ids: Iterable[str]) -> None:
         keys = list(dict.fromkeys(drive_ids))

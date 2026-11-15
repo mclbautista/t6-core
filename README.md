@@ -504,6 +504,34 @@ I/O and needs no extra.
   lists the Drives still out for a Project; `assignment_history(drive_id)` lists a
   Drive's Assignments across Projects, oldest start first. An unknown ID
   raises `UnknownDrive`. A label can repeat on different Drives and Projects.
+- A swing Assignment (role `SWING`) may carry a `return_date`, the day it is due
+  back, and a `holder` (a T6 Person ID). `return_date` cannot be before the
+  start. `DriveStore.drop_return_date(drive_id, number)` clears it,
+  `overdue_returns(today)` lists the open Assignments due back before `today`,
+  and `check_person(person_id)` checks a holder.
+
+### Swing Drives
+
+Swing Drives live once, in `t6.drives`. The verbs, all with the `drives`
+permission except the read, are `t6 swing assign DRIVE TARGET [--project P]
+[--label L] [--start D] [--return-date D]` (TARGET is a T6 Project ID, or a T6
+Person ID with `--project`), `t6 swing unassign DRIVE [--project P]
+[--assignment N] [--end D]` and `t6 swing return DRIVE [...]` (the same
+options). Each previews, then confirms with `--confirm`, and is idempotent.
+`return` ends the swing and clears its return date; `unassign` ends it and
+keeps the date in history. When a Drive has several open swings, name one with
+`--project` or `--assignment`, or the verb answers Ambiguous. `t6 swing
+overdue` (read only) lists the open swings due back before today in Manila time.
+
+`t6 admin drive import --swing --data-sources FILE` (with a `swing_drives`
+entry) previews the import of the Notion Swing Drives database and writes
+nothing. `--apply --preview FILE` carries it out, and only if Notion still
+holds the data the preview saw. A second apply changes nothing. A row is
+identified by its page ID and its Serial only, never by name or label. A row
+with no usable serial, a serial on several rows or only suspected, or no or
+an unregistered Project goes to the exception queue with its page ID. A row
+not in use is skipped and listed. The committed snapshot has no Serial or
+Projects property on this database; until they exist every row is an exception.
 
 ### Importing the legacy workbooks
 

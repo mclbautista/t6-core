@@ -1620,6 +1620,62 @@ def drive_write(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
         idempotency_key=getattr(inputs, 'idempotency_key'), confirm=getattr(inputs, 'confirm'))
 
 
+class SwingAssignInput(BaseModel):
+    drive: str
+    target: str
+    project: str | None = None
+    label: str | None = None
+    start: str | None = None
+    return_date: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class SwingUnassignInput(BaseModel):
+    drive: str
+    project: str | None = None
+    assignment: int | None = None
+    end: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class SwingReturnInput(SwingUnassignInput):
+    pass
+
+
+class SwingWriteOutput(DriveWriteOutput):
+    holder: str | None = None
+    return_date: str | None = None
+
+
+class SwingOverdueInput(BaseModel):
+    pass
+
+
+class SwingOverdueOutput(BaseModel):
+    today: str
+    overdue: list[dict[str, Any]]
+
+
+def swing_write(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.drive_verbs import DriveVerbs
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    people = _people()
+    verb = next(name for model, name in ((SwingAssignInput, 'swing_assign'), (SwingUnassignInput, 'swing_unassign'), (SwingReturnInput, 'swing_return'))
+                if type(inputs) is model)
+    return DriveVerbs(people.registry, people.tokens).write(
+        verb, inputs.model_dump(exclude={'idempotency_key', 'confirm'}, exclude_none=True), actor=_actor.get(),
+        idempotency_key=getattr(inputs, 'idempotency_key'), confirm=getattr(inputs, 'confirm'))
+
+
+def swing_overdue(inputs: SwingOverdueInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.drive_verbs import DriveVerbs
+    people = _people()
+    return Done(result=DriveVerbs(people.registry, people.tokens).overdue())
+
+
 class TranscriptCreateInput(BaseModel):
     media: str
     deliverable: str | None = None
@@ -1675,6 +1731,10 @@ VERBS = (
     Verb('drive', 'retire', 'Retire a Drive', (), DriveRetireInput, DriveWriteOutput, 'drives', 'Needs a reason; a later receive or return brings the Drive back.', drive_write),
     Verb('drive', 'assign', 'Assign a Drive to a Project', (), DriveAssignInput, DriveWriteOutput, 'drives', 'Preview and confirm; adds an Assignment with label and role.', drive_write),
     Verb('drive', 'unassign', 'End a Drive Assignment', (), DriveUnassignInput, DriveWriteOutput, 'drives', 'Ends the open Assignment and keeps it in history; when several are open, pick by label, role or assignment number.', drive_write),
+    Verb('swing', 'assign', 'Assign a swing Drive to a Person or Project', (), SwingAssignInput, SwingWriteOutput, 'drives', 'Preview and confirm; adds a swing Assignment, with an optional return date. A Person target also needs --project.', swing_write),
+    Verb('swing', 'unassign', 'End a swing Assignment', (), SwingUnassignInput, SwingWriteOutput, 'drives', 'Ends the open swing Assignment and keeps it, with its return date, in history.', swing_write),
+    Verb('swing', 'return', 'Return a swing Drive', (), SwingReturnInput, SwingWriteOutput, 'drives', 'Ends the open swing Assignment and clears its return date.', swing_write),
+    Verb('swing', 'overdue', 'List swing Drives past their return date', (), SwingOverdueInput, SwingOverdueOutput, 'reader', 'Open swing Assignments due back before today (Asia/Manila).', swing_overdue, read_only=True),
     Verb('media', 'link', 'Link a Media location', (), MediaLinkInput, MediaWriteOutput, 'coordinator', 'Preview and confirm the link.', media_write),
     Verb('media', 'unlink', 'Unlink a Media location', (), MediaUnlinkInput, MediaWriteOutput, 'coordinator', 'Preview and confirm the unlink.', media_write),
     Verb('frameio', 'project link', 'Link a Frame.io project to a Project', (), FrameioProjectInput, MediaWriteOutput, 'staff', 'One Frame.io project belongs to one Project. Preview and confirm.', frameio_project_link),
@@ -1928,6 +1988,25 @@ def add_parsers(commands: Any) -> None:
                 parser.add_argument('--on')
             parser.add_argument('--idempotency-key')
             parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.handler in (swing_write, swing_overdue):
+            parser = parser.add_parser(entry.verb, help=entry.description)
+            if entry.verb == 'assign':
+                parser.add_argument('drive')
+                parser.add_argument('target')
+                parser.add_argument('--project')
+                parser.add_argument('--label')
+                parser.add_argument('--start')
+                parser.add_argument('--return-date')
+            elif entry.handler is swing_write:
+                parser.add_argument('drive')
+                parser.add_argument('--project')
+                parser.add_argument('--assignment', type=int)
+                parser.add_argument('--end')
+            if entry.handler is swing_write:
+                parser.add_argument('--idempotency-key')
+                parser.add_argument('--confirm')
             parser.set_defaults(registered_verb=entry)
             continue
         if entry.handler in (frameio_project_link, frameio_project_unlink):
