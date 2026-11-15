@@ -321,6 +321,9 @@ _MIGRATIONS = (
         SELECT 'main', 'abang_nudge', r.id, json_object('request', r.id), h.at + 259200, 'queued', h.at
         FROM abang_requests r JOIN abang_history h ON h.request_id = r.id AND h.state = 'requested'
         WHERE r.state = 'requested'"""),
+    (31, False, """CREATE TABLE concern_pm_lines (project_id TEXT NOT NULL REFERENCES projects(id), as_of TEXT NOT NULL, line TEXT NOT NULL, PRIMARY KEY (project_id, as_of, line));
+    CREATE TABLE concern_pm_pending (concern_id TEXT PRIMARY KEY REFERENCES concerns(id), as_of TEXT NOT NULL, quote TEXT NOT NULL, due REAL NOT NULL, revision INTEGER NOT NULL);
+    CREATE TABLE concern_pm_changes (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL REFERENCES projects(id), concern_id TEXT NOT NULL REFERENCES concerns(id), action TEXT NOT NULL, quote TEXT NOT NULL, at REAL NOT NULL)"""),
 )
 
 

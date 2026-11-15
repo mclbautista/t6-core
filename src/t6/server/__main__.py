@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import secrets
 import sys
+import time
+from collections.abc import Mapping
 from dataclasses import replace
 
 from t6.operator import ActionStore, OperatorService
@@ -27,6 +29,22 @@ import threading
 def _address(value: str) -> tuple[str, int]:
     host, _, port = value.rpartition(":")
     return host, int(port)
+
+
+def concern_autoscan_seconds(environ: Mapping[str, str]) -> float | None:
+    """Seconds between automatic PM Notes scans, or None when the scan is off (the default)."""
+    if environ.get("T6_CONCERN_AUTOSCAN", "").strip().lower() not in {"1", "true", "on", "yes"}:
+        return None
+    return max(60.0, float(environ.get("T6_CONCERN_AUTOSCAN_SECONDS", "900")))
+
+
+def _autoscan(api: VerbAPI, seconds: float) -> None:
+    while True:
+        try:
+            api.scan_concerns()
+        except Exception as error:  # One bad scan must not stop the next.
+            print(f"t6.server: concern scan failed: {type(error).__name__}", file=sys.stderr, flush=True)
+        time.sleep(seconds)
 
 
 def main() -> int:
@@ -60,6 +78,9 @@ def main() -> int:
                              service_permissions_from_env(environ)),
                       queue, secrets_from_env(environ), _open_notion, app,
                       llm_service=service_from_env(environ), data_sources=sources, privacy_registry=privacy_registry)
+        interval = concern_autoscan_seconds(environ)
+        if interval is not None and api.llm_service is not None:
+            threading.Thread(target=_autoscan, args=(api, interval), daemon=True).start()
         def tailnet(request: Request) -> Response:
             if request.path.split("?", 1)[0].startswith("/v1/") or request.path.split("?", 1)[0] in {"/health", "/tap"}:
                 return api(request)
