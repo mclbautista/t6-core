@@ -5,6 +5,7 @@ import hashlib
 import json
 from typing import Any, Iterable
 
+from t6.google.sync import enqueue
 from t6.preview import PreviewTokens
 from t6.verbs import Outcome
 from t6.ids import EntityKind, T6Id
@@ -156,4 +157,5 @@ class BookingStore:
             db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (project, identifier, now, actor, action, name, cursor.lastrowid))
             db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
             db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(plan)))
+            enqueue(db, identifier, old[1] if old else None, key, now)
             return Done(result=plan)
