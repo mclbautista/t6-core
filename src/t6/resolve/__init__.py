@@ -1,7 +1,7 @@
 """DaVinci Resolve project server reader. Install with `pip install 't6[resolve]'`.
 
-- `ProjectServer(db, database, schema)`: lists every project of one database.
-  It refuses a role that can write.
+- `ProjectServer(db, database, schema)`: lists projects of one database.
+  It refuses unverified schemas and roles detected as writable.
 - `ResolveProject`: database, folder path, name and internal ID. Its
   `external_id` is `<database>/<folder path>/<project name>`, and `ref` is the
   ExternalRef for External Links (system `resolve`, kind `project`, internal ID
