@@ -324,6 +324,7 @@ _MIGRATIONS = (
     (31, False, """CREATE TABLE concern_pm_lines (project_id TEXT NOT NULL REFERENCES projects(id), as_of TEXT NOT NULL, line TEXT NOT NULL, PRIMARY KEY (project_id, as_of, line));
     CREATE TABLE concern_pm_pending (concern_id TEXT PRIMARY KEY REFERENCES concerns(id), as_of TEXT NOT NULL, quote TEXT NOT NULL, due REAL NOT NULL, revision INTEGER NOT NULL);
     CREATE TABLE concern_pm_changes (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL REFERENCES projects(id), concern_id TEXT NOT NULL REFERENCES concerns(id), action TEXT NOT NULL, quote TEXT NOT NULL, at REAL NOT NULL)"""),
+    (32, False, """CREATE TABLE concern_pm_attempts (project_id TEXT NOT NULL REFERENCES projects(id), as_of TEXT NOT NULL, line TEXT NOT NULL, attempts INTEGER NOT NULL, PRIMARY KEY (project_id, as_of, line))"""),
 )
 
 

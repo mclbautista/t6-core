@@ -15,6 +15,7 @@ from t6.verbs import Done, Outcome, Refused
 from t6.domain.studio_time import MANILA
 
 WEEK = 7 * 24 * 60 * 60
+MAX_ATTEMPTS = 3
 _WAITING = re.compile(r"\b(?:wait(?:ing)?|await(?:ing)?|pending|hinihintay|hinintay|inaantay|inaabangan|antay|abang)\b", re.IGNORECASE)
 
 
@@ -69,6 +70,13 @@ class ConcernStore:
                     self._pm_log(db, project, concern, 'concern_auto_resolve', quote, now, state)
                 db.execute('DELETE FROM concern_pm_pending WHERE concern_id = ?', (concern,))
 
+    def _rejected(self, project: str, as_of: str, text: str) -> None:
+        """Count a rejected answer for a line; after MAX_ATTEMPTS the line is recorded and not sent again."""
+        with self.registry._transaction() as db:
+            db.execute('INSERT INTO concern_pm_attempts VALUES (?, ?, ?, 1) ON CONFLICT (project_id, as_of, line) DO UPDATE SET attempts = attempts + 1', (project, as_of, text))
+            if db.execute('SELECT attempts FROM concern_pm_attempts WHERE project_id = ? AND as_of = ? AND line = ?', (project, as_of, text)).fetchone()[0] >= MAX_ATTEMPTS:
+                db.execute('INSERT OR IGNORE INTO concern_pm_lines VALUES (?, ?, ?)', (project, as_of, text))
+
     def process_notes(self, project: str, owner: str, lines: list[dict[str, str]], classify: Callable[[dict[str, Any]], Any]) -> None:
         for line in sorted(lines, key=lambda item: item['as_of']):
             text, as_of = line['text'], line['as_of']
@@ -90,18 +98,21 @@ class ConcernStore:
             offered = {r[0]: r for r in rows if as_of > r[2]}
             answer = classify({'line': text, 'as_of': as_of, 'concerns': [{'id': r[0], 'anchor': r[1], 'state': r[3], 'human_decision': bool(r[5])} for r in offered.values()]})
             if not isinstance(answer, dict):
-                continue
+                continue  # No usable answer (the LLM was unavailable): the line is tried again on the next scan.
             choice, quote, concern = answer.get('choice'), answer.get('quote'), answer.get('concern_id')
             waiting = answer.get('waiting_on')
             if choice not in ('new', 'nothing', 'continues', 'settles') or not isinstance(quote, str) or not quote or quote not in text:
+                self._rejected(project, as_of, text)
                 continue
             repeated = next((r[0] for r in offered.values() if r[1] == text), None)
             if choice == 'new' and repeated is not None:
                 # The same words on a later date are fresh evidence for the Concern they opened, never a second one.
                 choice, concern = 'continues', repeated
             if choice in ('continues', 'settles') and concern not in offered:
+                self._rejected(project, as_of, text)
                 continue
             if choice == 'new' and (not isinstance(waiting, str) or not waiting.strip() or waiting not in quote or not _WAITING.search(quote)):
+                self._rejected(project, as_of, text)
                 continue
             now = self.registry._clock()
             with self.registry._transaction() as db:
@@ -114,7 +125,7 @@ class ConcernStore:
                         continue
                 if choice == 'new':
                     concern = str(T6Id.mint(EntityKind.CONCERN))
-                    db.execute("INSERT INTO concerns (id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')", (concern, project, owner, waiting, quote, as_of, now, now))
+                    db.execute("INSERT INTO concerns (id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')", (concern, project, owner, waiting, quote, as_of, min(now, datetime.fromisoformat(as_of).replace(tzinfo=MANILA).timestamp()), now))
                     assert isinstance(concern, str)
                     self._schedule(db, concern, now, 1)
                     self._pm_log(db, project, concern, 'concern_auto_raise', quote, now, None)

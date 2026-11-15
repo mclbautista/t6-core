@@ -395,3 +395,19 @@ class WorkerRegistrationTests(SyncTestCase):
         frameio = WorkerSettings("http://server.invalid:8081", WORKER_SECRET, "frameio")
         environ = {"T6_NOTION_TOKEN": "token", "T6_NOTION_PROJECTS_DATA_SOURCE": PROJECTS}
         self.assertEqual(configured_handlers(environ, frameio, transport), {})
+
+
+class ReviewChatLinksTests(SyncTestCase):
+    def test_the_topic_whose_name_carries_the_project_code_comes_first(self) -> None:
+        page = self.page(code="ABC123")
+        found = self.registry.register(actor="setup", idempotency_key="review-chat", notion_page_id=page)
+        project = found.project.id  # type: ignore[union-attr]
+        with self.registry._transaction() as db:
+            db.execute("UPDATE projects SET code = 'ABC123', code_form = 'abc123', rotation = 'in' WHERE id = ?", (project,))
+            for link, chat, topic in (("a", -100, 4), ("b", -100, 5), ("c", -100, 6)):
+                db.execute("INSERT INTO chat_links VALUES (?, ?, ?, ?, 'active')", (link, project, chat, topic))
+            db.execute("INSERT INTO linked_chat_topics VALUES (-100, 5, 'ABC123 - Edit')")
+            db.execute("INSERT INTO linked_chat_topics VALUES (-100, 6, 'Other')")
+        answer = self.send("GET", f"/registry/review-chat/{page}")
+        self.assertEqual(answer.status, 200, answer.body)
+        self.assertEqual(answer.body["links"], [{"chat": -100, "topic": 5}, {"chat": -100, "topic": 4}, {"chat": -100, "topic": 6}])
