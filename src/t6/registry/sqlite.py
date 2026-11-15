@@ -293,6 +293,9 @@ _MIGRATIONS = (
         concern_id TEXT PRIMARY KEY REFERENCES concerns(id), project_id TEXT NOT NULL REFERENCES projects(id), field TEXT NOT NULL
     )"""),
     (26, False, """CREATE TABLE delivery_share_views (event_id TEXT PRIMARY KEY)"""),
+    (27, False, """CREATE TABLE linked_chat_topics (chat_id INTEGER NOT NULL, topic_id INTEGER NOT NULL, name TEXT NOT NULL, PRIMARY KEY (chat_id, topic_id));
+    CREATE TABLE linked_chat_notices (key TEXT PRIMARY KEY, text TEXT NOT NULL);
+    CREATE TABLE linked_chat_sends (ref INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL, topic_id INTEGER NOT NULL, links TEXT NOT NULL)"""),
 )
 
 

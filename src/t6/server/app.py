@@ -741,7 +741,14 @@ class WebhookApp:
             if project is None:
                 return Response(404)
             with registry._transaction() as db:
-                rows = db.execute("SELECT chat_id, topic_id FROM chat_links WHERE project_id = ? AND state = 'active' ORDER BY rowid", (project.id,)).fetchall()
+                rows = db.execute(
+                    "SELECT l.chat_id, l.topic_id, t.name, p.code_form FROM chat_links l JOIN projects p ON p.id = l.project_id "
+                    "LEFT JOIN linked_chat_topics t ON t.chat_id = l.chat_id AND t.topic_id = l.topic_id "
+                    "WHERE l.project_id = ? AND l.state = 'active' ORDER BY l.rowid", (project.id,)
+                ).fetchall()
+            from t6.lookup.normalize import Normalizers
+            # The topic whose name carries the Project's code goes first; the sort keeps link order otherwise.
+            rows.sort(key=lambda row: not (row[2] and row[3] and row[3] in Normalizers().code(row[2])))
             return Response(200, {"links": [{"chat": row[0], "topic": row[1]} for row in rows]})
         if len(steps) == 2 and steps[0] == 'status-sync':
             if not any(g.registry_sync for g in grants):

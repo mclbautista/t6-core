@@ -317,6 +317,11 @@ class ReviewMessageTests(ServerTestCase):
         self.run_worker()
         self.assertEqual([(m["to"], m.get("topic")) for m in self.gateway.sent.values()], [(-200, 9)])
         with registry._transaction() as db:
+            db.execute("INSERT INTO chat_links VALUES (?, ?, ?, ?, ?)", ("named", project.id, -200, 12, "active"))
+            db.execute("INSERT INTO linked_chat_topics VALUES (-200, 9, 'General talk'), (-200, 12, 'show - Edit')")
+        self.assertEqual(target("fp1"), (-200, 12))
+        with registry._transaction() as db:
+            db.execute("DELETE FROM chat_links WHERE id = 'named'")
             db.execute("UPDATE chat_links SET topic_id = NULL")
         self.comment("c2", "Ben", "u-b", "2026-11-12T10:01:00Z")
         self.clock.advance(15 * MINUTE)

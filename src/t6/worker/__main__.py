@@ -180,6 +180,11 @@ def configured_handlers(
 
             target = ReviewTarget(ExternalLinks(NotionClient(token), external_links), review_registry)
 
+        track_send = None
+        if environ.get("T6_DATABASE"):
+            from t6.registry.sqlite import SqliteProjectRegistry
+            from t6.worker.linked_chats import LinkedChats
+            track_send = LinkedChats(SqliteProjectRegistry(environ["T6_DATABASE"]), gateway).track_send
         review = ReviewMessage(
             GatewayClient(HttpTransport(gateway_url), gateway_secret),
             chat,
@@ -187,6 +192,7 @@ def configured_handlers(
             lambda request: ask(queue, request, timeout=review_ask_seconds(request)),
             target=target,
             version=review_registry.review_version,
+            track_send=track_send,
         )
         handlers.update(review.handlers())
     return {"main": handlers} if handlers else {}
@@ -386,10 +392,11 @@ def main(
     if settings.queue == "main" and environ.get("T6_DATABASE") and environ.get("T6_GATEWAY_URL") and environ.get("T6_GATEWAY_SECRET"):
         from t6.registry.sqlite import SqliteProjectRegistry
         from t6.worker.linked_chats import LinkedChats
+        from t6.domain.studio_people import operator_ids
         from t6.worker.gateway import GatewayRejected
         from urllib.error import URLError
 
-        linked = LinkedChats(SqliteProjectRegistry(environ["T6_DATABASE"]), GatewayClient(HttpTransport(environ["T6_GATEWAY_URL"]), environ["T6_GATEWAY_SECRET"]))
+        linked = LinkedChats(SqliteProjectRegistry(environ["T6_DATABASE"]), GatewayClient(HttpTransport(environ["T6_GATEWAY_URL"]), environ["T6_GATEWAY_SECRET"]), operator_ids(environ))
         def linked_tick() -> None:
             try:
                 linked.tick()

@@ -50,12 +50,14 @@ class ChatLinkTests(unittest.TestCase):
         self.assertTrue(first.result['chat_link_id'].startswith('t6h_'))
         self.assertIsInstance(self.links.write('link-chat', values, actor=self.actor), Done)
         self.approved('unlink-chat', values, 'unlink')
+        self.approved('link-chat', values, 'relink')
+        self.approved('unlink-chat', values, 'unlink-again')
         with self.registry._transaction() as db:
-            self.assertEqual([r[0] for r in db.execute('SELECT state FROM chat_link_history ORDER BY id')], ['active', 'inactive'])
+            self.assertEqual([r[0] for r in db.execute('SELECT state FROM chat_link_history ORDER BY id')], ['active', 'inactive', 'active', 'inactive'])
         actions = [a.action for a in self.registry.activity(self.project)]
-        self.assertEqual(actions.count('project_link_chat'), 1)
-        self.assertEqual(actions.count('project_unlink_chat'), 1)
-        self.assertEqual(len([a for a in self.registry.audit(self.project) if a.action.startswith('project_')]), 2)
+        self.assertEqual(actions.count('project_link_chat'), 2)
+        self.assertEqual(actions.count('project_unlink_chat'), 2)
+        self.assertEqual(len([a for a in self.registry.audit(self.project) if a.action.startswith('project_')]), 4)
 
     def test_catalogue(self) -> None:
         self.assertTrue({'link-chat', 'unlink-chat'} <= {v['verb'] for v in catalogue() if v['noun'] == 'project'})
@@ -78,3 +80,31 @@ class ChatLinkTests(unittest.TestCase):
             self.assertEqual(push(42).body['outcome'], 'rejected')
             with self.registry._transaction() as db:
                 self.assertEqual(db.execute('SELECT count(*) FROM chat_links').fetchone()[0], 0)
+
+    def test_preview_and_approval_name_a_known_topic(self) -> None:
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO linked_chat_topics VALUES (-100, 12, 'ABC123 - Edit')")
+        preview = self.links.write('link-chat', {'project': self.project, 'chat': -100, 'topic': 12}, actor=self.actor, idempotency_key='named')
+        assert isinstance(preview, Preview)
+        self.assertEqual(preview.plan['topic_name'], 'ABC123 - Edit')
+        with self.registry._transaction() as db:
+            target = db.execute('SELECT target FROM approvals WHERE id = ?', (preview.plan['approval_id'],)).fetchone()[0]
+        self.assertEqual(target, f'{self.project}: chat -100, topic 12 (ABC123 - Edit)')
+
+    def test_topic_name_prefills_link_command(self) -> None:
+        import tempfile
+        from t6.server import Request, ServerConfig, WebhookApp
+        from t6.server.queue import JobQueue
+        from t6.server.verbs import VerbAPI
+        with self.registry._transaction() as db:
+            db.execute("UPDATE projects SET code = 'ABC123', code_form = 'abc123', rotation = 'in' WHERE id = ?", (self.project,))
+            db.execute("INSERT INTO linked_chat_topics VALUES (-100, 12, 'ABC123 - Edit')")
+        with tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ', {'T6_PREVIEW_SIGNING_KEY': 'test'}):
+            queue = JobQueue(tmp + '/queue')
+            api = VerbAPI(People(self.registry, self.tokens), queue, {'gateway': 'gateway'}, lambda _: None, WebhookApp(queue, ServerConfig(), registry=self.registry))
+            body = {'kind': 'command', 'command': 'link', 'args': '', 'chat': -100, 'topic': 12, 'from': {'id': 42}}
+            response = api(Request('POST', '/tap', {'Authorization': 'Bearer gateway', 'X-Telegram-User-Id': '42', 'Idempotency-Key': 'prefill'}, json.dumps(body).encode()))
+            self.assertEqual(response.body['outcome'], 'accepted')
+            with self.registry._transaction() as db:
+                request = json.loads(db.execute('SELECT request FROM chat_link_previews').fetchone()[0])
+                self.assertEqual(request['values']['project'], 'ABC123')

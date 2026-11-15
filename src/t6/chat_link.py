@@ -50,6 +50,9 @@ class ChatLinks:
             link = db.execute('SELECT id, state FROM chat_links WHERE project_id = ? AND chat_id = ? AND topic_id IS ?', (project_id, chat, topic)).fetchone()
             desired = 'active' if verb == 'link-chat' else 'inactive'
             plan = {'project_id': project_id, 'action': verb, 'chat': chat, 'topic': topic, 'idempotency_key': key, 'state': desired, 'chat_link_id': link[0] if link else None}
+            named = db.execute('SELECT name FROM linked_chat_topics WHERE chat_id = ? AND topic_id = ?', (chat, topic)).fetchone()
+            if named:
+                plan['topic_name'] = named[0]
             snapshot = json.dumps(link)
             if not nonce:
                 pending = db.execute("SELECT approval_id, snapshot, request FROM chat_link_previews WHERE json_extract(request, '$.idempotency_key') = ?", (key,)).fetchone()
@@ -69,7 +72,7 @@ class ChatLinks:
                 preview = self.tokens.create('project ' + verb, actor, inputs, plan)
                 preview_nonce = self.tokens.verify(preview.token, 'project ' + verb, actor, inputs)
                 assert isinstance(preview_nonce, str)
-                target = f"{project_id}: chat {chat}, topic {topic if topic is not None else 'none'}"
+                target = f"{project_id}: chat {chat}, topic {topic if topic is not None else 'none'}" + (f" ({named[0]})" if named else '')
                 db.execute('INSERT INTO approvals VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL)', (approval_id, 'chat link', target, actor, json.dumps('permission:operator'), 'requested'))
                 now = self.registry._clock()
                 cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, NULL, ?)', (approval_id, 'approval_request', actor, now, json.dumps({'gate': 'chat link', 'target': target})))
