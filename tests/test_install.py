@@ -63,11 +63,12 @@ else:
                             "psycopg[binary]<4,>=3.2; extra == 'resolve'",
                             "openpyxl<4,>=3.1; extra == 'drives'",
                             "rapidfuzz<4,>=3.9; extra == 'lookup'",
+                            "cryptography<48,>=43; extra == 'google'",
                         },
                     )
                     self.assertEqual(
                         set(installed["extras"]),
-                        {"client", "notion", "privacy", "llm", "frameio", "resolve", "instagantt", "lookup", "drives", "server", "worker", "transcribe"},
+                        {"client", "notion", "privacy", "llm", "frameio", "resolve", "instagantt", "lookup", "drives", "server", "worker", "transcribe", "google"},
                     )
                     # A fresh environment may include setuptools on Python 3.11.
                     allowed = {"t6", "pip", "setuptools"} | BASE_PACKAGES

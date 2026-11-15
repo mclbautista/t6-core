@@ -211,7 +211,33 @@ def configured_handlers(
             track_send=track_send,
         )
         handlers.update(review.handlers())
+    if environ.get("T6_DATABASE"):
+        handlers["booking.calendar_sync"] = booking_calendar_handler(environ)
     return {"main": handlers} if handlers else {}
+
+
+def booking_calendar_handler(environ: Mapping[str, str]) -> Handler:
+    """`booking.calendar_sync` (an internal job): writes Booking events to the Bay calendars when they are set up.
+
+    With no calendar configured the job finishes with a result that says so. The event content needs
+    the Project's and the Person's names, so calendars without `T6_NOTION_TOKEN` are a `ConfigError`.
+    """
+    from t6.google.sync import Names, calendar_handler
+    from t6.registry.sqlite import SqliteProjectRegistry
+
+    def names(registry: SqliteProjectRegistry) -> Names:
+        token = environ.get("T6_NOTION_TOKEN")
+        if not token:
+            raise ValueError("missing environment variable: T6_NOTION_TOKEN (the calendar events carry Project and Person names)")
+        from t6.google.names import NotionNames
+        from t6.notion import NotionClient
+
+        return NotionNames(registry, NotionClient(token))
+
+    try:
+        return calendar_handler(environ, lambda: SqliteProjectRegistry(environ["T6_DATABASE"]), names)
+    except ValueError as error:
+        raise ConfigError(str(error)) from error
 
 
 def review_media_links(environ: Mapping[str, str], registry: MediaLinks) -> MediaLinks:

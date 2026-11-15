@@ -74,6 +74,11 @@ the times from the Person's shift pattern. Booking verbs (`bay book`,
   refused unless forced. A forced Booking is recorded as **forced**.
 - **Cancelled**: a cancelled Booking stays on record and no longer counts for
   overlap.
+- **Booking calendar sync**: every Booking change queues one `booking.calendar_sync`
+  internal job that writes the Booking's event to its Bay's Google Calendar (one
+  event per Booking, its ID derived from the Booking ID). The title is the
+  Project's name; the description names the Person and the Booking ID. With no
+  calendar configured the job finishes and says so.
 
 ## Media locations
 

@@ -1,6 +1,9 @@
 """A fake calendar for tests. No network and no credential."""
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from t6.google.calendar import CalendarError, EventExists, EventNotFound
@@ -49,3 +52,60 @@ class FakeCalendar:
 
     def set_acl(self, calendar: str, email: str, role: str) -> None:
         self.acl.setdefault(calendar, {})[email] = role
+
+
+class FakeNames:
+    """Names by id. `fail_next` makes the next lookups fail, as a Notion outage does."""
+
+    def __init__(self, projects: dict[str, str], people: dict[str, str]) -> None:
+        self.projects, self.people, self._failures = projects, people, 0
+
+    def fail_next(self, count: int) -> None:
+        self._failures = count
+
+    def _lookup(self, table: dict[str, str], key: str) -> str:
+        if self._failures > 0:
+            self._failures -= 1
+            raise CalendarError('name lookup failed')
+        if key not in table:
+            raise CalendarError(f'no name for {key}')
+        return table[key]
+
+    def project(self, project: str) -> str:
+        return self._lookup(self.projects, project)
+
+    def person(self, person: str) -> str:
+        return self._lookup(self.people, person)
+
+
+@dataclass(frozen=True)
+class HttpCall:
+    method: str
+    url: str
+    headers: dict[str, str]
+    body: bytes
+
+
+class FakeHttp:
+    """A fake HTTP transport: answers by method and URL (query ignored), and records each request."""
+
+    def __init__(self) -> None:
+        self.calls: list[HttpCall] = []
+        self._answers: dict[tuple[str, str], tuple[int, bytes]] = {}
+        self._failure: Exception | None = None
+
+    def answer(self, method: str, url: str, status: int, body: Any) -> None:
+        self._answers[(method, url)] = (status, b'' if body is None else json.dumps(body).encode())
+
+    def fail(self, error: Exception) -> None:
+        self._failure = error
+
+    def send(self, method: str, url: str, headers: Mapping[str, str], body: bytes) -> tuple[int, bytes]:
+        self.calls.append(HttpCall(method, url, dict(headers), body))
+        if self._failure is not None:
+            error, self._failure = self._failure, None
+            raise error
+        key = (method, url.split('?', 1)[0])
+        if key not in self._answers:
+            return 404, b'{"error": {"code": 404, "message": "no recorded answer"}}'
+        return self._answers[key]

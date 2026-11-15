@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from t6.bay import BayStore
 from t6.google.sync import BOOKING_SYNC_KIND, CalendarSync
-from t6.google.testing import FakeCalendar
+from t6.google.testing import FakeCalendar, FakeNames
 from t6.notion.generated import BaysRow
 from t6.notion.testing import FakeNotion, title
 from t6.server.testing import FakeClock
@@ -48,7 +48,8 @@ class BookingCalendarSyncTests(unittest.TestCase):
         self.registry._clock = self.clock
         self.calendar = FakeCalendar()
         self.queue = InternalJobQueue(self.registry, clock=self.clock)
-        self.sync = CalendarSync(self.registry, self.calendar, self.calendars)
+        self.names = FakeNames({self.project: 'Example Show'}, {'writer': 'Ana Example'})
+        self.sync = CalendarSync(self.registry, self.calendar, self.calendars, self.names)
         self.worker = Worker(InternalQueueClient(self.queue), 'main', {BOOKING_SYNC_KIND: self.sync.handle}, internal_client=None)
 
     def write(self, noun: str, verb: str, values: dict[str, Any]) -> Any:
@@ -126,18 +127,107 @@ class BookingCalendarSyncTests(unittest.TestCase):
         self.assertEqual(self.calendar.events, {})
         self.assertTrue(done.result['booking_id'])
 
-    def test_event_carries_ids_only(self) -> None:
-        self.book()
+    def test_event_title_is_the_project_name_and_description_names_the_person_and_the_booking(self) -> None:
+        booking = self.book()
         self.drain()
         (event,) = self.calendar.events.values()
         self.assertEqual(set(event), {'summary', 'description', 'start', 'end'})
-        self.assertEqual(event['summary'], self.project)
+        self.assertEqual(event['summary'], 'Example Show')
+        self.assertEqual(event['description'], f'Person: Ana Example\nBooking ID: {booking}')
+
+    def test_a_name_that_cannot_be_read_retries_the_job_and_writes_nothing(self) -> None:
+        self.names.fail_next(1)
+        self.book()
+        self.worker.run_once()
+        self.assertEqual(self.calendar.events, {})
+        self.clock.advance(31)
+        self.drain()
+        self.assertEqual(len(self.calendar.events), 1)
+
+    def test_the_configured_handler_writes_through_the_http_adapter(self) -> None:
+        import json
+        import tempfile
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from t6.google.config import CALENDARS_VARIABLE, CREDENTIAL_VARIABLE
+        from t6.google.sync import calendar_handler
+        from t6.google.testing import FakeHttp
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode()
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        credential = Path(directory.name) / 'account.json'
+        credential.write_text(json.dumps({'client_email': 'sync@example.invalid', 'private_key': pem, 'token_uri': 'https://oauth2.example.invalid/token'}))
+        http = FakeHttp()
+        http.answer('POST', 'https://oauth2.example.invalid/token', 200, {'access_token': 't', 'expires_in': 3600})
+        http.answer('POST', 'https://www.googleapis.com/calendar/v3/calendars/cal-one/events', 200, {})
+        environ = {CALENDARS_VARIABLE: json.dumps(self.calendars), CREDENTIAL_VARIABLE: str(credential)}
+        handler = calendar_handler(environ, lambda: self.registry, lambda _: self.names, http=http)
+        worker = Worker(InternalQueueClient(self.queue), 'main', {BOOKING_SYNC_KIND: handler}, internal_client=None)
+        booking = self.book()
+        self.assertTrue(worker.run_once())
+        (call,) = [c for c in http.calls if 'calendars/cal-one/events' in c.url]
+        sent = json.loads(call.body)
+        self.assertEqual((sent['summary'], sent['description'], sent['start']), ('Example Show', f'Person: Ana Example\nBooking ID: {booking}', {'dateTime': '2026-11-20T10:00:00.000000+08:00'}))
+
+    def test_a_job_with_no_calendar_configured_finishes_and_says_so(self) -> None:
+        from t6.google.sync import NoCalendar
+        worker = Worker(InternalQueueClient(self.queue), 'main', {BOOKING_SYNC_KIND: NoCalendar().handle}, internal_client=None)
+        done = self.write('bay', 'book', {'bay': self.bays[0], 'person': 'writer', 'project': self.project, 'start': '2026-11-20T10:00:00+08:00', 'end': '2026-11-20T12:00:00+08:00'})
+        self.assertTrue(worker.run_once())
+        self.assertTrue(done.result['booking_id'])
+        self.assertFalse(worker.run_once())
+        self.clock.advance(3600)
+        self.assertFalse(worker.run_once())
+        with self.registry._transaction() as db:
+            state, result = db.execute('SELECT state, result FROM internal_jobs').fetchone()
+        self.assertEqual(state, 'done')
+        self.assertIn('no calendar configured', result)
 
     def test_fake_acl_list_and_set(self) -> None:
         self.assertEqual(self.calendar.list_acl('cal-one'), [])
         self.calendar.set_acl('cal-one', 'person@example.invalid', 'reader')
         self.calendar.set_acl('cal-one', 'person@example.invalid', 'writer')
         self.assertEqual(self.calendar.list_acl('cal-one'), [{'email': 'person@example.invalid', 'role': 'writer'}])
+
+
+class MainWorkerHandlerTests(unittest.TestCase):
+    ENVIRON = {'T6_SERVER_URL': 'http://edge.invalid', 'T6_WORKER_SECRET': 'w', 'T6_WORKER_QUEUE': 'main', 'T6_API_URL': 'http://api.invalid'}
+
+    def handlers(self, **extra: str) -> dict[str, Any]:
+        from t6.worker.__main__ import WorkerSettings, configured_handlers
+        environ = {**self.ENVIRON, **extra}
+        return configured_handlers(environ, WorkerSettings.from_env(environ), None).get('main', {})  # type: ignore[arg-type]
+
+    def test_the_main_worker_with_a_database_handles_calendar_jobs_even_with_no_calendar(self) -> None:
+        handlers = self.handlers(T6_DATABASE='/nonexistent/t6.sqlite3')
+        self.assertIn(BOOKING_SYNC_KIND, handlers)
+        from t6.worker.client import WorkerJob
+        result = handlers[BOOKING_SYNC_KIND](WorkerJob(1, 'main', BOOKING_SYNC_KIND, 'x', {'booking_id': 'x', 'previous_bay': None}, 't', 1))
+        self.assertIn('no calendar configured', str(result))
+
+    def test_calendars_and_a_credential_without_a_notion_token_refuse_to_start(self) -> None:
+        import json
+        import tempfile
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from t6.google.config import CREDENTIAL_VARIABLE
+        from t6.worker.__main__ import ConfigError
+        pem = rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode()
+        with tempfile.TemporaryDirectory() as directory:
+            credential = Path(directory) / 'account.json'
+            credential.write_text(json.dumps({'client_email': 'a@example.invalid', 'private_key': pem, 'token_uri': 'https://oauth2.example.invalid/token'}))
+            with self.assertRaisesRegex(ConfigError, 'T6_NOTION_TOKEN'):
+                self.handlers(T6_DATABASE=str(Path(directory) / 't6.sqlite3'), T6_GOOGLE_BAY_CALENDARS='{"b": "c"}', **{CREDENTIAL_VARIABLE: str(credential)})
+
+    def test_without_a_database_there_is_no_calendar_handler(self) -> None:
+        self.assertNotIn(BOOKING_SYNC_KIND, self.handlers())
+
+    def test_calendars_without_a_credential_count_as_no_calendar(self) -> None:
+        handlers = self.handlers(T6_DATABASE='/nonexistent/t6.sqlite3', T6_GOOGLE_BAY_CALENDARS='{"b": "c"}')
+        from t6.worker.client import WorkerJob
+        result = handlers[BOOKING_SYNC_KIND](WorkerJob(1, 'main', BOOKING_SYNC_KIND, 'x', {'booking_id': 'x', 'previous_bay': None}, 't', 1))
+        self.assertIn('no calendar configured', str(result))
 
 
 class GoogleCredentialTests(unittest.TestCase):

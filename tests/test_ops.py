@@ -154,6 +154,28 @@ class HealthTests(OpsTestCase):
         self.assertEqual(report["problems"], [])
         self.assertIn("failed after retries", str(report["history"]))
 
+    def add_internal_jobs(self, *states: tuple[str, str]) -> None:
+        with sqlite3.connect(self.path) as db:
+            for number, (kind, state) in enumerate(states):
+                db.execute("INSERT INTO internal_jobs (queue, kind, dedupe_key, payload, run_at, state, created_at) VALUES ('main', ?, ?, '{}', 0, ?, 0)", (kind, f"k{number}", state))
+
+    def test_health_counts_dead_internal_jobs_by_kind(self) -> None:
+        self.add_internal_jobs(("booking.calendar_sync", "dead"), ("booking.calendar_sync", "dead"), ("registry.sync", "dead"), ("registry.sync", "done"), ("registry.sync", "queued"))
+        report = ops.health(self.live(), now=self.clock())
+        self.assertEqual(report["dead_internal_jobs"], {"booking.calendar_sync": 2, "registry.sync": 1})
+        self.assertIs(report["ok"], False)
+        self.assertIn("3 internal job(s) are dead", str(report["problems"]))
+        self.assertIn("booking.calendar_sync: 2", str(report["problems"]))
+        history = ops.health(self.live(), now=self.clock(), count_history=False)
+        self.assertIs(history["ok"], True)
+        self.assertEqual(history["dead_internal_jobs"], {"booking.calendar_sync": 2, "registry.sync": 1})
+
+    def test_health_reports_no_dead_internal_jobs_as_an_empty_count(self) -> None:
+        self.add_internal_jobs(("registry.sync", "done"))
+        report = ops.health(self.live(), now=self.clock())
+        self.assertEqual(report["dead_internal_jobs"], {})
+        self.assertIs(report["ok"], True)
+
     def test_an_edge_server_needs_no_registry(self) -> None:
         paths = dict(self.live())
         paths["registry"] = Path(self.directory.name) / "absent.sqlite"

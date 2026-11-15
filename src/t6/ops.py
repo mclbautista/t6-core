@@ -181,8 +181,15 @@ def health(
             failed = db.execute(
                 "SELECT COUNT(*) FROM sync_intents WHERE done_at IS NULL AND error_final = 1"
             ).fetchone()[0]
+            try:
+                dead = dict(db.execute("SELECT kind, COUNT(*) FROM internal_jobs WHERE state = 'dead' GROUP BY kind ORDER BY kind").fetchall())
+            except sqlite3.OperationalError:
+                dead = {}  # a database from before the internal job table
         finally:
             db.close()
+        report["dead_internal_jobs"] = dead
+        if dead:
+            history.append(f"{sum(dead.values())} internal job(s) are dead after their attempts: " + ", ".join(f"{kind}: {count}" for kind, count in dead.items()))
         report["sync_lag_seconds"] = None if oldest is None else round(max(0.0, now - oldest), 1)
         report["sync_persistent_failures"] = int(failed)
         if failed:
