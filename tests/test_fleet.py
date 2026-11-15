@@ -7,6 +7,7 @@ from t6.domain import Machine, Ring
 from t6.fleet import (
     ROLE_GROUPS,
     Fleet,
+    FleetSafetyError,
     MachineFacts,
     ManifestChainError,
     SyncResult,
@@ -21,6 +22,7 @@ from t6.notion.writes import Ambiguous, Rejected
 
 BAYS = "ds-bays"
 NOW = datetime(2026, 11, 14, 4, 0, tzinfo=UTC)
+FLEET_PROPERTIES = ("Serial Number", "Munki Manifest", "Ring", "Munki Client Version", "Last Check-in", "OS Version")
 
 
 def live_bays() -> FakeNotion:
@@ -124,6 +126,41 @@ class RuleTests(unittest.TestCase):
 
 
 class ReadTests(unittest.TestCase):
+    def test_pages_with_the_wrong_parent_are_refused(self) -> None:
+        import httpx
+
+        parents: tuple[dict[str, str] | None, ...] = (
+            {"type": "data_source_id", "data_source_id": "other"},
+            {"type": "page_id", "page_id": BAYS},
+            {},
+            None,
+        )
+        for parent in parents:
+            for operation in ("machines", "sync_dry", "sync_apply"):
+                with self.subTest(parent=parent, operation=operation):
+                    fake = live_bays()
+                    add_bay(fake)
+                    add_bay(fake, name="Bay 2", host="Bay-2")
+                    original = fake._handle
+
+                    def foreign_page(request: httpx.Request) -> httpx.Response:
+                        response = original(request)
+                        if request.url.path.endswith("/query"):
+                            body = response.json()
+                            body["results"][1]["parent"] = parent
+                            return httpx.Response(200, json=body)
+                        return response
+
+                    fake.transport = httpx.MockTransport(foreign_page)
+                    with fake.client() as client:
+                        fleet = Fleet(client, BAYS)
+                        with self.assertRaises(FleetSafetyError):
+                            if operation == "machines":
+                                fleet.machines()
+                            else:
+                                fleet.sync([facts("Bay-1", serial_number="S1")], apply=operation == "sync_apply", now=NOW)
+                    self.assertEqual(patches(fake), 0)
+
     def test_bays_read_as_machines(self) -> None:
         fake = live_bays()
         add_bay(
@@ -148,6 +185,30 @@ class ReadTests(unittest.TestCase):
 
 
 class SyncTests(unittest.TestCase):
+    def test_missing_fleet_property_refuses_sync_before_writing(self) -> None:
+        for prop in FLEET_PROPERTIES:
+            for apply in (False, True):
+                with self.subTest(prop=prop, apply=apply):
+                    fake = live_bays()
+                    add_bay(fake)
+                    fake.remove_property(BAYS, prop)
+                    with fake.client() as client:
+                        with self.assertRaisesRegex(FleetSafetyError, prop):
+                            Fleet(client, BAYS).sync([facts("Bay-1", serial_number="S1")], apply=apply, now=NOW)
+                    self.assertEqual(patches(fake), 0)
+
+    def test_wrong_fleet_property_type_refuses_sync_before_writing(self) -> None:
+        for prop in FLEET_PROPERTIES:
+            for apply in (False, True):
+                with self.subTest(prop=prop, apply=apply):
+                    fake = live_bays()
+                    add_bay(fake)
+                    fake.change_property_type(BAYS, prop, "number")
+                    with fake.client() as client:
+                        with self.assertRaisesRegex(FleetSafetyError, prop):
+                            Fleet(client, BAYS).sync([facts("Bay-1", serial_number="S1")], apply=apply, now=NOW)
+                    self.assertEqual(patches(fake), 0)
+
     def test_dry_run_reports_changes_and_writes_nothing(self) -> None:
         fake = live_bays()
         add_bay(fake, serial="old")
@@ -334,7 +395,7 @@ class SyncTests(unittest.TestCase):
     def test_a_refused_write_is_a_typed_failure(self) -> None:
         fake = live_bays()
         add_bay(fake)
-        fake.fail_next(400, code="validation_error", after=2)
+        fake.fail_next(400, code="validation_error", after=3)
         with fake.client() as client:
             (result,) = Fleet(client, BAYS).sync([facts("Bay-1", serial_number="S1")], apply=True, now=NOW)
         assert isinstance(result, SyncResult)
