@@ -8,7 +8,8 @@ and last comment (`first_at`, `last_at`: seconds since the epoch, from Frame.io)
 
 The message goes to the review chat through the gateway's `/notify`, keyed by
 the job, so a job that runs twice sends once. When the Frame.io project is linked to no Project, the
-activity is held instead (`t6.worker.review_hold`) and sent after the link. This worker holds no Frame.io
+activity is held instead (`t6.worker.review_hold`) and sent after the link, once: a run of a job whose event is already
+held or released sends nothing. This worker holds no Frame.io
 token and reads no Notion: the file's title and link, the file's comment count
 and the project's shares come from the Frame.io worker through the `frameio`
 queue. When it cannot answer, the job is tried again; on the third try the
@@ -55,6 +56,7 @@ class ReviewMessage:
         track_send: Callable[[int, int, int | None], None] | None = None,
         is_linked: Callable[[str], bool] | None = None,
         hold: Callable[[WorkerJob, str], JsonValue] | None = None,
+        is_held: Callable[[str], bool] | None = None,
     ) -> None:
         self._gateway = gateway
         self._chat = chat
@@ -66,6 +68,7 @@ class ReviewMessage:
         self._track_send = track_send
         self._is_linked = is_linked
         self._hold = hold
+        self._is_held = is_held
 
     def handlers(self) -> dict[str, Handler]:
         return {JobKind.FRAMEIO_REVIEW_DONE.value: self.notify}
@@ -80,6 +83,10 @@ class ReviewMessage:
             raise Refused("review job without a Frame.io file and project")
         if self._is_linked is not None and self._hold is not None and not self._is_linked(project_id):
             return self._hold(job, project_id)  # no show owns this Frame.io project yet: wait for the link (#272)
+        if self._is_held is not None and self._is_held(job.dedupe_key):
+            # This event was held (a failed card offer made the job run again) and the link has come: the held copy is sent
+            # by the release under its own key, so this run sends nothing.
+            return {"skipped": "held", "frameio_project_id": project_id}
         name = payload.get("user_name")
         who = html.escape(name if isinstance(name, str) and name.strip() else "Someone", quote=False)
 

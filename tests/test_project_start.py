@@ -210,6 +210,79 @@ class ProjectStartTests(unittest.TestCase):
         self.assertEqual(self.locations('frameio-project')[0][1], project['id'])
         self.assertEqual(len(self.locations('frameio-folder')), 2)
 
+    def later(self, seconds: float) -> None:
+        """Move the signing clock on, so a token made before now is past its fifteen minutes (the verb builds its own PreviewTokens)."""
+        import time
+        from t6.preview import PreviewTokens
+        real = PreviewTokens.__init__
+
+        def init(tokens: Any, key: str, *, expiry: float = 900, clock: Any = None) -> None:
+            real(tokens, key, expiry=expiry, clock=lambda: time.time() + seconds)
+
+        patcher = patch.object(PreviewTokens, '__init__', init)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def crash_at_folders(self) -> Any:
+        from t6.media import MediaStore
+        real = MediaStore.write
+
+        def crash(store: Any, verb: str, values: dict[str, Any], **kwargs: Any) -> Any:
+            if values.get('kind') == 'frameio-folder':
+                raise RuntimeError('process died after the Frame.io call')
+            return real(store, verb, values, **kwargs)
+
+        return patch.object(MediaStore, 'write', crash)
+
+    def totals(self) -> tuple[int, int]:
+        return self.count('approvals'), self.count('deliverables')
+
+    def test_a_finished_confirm_retried_with_its_key_after_the_token_expired_returns_the_first_result(self) -> None:
+        confirm = {**self.values, 'idempotency_key': 'start', 'confirm': self.preview().token}
+        first = self.call(confirm)
+        assert isinstance(first, Done)
+        self.later(16 * 60)
+        self.assertEqual(self.call(confirm), first)
+        self.assertEqual(self.totals(), (1, 2))
+
+    def test_an_expired_token_with_nothing_begun_is_still_refused(self) -> None:
+        confirm = {**self.values, 'idempotency_key': 'start', 'confirm': self.preview().token}
+        self.later(16 * 60)
+        refused = self.call(confirm)
+        assert isinstance(refused, Refused)
+        self.assertEqual((refused.rule, self.totals()), ('token_expired', (0, 0)))
+
+    def test_a_start_that_stopped_halfway_is_finished_with_its_key_after_the_token_expired(self) -> None:
+        confirm = {**self.values, 'idempotency_key': 'start', 'confirm': self.preview().token}
+        with self.crash_at_folders(), self.assertRaises(RuntimeError):
+            self.call(confirm)
+        self.assertEqual(self.totals(), (1, 2))
+        self.later(16 * 60)
+        done = self.call(confirm)
+        assert isinstance(done, Done), done
+        self.assertEqual((self.totals(), len(self.locations('frameio-folder')), len(self.frameio.projects)), ((1, 2), 2, 1))
+        self.assertEqual(self.call(confirm), done)
+        self.assertEqual(self.totals(), (1, 2))
+
+    def test_a_different_key_for_a_project_whose_start_has_begun_is_refused_at_preview_and_at_confirm(self) -> None:
+        first = {**self.values, 'idempotency_key': 'start', 'confirm': self.preview().token}
+        second = {**self.values, 'idempotency_key': 'other', 'confirm': self.preview(key='other').token}  # both planned before either ran
+        with self.crash_at_folders(), self.assertRaises(RuntimeError):
+            self.call(first)
+        refused = self.call(second)
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'project_started')
+        again = self.preview(key='third')
+        assert isinstance(again, Refused)
+        self.assertEqual(again.rule, 'project_started')
+        self.assertEqual(self.totals(), (1, 2))
+        self.later(16 * 60)
+        self.assertIsInstance(self.call(first), Done)
+        self.assertEqual(self.totals(), (1, 2))
+        other = self.call(second)
+        assert isinstance(other, Refused)
+        self.assertEqual(self.totals(), (1, 2))
+
     def test_a_frameio_failure_refuses_the_confirm_and_changes_nothing_in_t6_so_a_retry_works(self) -> None:
         preview = self.preview()
         confirm = {**self.values, 'idempotency_key': 'start', 'confirm': preview.token}

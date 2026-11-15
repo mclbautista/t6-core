@@ -472,6 +472,70 @@ class UnlinkedActivityTests(MainWorkerCase):
         self.assertEqual(len(self.reviews()), 1)
         self.assertEqual(self.held.waiting('fp-1'), [])
 
+    def verb(self, path: str, values: dict[str, Any]) -> dict[str, Any]:
+        api = VerbAPI(self.people, self.queue, {'person': self.operator_person}, lambda _: None, self.app)
+        with patch.dict('os.environ', {'T6_PREVIEW_SIGNING_KEY': 'test'}):
+            preview = api(Request('POST', path, {'Authorization': 'Bearer person'}, json.dumps(values).encode()))
+            self.assertEqual(preview.body['outcome'], 'preview', preview.body)
+            done = api(Request('POST', path, {'Authorization': 'Bearer person'}, json.dumps({**values, 'confirm': preview.body['token']}).encode()))
+        self.assertEqual(done.body['outcome'], 'done', done.body)
+        return dict(done.body)
+
+    def test_media_link_of_a_frameio_project_releases_the_held_activity(self) -> None:
+        self.event('fp-1', 'evt-1')
+        self.drain()
+        self.verb('/v1/media/link', {'owner': self.show_a, 'kind': 'frameio-project', 'ref': 'fp-1', 'role': 'frameio-project', 'idempotency_key': 'media-link'})
+        self.drain()
+        self.assertEqual((len(self.reviews()), self.held.waiting('fp-1')), (1, []))
+
+    def test_any_done_verb_releases_activity_whose_project_a_link_made_outside_the_verb_path(self) -> None:
+        """The decision is the link data, not a verb name: `project start` links through the Media store inside its own steps."""
+        from t6.verbs import Done as Finished
+        self.event('fp-1', 'evt-1')
+        self.drain()
+        self.link(self.show_a, 'fp-1')  # what the Frame.io step of `project start` does inside its confirm
+        self.app.after_verb('project', 'start', Finished(result={}))
+        self.drain()
+        self.assertEqual((len(self.reviews()), self.held.waiting('fp-1')), (1, []))
+
+    def test_a_retried_job_whose_event_is_held_or_released_sends_no_second_message(self) -> None:
+        self.event('fp-1', 'evt-1')
+        self.drain()  # held
+        self.link(self.show_a, 'fp-1')
+        self.assertEqual(self.app.release_held_activity(), 1)
+        self.drain()
+        self.assertEqual(len(self.reviews()), 1)
+        job = WorkerJob(99, 'main', 'frameio.review_done', 'evt-1', {
+            'file_id': 'file-evt-1', 'frameio_project_id': 'fp-1', 'user_id': 'u1', 'user_name': 'Ana Reyes',
+            'count': 2, 'first_at': 1_790_000_000.0, 'last_at': 1_790_000_060.0}, 't', 2)
+        review = ReviewMessage(GatewayClient(self.gateway, GATEWAY_SECRET), REVIEW_CHAT, None, self.ask, target=ReviewTarget(DatabaseMediaLinks(self.registry), self.registry),
+                               is_linked=lambda project: True, hold=HoldUnlinked(self.held, lambda project: None), is_held=self.held.has)
+        review.notify(job)  # the retry of the job that was held
+        self.assertEqual(len(self.reviews()), 1)
+
+    def test_a_failed_card_offer_then_a_link_sends_the_event_once(self) -> None:
+        offers = {'fail': True}
+
+        def offer(project: str) -> None:
+            if offers['fail']:
+                raise RuntimeError('API did not answer')
+
+        target = ReviewTarget(DatabaseMediaLinks(self.registry), self.registry)
+        review = ReviewMessage(GatewayClient(self.gateway, GATEWAY_SECRET), REVIEW_CHAT, None, self.ask, target=target,
+                               is_linked=target.linked, hold=HoldUnlinked(self.held, offer), is_held=self.held.has)
+        self.worker = Worker(QueueClient(InProcess(self.app), WORKER), 'main', review.handlers(), internal_client=InternalQueueClient(self.inside))
+        self.event('fp-1', 'evt-1')
+        self.drain()  # held, the offer failed, the job is waiting for its retry
+        self.assertEqual(len(self.held.waiting('fp-1')), 1)
+        self.link(self.show_a, 'fp-1')
+        self.assertEqual(self.app.release_held_activity(), 1)
+        offers['fail'] = False
+        import time
+        self.inside._clock = lambda: time.time() + 3600  # the retry is due now
+        for _ in range(5):
+            self.drain()
+        self.assertEqual(len(self.reviews()), 1)
+
     def test_a_restart_with_held_activity_for_a_linked_project_releases_it(self) -> None:
         self.event('fp-1', 'evt-1')
         self.drain()

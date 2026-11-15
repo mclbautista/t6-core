@@ -141,11 +141,14 @@ class ProjectStartStore:
             found = db.execute('SELECT 1 FROM projects WHERE id=?', (project,)).fetchone()
             archived = db.execute('SELECT 1 FROM project_archives WHERE project_id=?', (project,)).fetchone()
             started = db.execute("SELECT 1 FROM activity WHERE project_id=? AND action='project_start'", (project,)).fetchone()
+            begun_by_other = db.execute(
+                'SELECT 1 FROM approvals WHERE gate=? AND target=? AND NOT EXISTS (SELECT 1 FROM verb_requests WHERE idempotency_key=?)',
+                (GATE, project, f'{key}:approval')).fetchone()
         if not found:
             return Refused(rule='project', reason='Project not found')
         if archived:
             return Refused(rule='project_archived', reason='Project is archived')
-        if started:
+        if started or begun_by_other:  # a Start under another key has finished, or has made its Approval and stopped halfway
             return Refused(rule='project_started', reason='Project has already been started')
         if any(item['kind'] in FRAMEIO_KINDS for item in values['media']):
             return Refused(rule='frameio', reason='Frame.io Media locations come from the Frame.io step of the Start, not from `media`')
@@ -211,28 +214,32 @@ class ProjectStartStore:
         key = idempotency_key
         inputs = {**values, 'idempotency_key': key}
         fingerprint = _fingerprint(actor, inputs)
-        nonce = self.tokens.verify(token, VERB, actor, inputs)
+        with self.registry._transaction() as db:
+            previous = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key=?', (key,)).fetchone()
+            begun = db.execute('SELECT 1 FROM verb_requests WHERE idempotency_key=?', (f'{key}:approval',)).fetchone() is not None
+        if previous and previous[0] != fingerprint:
+            return Refused(rule='idempotency_key', reason='Idempotency key was used for a different request')
+        if previous:  # a retried confirm gets the first result, even after its token expired: never a second Start (ADR 0005)
+            return Done(result=json.loads(previous[1]))
+        # A Start of this key that stopped halfway (its Approval exists) is finished with the same signed token even past its expiry.
+        nonce = self.tokens.verify(token, VERB, actor, inputs, allow_expired=begun)
         if isinstance(nonce, Refused):
             return nonce
         with self.registry._transaction() as db:
-            previous = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key=?', (key,)).fetchone()
-            if previous and previous[0] != fingerprint:
-                return Refused(rule='idempotency_key', reason='Idempotency key was used for a different request')
-            if previous:  # a retried confirm gets the first result, never a second Start
-                return Done(result=json.loads(previous[1]))
             if db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce=?', (nonce,)).fetchone():
                 return Refused(rule='token_used', reason='Preview token has already been used')
             saved = db.execute('SELECT state FROM jo_state_previews WHERE nonce=?', (nonce,)).fetchone()
         if not saved:
             return Refused(rule='preview', reason='Preview not found')
         planned = json.loads(saved[0])
-        template = next(step['template'] for step in planned['steps'] if step['step'] == 'milestone template')
-        name = next(step['project_name'] for step in planned['steps'] if step['step'] == 'frameio')
-        fresh = self._plan(values, actor, key, template, name)
-        if isinstance(fresh, Refused):
-            return fresh
-        if fresh != planned:
-            return Refused(rule='project_changed', reason='The plan changed since the preview; preview again')
+        if not begun:  # a resumed Start applies the plan it began with: its own steps now exist and are not planned again
+            template = next(step['template'] for step in planned['steps'] if step['step'] == 'milestone template')
+            name = next(step['project_name'] for step in planned['steps'] if step['step'] == 'frameio')
+            fresh = self._plan(values, actor, key, template, name)
+            if isinstance(fresh, Refused):
+                return fresh
+            if fresh != planned:
+                return Refused(rule='project_changed', reason='The plan changed since the preview; preview again')
         if frameio is None:
             return Refused(rule='config', reason='The Frame.io worker is not reachable from this process; the Frame.io project cannot be made')
         result = self._apply(values, planned, actor, key, frameio)

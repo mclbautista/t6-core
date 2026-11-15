@@ -39,6 +39,11 @@ class HeldActivity:
                 (frameio_project_id, key, json.dumps(dict(payload), sort_keys=True), self._registry._clock()))
             return made.rowcount == 1
 
+    def has(self, key: str) -> bool:
+        """True when the job under `key` was held, whether its row is still waiting or already released."""
+        with self._registry._transaction() as db:
+            return db.execute('SELECT 1 FROM frameio_held_activity WHERE dedupe_key = ?', (key,)).fetchone() is not None
+
     def waiting(self, frameio_project_id: str | None = None) -> list[dict[str, Any]]:
         """The rows not released yet, oldest first, for one Frame.io project or all."""
         with self._registry._transaction() as db:

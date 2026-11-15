@@ -507,13 +507,13 @@ class WebhookApp:
     def after_verb(self, noun: str, verb: str, outcome: Outcome) -> None:
         """The effects a verb has outside the t6 database, once it is `Done`: they follow the verb, not the API that ran it.
 
-        A linked Frame.io project releases the review activity that waited for it (#272); a confirmed Project Start gives
-        the Approval it created its card (#267).
+        Review activity that waited for a Frame.io link is released after any verb that is `Done` (#272): the link data decides,
+        not the verb's name, so `frameio project link`, `media link` and `project start` are covered, and so is any later way to
+        link. It is one cheap query when nothing waits. A confirmed Project Start gives the Approval it created its card (#267).
         """
         if not isinstance(outcome, Done):
             return
-        if (noun, verb) == ("frameio", "project link"):
-            self.release_held_activity()
+        self.release_held_activity()
         if (noun, verb) == ("project", "start") and outcome.result.get("approval_id"):
             self._redeliver_cards()
 

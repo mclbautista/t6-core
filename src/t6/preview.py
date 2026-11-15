@@ -45,8 +45,12 @@ class PreviewTokens:
         signature = _encode(hmac.digest(self._key, body.encode(), 'sha256'))
         return Preview(plan=plan, token=f'{body}.{signature}')
 
-    def verify(self, token: str, verb: str, actor: str, inputs: Mapping[str, Any]) -> str | Refused:
-        """Return the unique token nonce, or a refusal naming the failed rule."""
+    def verify(self, token: str, verb: str, actor: str, inputs: Mapping[str, Any], *, allow_expired: bool = False) -> str | Refused:
+        """Return the unique token nonce, or a refusal naming the failed rule.
+
+        `allow_expired` skips only the time check: the signature, the verb, the actor and the inputs must still match. A verb
+        uses it to finish work its own earlier confirm already began.
+        """
         try:
             body, signature = token.split('.')
             expected = _encode(hmac.digest(self._key, body.encode('ascii'), 'sha256'))
@@ -59,7 +63,7 @@ class PreviewTokens:
                 raise ValueError('invalid expiry')
         except (ValueError, TypeError, UnicodeError, json.JSONDecodeError):
             return Refused(rule='token_invalid', reason='Invalid preview token')
-        if payload['expires'] <= self._clock():
+        if payload['expires'] <= self._clock() and not allow_expired:
             return Refused(rule='token_expired', reason='Preview token has expired')
         if payload.get('verb') != verb or payload.get('actor') != actor or payload.get('inputs') != _digest(inputs):
             return Refused(rule='token_mismatch', reason='Preview token does not match this request')
