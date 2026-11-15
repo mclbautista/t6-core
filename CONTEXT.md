@@ -125,6 +125,32 @@ classify to a review list.
   same owner, kind, ref and role again reactivates it. Its history is
   append-only: link and unlink, with actor and time.
 
+## Project Start
+
+**Project Start** is one verb, `project start`, with a previewed plan. It is a
+preview by job: the verb returns a job id, the main worker builds the plan, and
+the job's result is the Preview with its signed single-use token (read with
+`project start --job <id>`). Confirm (`--confirm <token>`, same inputs and key)
+applies the **t6 steps**; a changed input is refused. Role: operator, and the
+`bookings` permission when the Start asks for Bookings.
+
+- **t6 steps**, each created once under a key derived from the Start's key: the
+  Approval (gate `project start`, state requested, a card goes out like any
+  Approval), the Deliverables with the milestone template of the Project Type
+  (the Type is read once; a Type without a template refuses the plan), the
+  Media locations of the Project, and the initial Bookings. Each step goes
+  through the store that owns it, so its rules (overlap, one Frame.io project
+  per Project) apply. A retry after a failed step resumes without repeating
+  the steps already done.
+- **Manual steps** the plan lists and does not do: creating the NAS folders, the
+  Resolve project, the Resolve timelines with their stamps (manual stamping).
+  Confirm records each in Activity (`project_start_manual`) with `project_start`.
+- **Plan order**: approval, NAS folders, Frame.io project and per-Deliverable
+  folder (listed as coming with #275, not built here), Resolve project, Resolve
+  timelines, Media locations, milestone template, Bookings.
+- A Project is started once: a second Start, or a Start of an archived Project,
+  is refused. Frame.io Media locations are refused in a Start.
+
 ## Floor reads
 
 Three derived reads over Deliverables, Milestones, Packages and dates, per Project

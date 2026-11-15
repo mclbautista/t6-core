@@ -178,6 +178,10 @@ The VPS server runs in edge mode: it serves `/health` and `/queue/*` and answers
 
 The `main` jobs the API starts itself go to the internal job table in the t6 database (ADR 0006), not to `T6_QUEUE_DB`: `registry.sync`, `deliverable.sync`, `jo.sync`, `project.status_sync`, `operator.deliver`, the `/tap` job and the reconcile `notion.page_changed`. Outside events (Notion and Frame.io webhooks) keep using the VPS queue. When the API starts it moves the waiting `main` jobs of the four sync kinds from its queue file into the internal job table (same kind, same dedupe key; running it twice moves nothing twice) and logs, by kind, the other waiting jobs it leaves in the queue file (`t6.server: waiting jobs left in the queue file: ...`). Read that count before deciding what to do with them.
 
+### Project Start plans (main worker and API only)
+
+`project start` queues a `project_start.preview` internal job on the `main` queue. The main worker with `T6_DATABASE` set builds the plan and answers with the Preview and its token; the caller reads it with `t6 project start <project> --job <id>`. The worker needs `T6_PREVIEW_SIGNING_KEY` (the same key the API signs with, so the API accepts the token at confirm) and `T6_NOTION_TOKEN` (it reads the Project Type to choose the milestone template). Without the signing key the plan jobs stay queued and the worker's start-up log says `project start` plans are off. The plan lists the steps a person does by hand (NAS folders, the Resolve project, the Resolve timelines with their stamps); no worker writes to the NAS or to Resolve.
+
 ### Booking calendars (main worker and API only)
 
 Every Booking change queues a `booking.calendar_sync` internal job. The main worker with `T6_DATABASE` set handles it (ADR 0003: only the API and the main worker read the Google settings; apps and the gateway never do).

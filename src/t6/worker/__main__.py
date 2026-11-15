@@ -213,6 +213,14 @@ def configured_handlers(
         handlers.update(review.handlers())
     if environ.get("T6_DATABASE"):
         handlers["booking.calendar_sync"] = booking_calendar_handler(environ)
+        if environ.get("T6_PREVIEW_SIGNING_KEY"):
+            handlers["project_start.preview"] = project_start_handler(environ)
+        else:
+            print(
+                "t6.worker: `project start` plans are off: set T6_PREVIEW_SIGNING_KEY (the API's preview signing key) to turn them on",
+                file=sys.stderr,
+                flush=True,
+            )
         read_url, read_secret = (environ.get("T6_FRAMEIO_READ_URL") or "").strip(), environ.get("T6_FRAMEIO_READ_SECRET") or ""
         if read_url and read_secret:
             handlers[JobKind.FRAMEIO_FILE_VERSIONED.value] = file_versions_handler(environ)
@@ -242,6 +250,33 @@ def file_versions_handler(environ: Mapping[str, str]) -> Handler:
         return FrameioFileVersions(SqliteProjectRegistry(environ["T6_DATABASE"]), reader).handle(job)
 
     return handle
+
+
+def project_start_handler(environ: Mapping[str, str]) -> Handler:
+    """`project_start.preview` (an internal job): builds the plan of a `project start` and answers with its Preview.
+
+    It opens the t6 database, so it is the main worker's. The Project Type comes from Notion (`T6_NOTION_TOKEN`);
+    the Preview token is signed with `T6_PREVIEW_SIGNING_KEY`, the API's key.
+    """
+    from t6.preview import PreviewTokens
+    from t6.project_start import ProjectStartStore
+    from t6.registry.sqlite import SqliteProjectRegistry
+
+    def project_type(page: str) -> str | None:
+        token = environ.get("T6_NOTION_TOKEN")
+        if not token:
+            raise ValueError("missing environment variable: T6_NOTION_TOKEN (the plan reads the Project Type)")
+        from t6.notion import NotionClient, NotionError
+        from t6.notion.generated import ProjectsRow
+
+        try:
+            with NotionClient(token) as client:
+                return ProjectsRow.from_page(client.retrieve_page(page)).project_type
+        except NotionError as error:
+            raise ValueError(f"could not read the Project Type from Notion: {error}") from error
+
+    store = ProjectStartStore(SqliteProjectRegistry(environ["T6_DATABASE"]), PreviewTokens(environ["T6_PREVIEW_SIGNING_KEY"]), project_type)
+    return lambda job: store.run_preview(job.payload)
 
 
 def booking_calendar_handler(environ: Mapping[str, str]) -> Handler:

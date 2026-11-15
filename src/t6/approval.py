@@ -13,7 +13,7 @@ from t6.registry.sqlite import SqliteProjectRegistry
 from t6.registry.core import normalize_page_id
 from t6.verbs import Done, Outcome, Refused
 
-GATES = ('vfx committee', 'client cut', 'grade', 'delivery sign-off', 'drive wipe', 'fleet promotion')
+GATES = ('vfx committee', 'client cut', 'grade', 'delivery sign-off', 'drive wipe', 'fleet promotion', 'project start')
 
 
 class Approvals:

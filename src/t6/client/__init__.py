@@ -26,7 +26,7 @@ from t6.verbs import (
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
     LLMRunInput, PersonAddInput, PersonFindInput,
     PersonGetInput, PersonProjectRoleInput, PersonPermissionInput, PersonRebindInput, PersonShiftInput, PersonClassifyInput,
-    PersonTelegramInput, ProjectChatInput, ProjectHoldInput, ProjectResolveInput, ProjectResumeInput,
+    PersonTelegramInput, ProjectChatInput, ProjectHoldInput, ProjectResolveInput, ProjectResumeInput, ProjectStartInput,
 )
 
 
@@ -307,6 +307,9 @@ class Client:
 
     def project_archive(self, inputs: ProjectResumeInput) -> Result:
         return self.call('project', 'archive', inputs)
+
+    def project_start(self, inputs: ProjectStartInput) -> Result:
+        return self.call('project', 'start', inputs)
 
     def project_hold(self, inputs: ProjectHoldInput) -> Result:
         return self.call('project', 'hold', inputs)

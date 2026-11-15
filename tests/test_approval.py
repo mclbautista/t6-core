@@ -32,7 +32,7 @@ class ApprovalTests(unittest.TestCase):
         self.assertIsInstance(self.approvals.write('request', values, actor=self.actor, idempotency_key='request-1', confirm=preview.token), Refused)
 
     def test_all_gates_and_unknown_gate(self) -> None:
-        for gate in ('vfx committee', 'grade', 'delivery sign-off', 'drive wipe', 'fleet promotion'):
+        for gate in ('vfx committee', 'grade', 'delivery sign-off', 'drive wipe', 'fleet promotion', 'project start'):
             with self.subTest(gate=gate):
                 self.assertIsInstance(self.approvals.write('request', {'gate': gate, 'target': 'cut'}, actor=self.actor), Preview)
         self.assertIsInstance(self.approvals.write('request', {'gate': 'mystery', 'target': 'cut'}, actor=self.actor), Refused)
@@ -215,6 +215,30 @@ class ApprovalCardTests(unittest.TestCase):
         assert approval is not None
         self.assertEqual((approval['state'], approval['decided_by']), ('granted', self.actor))
         self.assertEqual(self.actions.rejections()[0][0], 'not_allowed')
+
+    def test_project_start_confirm_delivers_one_card_for_its_approval(self) -> None:
+        from t6.project_start import JOB_KIND, ProjectStartStore
+        from t6.registry import Registered
+        from t6.worker import Worker
+        from t6.worker.internal_queue import InternalJobQueue, InternalQueueClient
+        self.registry._new_id = lambda: 't6p_' + '4' * 24
+        project = self.registry.register(actor=self.actor, idempotency_key='start-project')
+        assert isinstance(project, Registered)
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO person_permissions VALUES (?, 'operator')", (self.actor,))
+        store = ProjectStartStore(self.registry, self.people.tokens)
+        values = {'project': project.project.id, 'idempotency_key': 'start'}
+        job = self.send('/v1/project/start', values)['result']['job_id']
+        Worker(InternalQueueClient(InternalJobQueue(self.registry)), 'main', {JOB_KIND: lambda claimed: store.run_preview(claimed.payload)}).run_once()
+        preview = self.send('/v1/project/start', {'project': project.project.id, 'job': job})
+        self.assertEqual(preview['outcome'], 'preview')
+        done = self.send('/v1/project/start', {**values, 'confirm': preview['token']})
+        self.assertEqual(done['outcome'], 'done')
+        self.drain()
+        self.assertEqual(self.gateway.sends, 1)
+        self.assertEqual(self.send('/v1/project/start', {**values, 'confirm': preview['token']}), done)
+        self.drain()
+        self.assertEqual(self.gateway.sends, 1)
 
     def test_card_denial_records_selected_reason(self) -> None:
         values = {'gate': 'grade', 'target': 'cut', 'tapper_rule': 'person:' + self.actor, 'idempotency_key': 'denial'}

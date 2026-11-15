@@ -155,6 +155,65 @@ def project_activity(inputs: ActivityInput, open_notion: Callable[..., Any]) -> 
 
 
 
+class ProjectStartDeliverable(BaseModel):
+    code: str
+    episode: str | None = None
+    due: str | None = None
+    air: str | None = None
+
+
+class ProjectStartMedia(BaseModel):
+    kind: Literal['drive', 'nas-path', 'frameio-project', 'frameio-folder', 'resolve-project', 'timeline', 'instagantt-project']
+    ref: str
+    role: Literal['master', 'backup', 'review', 'working', 'frameio-project']
+
+
+class ProjectStartBooking(BaseModel):
+    bay: str
+    person: str
+    start: str
+    end: str | None = None
+    shift: Literal['day', 'night'] | None = None
+    force: bool = False
+
+
+class ProjectStartInput(BaseModel):
+    project: str
+    deliverables: list[ProjectStartDeliverable] = Field(default_factory=list)
+    media: list[ProjectStartMedia] = Field(default_factory=list)
+    bookings: list[ProjectStartBooking] = Field(default_factory=list)
+    job: int | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class ProjectStartOutput(BaseModel):
+    job_id: int | None = None
+    state: str | None = None
+    project_id: str | None = None
+    idempotency_key: str | None = None
+    approval_id: str | None = None
+    deliverable_ids: list[str] = Field(default_factory=list)
+    media_ids: list[str] = Field(default_factory=list)
+    booking_ids: list[str] = Field(default_factory=list)
+    manual_steps: list[str] = Field(default_factory=list)
+
+
+def project_start(inputs: ProjectStartInput, open_notion: Callable[..., Any]) -> Outcome:
+    """Queue the plan job, read its Preview with `job`, or apply the t6 steps with `confirm`; the rules are in `t6.project_start`."""
+    from t6.project_start import ProjectStartStore
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    people = _people()
+    store = ProjectStartStore(people.registry, people.tokens)
+    values = inputs.model_dump(exclude={'job', 'idempotency_key', 'confirm'})
+    if inputs.job is not None:
+        return store.job_result(inputs.job, actor=_actor.get())
+    if inputs.confirm:
+        return store.confirm(values, actor=_actor.get(), idempotency_key=inputs.idempotency_key, token=inputs.confirm)
+    return store.start(values, actor=_actor.get(), idempotency_key=inputs.idempotency_key)
+
+
 class ProjectHoldInput(BaseModel):
     project: str
     reason: str
@@ -1633,9 +1692,9 @@ VERBS = (
     Verb("version", "find", "Find a Version by Frame.io file", (), VersionFindInput, VersionFindOutput, "reader", "Resolve a review file to its Version.", api_read, read_only=True),
     Verb("version", "add", "Add a Version", (), VersionAddInput, VersionOutput, "coordinator", "Preview and confirm a Frame.io file.", version_write),
     Verb("version", "lock", "Lock a Version", (), VersionLockInput, VersionOutput, "coordinator", "Record picture lock.", version_write),
-    Verb('approval', 'request', 'Request an Approval', tuple('approval request-' + gate for gate in ('vfx-committee', 'client-cut', 'grade', 'delivery-sign-off', 'drive-wipe', 'fleet-promotion')), ApprovalRequestInput, ApprovalOutput, 'person', 'An active Person may request an Approval.', approval_write),
-    Verb('approval', 'grant', 'Grant an Approval', tuple('approval grant-' + gate for gate in ('vfx-committee', 'client-cut', 'grade', 'delivery-sign-off', 'drive-wipe', 'fleet-promotion')), ApprovalGrantInput, ApprovalOutput, 'person', 'The allowed-tapper rule applies.', approval_write),
-    Verb('approval', 'deny', 'Deny an Approval', tuple('approval deny-' + gate for gate in ('vfx-committee', 'client-cut', 'grade', 'delivery-sign-off', 'drive-wipe', 'fleet-promotion')), ApprovalDenyInput, ApprovalOutput, 'person', 'The allowed-tapper rule and a reason are required.', approval_write),
+    Verb('approval', 'request', 'Request an Approval', tuple('approval request-' + gate for gate in ('vfx-committee', 'client-cut', 'grade', 'delivery-sign-off', 'drive-wipe', 'fleet-promotion', 'project-start')), ApprovalRequestInput, ApprovalOutput, 'person', 'An active Person may request an Approval.', approval_write),
+    Verb('approval', 'grant', 'Grant an Approval', tuple('approval grant-' + gate for gate in ('vfx-committee', 'client-cut', 'grade', 'delivery-sign-off', 'drive-wipe', 'fleet-promotion', 'project-start')), ApprovalGrantInput, ApprovalOutput, 'person', 'The allowed-tapper rule applies.', approval_write),
+    Verb('approval', 'deny', 'Deny an Approval', tuple('approval deny-' + gate for gate in ('vfx-committee', 'client-cut', 'grade', 'delivery-sign-off', 'drive-wipe', 'fleet-promotion', 'project-start')), ApprovalDenyInput, ApprovalOutput, 'person', 'The allowed-tapper rule and a reason are required.', approval_write),
     Verb("studio", "notices", "Read studio notices", (), StudioNoticesInput, StudioNoticesOutput, "reader", "Read Project source notices.", api_read, read_only=True),
     Verb("external-link", "find", "Find an External Link", (), ExternalLinkFindInput, ExternalLinkFindOutput, "reader", "Resolve an external reference.", api_read, read_only=True),
     Verb("project", "get", "Get a Project", (), ProjectGetInput, ProjectGetOutput, "reader", "Read a Project.", api_read, read_only=True),
@@ -1670,6 +1729,7 @@ VERBS = (
     Verb("person", "get", "Get a Person", (), PersonGetInput, PersonGetOutput, "reader", "Read a Person.", person_get, read_only=True),
     Verb("project", "link-chat", "Link a Telegram chat to a Project", (), ProjectChatInput, ProjectChatOutput, "coordinator", "Approval is required.", project_link_chat),
     Verb("project", "unlink-chat", "Unlink a Telegram chat from a Project", (), ProjectChatInput, ProjectChatOutput, "coordinator", "Approval is required.", project_unlink_chat),
+    Verb("project", "start", "Start a Project: a previewed plan, then its t6 steps", (), ProjectStartInput, ProjectStartOutput, "operator", "A preview by job; confirm applies the Approval, Deliverables, Media locations and Bookings once. The manual steps are listed and recorded.", project_start),
     Verb("project", "archive", "Archive a Project", (), ProjectResumeInput, ProjectWriteOutput, "coordinator", "An archived Project cannot accept new work.", project_archive),
     Verb("project", "hold", "Hold a Project", (), ProjectHoldInput, ProjectWriteOutput,
          "operator", "A held Project cannot be held again.", project_hold),
@@ -2049,6 +2109,16 @@ def add_parsers(commands: Any) -> None:
             parser.add_argument('project')
             parser.add_argument('--chat', type=int, required=True)
             parser.add_argument('--topic', type=int)
+            parser.add_argument('--idempotency-key')
+            parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.handler is project_start:
+            parser.add_argument('project')
+            for name, label in (('deliverables', 'deliverable'), ('media', 'media'), ('bookings', 'booking')):
+                parser.add_argument('--' + label, dest=name, action='append', type=json.loads, default=[], metavar='JSON',
+                                    help=f'One {label} as a JSON object; repeat for more')
+            parser.add_argument('--job', type=int, help='Read the Preview a plan job produced')
             parser.add_argument('--idempotency-key')
             parser.add_argument('--confirm')
             parser.set_defaults(registered_verb=entry)

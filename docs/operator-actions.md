@@ -140,7 +140,7 @@ it. Cards already sent stay answerable while core runs this version.
 
 An Approval is a t6 database record, independent of Frame.io. `approval request`
 accepts the gates `vfx-committee`, `client-cut`, `grade`, `delivery-sign-off`,
-`drive-wipe`, and `fleet-promotion`; the corresponding `request-<gate>` aliases
+`drive-wipe`, `fleet-promotion`, and `project-start` (the Approval `project start` creates); the corresponding `request-<gate>` aliases
 supply the gate. The target can be a T6 ID or a free reference. The optional
 `--tapper-rule` accepts the same rules as operator actions (JSON for `any_of`)
 and defaults to `permission:operator`. A single `person:<id>` rule sends the
