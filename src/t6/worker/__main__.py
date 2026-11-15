@@ -11,6 +11,7 @@ from pathlib import Path
 import signal
 import sys
 import threading
+from urllib.error import URLError
 
 from t6.domain.events import JsonValue
 from t6.frameio.readapi import ReadApi
@@ -299,6 +300,9 @@ def read_api_server(environ: Mapping[str, str], frameio: FrameioWorker) -> Threa
     return make_server((host, int(port)), ReadApi(frameio, secret).handle)
 
 
+MAX_RETRY_SECONDS = 60.0
+
+
 def serve(
     worker: Worker, stop: threading.Event, poll_seconds: float, tick: Callable[[], None] | None = None
 ) -> None:
@@ -306,11 +310,25 @@ def serve(
 
     `tick` runs before every poll, so it runs at least once every `poll_seconds`
     plus the length of one job.
+
+    When the queue server cannot be reached (it restarts during a deploy, or the
+    network drops), the worker waits and tries again, doubling the wait from
+    `poll_seconds` up to `MAX_RETRY_SECONDS`, instead of exiting. A refused
+    secret (`QueueRejected`) still stops it: that needs an operator.
     """
+    retry = 0.0
     while not stop.is_set():
         if tick is not None:
             tick()
-        if not worker.run_once():
+        try:
+            busy = worker.run_once()
+        except (OSError, URLError) as error:
+            retry = min(MAX_RETRY_SECONDS, retry * 2 if retry else max(poll_seconds, 1.0))
+            print(f"t6.worker: queue unreachable ({error}); retrying in {retry:g}s", file=sys.stderr, flush=True)
+            stop.wait(retry)
+            continue
+        retry = 0.0
+        if not busy:
             stop.wait(poll_seconds)
 
 
