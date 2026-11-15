@@ -22,6 +22,7 @@ from t6.worker.review_target import ReviewTarget
 from t6.worker.registry import RegistryClient
 from t6.registry import Registered
 from t6.registry.sqlite import SqliteProjectRegistry
+from t6.registry import Registered
 from t6.server.app import Grant, ServerConfig, WebhookApp
 from test_frameio_worker import FakeTokens
 from test_server_app import (

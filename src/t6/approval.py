@@ -93,6 +93,9 @@ class Approvals:
                 db.execute('INSERT INTO approvals VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL)', (approval_id, plan['gate'], target, actor, json.dumps(rule), 'requested'))
             else:
                 db.execute('UPDATE approvals SET state = ?, decided_by = ?, decided_at = ?, reason = ? WHERE id = ?', ('granted' if verb == 'grant' else 'denied', actor, now, plan['reason'], approval_id))
+                if verb == 'grant':
+                    from t6.concern import settle_linked
+                    settle_linked(db, approval_id, now)
             cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, NULL, ?)', (approval_id, 'approval_' + verb, actor, now, json.dumps(plan)))
             project = db.execute('SELECT id FROM projects WHERE id = ?', (target,)).fetchone()
             if not project:
