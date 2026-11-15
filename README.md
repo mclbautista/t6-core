@@ -1696,6 +1696,22 @@ client with the caller's API key and pass it to
 SDK's word-level JSON as a dictionary. `language="en"` overrides the default
 Filipino language hint; English remains the secondary hint.
 
+Transcribe worker variables (`python -m t6.worker` with `T6_WORKER_QUEUE=transcribe`):
+
+| Variable | Read by | Meaning |
+| --- | --- | --- |
+| `T6_TRANSCRIBE_SHARES` | the transcribe worker only | Path of a JSON file on the worker's host mapping each NAS share name to its mount point there, for example `{"Audio": "/Volumes/Audio"}`. Required, no default; the worker exits 2 when it is unset, unreadable, not a JSON object of strings, empty, or has a relative mount point. |
+| `ELEVENLABS_API_KEY` | the transcribe worker only | The ElevenLabs key. No other process holds it. |
+| `T6_TRANSCRIBE_RATE` | the API server (`python -m t6.server`) | Price per audio hour used for previews, default `0.4` USD. The worker never reads it. |
+
+A `nas-path` Media location is read as `/Volumes/<share name>/<folders>`. The worker
+maps it to `<mount point>/<folders>` and resolves symlinks. When the share is not in
+the mapping, the ref has another form, or the resolved folder is outside the mount
+point (a `..` escape or a symlink that leaves it), the job is refused with rule
+`outside_shares` before anything is read or written. This covers `transcript.preview`,
+`transcript.run`, `transcript.speakers.preview`, `transcript.speakers.run` and the
+translate jobs.
+
 `render_srt(transcript, offset=0, fps=24)` from `t6.transcribe` needs no SDK.
 Offsets are seconds or non-drop-frame `HH:MM:SS:FF` timecodes; set `fps` to
 the timeline's frame rate. Words with missing timestamps are skipped.
@@ -1707,6 +1723,17 @@ Pass the resulting map and clip path as `speaker_map` and `source` to
 its original unlabeled output when no map is supplied. `render_docx` returns
 validated DOCX bytes, with one paragraph per speaker turn and the same offset
 and frame-rate options as SRT. Neither renderer calls ElevenLabs.
+
+`t6 transcript translate <transcript> [--confirm TOKEN]` writes `.en.srt` and
+`.en.docx` beside a Transcript's outputs under `_transcripts`, translating cue by
+cue through the API's `llm run`. It is off unless the API server has
+`T6_TRANSCRIPT_TRANSLATE=true`; until then it returns Refused (`translate_disabled`).
+The first call queues a preview (clips, cue count, estimated tokens); the same call
+with the signed single-use `--confirm` token translates and records a `translated`
+history entry and an Activity entry. The transcribe worker holds no provider
+credentials; the API masks registered names, Project codes and credentials.
+Synthetic eval cases and code graders are in `t6.transcribe.translate_evals`.
+A recorded live run (#213) must pass before the task is released.
 
 ### Studio verb HTTP API
 
