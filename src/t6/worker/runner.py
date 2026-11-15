@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from typing import Protocol
 from threading import Event, Thread
 from urllib.error import URLError
@@ -21,7 +21,7 @@ class Refused(Exception):
 
 
 class WorkerQueue(Protocol):
-    def claim(self, queue: str, lease_seconds: float = 60.0) -> WorkerJob | None: ...
+    def claim(self, queue: str, lease_seconds: float = 60.0, kinds: Collection[str] | None = None) -> WorkerJob | None: ...
     def ack(self, job: WorkerJob, result: JsonValue = None) -> None: ...
     def fail(self, job: WorkerJob, reason: str, retry_in: float | None = None) -> None: ...
     def extend(self, job: WorkerJob, lease_seconds: float = 60.0) -> None: ...
@@ -30,8 +30,10 @@ class WorkerQueue(Protocol):
 class Worker:
     """Claims jobs from `queue` and runs the handler registered for each kind.
 
-    Handlers must be safe to run twice: delivery is at-least-once. A job with
-    no handler is failed without retry, so it does not block the queue.
+    Handlers must be safe to run twice: delivery is at-least-once. It claims only
+    the kinds it has handlers for, so a job it cannot run stays queued, untouched
+    and with no try used, for a worker that can (#360). If a server that does not
+    filter by kind still hands one over, that job is failed without retry.
     """
 
     def __init__(
@@ -55,7 +57,7 @@ class Worker:
             index = (self._next_client + offset) % len(self._clients)
             client = self._clients[index]
             try:
-                job = client.claim(self._queue, self._lease_seconds)
+                job = client.claim(self._queue, self._lease_seconds, self._handlers.keys())
             except (OSError, URLError):
                 if len(self._clients) == 1:
                     raise

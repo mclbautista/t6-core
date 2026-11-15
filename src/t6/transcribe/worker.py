@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Collection, Mapping
 
 from t6.transcribe.folder import FolderPreview, OverHoursCap, UnreadableClips, preview_folder, run_folder
 from t6.transcribe.srt import _offset_seconds
@@ -288,7 +288,7 @@ class TranscribeQueue:
     def __init__(self, transport: Transport, secret: str) -> None:
         self.client = QueueClient(transport, secret)
 
-    def claim(self, queue: str, lease_seconds: float = 300.0) -> WorkerJob | None:
+    def claim(self, queue: str, lease_seconds: float = 300.0, kinds: Collection[str] | None = None) -> WorkerJob | None:
         data = self.client._call('POST', '/v1/transcribe/claim', {})['job']
         return None if data is None else WorkerJob(data['job_id'], queue, data['kind'], data['dedupe_key'], data['payload'], data['token'], data['attempt'])
 

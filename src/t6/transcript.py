@@ -152,6 +152,7 @@ class TranscriptStore:
         entry is written once.
         """
         with (self.registry._transaction() if _db is None else nullcontext(_db)) as db:
+            self.queue.bury(db=db)  # a job whose lease ran out for the last time is dead now, whether or not a worker has polled since
             for job in self.queue.find('transcript.run', states=['dead'], db=db):
                 payload: Any = job.payload
                 if self.queue.find('transcript.run', after=job.job_id, payload={'transcript_id': payload['transcript_id']}, db=db):

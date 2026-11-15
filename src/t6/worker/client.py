@@ -6,7 +6,7 @@ that calls `WebhookApp.tailnet` in the same process.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 import json
 from typing import Any, Protocol
@@ -75,8 +75,11 @@ class QueueClient:
             raise QueueRejected(status, str(answer.get("error", answer)))
         return answer
 
-    def claim(self, queue: str, lease_seconds: float = 60.0) -> WorkerJob | None:
-        answer = self._call("POST", "/queue/claim", {"queue": queue, "lease_seconds": lease_seconds})
+    def claim(self, queue: str, lease_seconds: float = 60.0, kinds: Collection[str] | None = None) -> WorkerJob | None:
+        body: dict[str, Any] = {"queue": queue, "lease_seconds": lease_seconds}
+        if kinds is not None:
+            body["kinds"] = sorted(kinds)
+        answer = self._call("POST", "/queue/claim", body)
         job = answer["job"]
         if job is None:
             return None

@@ -20,7 +20,7 @@ fake clock. Every operation opens its own connection and runs in one
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 import json
@@ -225,8 +225,8 @@ class JobQueue:
 
     # -- claim, extend, finish ----------------------------------------------
 
-    def claim(self, queue: str, lease_seconds: float) -> Claim | None:
-        """Lease the oldest due job on `queue`, or return None.
+    def claim(self, queue: str, lease_seconds: float, kinds: Collection[str] | None = None) -> Claim | None:
+        """Lease the oldest due job on `queue`, or return None. With `kinds`, only jobs of those kinds are looked at.
 
         A job whose lease ran out is claimable again. A job that has used all
         its attempts is failed instead of claimed.
@@ -245,11 +245,14 @@ class JobQueue:
                     self._max_attempts,
                 ),
             )
+            wanted = () if kinds is None else tuple(kinds)
             row = db.execute(
                 "SELECT id, kind, dedupe_key, payload, attempts FROM jobs "
                 "WHERE queue = ? AND ((state = 'pending' AND run_at <= ?) "
-                "OR (state = 'claimed' AND lease_until <= ?)) ORDER BY run_at, id LIMIT 1",
-                (queue, now, now),
+                "OR (state = 'claimed' AND lease_until <= ?))"
+                + ("" if kinds is None else " AND kind IN (" + ", ".join("?" * len(wanted)) + ")")
+                + " ORDER BY run_at, id LIMIT 1",
+                (queue, now, now, *wanted),
             ).fetchone()
             if row is None:
                 return None

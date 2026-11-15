@@ -509,8 +509,10 @@ class WebhookApp:
 
         Review activity that waited for a Frame.io link is released after any verb that is `Done` (#272): the link data decides,
         not the verb's name, so `frameio project link`, `media link` and `project start` are covered, and so is any later way to
-        link. It is one cheap query when nothing waits. A confirmed Project Start gives the Approval it created its card (#267).
+        link. It is one cheap query when nothing waits. Sync intents a verb committed are queued here, whatever the outcome (queueing
+        twice is harmless), so no restart or other call is needed (#358). A confirmed Project Start gives the Approval it created its card (#267).
         """
+        self._dispatch_sync()  # a write through a verb queues its sync job before the request answers
         if not isinstance(outcome, Done):
             return
         self.release_held_activity()
@@ -711,7 +713,10 @@ class WebhookApp:
                 return Response(403, {"error": "queue not allowed"})
             if queue != DIAGNOSTIC_QUEUE:
                 self._dispatch_sync()
-            claim = self._queue.claim(queue, lease)
+            kinds = body.get("kinds")
+            if kinds is not None and not (isinstance(kinds, list) and all(isinstance(kind, str) for kind in kinds)):
+                return Response(400, {"error": "kinds must be a list of names"})
+            claim = self._queue.claim(queue, lease, kinds)
             if claim is None:
                 return Response(200, {"job": None})
             return Response(

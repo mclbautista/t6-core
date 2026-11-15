@@ -1,7 +1,7 @@
 """Internal jobs in the t6 database, with the worker queue interface."""
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 import json
@@ -111,18 +111,29 @@ class InternalJobQueue:
             row = conn.execute("SELECT id FROM internal_jobs WHERE kind = ? AND dedupe_key = ?", (kind, dedupe_key)).fetchone()
             return Submitted(row[0], False)
 
-    def claim(self, queue: str, lease_seconds: float = 60.0) -> Claim | None:
+    def bury(self, queue: str | None = None, *, db: sqlite3.Connection | None = None) -> int:
+        """Mark dead every claimed job whose lease ran out with all its attempts used (of one queue, or of all); how many.
+
+        A claim does this first. Anyone who must know whether such a job is dead, with no worker polling, calls it too.
+        """
+        with self._within(db) as conn:
+            return conn.execute("UPDATE internal_jobs SET state = 'dead', lease_token = NULL, lease_until = NULL, result = ? "
+                                "WHERE (? IS NULL OR queue = ?) AND state = 'claimed' AND lease_until <= ? AND attempts >= ?",
+                                (json.dumps({'status': 'failed', 'value': 'lease expired too many times'}), queue, queue,
+                                 self._clock(), self._max_attempts)).rowcount
+
+    def claim(self, queue: str, lease_seconds: float = 60.0, kinds: Collection[str] | None = None) -> Claim | None:
         _require_name(queue, 'queue')
         if lease_seconds <= 0:
             raise ValueError('lease_seconds must be positive')
         now = self._clock()
         with self._db._transaction() as db:
-            db.execute("UPDATE internal_jobs SET state = 'dead', lease_token = NULL, lease_until = NULL, result = ? "
-                       "WHERE queue = ? AND state = 'claimed' AND lease_until <= ? AND attempts >= ?",
-                       (json.dumps({'status': 'failed', 'value': 'lease expired too many times'}), queue, now, self._max_attempts))
+            self.bury(queue, db=db)
+            wanted = () if kinds is None else tuple(kinds)
             row = db.execute("SELECT id, kind, dedupe_key, payload, attempts FROM internal_jobs WHERE queue = ? AND "
-                             "((state = 'queued' AND run_at <= ?) OR (state = 'claimed' AND lease_until <= ?)) "
-                             "ORDER BY run_at, id LIMIT 1", (queue, now, now)).fetchone()
+                             "((state = 'queued' AND run_at <= ?) OR (state = 'claimed' AND lease_until <= ?))"
+                             + ("" if kinds is None else " AND kind IN (" + ", ".join("?" * len(wanted)) + ")")
+                             + " ORDER BY run_at, id LIMIT 1", (queue, now, now, *wanted)).fetchone()
             if row is None:
                 return None
             job_id, kind, key, payload, attempts = row
@@ -170,8 +181,8 @@ class InternalQueueClient:
     def __init__(self, queue: InternalJobQueue) -> None:
         self._queue = queue
 
-    def claim(self, queue: str, lease_seconds: float = 60.0) -> WorkerJob | None:
-        claim = self._queue.claim(queue, lease_seconds)
+    def claim(self, queue: str, lease_seconds: float = 60.0, kinds: Collection[str] | None = None) -> WorkerJob | None:
+        claim = self._queue.claim(queue, lease_seconds, kinds)
         if claim is None:
             return None
         return WorkerJob(claim.job_id, claim.queue, claim.kind, claim.dedupe_key, claim.payload, claim.token, claim.attempt)

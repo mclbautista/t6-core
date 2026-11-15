@@ -188,6 +188,22 @@ class DeadAndFailedJobTests(unittest.TestCase):
         self.assertEqual(flow.create(confirm=tokens[1])['outcome'], 'done')
         self.assertEqual([e['action'] for e in flow.transcript(identifier)['history']], ['created', 'failed', 're-run'])
 
+    def test_a_run_whose_lease_expired_for_the_last_time_is_dead_with_no_worker_polling(self) -> None:
+        from t6.transcript import TranscriptStore
+        from t6.worker.internal_queue import InternalJobQueue
+        flow = Flow(self, ['srt'])
+        wav(flow.root / 'one.wav')
+        now = [1_000_000.0]
+        flow.registry._clock = lambda: now[0]
+        identifier = flow.create(confirm=flow.preview()['token'])['result']['transcript_id']
+        queue = InternalJobQueue(flow.registry, clock=flow.registry._clock)
+        for _ in range(5):  # every try is used and its lease runs out; no sixth claim ever marks the job dead
+            self.assertIsNotNone(queue.claim('transcribe', 300))
+            now[0] += 400
+        self.assertTrue(TranscriptStore(flow.registry).is_running(transcript=identifier) is False)
+        self.assertEqual(flow.transcript(identifier)['state'], 'failed')
+        self.assertEqual([e['action'] for e in flow.transcript(identifier)['history']], ['created', 'failed'])
+
     def test_a_repeated_lookup_writes_the_failed_entry_once(self) -> None:
         from t6.transcript import TranscriptStore
         flow = Flow(self, ['srt'])

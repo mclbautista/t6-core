@@ -268,6 +268,26 @@ class InsideJobsTests(Reach, SyncTestCase):
         self.drain_main()
         self.assertEqual(len(self.client.query_data_source("job-orders")), 1)
 
+    def test_a_registry_write_through_a_verb_queues_its_sync_job_before_the_request_answers(self) -> None:
+        from t6.person import People
+        from t6.server.verbs import VerbAPI
+        project = self.new("ABC", "in", page=self.page())
+        self.drain_main()
+        person = "t6n_" + "a" * 32
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', 1, 0, 1)", (person,))
+            db.execute("INSERT INTO person_permissions VALUES (?, 'operator')", (person,))
+        api = VerbAPI(People(self.registry, PreviewTokens("test")), self.queue, {"person": person}, lambda _: None, self.app)
+        headers = {"Authorization": "Bearer person"}
+        values = {"project": project["id"], "reason": "paused", "idempotency_key": "hold"}
+        with patch.dict("os.environ", {"T6_PREVIEW_SIGNING_KEY": "test"}):
+            preview = api(Request("POST", "/v1/project/hold", headers, json.dumps(values).encode()))
+            self.assertEqual(preview.body["outcome"], "preview", preview.body)
+            done = api(Request("POST", "/v1/project/hold", headers, json.dumps({**values, "confirm": preview.body["token"]}).encode()))
+        self.assertEqual(done.body["outcome"], "done", done.body)
+        # no restart and no other call: the job is in the table when the request has answered
+        self.assertIn("project.status_sync", [kind for kind, _ in self.waiting()])
+
     def test_a_reconcile_request_becomes_an_internal_job(self) -> None:
         self.new("ABC", page=self.page())
         self.drain_main()
