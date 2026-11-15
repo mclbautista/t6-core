@@ -16,7 +16,9 @@ class PackageSpecReaderTests(unittest.TestCase):
             advisory_items=("Reference",), blocking_items=("  EDL  ",),
         ))
         self.fake.add_page("specs", package_spec_properties(package_kind="Sound", version="1"))
-        self.reader = PackageSpecReader(self.fake.client(), "specs")
+        notion = self.fake.client()
+        self.addCleanup(notion.close)
+        self.reader = PackageSpecReader(notion, "specs")
 
     def test_general_spec_is_all_advisory(self) -> None:
         spec, = self.reader.find("Color")

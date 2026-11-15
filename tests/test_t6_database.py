@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 import tempfile
 import unittest
 from pathlib import Path
@@ -26,7 +27,7 @@ class MigrationTests(unittest.TestCase):
     def test_old_database_upgrades_without_rewriting_bindings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'db'
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 db.executescript((Path(__file__).parent / 'fixtures/registry_schema_v0.sql').read_text())
                 db.execute("INSERT INTO projects VALUES ('t6p_0123456789abcdef01234567', 1, NULL, NULL, 'out', 1)")
                 db.execute("INSERT INTO audit (project_id, action, actor, at, before, after) VALUES ('t6p_0123456789abcdef01234567', 'registered', 'legacy', 1, NULL, '{}')")
@@ -36,7 +37,7 @@ class MigrationTests(unittest.TestCase):
             assert project is not None
             self.assertEqual(project.id, 't6p_0123456789abcdef01234567')
             self.assertEqual(registry.activity('t6p_0123456789abcdef01234567')[0].actor, 'legacy')
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 self.assertEqual(db.execute('SELECT version, forward_only FROM schema_version ORDER BY version').fetchall(), [(1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (6, 0), (7, 0), (8, 0), (9, 0), (10, 0), (11, 0), (12, 0), (13, 0), (14, 0), (15, 0), (16, 0), (17, 0)])
             SqliteProjectRegistry(path)
 
@@ -48,7 +49,7 @@ class MigrationTests(unittest.TestCase):
             assert isinstance(project, Registered)
             project_id = project.project.id
             # The previous release writes only to the original audit table.
-            with sqlite3.connect(path) as old_release:
+            with closing(sqlite3.connect(path)) as old_release, old_release:
                 old_release.execute("INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, 'legacy_change', 'old', 42, NULL, '{}')", (project_id,))
             reopened = SqliteProjectRegistry(path)
             self.assertEqual(sum(item.actor == "old" for item in reopened.activity(project_id)), 1)
@@ -58,12 +59,12 @@ class MigrationTests(unittest.TestCase):
     def test_version_one_upgrades(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'db'
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 db.executescript((Path(__file__).parent / 'fixtures/registry_schema_v0.sql').read_text())
                 db.execute('CREATE TABLE schema_version (version INTEGER PRIMARY KEY, forward_only INTEGER NOT NULL)')
                 db.execute('INSERT INTO schema_version VALUES (1, 0)')
             SqliteProjectRegistry(path)
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 self.assertEqual(db.execute('SELECT version FROM schema_version ORDER BY version').fetchall(), [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,), (10,), (11,), (12,), (13,), (14,), (15,), (16,), (17,)])
                 self.assertIn('project_id', [row[1] for row in db.execute('PRAGMA table_info(bindings)')])
 
@@ -74,7 +75,7 @@ class MigrationTests(unittest.TestCase):
             with patch.object(migrations, '_MIGRATIONS', migrations._MIGRATIONS[:-1]):
                 SqliteProjectRegistry(path)
             SqliteProjectRegistry(path)
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
                 self.assertTrue({'concerns', 'concern_notes', 'project_archives', 'project_person_roles', 'approvals', 'deliverables', 'deliverable_sync_intents', 'deliverable_migration_receipts', 'milestones'} <= tables)
                 self.assertEqual(db.execute('SELECT MAX(version) FROM schema_version').fetchone(), (17,))
@@ -87,7 +88,7 @@ class MigrationTests(unittest.TestCase):
             registry.bind_entity('notion', 'second', identifier, actor='editor')
             self.assertEqual(registry.bound_entity('notion', 'first'), str(identifier))
             self.assertEqual(registry.bound_entity('notion', 'second'), str(identifier))
-            with sqlite3.connect(Path(directory) / 'db') as db:
+            with closing(sqlite3.connect(Path(directory) / 'db')) as db, db:
                 self.assertEqual(db.execute('SELECT page_id, active FROM bindings ORDER BY page_id').fetchall(), [('first', 0), ('second', 1)])
             with self.assertRaises(ValueError):
                 registry.bind_entity('notion', 'first', T6Id.mint(EntityKind.PERSON), actor='editor')
@@ -110,10 +111,10 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'db'
             SqliteProjectRegistry(path)
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 db.execute('INSERT INTO schema_version VALUES (18, 0)')
             SqliteProjectRegistry(path)
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 db.execute('INSERT INTO schema_version VALUES (19, 1)')
             with self.assertRaises(RegistryError):
                 SqliteProjectRegistry(path)

@@ -1,5 +1,6 @@
 from typing import Any
 import sqlite3
+from contextlib import closing
 import tempfile
 import unittest
 from pathlib import Path
@@ -59,7 +60,7 @@ class InternalJobsTests(unittest.TestCase):
         result = self.queue.result(job.job_id, 'main')
         assert result is not None
         self.assertEqual(result.value, 'again')
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             self.assertEqual(db.execute('SELECT state FROM internal_jobs').fetchone()[0], 'dead')
 
     def test_expired_final_lease_goes_dead(self) -> None:
