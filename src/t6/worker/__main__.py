@@ -397,7 +397,9 @@ def main(
         queue_handlers = {**queue_handlers, "concern_silence": concern_silence, "concern_pm_close": concern_pm_close}
         def unavailable_abang_nudge(job: WorkerJob) -> bool:
             raise RuntimeError('Abang nudge needs a configured gateway')
-        queue_handlers = {**queue_handlers, "abang_nudge": unavailable_abang_nudge}
+        def unavailable_subscriptions(job: WorkerJob) -> bool:
+            raise RuntimeError('Chat subscriptions need a configured gateway')
+        queue_handlers = {**queue_handlers, "abang_nudge": unavailable_abang_nudge, "chat_subscriptions": unavailable_subscriptions}
     if settings.queue == "main" and environ.get("T6_DATABASE") and environ.get("T6_GATEWAY_URL") and environ.get("T6_GATEWAY_SECRET"):
         from t6.registry.sqlite import SqliteProjectRegistry
         from t6.worker.linked_chats import LinkedChats
@@ -406,7 +408,7 @@ def main(
         from urllib.error import URLError
 
         linked = LinkedChats(SqliteProjectRegistry(environ["T6_DATABASE"]), GatewayClient(HttpTransport(environ["T6_GATEWAY_URL"]), environ["T6_GATEWAY_SECRET"]), operator_ids(environ))
-        queue_handlers = {**queue_handlers, "abang_nudge": linked.nudge}
+        queue_handlers = {**queue_handlers, "abang_nudge": linked.nudge, "chat_subscriptions": linked.replace_subscriptions}
         def linked_tick() -> None:
             try:
                 linked.tick()

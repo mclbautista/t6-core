@@ -23,19 +23,25 @@ class LinkedChats:
     def tick(self) -> None:
         self._check_sends()
         self._notices()
+        self.replace_subscriptions()
         with self.registry._transaction() as db:
-            rows = db.execute("SELECT DISTINCT chat_id, topic_id FROM chat_links WHERE state = 'active' ORDER BY chat_id, topic_id").fetchall()
             cursor = db.execute('SELECT seq FROM linked_chat_cursor WHERE id = 1').fetchone()[0]
-        subscriptions = [{'chat': chat, 'topic': topic} for chat, topic in rows]
-        if subscriptions != self._subscriptions:
-            self.gateway.replace_subscriptions(subscriptions)
-            self._subscriptions = subscriptions
         self._relay_pending()
         for item in self.gateway.updates(cursor):
             if not self._record(item):
                 break
         self._relay_pending()
         self._notices()
+
+    def replace_subscriptions(self, job: WorkerJob | None = None) -> bool:
+        """Tell the gateway which chats and topics to follow; a failure raises so a queued job retries and the tick tries again."""
+        with self.registry._transaction() as db:
+            rows = db.execute("SELECT DISTINCT chat_id, topic_id FROM chat_links WHERE state = 'active' ORDER BY chat_id, topic_id").fetchall()
+        subscriptions = [{'chat': chat, 'topic': topic} for chat, topic in rows]
+        if subscriptions != self._subscriptions:
+            self.gateway.replace_subscriptions(subscriptions)
+            self._subscriptions = subscriptions
+        return True
 
     def _relay_pending(self) -> None:
         with self.registry._transaction() as db:
