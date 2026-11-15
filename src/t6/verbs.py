@@ -1374,6 +1374,87 @@ def media_list(inputs: MediaListInput, open_notion: Callable[..., Any]) -> Outco
     return Done(result={'locations': MediaStore(people.registry, people.tokens).list(inputs.owner)})
 
 
+class DriveReceiveInput(BaseModel):
+    drive: str
+    project: str
+    party: str | None = None
+    party_kind: Literal['contact', 'studio'] | None = None
+    on: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class DriveReturnInput(DriveReceiveInput):
+    pass
+
+
+class DriveReleaseInput(BaseModel):
+    drives: list[str]
+    project: str
+    party: str
+    party_kind: Literal['contact', 'studio']
+    on: str | None = None
+    delivery: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class DriveRetireInput(BaseModel):
+    drive: str
+    project: str
+    reason: str
+    on: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class DriveAssignInput(BaseModel):
+    drive: str
+    project: str
+    label: str
+    role: Literal['master', 'backup', 'offline', 'swing', 'archive']
+    start: str | None = None
+    end: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class DriveUnassignInput(BaseModel):
+    drive: str
+    project: str
+    label: str | None = None
+    end: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class DriveWriteOutput(BaseModel):
+    action: str
+    drive_ids: list[str]
+    project_id: str
+    on: str | None = None
+    shipment_id: str | None = None
+    delivery_id: str | None = None
+    label: str | None = None
+    role: str | None = None
+    start: str | None = None
+    end: str | None = None
+    idempotency_key: str
+
+
+def drive_write(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.drive_verbs import DriveVerbs
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    people = _people()
+    verb = next(name for model, name in ((DriveReceiveInput, 'receive'), (DriveReleaseInput, 'release'), (DriveReturnInput, 'return'),
+                                         (DriveRetireInput, 'retire'), (DriveAssignInput, 'assign'), (DriveUnassignInput, 'unassign'))
+                if type(inputs) is model)
+    return DriveVerbs(people.registry, people.tokens).write(
+        verb, inputs.model_dump(exclude={'idempotency_key', 'confirm'}, exclude_none=True), actor=_actor.get(),
+        idempotency_key=getattr(inputs, 'idempotency_key'), confirm=getattr(inputs, 'confirm'))
+
+
 class TranscriptCreateInput(BaseModel):
     media: str
     deliverable: str | None = None
@@ -1420,6 +1501,12 @@ VERBS = (
     Verb('transcript', 'speakers', 'Name Transcript speakers', (), TranscriptSpeakersInput, TranscriptCreateOutput, 'reader', 'Preview and confirm speaker names.', api_read),
     Verb('transcript', 'translate', 'Translate a Transcript', (), TranscriptTranslateInput, TranscriptCreateOutput, 'reader', 'Preview and confirm translation.', api_read),
     Verb('transcript', 'get', 'Get a Transcript', (), TranscriptGetInput, TranscriptGetOutput, 'reader', 'Read progress and summary.', transcript_get),
+    Verb('drive', 'receive', 'Receive a Drive into custody', (), DriveReceiveInput, DriveWriteOutput, 'drives', 'Preview and confirm; appends a received event.', drive_write),
+    Verb('drive', 'release', 'Release Drives in one shipment', (), DriveReleaseInput, DriveWriteOutput, 'drives', 'Preview and confirm; one released event per Drive, grouped by shipment.', drive_write),
+    Verb('drive', 'return', 'Return a Drive to custody', (), DriveReturnInput, DriveWriteOutput, 'drives', 'Preview and confirm; appends a returned event.', drive_write),
+    Verb('drive', 'retire', 'Retire a Drive', (), DriveRetireInput, DriveWriteOutput, 'drives', 'Needs a reason; a later receive or return brings the Drive back.', drive_write),
+    Verb('drive', 'assign', 'Assign a Drive to a Project', (), DriveAssignInput, DriveWriteOutput, 'drives', 'Preview and confirm; adds an Assignment with label and role.', drive_write),
+    Verb('drive', 'unassign', 'End a Drive Assignment', (), DriveUnassignInput, DriveWriteOutput, 'drives', 'Ends the open Assignment and keeps it in history.', drive_write),
     Verb('media', 'link', 'Link a Media location', (), MediaLinkInput, MediaWriteOutput, 'coordinator', 'Preview and confirm the link.', media_write),
     Verb('media', 'unlink', 'Unlink a Media location', (), MediaUnlinkInput, MediaWriteOutput, 'coordinator', 'Preview and confirm the unlink.', media_write),
     Verb('media', 'list', 'List Media locations', (), MediaListInput, MediaListOutput, 'reader', 'Read Media locations.', media_list),
@@ -1633,6 +1720,36 @@ def add_parsers(commands: Any) -> None:
                 alias_parser.add_argument('--idempotency-key')
                 alias_parser.add_argument('--confirm')
                 alias_parser.set_defaults(registered_verb=entry, gate=gate)
+        if entry.handler is drive_write:
+            parser = parser.add_parser(entry.verb, help=entry.description)
+            if entry.verb == 'release':
+                parser.add_argument('drives', nargs='+')
+                parser.add_argument('--project', required=True)
+                parser.add_argument('--party', required=True)
+                parser.add_argument('--party-kind', choices=('contact', 'studio'), required=True)
+                parser.add_argument('--delivery')
+            else:
+                parser.add_argument('drive')
+                parser.add_argument('project')
+            if entry.verb in ('receive', 'return'):
+                parser.add_argument('--party')
+                parser.add_argument('--party-kind', choices=('contact', 'studio'))
+            if entry.verb == 'retire':
+                parser.add_argument('--reason', required=True)
+            if entry.verb == 'assign':
+                parser.add_argument('--label', required=True)
+                parser.add_argument('--role', required=True, choices=('master', 'backup', 'offline', 'swing', 'archive'))
+                parser.add_argument('--start')
+            if entry.verb == 'unassign':
+                parser.add_argument('--label')
+            if entry.verb in ('assign', 'unassign'):
+                parser.add_argument('--end')
+            else:
+                parser.add_argument('--on')
+            parser.add_argument('--idempotency-key')
+            parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
         if entry.handler in (media_write, media_list):
             parser = parser.add_parser(entry.verb, help=entry.description)
             if entry.verb == 'link':

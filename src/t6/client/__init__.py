@@ -16,6 +16,7 @@ from t6.verbs import (
     VersionAddInput, VersionLockInput, VersionFindInput, VersionGetInput,
     MediaLinkInput, MediaUnlinkInput, MediaListInput, MediaMigrateInput,
     TranscriptCreateInput, TranscriptGetInput, TranscriptSpeakersInput, TranscriptTranslateInput,
+    DriveReceiveInput, DriveReleaseInput, DriveReturnInput, DriveRetireInput, DriveAssignInput, DriveUnassignInput,
     BayBookInput, BookingMoveInput, BookingExtendInput, BookingCancelInput, BookingGetInput, BookingListInput,
     DeliverableDeliverInput, PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
@@ -123,6 +124,24 @@ class Client:
 
     def admin_media_migrate(self, inputs: MediaMigrateInput) -> Result:
         return self.call('admin/media', 'migrate', inputs)
+
+    def drive_receive(self, inputs: DriveReceiveInput) -> Result:
+        return self.call('drive', 'receive', inputs)
+
+    def drive_release(self, inputs: DriveReleaseInput) -> Result:
+        return self.call('drive', 'release', inputs)
+
+    def drive_return(self, inputs: DriveReturnInput) -> Result:
+        return self.call('drive', 'return', inputs)
+
+    def drive_retire(self, inputs: DriveRetireInput) -> Result:
+        return self.call('drive', 'retire', inputs)
+
+    def drive_assign(self, inputs: DriveAssignInput) -> Result:
+        return self.call('drive', 'assign', inputs)
+
+    def drive_unassign(self, inputs: DriveUnassignInput) -> Result:
+        return self.call('drive', 'unassign', inputs)
 
     def media_link(self, inputs: MediaLinkInput) -> Result:
         return self.call('media', 'link', inputs)

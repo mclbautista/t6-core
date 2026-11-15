@@ -135,6 +135,33 @@ class VerbAPITests(unittest.TestCase):
             self.assertEqual(main(['media', 'link', project.project.id, 'nas-path', '/other', '--role', 'backup']), 0)
         self.assertEqual(json.loads(out.getvalue())['outcome'], 'preview')
 
+    def test_drive_verbs_over_the_api_need_the_drives_permission(self) -> None:
+        from t6.client import Client
+        from t6.drives import Drive, DriveStatus
+        from t6.drives.sqlite import SqliteDriveStore
+        from t6.verbs import DriveReceiveInput, DriveRetireInput, Done, Preview, Refused
+        project = self.registry.register(actor='setup', idempotency_key='drive-project')
+        assert isinstance(project, Registered)
+        drive = SqliteDriveStore(self.registry).add_drive(Drive(serial='SYNTH-API')).id
+        client = Client('http://127.0.0.1:%s' % self.server.server_port, 'operator-secret')
+        values = DriveReceiveInput(drive=drive, project=project.project.id, idempotency_key='drive-receive')
+        refused = client.drive_receive(values)
+        assert isinstance(refused, Refused)
+        self.assertIn('drives', refused.reason)
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO person_permissions VALUES (?, 'drives')", (self.actor,))
+        preview = client.drive_receive(values)
+        assert isinstance(preview, Preview)
+        values.confirm = preview.token
+        self.assertIsInstance(client.drive_receive(values), Done)
+        retire = DriveRetireInput(drive=drive, project=project.project.id, reason='dead', idempotency_key='drive-retire')
+        preview = client.drive_retire(retire)
+        assert isinstance(preview, Preview)
+        retire.confirm = preview.token
+        self.assertIsInstance(client.drive_retire(retire), Done)
+        self.assertIs(SqliteDriveStore(self.registry).status(drive), DriveStatus.RETIRED)
+        self.assertEqual(self.registry.activity(project.project.id)[0].actor, self.actor)
+
     def test_delivery_api_uses_configured_spec_and_authenticated_actor(self) -> None:
         from t6.notion.testing import FakeNotion, package_spec_properties
         fake = FakeNotion()

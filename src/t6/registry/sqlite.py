@@ -314,6 +314,8 @@ _MIGRATIONS = (
     CREATE TABLE transcript_history (id INTEGER PRIMARY KEY, transcript_id TEXT NOT NULL REFERENCES transcripts(id), action TEXT NOT NULL, actor TEXT NOT NULL, at REAL NOT NULL);
     CREATE TABLE transcript_previews (nonce TEXT PRIMARY KEY, snapshot TEXT NOT NULL)"""),
     (33, False, """CREATE TABLE transcript_speaker_maps (history_id INTEGER PRIMARY KEY REFERENCES transcript_history(id), csv TEXT NOT NULL)"""),
+    (34, False, """CREATE TABLE drive_previews (nonce TEXT PRIMARY KEY, snapshot TEXT NOT NULL);
+    CREATE TABLE delivery_drives (package_id TEXT NOT NULL REFERENCES packages(id), drive_id TEXT NOT NULL REFERENCES drives(id), PRIMARY KEY (package_id, drive_id))"""),
 )
 
 
@@ -370,6 +372,7 @@ def _migrate(db: sqlite3.Connection) -> None:
     jo_filter += "NOT EXISTS (SELECT 1 FROM deliverables WHERE deliverables.id = audit.project_id) AND " if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'deliverables'").fetchone() else ""
     jo_filter += "NOT EXISTS (SELECT 1 FROM media_locations WHERE media_locations.id = audit.project_id) AND " if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'media_locations'").fetchone() else ""
     jo_filter += "NOT EXISTS (SELECT 1 FROM transcripts WHERE transcripts.id = audit.project_id) AND " if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'transcripts'").fetchone() else ""
+    jo_filter += "NOT EXISTS (SELECT 1 FROM drives WHERE drives.id = audit.project_id) AND " if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'drives'").fetchone() else ""
     db.execute("INSERT INTO activity (project_id, at, actor, action, summary, audit_id) "
                "SELECT project_id, at, actor, action, REPLACE(action, '_', ' '), id FROM audit "
                f"WHERE {jo_filter}NOT EXISTS (SELECT 1 FROM activity WHERE activity.audit_id = audit.id)")
