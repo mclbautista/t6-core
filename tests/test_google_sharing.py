@@ -159,11 +159,23 @@ class ReconcileTests(SharingCase):
         self.assertEqual(self.roles('cal-two')[SERVICE], 'owner')
         self.assertNotIn(SERVICE.upper(), self.roles('cal-two'))
 
-    def test_an_entry_that_maps_to_no_person_is_not_owned_and_stays(self) -> None:
+    def test_a_writer_added_by_hand_who_is_no_person_is_lowered_to_reader_and_logged_by_hash(self) -> None:
         self.calendar.acl['cal-one']['stranger@example.invalid'] = 'writer'
-        result = self.reconcile()
-        self.assertEqual(self.roles('cal-one')['stranger@example.invalid'], 'writer')
-        self.assertEqual(result['unmanaged'], 1)
+        self.calendar.acl['cal-one']['viewer@example.invalid'] = 'reader'
+        with self.assertLogs('t6.google.sharing', level='INFO') as logs:
+            result = self.reconcile()
+        self.assertEqual(self.roles('cal-one')['stranger@example.invalid'], 'reader')
+        self.assertEqual(self.roles('cal-one')['viewer@example.invalid'], 'reader')
+        self.assertEqual(result['unmanaged'], 1)  # the reader is left alone
+        self.assertIn({'calendar': short_hash('cal-one'), 'identity': short_hash('stranger@example.invalid'), 'change': 'writer->reader'}, result['fixed'])
+        text = '\n'.join(logs.output) + str(result)
+        self.assertNotIn('stranger@example.invalid', text)
+        self.assertIn(short_hash('stranger@example.invalid'), text)
+
+    def test_owners_and_the_service_account_are_never_lowered(self) -> None:
+        self.reconcile()
+        self.assertEqual(self.roles('cal-one')[OWNER], 'owner')
+        self.assertEqual(self.roles('cal-one')[SERVICE], 'owner')
 
     def test_an_inactive_person_loses_edit_and_gets_no_new_entry(self) -> None:
         with self.registry._transaction() as db:

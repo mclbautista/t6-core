@@ -64,7 +64,7 @@ class BookingStore:
             rows = db.execute('SELECT id, bay_id, person_id, project_id, start, end, forced, cancelled FROM bookings ORDER BY start, id').fetchall()
             return [dict(zip(('id', 'bay_id', 'person_id', 'project_id', 'start', 'end', 'forced', 'cancelled'), (*row[:6], bool(row[6]), bool(row[7])))) for row in rows]
 
-    def write(self, verb: str, values: dict[str, Any], *, actor: str, idempotency_key: str | None, confirm: str | None) -> Outcome:
+    def write(self, verb: str, values: dict[str, Any], *, actor: str, idempotency_key: str | None, confirm: str | None, note: str | None = None) -> Outcome:
         import secrets
         from datetime import date, datetime, time, timedelta
         from t6.domain.studio_time import MANILA
@@ -154,7 +154,7 @@ class BookingStore:
             now = self.registry._clock()
             action = 'booking_' + verb
             cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)', (identifier, action, actor, now, json.dumps(old), json.dumps(plan)))
-            db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (project, identifier, now, actor, action, name, cursor.lastrowid))
+            db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (project, identifier, now, actor, action, f'{name}: {note}' if note else name, cursor.lastrowid))
             db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
             db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(plan)))
             enqueue(db, identifier, old[1] if old else None, key, now)

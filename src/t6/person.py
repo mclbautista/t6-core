@@ -18,6 +18,11 @@ from t6.verbs import Done, Outcome, Refused
 
 SERVICES = frozenset({'gateway', 'worker', 'reports', 'watchdog', 'munki', 'hermes', 'mcp', 'transcribe'})
 
+# Internal actors: named, not a Person, used only inside the worker by one handler. They are not in SERVICES, so no API secret
+# can name them and `T6_API_SERVICE_PERMISSIONS` cannot grant them anything; their grants are fixed here.
+CALENDAR_ACTOR = 'google-calendar'  # inbound Google Calendar edits (#270): Google names no editor, calendar sharing is the check
+INTERNAL_ACTORS: Mapping[str, frozenset[str]] = {CALENDAR_ACTOR: frozenset({'bookings'})}
+
 PERMISSIONS = frozenset({"operator", "coordinator", "bookings", "drives", "admin", "llm"})
 
 
@@ -47,8 +52,10 @@ class People:
 
     def _authorize(self, db: Any, actor: str, role: str) -> Refused | None:
         if role == 'staff':
-            person = None if actor in SERVICES else db.execute("SELECT kind, active FROM persons WHERE id = ?", (actor,)).fetchone()
+            person = None if actor in SERVICES or actor in INTERNAL_ACTORS else db.execute("SELECT kind, active FROM persons WHERE id = ?", (actor,)).fetchone()
             return None if person and person[1] and person[0] == 'staff' else Refused(rule='permission', reason='needs active staff Person')
+        if actor in INTERNAL_ACTORS:
+            return None if role in INTERNAL_ACTORS[actor] else Refused(rule='permission', reason=f'needs {role}')
         if actor in SERVICES:
             service_grants = self.service_permissions.get(actor, frozenset())
             if role == 'reader' or role in service_grants or (role in ('operator', 'coordinator') and 'admin' in service_grants) or (role == 'coordinator' and 'operator' in service_grants):

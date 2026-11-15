@@ -81,12 +81,15 @@ the times from the Person's shift pattern. Booking verbs (`bay book`,
   calendar configured the job finishes and says so.
 - **Inbound calendar edit**: a change to a Booking event in Google Calendar. The
   `google.calendar_changed` job (queued by the edge from a Google notification,
-  which names no event) lists the changed events, and an edit by a Person with the
-  `bookings` permission (found by the email on their Notion Contact) runs
-  `booking move`, `booking extend` or `booking cancel` as that Person. A clash, or an
-  editor without the permission, is **reverted**: the event is written back from the
-  Booking with a note, and the Booking does not change. An event that already equals
-  its Booking is our own write coming back and is ignored.
+  which names no event) lists the changed events and runs `booking move`, `booking extend` or
+  `booking cancel`. Google names no editor, so with the real adapter the edit is accepted as made by
+  a `bookings` holder: the actor is the internal service actor `google-calendar` (not a Person, not
+  usable through the API) and the Activity says the change was made in Google Calendar and that
+  Google does not name the editor. When an editor is known, a Person with `bookings` (found by the
+  email on their Notion Contact) is the actor and anyone else is reverted. A clash is **reverted**:
+  the event is written back from the Booking with a note, and the Booking does not change. An event
+  that already equals its Booking is our own write coming back and is ignored. **Calendar sharing is
+  the permission check for inbound edits**, and the daily reconcile job keeps it true.
 - **Notification channel**: the Google channel that sends changes of one Bay
   calendar to the edge. The daily `google.renew_channels` job replaces it before it expires.
 - **Calendar sharing**: who can edit a Bay calendar follows the `bookings` permission.
@@ -94,8 +97,8 @@ the times from the Person's shift pattern. Booking verbs (`bay book`,
   same transaction; it gives the Person (found by the email on their Notion Contact) edit
   (`writer`) or view (`reader`) on every Bay calendar. Every other active staff Person has view.
   The daily `google.reconcile_sharing` job compares each calendar's ACL with t6 and fixes
-  drift (t6 wins), logging each fix by a short hash. Manager entries (the calendar owner and the
-  service account) and emails that are no Person's are never changed. Revoke sets view; it does not
+  drift (t6 wins), logging each fix by a short hash. A writer whose email is no Person's (added by hand) is lowered to view. Manager entries (the calendar owner and the
+  service account) are never changed. Revoke sets view; it does not
   delete the entry.
 
 ## Timelines

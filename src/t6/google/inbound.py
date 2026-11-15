@@ -3,6 +3,9 @@
 Google's notification names no event: it says "this calendar changed". The handler lists what changed since the
 stored sync token, matches each event to its Booking by the event id (derived from the Booking id), and either runs
 the matching verb as the Person who edited it or writes the Booking's current state back with a note.
+Google's Events resource names no editor (docs/research/google-calendar-fact-check.md, section 4), so with the real adapter the editor is
+None: the calendar sharing is then the permission check (only a `writer` can edit, and #271 keeps writers equal to `bookings` holders), and
+the actor is the internal service actor `google-calendar`, never a guessed Person. A named editor must be a Person with `bookings`.
 The Booking verbs stay the only writer of Bookings (`BookingStore.write`).
 """
 from __future__ import annotations
@@ -24,7 +27,7 @@ from t6.google.config import (
     CALENDARS_VARIABLE, CHANNEL_TOKEN_VARIABLE, NOTIFY_URL_VARIABLE, bay_calendars, channel_token, credential_path, notify_url,
 )
 from t6.google.sync import BOOKING_SYNC_KIND, Names, event_body, event_id
-from t6.person import People
+from t6.person import CALENDAR_ACTOR, People
 from t6.preview import PreviewTokens
 from t6.registry.sqlite import SqliteProjectRegistry
 from t6.verbs import Done, Preview, Refused
@@ -40,6 +43,7 @@ CHANNEL_TTL = 7 * 86400        # Google's documented default; the maximum is not
 RENEW_BEFORE = 3 * 86400       # replace a channel this long before it expires
 RENEW_EVERY = 86400            # the renewal job runs daily
 NO_PERMISSION = 'the editor is not a Person with the bookings permission'
+UNNAMED_EDITOR = 'changed in Google Calendar; Google does not name the editor'
 NO_TIME = 'the event needs a start and end with a time zone'
 
 
@@ -139,13 +143,21 @@ class InboundEdits:
                 verb, values = 'extend', {'booking': booking['id'], 'end': end.isoformat()}
             else:
                 verb, values = 'move', {'booking': booking['id'], 'bay': bays[calendar], 'start': start.isoformat(), 'end': end.isoformat()}
-        actor = self._actor(event.get('editor'))
-        if actor is None:
-            return self._revert(calendar, mine, booking, NO_PERMISSION)
+        editor = event.get('editor')
+        note: str | None = None
+        if editor is None:
+            actor, note = str(CALENDAR_ACTOR), UNNAMED_EDITOR  # Google names no editor: sharing is the permission check, no Person is guessed
+            if self.people.authorize(actor, 'bookings') is not None:
+                return self._revert(calendar, mine, booking, NO_PERMISSION)
+        else:
+            named = self._actor(editor)
+            if named is None:
+                return self._revert(calendar, mine, booking, NO_PERMISSION)
+            actor = named
         key = f'google:{calendar}:{name}:' + (version or hashlib.sha256(json.dumps([event.get('status'), event.get('start'), event.get('end')]).encode()).hexdigest()[:16])
-        outcome = self.bookings.write(verb, values, actor=actor, idempotency_key=key, confirm=None)
+        outcome = self.bookings.write(verb, values, actor=actor, idempotency_key=key, confirm=None, note=note)
         if isinstance(outcome, Preview):
-            outcome = self.bookings.write(verb, values, actor=actor, idempotency_key=key, confirm=outcome.token)
+            outcome = self.bookings.write(verb, values, actor=actor, idempotency_key=key, confirm=outcome.token, note=note)
         if isinstance(outcome, Done):
             return 'applied'
         return self._revert(calendar, mine, booking, getattr(outcome, 'reason', None) or 'the booking rules refused the change')

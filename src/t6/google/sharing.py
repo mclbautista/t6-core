@@ -5,8 +5,10 @@ t6 wins: a grant or revoke queues a `booking.calendar_sharing` job in the same t
 `google.reconcile_sharing` job compares each calendar's actual ACL with t6 and fixes the difference.
 
 What the jobs own: an ACL entry whose email is a Person's email (Notion keeps it, found by the binding, as `inbound.py` does).
-What they never touch: a manager entry (role `owner`: the calendar owner and the service account are both managers), the service
-account's email in any role, and any email that is no Person's (counted as `unmanaged`). Revoke sets `reader`; it does not delete the entry.
+A writer added by hand in Google, whose email is no Person's, is lowered to `reader` (calendar sharing is the permission check for inbound
+edits, so no one outside t6's people may edit); other entries whose email is no Person's are counted as `unmanaged`.
+What they never touch: a manager entry (role `owner`: the calendar owner and the service account are both managers) and the service
+account's email in any role. Revoke sets `reader`; it does not delete the entry.
 Logs and job results name an identity only by a short hash and count the changes.
 """
 from __future__ import annotations
@@ -113,7 +115,16 @@ class SharingSync:
             current = {e['email'].strip().casefold(): e['role'] for e in self.calendar.list_acl(calendar)}
             roles = {email: role for email, role in current.items() if role != MANAGER and email != self.service_account}
             if only is None:
-                unmanaged += sum(1 for email in roles if email not in wanted)
+                for email, listed in roles.items():
+                    if email in wanted:
+                        continue
+                    if listed != EDIT:
+                        unmanaged += 1
+                        continue
+                    self.calendar.set_acl(calendar, email, VIEW)  # a hand-added writer who is no Person
+                    change = {'calendar': short_hash(calendar), 'identity': short_hash(email), 'change': f'{listed}->{VIEW}'}
+                    fixed.append(change)
+                    log.info('calendar sharing fix: calendar=%s identity=%s role %s', change['calendar'], change['identity'], change['change'])
             for email, (role, staff) in wanted.items():
                 if email == self.service_account or current.get(email) == MANAGER:
                     continue

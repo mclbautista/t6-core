@@ -210,10 +210,9 @@ class RejectedEditsAreReverted(InboundCase):
     def test_an_unknown_editor_has_no_permission(self) -> None:
         booking = self.book()
         self.notify()
-        for editor in ('stranger@example.invalid', None):
-            self.calendar.external_edit('cal-one', event_id(booking), editor=editor, end='2026-11-20T14:00:00+08:00')
-            self.notify()
-            self.assert_reverted(booking, 'bookings permission')
+        self.calendar.external_edit('cal-one', event_id(booking), editor='stranger@example.invalid', end='2026-11-20T14:00:00+08:00')
+        self.notify()
+        self.assert_reverted(booking, 'bookings permission')
 
     def test_a_deletion_by_someone_without_the_permission_puts_the_event_back(self) -> None:
         booking = self.book()
@@ -238,6 +237,96 @@ class RejectedEditsAreReverted(InboundCase):
         writes = list(self.calendar.calls)
         self.notify()  # the revert's own notification
         self.assertEqual(self.calendar.calls, writes)
+
+
+class EditorNotNamed(InboundCase):
+    """Google names no editor (the real adapter always gives None): calendar sharing is the permission check, the actor is the calendar service actor (#270 follow-up)."""
+
+    def test_an_edit_with_no_editor_is_applied_by_the_calendar_service_actor_with_a_note_in_the_activity(self) -> None:
+        booking = self.book()
+        self.notify()
+        self.calendar.external_edit('cal-one', event_id(booking), editor=None, end='2026-11-20T14:00:00+08:00')
+        self.notify()
+        self.assertEqual(self.booking(booking)['end'], '2026-11-20T14:00:00.000000+08:00')
+        self.assertEqual(self.audit('booking_extend'), [(booking, 'google-calendar')])
+        with self.registry._transaction() as db:
+            summary = str(db.execute("SELECT summary FROM activity WHERE action = 'booking_extend'").fetchone()[0])
+        self.assertIn('Google Calendar', summary)
+        self.assertIn('does not name the editor', summary)
+
+    def test_no_editor_runs_move_and_cancel_too_and_a_clash_is_still_reverted(self) -> None:
+        booking = self.book()
+        other = self.book(start='12:00', end='14:00')
+        self.notify()
+        self.calendar.external_edit('cal-one', event_id(booking), editor=None, end='2026-11-20T13:00:00+08:00')
+        self.notify()
+        self.assertEqual(self.booking(booking)['end'], '2026-11-20T12:00:00.000000+08:00')
+        self.assertIn('overlapping Booking', self.event(booking)['description'])
+        self.calendar.external_edit('cal-one', event_id(booking), editor=None, start='2026-11-21T09:00:00+08:00', end='2026-11-21T11:00:00+08:00')
+        self.notify()
+        self.assertEqual(self.audit('booking_move'), [(booking, 'google-calendar')])
+        self.calendar.external_delete('cal-one', event_id(other), editor=None)
+        self.notify()
+        self.assertEqual(self.audit('booking_cancel'), [(other, 'google-calendar')])
+
+    def test_a_known_editor_without_the_permission_is_still_reverted(self) -> None:
+        booking = self.book()
+        self.notify()
+        self.calendar.external_edit('cal-one', event_id(booking), editor=VIEWER, end='2026-11-20T14:00:00+08:00')
+        self.notify()
+        self.assertEqual(self.audit('booking_extend'), [])
+        self.assertIn('bookings permission', self.event(booking)['description'])
+
+    def test_the_real_adapter_shape_changes_the_booking_once(self) -> None:
+        import json as jsonlib
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from t6.google.http import GoogleCalendar, ServiceAccount
+        from t6.google.testing import FakeHttp
+        from t6.worker.client import WorkerJob
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode()
+        account = ServiceAccount.from_json(jsonlib.dumps({'type': 'service_account', 'client_email': 'sync@example.invalid', 'private_key': pem, 'token_uri': 'https://oauth2.example.invalid/token'}))
+        http = FakeHttp()
+        http.answer('POST', 'https://oauth2.example.invalid/token', 200, {'access_token': 't', 'expires_in': 3600})
+        booking = self.book()
+        self.notify()
+        base = 'https://www.googleapis.com/calendar/v3/calendars/cal-one/events'
+        item = {'kind': 'calendar#event', 'id': event_id(booking), 'status': 'confirmed', 'etag': '"v2"', 'updated': '2026-11-16T01:00:00.000Z',
+                'start': {'dateTime': '2026-11-20T10:00:00+08:00'}, 'end': {'dateTime': '2026-11-20T14:00:00+08:00'}}
+        http.answer('GET', base, 200, {'items': [item], 'nextSyncToken': 'next-1'})
+        names = FakeNames({self.project: 'Example Show'}, {'writer': 'Ana Example'})
+        real = InboundEdits(self.registry, GoogleCalendar(account, http, clock=self.clock), self.calendars, names, FakeIdentities({'writer': WRITER}), clock=self.clock)
+        headers: dict[str, JsonValue] = {'x-goog-channel-id': 'chan-1', 'x-goog-resource-state': 'exists'}
+        job = WorkerJob(1, 'main', CHANGED_KIND, 'k', {'headers': headers}, 't', 1)
+        self.assertEqual(real.handle(job), {'channel': 'chan-1', 'events': 1, 'outcomes': {'applied': 1}})
+        self.assertEqual(real.handle(job), {'channel': 'chan-1', 'events': 1, 'outcomes': {'seen': 1}})
+        self.assertEqual(self.booking(booking)['end'], '2026-11-20T14:00:00.000000+08:00')
+        self.assertEqual(self.audit('booking_extend'), [(booking, 'google-calendar')])
+
+
+class CalendarServiceActorIsNarrow(unittest.TestCase):
+    def test_the_calendar_actor_may_run_booking_verbs_and_nothing_else(self) -> None:
+        from t6.person import People
+        from t6.preview import PreviewTokens
+        registry = MemoryRegistry()
+        self.addCleanup(registry.db.close)
+        people = People(registry, PreviewTokens('test'))
+        self.assertIsNone(people.authorize('google-calendar', 'bookings'))
+        for role in ('operator', 'coordinator', 'admin', 'drives', 'llm', 'staff'):
+            self.assertIsNotNone(people.authorize('google-calendar', role), role)
+
+    def test_it_cannot_be_named_as_an_api_secret_or_given_a_service_grant(self) -> None:
+        from t6.person import People, SERVICES
+        from t6.preview import PreviewTokens
+        from t6.server.verbs import service_permissions_from_env
+        self.assertNotIn('google-calendar', SERVICES)
+        registry = MemoryRegistry()
+        self.addCleanup(registry.db.close)
+        with self.assertRaises(ValueError):
+            People(registry, PreviewTokens('test'), service_permissions={'google-calendar': frozenset({'admin'})})
+        with self.assertRaises(ValueError):
+            service_permissions_from_env({'T6_API_SERVICE_PERMISSIONS': '{"google-calendar": ["bookings"]}'})
 
 
 class OurOwnWritesDoNotLoop(InboundCase):
