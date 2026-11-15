@@ -42,13 +42,15 @@ class Contacts:
         )
 
     def create(
-        self, name: str, *, telegram_user_id: int, telegram_handle: str = "", note: str = ""
+        self, name: str, *, telegram_user_id: int | None = None, telegram_handle: str = "", note: str = ""
     ) -> Contact | Rejected | Ambiguous:
         """Create a Contact, with `note` as one line in the page body, and return it as saved.
 
         A note that could not be saved is `Ambiguous`: the page exists, so check before repeating the create.
         """
-        values: dict[str, object] = {"name": name, "telegram_user_id": str(telegram_user_id)}
+        values: dict[str, object] = {"name": name}
+        if telegram_user_id is not None:
+            values["telegram_user_id"] = str(telegram_user_id)
         if telegram_handle:
             values["telegram_handle"] = telegram_handle
         saved = create_row(self._client, ContactsRow, self._source, values, to_domain=contact_from_row)
