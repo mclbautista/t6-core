@@ -53,11 +53,10 @@ def short_hash(email: str) -> str:
     return hashlib.sha256(email.strip().casefold().encode()).hexdigest()[:8]
 
 
-def enqueue(db: sqlite3.Connection, person: str, verb: str, key: str, now: float) -> None:
+def enqueue(registry: SqliteProjectRegistry, db: sqlite3.Connection, person: str, verb: str, key: str, now: float) -> None:
     """Queue the sharing update in the same transaction as the grant or revoke. `key` is the change's idempotency key."""
-    db.execute("INSERT INTO internal_jobs (queue, kind, dedupe_key, payload, run_at, state, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?) "
-               "ON CONFLICT (kind, dedupe_key) DO NOTHING",
-               (QUEUE, SHARING_KIND, f'{person}:{verb}:{key}', json.dumps({'person_id': person}), now, now))
+    from t6.worker.internal_queue import InternalJobQueue  # imported here: t6.person imports this module, and the queue imports t6.person
+    InternalJobQueue(registry, clock=lambda: now).submit(QUEUE, SHARING_KIND, f'{person}:{verb}:{key}', {'person_id': person}, db=db)
 
 
 class NoSharing:
@@ -163,8 +162,6 @@ def sharing_handlers(
     environ: Mapping[str, str],
     open_registry: Callable[[], SqliteProjectRegistry],
     open_identities: Callable[[SqliteProjectRegistry], Any],
-    *,
-    http: Any = None,
 ) -> dict[str, Handler]:
     """The `booking.calendar_sharing` and `google.reconcile_sharing` handlers for the main worker.
 
@@ -181,6 +178,6 @@ def sharing_handlers(
     except OSError as error:
         raise ValueError(f'cannot read the Google credential file: {error.__class__.__name__}') from error
     registry = open_registry()
-    sharing = SharingSync(registry, GoogleCalendar(account, http or UrllibHttp()), calendars, open_identities(registry), service_account=account.email)
+    sharing = SharingSync(registry, GoogleCalendar(account, UrllibHttp()), calendars, open_identities(registry), service_account=account.email)
     sharing.schedule()
     return {SHARING_KIND: sharing.handle_change, RECONCILE_KIND: sharing.handle_reconcile}

@@ -76,6 +76,13 @@ class FakeProjects:
 
 
 class LinkCase(unittest.TestCase):
+    def waiting_rows(self, frameio_project_id: str | None = None) -> list[dict[str, Any]]:
+        """The held rows not released yet, oldest first (read from the table: the production class has no read for it)."""
+        with self.registry._transaction() as db:
+            rows = db.execute('SELECT id, frameio_project_id, dedupe_key, payload FROM frameio_held_activity WHERE released_at IS NULL AND (? IS NULL OR frameio_project_id = ?) ORDER BY id',
+                              (frameio_project_id, frameio_project_id)).fetchall()
+        return [{'id': r[0], 'frameio_project_id': r[1], 'dedupe_key': r[2], 'payload': json.loads(r[3])} for r in rows]
+
     def setUp(self) -> None:
         self.registry = MemoryRegistry()
         self.addCleanup(self.registry.db.close)
@@ -377,7 +384,7 @@ class UnlinkedActivityTests(MainWorkerCase):
         self.event('fp-2', 'evt-4')
         self.drain()
         self.assertEqual(self.reviews(), [])
-        self.assertEqual([len(self.held.waiting(project)) for project in ('fp-1', 'fp-2')], [3, 1])
+        self.assertEqual([len(self.waiting_rows(project)) for project in ('fp-1', 'fp-2')], [3, 1])
         self.assertEqual(len(self.cards()), 2)
         self.assertEqual(self.gateway.sends, 2)
 
@@ -385,7 +392,7 @@ class UnlinkedActivityTests(MainWorkerCase):
         self.event('fp-1', 'evt-1')
         self.drain()
         self.assertFalse(self.held.hold('fp-1', 'evt-1', {'file_id': 'file-evt-1'}))
-        self.assertEqual(len(self.held.waiting('fp-1')), 1)
+        self.assertEqual(len(self.waiting_rows('fp-1')), 1)
 
     def test_the_card_names_the_frameio_project_offers_shows_and_is_for_coordinators(self) -> None:
         self.event('fp-new', 'evt-1')
@@ -411,7 +418,7 @@ class UnlinkedActivityTests(MainWorkerCase):
         self.assertEqual(self.linked(), {'fp-1': self.show_a})
         self.drain()
         self.assertEqual(len(self.reviews()), 3)
-        self.assertEqual(self.held.waiting('fp-1'), [])
+        self.assertEqual(self.waiting_rows('fp-1'), [])
         self.assertIn('Linked', self.gateway.messages[ref]['text'])
         token = self.service.store.find_offer('frameio_link:fp-1')
         assert token is not None
@@ -424,7 +431,7 @@ class UnlinkedActivityTests(MainWorkerCase):
         self.link(self.show_a, 'fp-1')
         self.event('fp-1', 'evt-1')
         self.drain()
-        self.assertEqual((len(self.reviews()), self.cards(), self.held.waiting()), (1, {}, []))
+        self.assertEqual((len(self.reviews()), self.cards(), self.waiting_rows()), (1, {}, []))
 
     def test_a_person_who_is_not_a_coordinator_cannot_choose(self) -> None:
         self.event('fp-1', 'evt-1')
@@ -432,7 +439,7 @@ class UnlinkedActivityTests(MainWorkerCase):
         ref = self.only_card()
         self.assertEqual(self.pick(ref, who=STAFF)['outcome'], 'rejected')
         self.assertEqual(self.pick(ref, who=CLIENT)['outcome'], 'rejected')
-        self.assertEqual((self.linked(), len(self.held.waiting('fp-1'))), ({}, 1))
+        self.assertEqual((self.linked(), len(self.waiting_rows('fp-1'))), ({}, 1))
 
     def test_a_client_with_a_coordinator_permission_cannot_link(self) -> None:
         with self.registry._transaction() as db:
@@ -470,7 +477,7 @@ class UnlinkedActivityTests(MainWorkerCase):
             self.assertEqual(done.body['outcome'], 'done')
         self.drain()
         self.assertEqual(len(self.reviews()), 1)
-        self.assertEqual(self.held.waiting('fp-1'), [])
+        self.assertEqual(self.waiting_rows('fp-1'), [])
 
     def verb(self, path: str, values: dict[str, Any]) -> dict[str, Any]:
         api = VerbAPI(self.people, self.queue, {'person': self.operator_person}, lambda _: None, self.app)
@@ -486,7 +493,7 @@ class UnlinkedActivityTests(MainWorkerCase):
         self.drain()
         self.verb('/v1/media/link', {'owner': self.show_a, 'kind': 'frameio-project', 'ref': 'fp-1', 'role': 'frameio-project', 'idempotency_key': 'media-link'})
         self.drain()
-        self.assertEqual((len(self.reviews()), self.held.waiting('fp-1')), (1, []))
+        self.assertEqual((len(self.reviews()), self.waiting_rows('fp-1')), (1, []))
 
     def test_project_start_through_the_api_releases_the_held_activity(self) -> None:
         """A real /v1/project/start preview, job and confirm: the Frame.io step links the project, and the held review is sent once."""
@@ -504,7 +511,7 @@ class UnlinkedActivityTests(MainWorkerCase):
         self.registry.review_chat_links = lambda page: []  # type: ignore[attr-defined]  # the memory registry has no chat links; the review goes to the default chat
         self.event('fp-1', 'evt-1')
         self.drain()
-        self.assertEqual((len(self.reviews()), bool(self.held.waiting('fp-1'))), (0, True))
+        self.assertEqual((len(self.reviews()), bool(self.waiting_rows('fp-1'))), (0, True))
         api = VerbAPI(self.people, self.queue, {'person': self.operator_person}, lambda _: None, self.app)
         api.frameio = Writer()  # type: ignore[assignment]  # the Frame.io worker's answer; the queue to it is not what is tested here
         store = ProjectStartStore(self.registry, self.people.tokens, lambda page: 'Feature Film', lambda page: 'Start Show')
@@ -526,7 +533,7 @@ class UnlinkedActivityTests(MainWorkerCase):
             done = post({**values, 'idempotency_key': 'start-e2e', 'confirm': preview['token']})
         self.assertEqual(done['outcome'], 'done', done)
         self.drain()
-        self.assertEqual((len(self.reviews()), self.held.waiting('fp-1')), (1, []))
+        self.assertEqual((len(self.reviews()), self.waiting_rows('fp-1')), (1, []))
 
     def test_any_done_verb_releases_activity_whose_project_a_link_made_outside_the_verb_path(self) -> None:
         """The decision is the link data, not a verb name: `project start` links through the Media store inside its own steps."""
@@ -536,7 +543,7 @@ class UnlinkedActivityTests(MainWorkerCase):
         self.link(self.show_a, 'fp-1')  # what the Frame.io step of `project start` does inside its confirm
         self.app.after_verb('project', 'start', Finished(result={}))
         self.drain()
-        self.assertEqual((len(self.reviews()), self.held.waiting('fp-1')), (1, []))
+        self.assertEqual((len(self.reviews()), self.waiting_rows('fp-1')), (1, []))
 
     def test_a_retried_job_whose_event_is_held_or_released_sends_no_second_message(self) -> None:
         self.event('fp-1', 'evt-1')
@@ -566,7 +573,7 @@ class UnlinkedActivityTests(MainWorkerCase):
         self.worker = Worker(QueueClient(InProcess(self.app), WORKER), 'main', review.handlers(), internal_client=InternalQueueClient(self.inside))
         self.event('fp-1', 'evt-1')
         self.drain()  # held, the offer failed, the job is waiting for its retry
-        self.assertEqual(len(self.held.waiting('fp-1')), 1)
+        self.assertEqual(len(self.waiting_rows('fp-1')), 1)
         self.link(self.show_a, 'fp-1')
         self.assertEqual(self.app.release_held_activity(), 1)
         offers['fail'] = False
@@ -590,21 +597,24 @@ class UnlinkedActivityTests(MainWorkerCase):
         ref = self.only_card()
         self.assertEqual(self.tap(self.button(ref, 'Not now')[len(CALLBACK_PREFIX):], ref=ref)['outcome'], 'skipped')
         self.drain()
-        self.assertEqual(len(self.held.waiting('fp-1')), 1)
+        self.assertEqual(len(self.waiting_rows('fp-1')), 1)
         self.event('fp-1', 'evt-2')
         self.drain()
-        self.assertEqual(len(self.held.waiting('fp-1')), 2)
+        self.assertEqual(len(self.waiting_rows('fp-1')), 2)
         live = [card for card in self.cards().values() if card['text'].startswith('<b>Frame.io') and 'Not now' in json.dumps(card['buttons'])]
         self.assertEqual(len(live), 1)
 
     def test_no_message_text_is_stored_with_held_activity(self) -> None:
         self.event('fp-1', 'evt-1')
         self.drain()
-        (row,) = self.held.waiting('fp-1')
+        (row,) = self.waiting_rows('fp-1')
         self.assertEqual(set(row['payload']) - {'file_id', 'frameio_project_id', 'user_id', 'user_name', 'count', 'first_at', 'last_at'}, set())
 
 
 class HeldActivityStoreTests(LinkCase):
+    def test_held_activity_has_no_read_of_waiting_rows_that_nothing_in_production_uses(self) -> None:
+        self.assertFalse(hasattr(HeldActivity, 'waiting'))
+
     def test_hold_is_idempotent_and_release_sends_each_row_once(self) -> None:
         held = HeldActivity(self.registry)
         self.assertTrue(held.hold('fp-1', 'k1', {'count': 1}))
@@ -621,7 +631,7 @@ class HeldActivityStoreTests(LinkCase):
         self.assertEqual(held.release_linked(submit), 1)
         self.assertEqual(held.release_linked(submit), 0)
         self.assertEqual(sent, [('main', {'count': 1})])
-        self.assertEqual([row['frameio_project_id'] for row in held.waiting()], ['fp-2'])
+        self.assertEqual([row['frameio_project_id'] for row in self.waiting_rows()], ['fp-2'])
 
     def test_a_row_released_but_not_marked_is_sent_again_under_the_same_key(self) -> None:
         held = HeldActivity(self.registry)
@@ -638,7 +648,7 @@ class HeldActivityStoreTests(LinkCase):
         held.release_linked(lambda queue, kind, key, payload: keys.append(key))
         self.assertEqual(len(keys), 2)
         self.assertEqual(len(set(keys)), 1)
-        self.assertEqual(held.waiting(), [])
+        self.assertEqual(self.waiting_rows(), [])
 
 
 class ReviewMessageHoldTests(unittest.TestCase):

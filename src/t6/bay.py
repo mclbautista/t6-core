@@ -65,6 +65,27 @@ class BookingStore:
             rows = db.execute('SELECT id, bay_id, person_id, project_id, start, end, forced, cancelled FROM bookings ORDER BY start, id').fetchall()
             return [dict(zip(('id', 'bay_id', 'person_id', 'project_id', 'start', 'end', 'forced', 'cancelled'), (*row[:6], bool(row[6]), bool(row[7])))) for row in rows]
 
+    def resync_calendar(self, now: float | None = None) -> int:
+        """Queue one calendar sync for every Booking that is not cancelled and has not ended; how many were queued.
+
+        It uses the queueing function every Booking change uses. A Booking that already has a sync queued or claimed is skipped,
+        so a second run does not double it; once that job has finished, a later run queues it again (for example after the
+        calendar settings were fixed).
+        """
+        from datetime import datetime
+        from t6.google.sync import BOOKING_SYNC_KIND
+        from t6.worker.internal_queue import InternalJobQueue
+        now = self.registry._clock() if now is None else now
+        queued = 0
+        with self.registry._transaction() as db:
+            pending = {job.payload.get('booking_id') for job in InternalJobQueue(self.registry).find(BOOKING_SYNC_KIND, states=('queued', 'claimed'), db=db)}
+            for row in db.execute('SELECT id, bay_id, end FROM bookings WHERE cancelled = 0 ORDER BY start, id').fetchall():
+                if row[0] in pending or datetime.fromisoformat(row[2]).timestamp() <= now:
+                    continue
+                enqueue(self.registry, db, row[0], None, f'resync:{int(now)}', now)
+                queued += 1
+        return queued
+
     def write(self, verb: str, values: dict[str, Any], *, actor: str, idempotency_key: str | None, confirm: str | None, note: str | None = None) -> Outcome:
         from datetime import date, datetime, time, timedelta
         from t6.domain.studio_time import MANILA
@@ -144,5 +165,5 @@ class BookingStore:
             cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)', (identifier, action, actor, now, json.dumps(old), json.dumps(plan)))
             db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (project, identifier, now, actor, action, f'{name}: {note}' if note else name, cursor.lastrowid))
             done = verbflow.finish(db, request, plan)
-            enqueue(db, identifier, old[1] if old else None, key, now)
+            enqueue(self.registry, db, identifier, old[1] if old else None, key, now)
             return done

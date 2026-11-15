@@ -141,3 +141,11 @@ class JobLookupTests(unittest.TestCase):
         self.assertEqual([j.job_id for j in self.queue.find('a.kind', states=['dead'])], [dead])
         self.assertTrue(self.queue.settle(dead))
         self.assertFalse(self.queue.settle(dead))
+
+
+class OneWriterOfInternalJobs(unittest.TestCase):
+    def test_only_the_internal_job_queue_inserts_into_the_job_table(self) -> None:
+        from pathlib import Path
+        root = Path(__file__).parents[1] / 'src' / 't6'
+        writers = sorted(str(path.relative_to(root)) for path in root.rglob('*.py') if 'INSERT INTO internal_jobs' in path.read_text(encoding='utf-8'))
+        self.assertEqual(writers, ['worker/internal_queue.py'])

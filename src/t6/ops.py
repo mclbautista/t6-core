@@ -23,10 +23,12 @@ from pathlib import Path
 import sqlite3
 import time
 
-__all__ = ["ROLES", "OpsError", "backup", "counts", "health", "restore"]
+__all__ = ["ROLES", "WAITING_LIMIT_SECONDS", "OpsError", "backup", "counts", "health", "restore"]
 
 ROLES = ("registry", "queue", "operator")
 MANIFEST = "manifest.json"
+WAITING_LIMIT_SECONDS = 900
+"""A due job that nothing has taken for this long is a problem (15 minutes): `health` has a `waiting_limit` to change it."""
 
 _COUNTS = {
     "registry": {
@@ -148,12 +150,30 @@ def restore(source: Path, targets: Mapping[str, Path]) -> dict[str, dict[str, in
     return restored
 
 
+def _waiting(path: Path, table: str, open_state: str, now: float, limit: float) -> dict[str, dict[str, float]]:
+    """Due jobs of one table that have waited more than `limit` seconds since they fell due, by kind: their count and the oldest age.
+
+    Waiting: the job is `open_state` with `run_at` in the past, or it is claimed and its lease ran out.
+    """
+    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)
+    try:
+        rows = db.execute(
+            f"SELECT kind, COUNT(*), MIN(run_at) FROM {table} WHERE run_at <= ? AND (state = ? OR (state = 'claimed' AND lease_until <= ?)) "
+            "GROUP BY kind ORDER BY kind", (now - limit, open_state, now)).fetchall()
+    except sqlite3.OperationalError:
+        return {}  # a database from before this table
+    finally:
+        db.close()
+    return {str(kind): {"count": int(count), "oldest_seconds": round(now - oldest, 1)} for kind, count, oldest in rows}
+
+
 def health(
     paths: Mapping[str, Path],
     now: float | None = None,
     *,
     required: tuple[str, ...] = ("registry", "queue"),
     count_history: bool = True,
+    waiting_limit: float = WAITING_LIMIT_SECONDS,
 ) -> dict[str, object]:
     """What an operator checks: sync lag, persistent failures, stuck work. Reads only.
 
@@ -161,6 +181,9 @@ def health(
     Jobs and Notion syncs that failed after their retries are history: always listed under
     `history`, and counted as problems only when `count_history` is true, so a deploy check can
     ask "is this process healthy" without being failed by old work an operator has to review.
+    Due jobs that waited longer than `waiting_limit` seconds are a current state, not history: `waiting_jobs`
+    lists them by kind with the oldest age, for the queue file and for the internal job table, and they are
+    always problems. A job not yet due, or claimed under a live lease, is not waiting.
     """
     now = time.time() if now is None else now
     report: dict[str, object] = {"ok": True, "problems": []}
@@ -173,7 +196,18 @@ def health(
                 problems.append(f"no {role} database at {path}")
             continue
         report[role] = counts(role, path)
+    waiting: dict[str, dict[str, dict[str, float]]] = {"queue": {}, "internal": {}}
+    queue_file = paths.get("queue")
+    if queue_file is not None and queue_file.is_file():
+        waiting["queue"] = _waiting(queue_file, "jobs", "pending", now, waiting_limit)
     registry = paths.get("registry")
+    if registry is not None and registry.is_file():
+        waiting["internal"] = _waiting(registry, "internal_jobs", "queued", now, waiting_limit)
+    report["waiting_jobs"] = waiting
+    for table, label in (("queue", "queue file"), ("internal", "internal job table")):
+        if waiting[table]:
+            problems.append(f"due job(s) in the {label} wait for a worker: " + ", ".join(
+                f"{kind}: {entry['count']:g}, oldest {entry['oldest_seconds']:g} s" for kind, entry in waiting[table].items()))
     if registry is not None and registry.is_file():
         db = sqlite3.connect(f"file:{registry}?mode=ro", uri=True, timeout=30)
         try:

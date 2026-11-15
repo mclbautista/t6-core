@@ -74,6 +74,12 @@ one leak is one capability. An unset secret turns its route off (503).
   and trigger `POST /registry/pages/{id}/reconcile`.
 - `failed_jobs`: queue jobs that failed after their attempts; read their `result`.
 - `pending_actions`: operator cards waiting for a tap.
+- `waiting_jobs`: jobs that are due and that nothing has taken for more than 15 minutes
+  (`WAITING_LIMIT_SECONDS` in `src/t6/ops.py`), by kind with the count and the oldest age in
+  seconds, for the queue file (`queue`) and for the internal job table (`internal`). Typical
+  cause: no running worker handles that kind. A job whose time is still in the future, or that a
+  worker holds under a live lease, is not waiting. This is a problem now, not history:
+  `--ignore-history` does not hide it.
 
 Failed jobs and syncs are also listed under `history`. Two flags narrow the check for
 deploy tools and monitors:
@@ -219,7 +225,7 @@ Every Booking change queues a `booking.calendar_sync` internal job. The main wor
 - `GOOGLE_APPLICATION_CREDENTIALS`: the path of the Google service account key file (JSON, mode 600, in the root-only env directory on Sixto, never in the image or the repository). One service account; each Bay calendar stays owned by the personal Gmail account and is shared to the service account's email with "Make changes and manage sharing" (issue #186). Fallback if Google refuses that: an OAuth user credential.
 - Install the `google` extra (`pip install 't6[google]'`), which adds `cryptography` to sign the service account sign-in. Nothing else is added: HTTP is the standard library.
 - Event content: the title is the Project's name, the description is `Person: <name>` and `Booking ID: <t6g_ id>`, nothing else. The names come from Notion, so `T6_NOTION_TOKEN` is required with the calendars; the worker refuses to start without it (`ConfigError`).
-- With either variable unset, the job finishes with the result `no calendar configured` (it does not fail, retry or die). The Booking is kept; Bookings changed while no calendar was set up are not written later. No command queues a calendar sync for every future Booking yet (no verb exists for it; #276 notes the gap), so when the calendar goes live a Booking gets its event only when it next changes.
+- With either variable unset, the job finishes with the result `no calendar configured` (it does not fail, retry or die). The Booking is kept; Bookings changed while no calendar was set up are not written later. To give the Bookings that already exist their events when the calendar goes live, run `t6 admin calendar resync` on the database host (`--registry-db FILE`, default `T6_REGISTRY_DB`). It queues one `booking.calendar_sync` job for every Booking that is not cancelled and has not ended, through the same function a Booking change uses, and prints `{"queued": N}`. A Booking that already has a sync queued or claimed is skipped, so a second run does not double it. It is an admin command, not a verb.
 - A job that failed five times is dead. `t6 health` lists dead internal jobs by kind (`dead_internal_jobs`) and counts them as a problem; `--ignore-history` reports them without failing.
 - A calendar write is safe to repeat: the event ID is derived from the Booking ID, Google's 409 (event exists) turns into an update, and a 404 or 410 on delete counts as already gone.
 

@@ -21,7 +21,8 @@ SERVICES = frozenset({'gateway', 'worker', 'reports', 'watchdog', 'munki', 'herm
 # Internal actors: named, not a Person, used only inside the worker by one handler. They are not in SERVICES, so no API secret
 # can name them and `T6_API_SERVICE_PERMISSIONS` cannot grant them anything; their grants are fixed here.
 CALENDAR_ACTOR = 'google-calendar'  # inbound Google Calendar edits (#270): Google names no editor, calendar sharing is the check
-INTERNAL_ACTORS: Mapping[str, frozenset[str]] = {CALENDAR_ACTOR: frozenset({'bookings'})}
+FRAMEIO_ACTOR = 'frameio'  # Frame.io events (#275): a file landing in a Deliverable's folder, a client viewing a share. It writes its own rows and runs no verb
+INTERNAL_ACTORS: Mapping[str, frozenset[str]] = {CALENDAR_ACTOR: frozenset({'bookings'}), FRAMEIO_ACTOR: frozenset()}
 
 PERMISSIONS = frozenset({"operator", "coordinator", "bookings", "drives", "admin", "llm"})
 STAFF_RULE = "role:staff"
@@ -281,7 +282,7 @@ class People:
                 before = {'page_id': current[0] if current else None}
                 db.execute("UPDATE bindings SET active = 0 WHERE system = 'notion' AND project_id = ?", (person_id,))
                 db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, ?, 1) ON CONFLICT(system, page_id) DO UPDATE SET active = 1", (page, person_id, now))
-                enqueue_sharing(db, str(person_id), verb, key, now)  # the Person's Google email comes from the bound page
+                enqueue_sharing(self.registry, db, str(person_id), verb, key, now)  # the Person's Google email comes from the bound page
             elif verb == 'shift':
                 current = db.execute('SELECT pattern, start, end FROM person_shifts WHERE person_id = ?', (person_id,)).fetchone()
                 before = dict(zip(('pattern', 'start', 'end'), current)) if current else None
@@ -289,7 +290,7 @@ class People:
             elif verb == 'classify':
                 before = {'kind': db.execute('SELECT kind FROM persons WHERE id = ?', (person_id,)).fetchone()[0]}
                 db.execute('UPDATE persons SET kind = ? WHERE id = ?', (values['kind'], person_id))
-                enqueue_sharing(db, str(person_id), verb, key, now)  # only active staff may hold calendar edit
+                enqueue_sharing(self.registry, db, str(person_id), verb, key, now)  # only active staff may hold calendar edit
             elif verb in ('grant', 'revoke'):
                 permission = values['permission']
                 held = db.execute('SELECT 1 FROM person_permissions WHERE person_id = ? AND permission = ?', (person_id, permission)).fetchone() is not None
@@ -299,7 +300,7 @@ class People:
                 else:
                     db.execute('DELETE FROM person_permissions WHERE person_id = ? AND permission = ?', (person_id, permission))
                 if permission == BOOKINGS:
-                    enqueue_sharing(db, str(person_id), verb, key, now)
+                    enqueue_sharing(self.registry, db, str(person_id), verb, key, now)
             else:
                 before = {'telegram_id': db.execute('SELECT telegram_id FROM persons WHERE id = ?', (person_id,)).fetchone()[0]}
                 db.execute('UPDATE persons SET telegram_id = ? WHERE id = ?', (telegram, person_id))

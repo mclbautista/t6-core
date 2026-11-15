@@ -1,6 +1,7 @@
 """Bay migration through the in-memory t6 database."""
 import unittest
 from typing import Any
+from unittest.mock import patch
 
 from t6.bay import BayStore
 from t6.notion.generated import BaysRow
@@ -86,6 +87,82 @@ class BookingTests(unittest.TestCase):
         self.assertTrue(read.result['booking']['forced'])
         self.assertEqual(sum(item.action.startswith("booking_") for item in self.registry.activity(self.project)), 2)
         self.assertEqual(len(self.registry.audit(first.result['booking_id'])), 1)
+
+    def book(self, key: str, start: str, end: str, bay: int = 0) -> str:
+        done = self.write('bay', 'book', {'bay': self.bays[bay], 'person': 'editor', 'project': self.project, 'start': start, 'end': end, 'idempotency_key': key})
+        return str(done.result['booking_id'])
+
+    def sync_jobs(self, states: tuple[str, ...] = ('queued', 'claimed')) -> list[Any]:
+        from t6.google.sync import BOOKING_SYNC_KIND
+        from t6.worker.internal_queue import InternalJobQueue
+        return InternalJobQueue(self.registry).find(BOOKING_SYNC_KIND, states=states)
+
+    def settle_sync_jobs(self) -> None:
+        from t6.worker.internal_queue import InternalJobQueue
+        queue = InternalJobQueue(self.registry)
+        for job in self.sync_jobs():
+            queue.finish(job.job_id, {'event': 'skipped'})
+
+    def test_a_booking_change_queues_its_sync_through_the_internal_job_queue(self) -> None:
+        from t6.google.sync import BOOKING_SYNC_KIND
+        from t6.worker.internal_queue import InternalJobQueue
+        with patch.object(InternalJobQueue, 'submit', autospec=True, side_effect=InternalJobQueue.submit) as submit:
+            booking = self.book('one', '2026-11-20T10:00:00+08:00', '2026-11-20T11:00:00+08:00')
+        calls = [call for call in submit.call_args_list if call.args[2] == BOOKING_SYNC_KIND]
+        self.assertEqual(len(calls), 1)
+        self.assertIsNotNone(calls[0].kwargs.get('db'))
+        self.assertEqual([job.payload['booking_id'] for job in self.sync_jobs()], [booking])
+
+    def test_resync_queues_one_sync_per_booking_that_is_live_and_not_over(self) -> None:
+        from t6.bay import BookingStore
+        from t6.preview import PreviewTokens
+        from datetime import datetime
+        coming = self.book('coming', '2026-11-20T10:00:00+08:00', '2026-11-20T11:00:00+08:00')
+        later = self.book('later', '2026-12-01T10:00:00+08:00', '2026-12-01T11:00:00+08:00', bay=1)
+        over = self.book('over', '2026-11-10T10:00:00+08:00', '2026-11-10T11:00:00+08:00')
+        cancelled = self.book('cancelled', '2026-11-21T10:00:00+08:00', '2026-11-21T11:00:00+08:00')
+        self.write('booking', 'cancel', {'booking': cancelled})
+        self.settle_sync_jobs()
+        now = datetime.fromisoformat('2026-11-16T09:00:00+08:00').timestamp()
+        store = BookingStore(self.registry, PreviewTokens('test'))
+        self.assertEqual(store.resync_calendar(now=now), 2)
+        self.assertEqual(sorted(job.payload['booking_id'] for job in self.sync_jobs()), sorted([coming, later]))
+        self.assertNotIn(over, [job.payload['booking_id'] for job in self.sync_jobs()])
+
+    def test_resync_twice_does_not_double_what_is_still_queued_but_queues_again_once_it_finished(self) -> None:
+        from t6.bay import BookingStore
+        from t6.preview import PreviewTokens
+        from datetime import datetime
+        self.book('coming', '2026-11-20T10:00:00+08:00', '2026-11-20T11:00:00+08:00')
+        self.settle_sync_jobs()
+        now = datetime.fromisoformat('2026-11-16T09:00:00+08:00').timestamp()
+        store = BookingStore(self.registry, PreviewTokens('test'))
+        self.assertEqual(store.resync_calendar(now=now), 1)
+        self.assertEqual(store.resync_calendar(now=now + 60), 0)
+        self.assertEqual(len(self.sync_jobs()), 1)
+        self.settle_sync_jobs()  # the first run ended with no calendar configured; the second run, after the setting is fixed, must work
+        self.assertEqual(store.resync_calendar(now=now + 120), 1)
+
+    def test_admin_calendar_resync_command_prints_the_count(self) -> None:
+        import io
+        import json
+        import tempfile
+        from contextlib import redirect_stdout
+        from pathlib import Path
+        from t6.cli import main
+        from t6.registry import SqliteProjectRegistry
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'registry.sqlite3'
+            registry = SqliteProjectRegistry(path)
+            with registry._transaction() as db:
+                db.execute("INSERT INTO bookings VALUES ('t6g_one', 'bay', 'person', 'project', '2999-01-01T10:00:00+08:00', '2999-01-01T11:00:00+08:00', 0, 0)")
+                db.execute("INSERT INTO bookings VALUES ('t6g_two', 'bay', 'person', 'project', '2999-01-02T10:00:00+08:00', '2999-01-02T11:00:00+08:00', 0, 1)")
+                db.execute("INSERT INTO bookings VALUES ('t6g_old', 'bay', 'person', 'project', '2001-01-02T10:00:00+08:00', '2001-01-02T11:00:00+08:00', 0, 0)")
+            for expected in (1, 0):
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    status = main(['admin', 'calendar', 'resync', '--registry-db', str(path)])
+                self.assertEqual((status, json.loads(out.getvalue())['queued']), (0, expected))
 
     def test_shift_and_mutations(self) -> None:
         from t6.verbs import NeedsPerson, Refused

@@ -44,15 +44,6 @@ class HeldActivity:
         with self._registry._transaction() as db:
             return db.execute('SELECT 1 FROM frameio_held_activity WHERE dedupe_key = ?', (key,)).fetchone() is not None
 
-    def waiting(self, frameio_project_id: str | None = None) -> list[dict[str, Any]]:
-        """The rows not released yet, oldest first, for one Frame.io project or all."""
-        with self._registry._transaction() as db:
-            rows = db.execute(
-                'SELECT id, frameio_project_id, dedupe_key, payload, held_at FROM frameio_held_activity '
-                'WHERE released_at IS NULL AND (? IS NULL OR frameio_project_id = ?) ORDER BY id',
-                (frameio_project_id, frameio_project_id)).fetchall()
-        return [{'id': row[0], 'frameio_project_id': row[1], 'dedupe_key': row[2], 'payload': json.loads(row[3]), 'held_at': row[4]} for row in rows]
-
     def release_linked(self, submit: Submit) -> int:
         """Send every waiting row whose Frame.io project is now linked to a Project, once. Returns how many were released.
 

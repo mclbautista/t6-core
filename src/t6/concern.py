@@ -202,10 +202,11 @@ class ConcernStore:
             db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(result)))
             return Done(result=result)
 
-    @staticmethod
-    def _schedule(db: Any, concern: str, now: float, revision: int) -> None:
+    def _schedule(self, db: Any, concern: str, now: float, revision: int) -> None:
+        from t6.worker.internal_queue import InternalJobQueue
+        queue = InternalJobQueue(self.registry, clock=lambda: now)
         for weeks, target in ((2, 'quiet'), (4, 'expired')):
-            db.execute("INSERT INTO internal_jobs (queue, kind, dedupe_key, payload, run_at, state, created_at) VALUES ('main', 'concern_silence', ?, ?, ?, 'queued', ?)", (f'{concern}:{revision}:{target}', json.dumps({'concern': concern, 'evidence_at': now, 'target': target}), now + weeks * WEEK, now))
+            queue.submit('main', 'concern_silence', f'{concern}:{revision}:{target}', {'concern': concern, 'evidence_at': now, 'target': target}, run_at=now + weeks * WEEK, db=db)
 
     @staticmethod
     def _log(db: Any, project: str, concern: str, actor: str, action: str, now: float, before: Any, after: Any, summary: str) -> None:

@@ -271,6 +271,14 @@ class PersonChangesQueueSharingTests(SharingCase):
         self.person_verb('rebind', {'person_id': 'ana', 'page_id': 'a' * 32})
         self.assertEqual(self.jobs(SHARING_KIND), 1)
 
+    def test_the_sharing_job_is_queued_through_the_internal_job_queue(self) -> None:
+        from t6.worker.internal_queue import InternalJobQueue
+        with patch.object(InternalJobQueue, 'submit', autospec=True, side_effect=InternalJobQueue.submit) as submit:
+            self.person_verb('rebind', {'person_id': 'ana', 'page_id': 'a' * 32})
+        self.assertEqual([call.args[2] for call in submit.call_args_list if call.args[2] == SHARING_KIND], [SHARING_KIND])
+        self.assertTrue(all(call.kwargs.get('db') is not None for call in submit.call_args_list))
+        self.assertEqual(self.jobs(SHARING_KIND), 1)
+
     def test_a_refused_classify_queues_nothing(self) -> None:
         from t6.verbs import VERBS, Refused, invoke
         entry = next(e for e in VERBS if (e.noun, e.verb) == ('person', 'classify'))

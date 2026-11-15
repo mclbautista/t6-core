@@ -3,6 +3,7 @@
 import time
 from collections.abc import Callable
 
+from t6.person import FRAMEIO_ACTOR
 from t6.registry.sqlite import SqliteProjectRegistry
 
 
@@ -27,6 +28,6 @@ class DeliveryShareViews:
             if receipt.rowcount:
                 db.execute(
                     'INSERT INTO activity (project_id, subject_id, at, actor, action, summary) VALUES (?, ?, ?, ?, ?, ?)',
-                    (row[0], row[1], self._clock(), 'frameio', 'delivery_share_viewed', 'client viewed the delivery share'),
+                    (row[0], row[1], self._clock(), FRAMEIO_ACTOR, 'delivery_share_viewed', 'client viewed the delivery share'),
                 )
             return True

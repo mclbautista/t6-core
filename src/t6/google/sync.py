@@ -19,11 +19,10 @@ BOOKING_SYNC_KIND = 'booking.calendar_sync'
 QUEUE = 'main'
 
 
-def enqueue(db: sqlite3.Connection, booking: str, previous_bay: str | None, key: str, now: float) -> None:
+def enqueue(registry: SqliteProjectRegistry, db: sqlite3.Connection, booking: str, previous_bay: str | None, key: str, now: float) -> None:
     """Queue the write in the same transaction as the Booking change. `key` is the change's idempotency key."""
-    db.execute("INSERT INTO internal_jobs (queue, kind, dedupe_key, payload, run_at, state, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?) "
-               "ON CONFLICT (kind, dedupe_key) DO NOTHING",
-               (QUEUE, BOOKING_SYNC_KIND, f'{booking}:{key}', json.dumps({'booking_id': booking, 'previous_bay': previous_bay}), now, now))
+    from t6.worker.internal_queue import InternalJobQueue  # imported here: t6.person imports the sharing module, and the queue imports t6.person
+    InternalJobQueue(registry, clock=lambda: now).submit(QUEUE, BOOKING_SYNC_KIND, f'{booking}:{key}', {'booking_id': booking, 'previous_bay': previous_bay}, db=db)
 
 
 def event_id(booking: str) -> str:

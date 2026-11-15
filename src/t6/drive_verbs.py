@@ -165,10 +165,10 @@ class DriveVerbs:
             state.append([drive_id, len(store.list_events(drive_id)), len(listed), sum(a.is_open for a in listed)])
         return state
 
-    def overdue(self, store: DriveStore | None = None) -> dict[str, Any]:
+    def overdue(self) -> dict[str, Any]:
         """The swings still out past their return date, as of today in Manila."""
         today = date.fromisoformat(self._today())
-        found = (store or self.store).overdue_returns(today)
+        found = self.store.overdue_returns(today)
         return {'today': today.isoformat(), 'overdue': [
             {'drive_id': drive.id, 'serial': drive.serial, 'label': a.label, 'project_id': a.project.page_id if a.project else None, 'holder': a.holder,
              'start': a.start.isoformat() if a.start else None, 'return_date': a.return_date.isoformat() if a.return_date else None,

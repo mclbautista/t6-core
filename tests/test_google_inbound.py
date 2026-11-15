@@ -346,6 +346,43 @@ class CalendarServiceActorIsNarrow(unittest.TestCase):
             service_permissions_from_env({'T6_API_SERVICE_PERMISSIONS': '{"google-calendar": ["bookings"]}'})
 
 
+class InternalActorsAndParameters(unittest.TestCase):
+    def test_frameio_is_a_named_internal_actor_with_no_role_and_no_api_secret(self) -> None:
+        from t6.person import FRAMEIO_ACTOR, INTERNAL_ACTORS, People, SERVICES
+        from t6.preview import PreviewTokens
+        from t6.server.verbs import service_permissions_from_env
+        self.assertEqual(FRAMEIO_ACTOR, 'frameio')
+        self.assertEqual(INTERNAL_ACTORS[FRAMEIO_ACTOR], frozenset())  # it records Versions and share views itself; it runs no verb
+        self.assertNotIn(FRAMEIO_ACTOR, SERVICES)
+        registry = MemoryRegistry()
+        self.addCleanup(registry.db.close)
+        people = People(registry, PreviewTokens('test'))
+        for role in ('reader', 'staff', 'operator', 'coordinator', 'bookings', 'drives', 'admin', 'llm'):
+            self.assertIsNotNone(people.authorize('frameio', role), role)
+        with self.assertRaises(ValueError):
+            People(registry, PreviewTokens('test'), service_permissions={'frameio': frozenset({'admin'})})
+        with self.assertRaises(ValueError):
+            service_permissions_from_env({'T6_API_SERVICE_PERMISSIONS': '{"frameio": ["operator"]}'})
+
+    def test_the_frameio_actor_is_written_through_the_one_constant(self) -> None:
+        import inspect
+        from t6 import version
+        from t6.frameio import share_views
+        for module in (version, share_views):
+            source = inspect.getsource(module)
+            self.assertIn('FRAMEIO_ACTOR', source, module.__name__)
+            self.assertNotRegex(source, r"'(version_add|delivery_share_viewed)'[^)]*'frameio'|'frameio',\s*'(version_add|delivery_share_viewed)'", module.__name__)
+
+    def test_parameters_nothing_passes_are_gone(self) -> None:
+        import inspect
+        from t6.drive_verbs import DriveVerbs
+        from t6.google.inbound import inbound_handlers
+        from t6.google.sharing import sharing_handlers
+        self.assertNotIn('http', inspect.signature(inbound_handlers).parameters)
+        self.assertNotIn('http', inspect.signature(sharing_handlers).parameters)
+        self.assertNotIn('store', inspect.signature(DriveVerbs.overdue).parameters)
+
+
 class OurOwnWritesDoNotLoop(InboundCase):
     def test_the_echo_of_our_own_write_changes_nothing(self) -> None:
         booking = self.book()

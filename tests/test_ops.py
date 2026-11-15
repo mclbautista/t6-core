@@ -157,7 +157,7 @@ class HealthTests(OpsTestCase):
     def add_internal_jobs(self, *states: tuple[str, str]) -> None:
         with sqlite3.connect(self.path) as db:
             for number, (kind, state) in enumerate(states):
-                db.execute("INSERT INTO internal_jobs (queue, kind, dedupe_key, payload, run_at, state, created_at) VALUES ('main', ?, ?, '{}', 0, ?, 0)", (kind, f"k{number}", state))
+                db.execute("INSERT INTO internal_jobs (queue, kind, dedupe_key, payload, run_at, state, created_at) VALUES ('main', ?, ?, '{}', 1e12, ?, 0)", (kind, f"k{number}", state))  # run_at far ahead: a queued row here is not waiting
 
     def test_health_counts_dead_internal_jobs_by_kind(self) -> None:
         self.add_internal_jobs(("booking.calendar_sync", "dead"), ("booking.calendar_sync", "dead"), ("registry.sync", "dead"), ("registry.sync", "done"), ("registry.sync", "queued"))
@@ -176,6 +176,67 @@ class HealthTests(OpsTestCase):
         self.assertEqual(report["dead_internal_jobs"], {})
         self.assertIs(report["ok"], True)
 
+    def add_waiting(self, queue_jobs: tuple[tuple[str, str, float, float | None], ...] = (), internal: tuple[tuple[str, str, float, float | None], ...] = ()) -> None:
+        """Rows of (kind, state, run_at, lease_until) in the queue file and in the internal job table."""
+        with sqlite3.connect(self.live()["queue"]) as db:
+            for number, (kind, state, run_at, lease) in enumerate(queue_jobs):
+                db.execute("INSERT INTO jobs (queue, kind, dedupe_key, payload, run_at, state, lease_until, created_at) VALUES ('main', ?, ?, '{}', ?, ?, ?, 0)", (kind, f"q{number}", run_at, state, lease))
+        with sqlite3.connect(self.path) as db:
+            for number, (kind, state, run_at, lease) in enumerate(internal):
+                db.execute("INSERT INTO internal_jobs (queue, kind, dedupe_key, payload, run_at, state, lease_until, created_at) VALUES ('main', ?, ?, '{}', ?, ?, ?, 0)", (kind, f"i{number}", run_at, state, lease))
+
+    def test_health_shows_due_jobs_that_waited_too_long_by_kind_with_the_oldest_age(self) -> None:
+        now = self.clock()
+        self.add_waiting(
+            queue_jobs=(("nobody.claims", "pending", now - 3600, None), ("nobody.claims", "pending", now - 1800, None)),
+            internal=(("orphan.kind", "queued", now - 7200, None),),
+        )
+        report = ops.health(self.live(), now=now)
+        self.assertEqual(report["waiting_jobs"], {"queue": {"nobody.claims": {"count": 2, "oldest_seconds": 3600.0}},
+                                                  "internal": {"orphan.kind": {"count": 1, "oldest_seconds": 7200.0}}})
+        self.assertIs(report["ok"], False)
+        self.assertIn("nobody.claims", str(report["problems"]))
+        self.assertIn("orphan.kind", str(report["problems"]))
+
+    def test_jobs_not_yet_due_or_not_waiting_long_or_under_a_live_lease_are_not_waiting(self) -> None:
+        now = self.clock()
+        self.add_waiting(
+            queue_jobs=(("later", "pending", now + 3600, None), ("fresh", "pending", now - 60, None), ("busy", "claimed", now - 7200, now + 30)),
+            internal=(("later", "queued", now + 3600, None), ("fresh", "queued", now - 60, None), ("busy", "claimed", now - 7200, now + 30), ("finished", "done", now - 7200, None)),
+        )
+        report = ops.health(self.live(), now=now)
+        self.assertEqual(report["waiting_jobs"], {"queue": {}, "internal": {}})
+        self.assertIs(report["ok"], True)
+
+    def test_a_claimed_job_whose_lease_ran_out_is_waiting(self) -> None:
+        now = self.clock()
+        self.add_waiting(internal=(("stalled", "claimed", now - 7200, now - 3000),))
+        self.assertEqual(ops.health(self.live(), now=now)["waiting_jobs"]["internal"], {"stalled": {"count": 1, "oldest_seconds": 7200.0}})  # type: ignore[index]
+
+    def test_the_threshold_is_fifteen_minutes_by_default_and_can_be_changed(self) -> None:
+        now = self.clock()
+        self.add_waiting(internal=(("slow", "queued", now - 600, None),))
+        self.assertEqual(ops.health(self.live(), now=now)["waiting_jobs"]["internal"], {})  # type: ignore[index]
+        self.assertEqual(ops.health(self.live(), now=now, waiting_limit=300)["waiting_jobs"]["internal"], {"slow": {"count": 1, "oldest_seconds": 600.0}})  # type: ignore[index]
+        self.assertEqual(ops.WAITING_LIMIT_SECONDS, 900)
+
+    def test_waiting_jobs_are_a_current_state_so_ignore_history_does_not_hide_them(self) -> None:
+        now = self.clock()
+        self.add_waiting(internal=(("orphan.kind", "queued", now - 7200, None),))
+        report = ops.health(self.live(), now=now, count_history=False)
+        self.assertIs(report["ok"], False)
+        self.assertIn("orphan.kind", str(report["problems"]))
+        self.assertNotIn("orphan.kind", str(report["history"]))
+
+    def test_an_edge_server_with_no_registry_still_reports_its_queue_file(self) -> None:
+        now = self.clock()
+        self.add_waiting(queue_jobs=(("nobody.claims", "pending", now - 3600, None),))
+        paths = dict(self.live())
+        paths["registry"] = Path(self.directory.name) / "absent.sqlite"
+        report = ops.health(paths, now=now, required=("queue",))
+        self.assertEqual(report["waiting_jobs"], {"queue": {"nobody.claims": {"count": 1, "oldest_seconds": 3600.0}}, "internal": {}})
+        self.assertIs(report["ok"], False)
+
     def test_an_edge_server_needs_no_registry(self) -> None:
         paths = dict(self.live())
         paths["registry"] = Path(self.directory.name) / "absent.sqlite"
@@ -193,11 +254,11 @@ class CommandTests(OpsTestCase):
         live = self.live()
         env = {"T6_REGISTRY_DB": str(live["registry"]), "T6_QUEUE_DB": str(live["queue"]), "T6_OPERATOR_DB": str(live["operator"])}
         backup = Path(self.directory.name) / "backup"
-        with mock.patch.dict(os.environ, env), mock.patch("t6.client.Client.health", return_value={"version": "test", "schema_version": 1}):
+        with mock.patch.dict(os.environ, env), mock.patch("t6.ops.time.time", side_effect=self.clock), mock.patch("t6.client.Client.health", return_value={"version": "test", "schema_version": 1}):
             self.assertEqual(cli_main(["backup", "--into", str(backup)]), 0)
             self.assertEqual(cli_main(["health"]), 0)
             self.assertEqual(cli_main(["restore", "--from", str(backup)]), 2)  # the databases exist: refused
-        with mock.patch.dict(os.environ, env), mock.patch("t6.client.Client.health", side_effect=AssertionError("must not call the API")):
+        with mock.patch.dict(os.environ, env), mock.patch("t6.ops.time.time", side_effect=self.clock), mock.patch("t6.client.Client.health", side_effect=AssertionError("must not call the API")):
             self.assertEqual(cli_main(["health", "--local"]), 0)
             self.assertEqual(cli_main(["health", "--local", "--ignore-history"]), 0)
             with mock.patch.dict(os.environ, {"T6_SERVER_MODE": "edge", "T6_REGISTRY_DB": str(Path(self.directory.name) / "none.sqlite")}):

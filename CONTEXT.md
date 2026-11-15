@@ -57,6 +57,9 @@ Modelled in `t6.drives`.
   are blank when they were never recorded. No end means open, and "which drives
   are out for show X" is a query over open Assignments. A reused Drive gets a new
   Assignment; old ones stay as its history.
+- **Assignment number**: the place of an Assignment in its Drive's list, counted
+  from 1 in the order they were added. It never changes, because an Assignment is
+  never removed. `drive unassign` picks the Assignment to end by it when several are open.
 - **Swing drive**: a Drive with a `swing` Assignment, lent to a Project, to a
   Person (the holder), or to both. A swing held by a Person alone has no Project:
   an Assignment with no Project must name a holder, and a Drive cannot have two
@@ -441,7 +444,9 @@ fields, read from Notion) and `t6.registry` (identity).
   serves the `frameio` queue. Nothing else in T6 has Frame.io credentials.
 - **Request** (Frame.io): one typed question or step for the Frame.io worker,
   sent as a job on the `frameio` queue. Its **result** is `Ok` or `Failed`.
-  A **Frame.io project** is Frame.io's own object, never a T6 Project.
+  A **Frame.io project** is Frame.io's own object, never a T6 **Project**: this file
+  writes "Frame.io project" for Frame.io's and "Project" for T6's, and a Project holds at most one
+  Frame.io project through its frameio-project Media location.
 - **Caller**: any part of T6 that asks the Frame.io worker and waits for the
   result: the main worker, the API (Project Start confirm), t6-notion-reports.
   Almost every request is a read; `CreateProjectFolders` is the one **write**
@@ -452,16 +457,16 @@ fields, read from Notion) and `t6.registry` (identity).
 - **Unlinked Frame.io activity**: review activity on a Frame.io project that
   no Project holds (no active frameio-project Media location). The main worker
   **holds** it in the t6 database (the Frame.io worker never opens it) and posts one
-  operator card per Frame.io project, a show picker that a coordinator
-  (`permission:coordinator`) answers. Tapping a show runs `frameio project link`; the
+  operator card per Frame.io project, a picker of Projects that a coordinator
+  (`permission:coordinator`) answers. Tapping a Project runs `frameio project link`; the
   held activity is then **released**, each event once, whatever linked the project
   (the card, the verb, or anything else). It is never dropped and no comment text is
   stored with it. Skipping the card leaves it held and the next event posts a new card.
 - **Link Frame.io project**: a button on the `/project` card, for any active staff
   Person (a staff Person who is not an operator gets the card with only this
   button). It lists the Frame.io projects of the configured T6 Frame.io account that
-  no show holds, most recently updated first, five to a page, with a typed search.
-  A second show choosing a project another show holds is refused, naming the holder.
+  no Project holds, most recently updated first, five to a page, with a typed search.
+  A second Project choosing a Frame.io project another Project holds is refused, naming the holder.
 - **Sign-in**: a person signing in to Adobe so the Frame.io worker has a
   token again. The **sign-in alert** is the Telegram message with the link.
 

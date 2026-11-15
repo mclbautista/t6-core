@@ -9,6 +9,7 @@ from typing import Any
 from t6.domain.studio_time import MANILA
 from t6.deliverable import write_milestone
 from t6.ids import EntityKind, T6Id
+from t6.person import FRAMEIO_ACTOR
 from t6.registry.core import normalize_page_id
 from t6.registry.sqlite import SqliteProjectRegistry
 from t6.preview import PreviewTokens
@@ -57,8 +58,8 @@ class VersionStore:
                 now, version_id = self.registry._clock(), str(T6Id.mint(EntityKind.VERSION))
                 db.execute('INSERT INTO versions VALUES (?, ?, ?, ?, NULL, NULL)', (version_id, deliverable, file_id, stack_id))
                 result, outcome = {'version_id': version_id, 'deliverable_id': deliverable, 'project_id': project, 'frameio_file_id': file_id, 'frameio_stack_id': stack_id, 'recorded': True}, 'recorded'
-                audit = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, NULL, ?)', (version_id, 'version_add', 'frameio', now, json.dumps(result)))
-                db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (project, version_id, now, 'frameio', 'version_add', 'version add', audit.lastrowid))
+                audit = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, NULL, ?)', (version_id, 'version_add', FRAMEIO_ACTOR, now, json.dumps(result)))
+                db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (project, version_id, now, FRAMEIO_ACTOR, 'version_add', 'version add', audit.lastrowid))
             db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, event_id, json.dumps(result)))
             return outcome
 

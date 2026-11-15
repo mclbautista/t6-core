@@ -242,6 +242,18 @@ def _migrate_bays(args: argparse.Namespace, open_notion: Callable[..., Any]) -> 
     return 0
 
 
+def _calendar_resync(args: argparse.Namespace) -> int:
+    from t6.bay import BookingStore
+    from t6.preview import PreviewTokens
+    from t6.registry import SqliteProjectRegistry
+    try:
+        queued = BookingStore(SqliteProjectRegistry(args.registry_db), PreviewTokens("calendar-resync")).resync_calendar()
+    except (OSError, ValueError) as error:
+        return _fail(str(error))
+    print(json.dumps({"queued": queued}, indent=2))
+    return 0
+
+
 def _migrate_deliverables(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
     import pwd
     from t6.deliverable import DeliverableStore
@@ -580,15 +592,19 @@ def main(
     dry_run = commands.add_parser(
         "drives-import-dry-run",
         help="Import the legacy drive workbooks into memory and print the review report",
-        description="Nothing is written anywhere: the import runs into an in-memory store that is thrown away.",
+        description="With a workbook, nothing is written anywhere: the import runs into an in-memory store that is thrown away. "
+        "With --swing it reads the Notion Swing Drives database: it prints a preview and writes nothing; "
+        "--swing --apply writes into the t6 database the Drives (one per Notion row), the open swing Assignments of the rows "
+        "that name one registered Person as holder, and the exceptions (the rows that need a person's answer), "
+        "and only the ones the preview named. Always preview first.",
     )
     dry_run.add_argument("workbook", type=Path, nargs="?", help="the per-project drive workbook (.xlsx); not used with --swing")
     dry_run.add_argument("--log-sheet", type=Path, metavar="FILE", help="also import the drive log sheet workbook (.xlsx) into the same store")
     dry_run.add_argument("--projects", type=Path, metavar="FILE", help="JSON list of {\"page_id\", \"name\"} to resolve Project names against; without it every Project is unresolved")
-    dry_run.add_argument("--swing", action="store_true", help="import the Notion Swing Drives database into the t6 database: a preview, unless --apply")
+    dry_run.add_argument("--swing", action="store_true", help="read the Notion Swing Drives database: print a preview, and write nothing unless --apply")
     dry_run.add_argument("--data-sources", type=Path, metavar="FILE", help="with --swing: JSON of database key to data source ID, with a swing_drives entry")
     dry_run.add_argument("--registry-db", type=Path, default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)), help="with --swing: the t6 database")
-    dry_run.add_argument("--apply", action="store_true", help="with --swing: carry out the import; needs --preview FILE")
+    dry_run.add_argument("--apply", action="store_true", help="with --swing: write the previewed Drives, swing Assignments and exceptions into the t6 database; needs --preview FILE")
     dry_run.add_argument("--preview", type=Path, metavar="FILE", help="with --swing --apply: the JSON a preview printed")
     consumer = commands.add_parser(
         "check-consumer",
@@ -642,6 +658,13 @@ def main(
     deliverable_migrate.add_argument("--registry-db", type=Path, default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)))
     deliverable_migrate.add_argument("--apply", action="store_true")
     deliverable_migrate.add_argument("--preview", type=Path)
+    calendar_admin = admin_commands.add_parser("calendar", help="Calendar administration")
+    calendar_commands = calendar_admin.add_subparsers(dest="calendar_admin_command", required=True)
+    calendar_resync = calendar_commands.add_parser(
+        "resync", help="Queue a calendar sync for every Booking that is not cancelled and has not ended",
+        description="Run on the database host. Queues one booking.calendar_sync job per Booking and prints how many. "
+        "Safe to run twice: a Booking whose sync is still queued is not queued again.")
+    calendar_resync.add_argument("--registry-db", type=Path, default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)), metavar="FILE", help="the t6 database")
     drive = admin_commands.add_parser("drive", help="Drive administration")
     drive_commands = drive.add_subparsers(dest="drive_command", required=True)
 
@@ -687,6 +710,8 @@ def main(
         return _migrate_people(args, open_notion)
     if getattr(args, "admin_command", None) == "media":
         return _migrate_media(args)
+    if getattr(args, "admin_command", None) == "calendar":
+        return _calendar_resync(args)
     if getattr(args, "admin_command", None) == "bay":
         return _migrate_bays(args, open_notion)
     if getattr(args, "admin_command", None) == "deliverable":

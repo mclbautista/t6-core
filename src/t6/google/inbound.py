@@ -281,8 +281,6 @@ def inbound_handlers(
     environ: Mapping[str, str],
     open_registry: Callable[[], SqliteProjectRegistry],
     open_names: Callable[[SqliteProjectRegistry], Any],
-    *,
-    http: Any = None,
 ) -> dict[str, Handler]:
     """The `google.calendar_changed` and `google.renew_channels` handlers for the main worker.
 
@@ -299,7 +297,7 @@ def inbound_handlers(
     except OSError as error:
         raise ValueError(f'cannot read the Google credential file: {error.__class__.__name__}') from error
     registry = open_registry()
-    calendar = GoogleCalendar(account, http or UrllibHttp())
+    calendar = GoogleCalendar(account, UrllibHttp())
     names = open_names(registry)
     inbound = InboundEdits(registry, calendar, calendars, names, names)
     renewal = ChannelRenewal(registry, calendar, calendars, address=address, token=token, catch_up=inbound.catch_up)
