@@ -49,6 +49,7 @@ class ReviewMessage:
         ask_frameio: Callable[[FrameioRequest], FrameioResult],
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         target: Callable[[str], tuple[int, int | None] | None] | None = None,
+        track_send: Callable[[int, int, int | None], None] | None = None,
     ) -> None:
         self._gateway = gateway
         self._chat = chat
@@ -56,6 +57,7 @@ class ReviewMessage:
         self._ask = ask_frameio
         self._now = now
         self._target = target
+        self._track_send = track_send
 
     def handlers(self) -> dict[str, Handler]:
         return {JobKind.FRAMEIO_REVIEW_DONE.value: self.notify}
@@ -89,6 +91,8 @@ class ReviewMessage:
         target = self._target(project_id) if self._target is not None else None
         chat, topic = target if target is not None else (self._chat, self._topic)
         ref = self._gateway.notify(chat, text, [], f"frameio-review:{job.dedupe_key}", topic=topic)
+        if target is not None and self._track_send is not None:
+            self._track_send(ref, chat, topic)
         return {"message_ref": ref, "count": count}
 
     def _read_file(self, file_id: str) -> FrameioFile | None:
