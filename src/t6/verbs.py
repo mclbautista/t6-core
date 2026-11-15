@@ -1392,6 +1392,11 @@ class TranscriptSpeakersInput(BaseModel):
     confirm: str | None = None
 
 
+class TranscriptTranslateInput(BaseModel):
+    transcript: str
+    confirm: str | None = None
+
+
 class TranscriptGetInput(BaseModel):
     transcript: str
 
@@ -1413,6 +1418,7 @@ def transcript_get(inputs: TranscriptGetInput, open_notion: Callable[..., Any]) 
 VERBS = (
     Verb('transcript', 'create', 'Create a Transcript', (), TranscriptCreateInput, TranscriptCreateOutput, 'reader', 'Preview and confirm a transcription job.', api_read),
     Verb('transcript', 'speakers', 'Name Transcript speakers', (), TranscriptSpeakersInput, TranscriptCreateOutput, 'reader', 'Preview and confirm speaker names.', api_read),
+    Verb('transcript', 'translate', 'Translate a Transcript', (), TranscriptTranslateInput, TranscriptCreateOutput, 'reader', 'Preview and confirm translation.', api_read),
     Verb('transcript', 'get', 'Get a Transcript', (), TranscriptGetInput, TranscriptGetOutput, 'reader', 'Read progress and summary.', transcript_get),
     Verb('media', 'link', 'Link a Media location', (), MediaLinkInput, MediaWriteOutput, 'coordinator', 'Preview and confirm the link.', media_write),
     Verb('media', 'unlink', 'Unlink a Media location', (), MediaUnlinkInput, MediaWriteOutput, 'coordinator', 'Preview and confirm the unlink.', media_write),
@@ -1611,6 +1617,7 @@ def add_parsers(commands: Any) -> None:
                 parser.add_argument('transcript')
                 if entry.verb == 'speakers':
                     parser.add_argument('csv')
+                if entry.verb in ('speakers', 'translate'):
                     parser.add_argument('--confirm')
             parser.add_argument('--json', action='store_true')
             parser.set_defaults(registered_verb=entry)

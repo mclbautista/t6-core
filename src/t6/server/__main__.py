@@ -60,7 +60,8 @@ def main() -> int:
                              service_permissions_from_env(environ)),
                       queue, secrets_from_env(environ), _open_notion, app,
                       llm_service=service_from_env(environ), data_sources=sources, privacy_registry=privacy_registry,
-                      transcribe_rate=float(environ.get('T6_TRANSCRIBE_RATE', '0.4')))
+                      transcribe_rate=float(environ.get('T6_TRANSCRIBE_RATE', '0.4')),
+                      translate_enabled=environ.get('T6_TRANSCRIPT_TRANSLATE', '').lower() == 'true')
         def tailnet(request: Request) -> Response:
             if request.path.split("?", 1)[0].startswith("/v1/") or request.path.split("?", 1)[0] in {"/health", "/tap"}:
                 return api(request)

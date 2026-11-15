@@ -14,8 +14,68 @@ from t6.domain.events import JsonValue
 
 
 class TranscriptWorker:
-    def __init__(self, client: Any, report: Callable[[WorkerJob, str, dict[str, Any]], None]) -> None:
+    def __init__(self, client: Any, report: Callable[[WorkerJob, str, dict[str, Any]], None], *, queue: Any = None) -> None:
         self.client, self.report = client, report
+        self.queue = queue
+
+    def _translate_plan(self, job: WorkerJob) -> tuple[list[tuple[Path, Any]], dict[str, Any]]:
+        from t6.transcribe.translate import parse_srt
+        root = Path(str(job.payload['audio_folder'])).resolve(strict=True)
+        output = root / '_transcripts'
+        if output.is_symlink() or not output.resolve().is_relative_to(root):
+            raise ValueError('Transcript output escapes audio folder')
+        digest = hashlib.sha256()
+        clips = []
+        for path in sorted(output.rglob('*.srt')):
+            if path.name.endswith('.en.srt'):
+                continue
+            if path.is_symlink() or not path.resolve().is_relative_to(output.resolve()):
+                raise ValueError('Transcript path escapes output folder')
+            raw = path.read_bytes()
+            cues = parse_srt(raw.decode('utf-8'))
+            digest.update(str(path.relative_to(output)).encode())
+            digest.update(raw)
+            clips.append((path, cues))
+        return clips, {'clips': [str(p.relative_to(output)) for p, _ in clips],
+                       'cue_count': sum(len(c) for _, c in clips),
+                       'estimated_tokens': sum((len(cue.text.encode('utf-8')) + 3) // 4 for _, cues in clips for cue in cues),
+                       'snapshot': digest.hexdigest()}
+
+    def translate_preview(self, job: WorkerJob) -> None:
+        _, plan = self._translate_plan(job)
+        self.report(job, 'preview', plan)
+
+    def translate_run(self, job: WorkerJob) -> None:
+        from t6.transcribe.docx import render_docx
+        from t6.transcribe.folder import _write
+        from t6.transcribe.translate import TranslationError, docx_words, render_srt, translate_cues
+        clips, plan = self._translate_plan(job)
+        if plan['snapshot'] != job.payload.get('snapshot'):
+            self.report(job, 'failed', {'rule': 'input_changed'})
+            return
+
+        def run_cue(text: str) -> str | None:
+            # The API owns the provider key and the masking; this worker only sends cue text to it.
+            result = self.queue.client._call('POST', '/v1/transcribe/llm', {'job_id': job.job_id, 'token': job.token, 'text': text})
+            if result.get('outcome') != 'done' or not result['result'].get('output_valid'):
+                return None
+            value = result['result']['output'].get('text')
+            return value if isinstance(value, str) else None
+
+        output = Path(str(job.payload['audio_folder'])).resolve() / '_transcripts'
+        rendered = []
+        try:
+            for path, cues in clips:
+                translated = translate_cues(cues, run_cue)
+                transcript, names = docx_words(translated)
+                rendered.append((path.with_suffix('.en.srt'), render_srt(translated).encode()))
+                rendered.append((path.with_suffix('.en.docx'), render_docx(transcript, speaker_map=names)))
+        except TranslationError:
+            self.report(job, 'failed', {'rule': 'translation'})
+            return
+        for path, content in rendered:
+            _write(output, path, content)
+        self.report(job, 'complete', {})
 
     def _plan(self, job: WorkerJob) -> tuple[FolderPreview, dict[str, Any]]:
         data: dict[str, Any] = dict(job.payload)
@@ -163,5 +223,5 @@ def configured(environ: Mapping[str, str], queue: TranscribeQueue) -> dict[str, 
     if not key:
         raise ValueError('Transcribe worker key is required')
     from elevenlabs.client import ElevenLabs
-    worker = TranscriptWorker(ElevenLabs(api_key=key), queue.report)
-    return {'transcript.preview': worker.preview, 'transcript.run': worker.run, 'transcript.speakers.preview': worker.speakers_preview, 'transcript.speakers.run': worker.speakers_run}
+    worker = TranscriptWorker(ElevenLabs(api_key=key), queue.report, queue=queue)
+    return {'transcript.preview': worker.preview, 'transcript.run': worker.run, 'transcript.speakers.preview': worker.speakers_preview, 'transcript.speakers.run': worker.speakers_run, 'transcript.translate.preview': worker.translate_preview, 'transcript.translate.run': worker.translate_run}

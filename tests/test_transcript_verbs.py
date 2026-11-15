@@ -11,7 +11,7 @@ class TranscriptVerbTests(unittest.TestCase):
         from unittest.mock import patch
         from t6.cli import main
         from t6.client import Client
-        from t6.verbs import Done, TranscriptCreateInput, TranscriptGetInput
+        from t6.verbs import Done, TranscriptCreateInput, TranscriptGetInput, TranscriptTranslateInput
         calls: list[tuple[str, str, Any]] = []
         def call(client: Any, noun: str, verb: str, inputs: Any) -> Any:
             calls.append((noun, verb, inputs))
@@ -19,15 +19,18 @@ class TranscriptVerbTests(unittest.TestCase):
         with patch.object(Client, 'call', new=call), redirect_stdout(io.StringIO()):
             self.assertEqual(main(['transcript', 'create', 't6m_fake', '--no-diarize', '--max-hours', '2', '--json']), 0)
             self.assertEqual(main(['transcript', 'get', '1', '--json']), 0)
+            self.assertEqual(main(['transcript', 'translate', '1', '--confirm', 'token', '--json']), 0)
+            Client().transcript_translate(TranscriptTranslateInput(transcript='1'))
             Client().transcript_create(TranscriptCreateInput(media='t6m_fake'))
             Client().transcript_get(TranscriptGetInput(transcript='1'))
         self.assertTrue(calls[0][2].no_diarize)
         self.assertEqual(calls[0][2].max_hours, 2)
-        self.assertEqual([(noun, verb) for noun, verb, _ in calls], [('transcript', 'create'), ('transcript', 'get'), ('transcript', 'create'), ('transcript', 'get')])
+        self.assertEqual([(noun, verb) for noun, verb, _ in calls], [('transcript', 'create'), ('transcript', 'get'), ('transcript', 'translate'), ('transcript', 'translate'), ('transcript', 'create'), ('transcript', 'get')])
+        self.assertEqual(calls[2][2].confirm, 'token')
 
     def test_catalogue_exposes_typed_create_and_get(self) -> None:
         entries = {entry['verb']: entry for entry in catalogue() if entry['noun'] == 'transcript'}
-        self.assertEqual(set(entries), {'create', 'get', 'speakers'})
+        self.assertEqual(set(entries), {'create', 'get', 'speakers', 'translate'})
         create = entries['create']
         self.assertIn('media', create['input_schema']['properties'])
         self.assertIn('confirm', create['input_schema']['properties'])

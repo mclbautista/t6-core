@@ -15,7 +15,7 @@ from t6.verbs import (
     Ambiguous, Done, NeedsPerson, Outcome, Preview, Refused,
     VersionAddInput, VersionLockInput, VersionFindInput, VersionGetInput,
     MediaLinkInput, MediaUnlinkInput, MediaListInput, MediaMigrateInput,
-    TranscriptCreateInput, TranscriptGetInput, TranscriptSpeakersInput,
+    TranscriptCreateInput, TranscriptGetInput, TranscriptSpeakersInput, TranscriptTranslateInput,
     BayBookInput, BookingMoveInput, BookingExtendInput, BookingCancelInput, BookingGetInput, BookingListInput,
     DeliverableDeliverInput, PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
@@ -50,6 +50,9 @@ class Client:
 
     def transcript_speakers(self, inputs: TranscriptSpeakersInput) -> Result:
         return self.call('transcript', 'speakers', inputs)
+
+    def transcript_translate(self, inputs: TranscriptTranslateInput) -> Result:
+        return self.call('transcript', 'translate', inputs)
 
     def transcript_get(self, inputs: TranscriptGetInput) -> Result:
         return self.call('transcript', 'get', inputs)
