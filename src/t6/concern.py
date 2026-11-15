@@ -70,12 +70,15 @@ class ConcernStore:
                     self._pm_log(db, project, concern, 'concern_auto_resolve', quote, now, state)
                 db.execute('DELETE FROM concern_pm_pending WHERE concern_id = ?', (concern,))
 
-    def _rejected(self, project: str, as_of: str, text: str) -> None:
+    def _rejected(self, project: str, as_of: str, text: str, db: Any = None) -> None:
         """Count a rejected answer for a line; after MAX_ATTEMPTS the line is recorded and not sent again."""
-        with self.registry._transaction() as db:
-            db.execute('INSERT INTO concern_pm_attempts VALUES (?, ?, ?, 1) ON CONFLICT (project_id, as_of, line) DO UPDATE SET attempts = attempts + 1', (project, as_of, text))
-            if db.execute('SELECT attempts FROM concern_pm_attempts WHERE project_id = ? AND as_of = ? AND line = ?', (project, as_of, text)).fetchone()[0] >= MAX_ATTEMPTS:
-                db.execute('INSERT OR IGNORE INTO concern_pm_lines VALUES (?, ?, ?)', (project, as_of, text))
+        if db is None:
+            with self.registry._transaction() as own:
+                self._rejected(project, as_of, text, own)
+            return
+        db.execute('INSERT INTO concern_pm_attempts VALUES (?, ?, ?, 1) ON CONFLICT (project_id, as_of, line) DO UPDATE SET attempts = attempts + 1', (project, as_of, text))
+        if db.execute('SELECT attempts FROM concern_pm_attempts WHERE project_id = ? AND as_of = ? AND line = ?', (project, as_of, text)).fetchone()[0] >= MAX_ATTEMPTS:
+            db.execute('INSERT OR IGNORE INTO concern_pm_lines VALUES (?, ?, ?)', (project, as_of, text))
 
     def process_notes(self, project: str, owner: str, lines: list[dict[str, str]], classify: Callable[[dict[str, Any]], Any]) -> None:
         for line in sorted(lines, key=lambda item: item['as_of']):
@@ -121,7 +124,12 @@ class ConcernStore:
                 if choice in ('continues', 'settles'):
                     row = db.execute('SELECT state, revision, manual_override, as_of FROM concerns WHERE id = ? AND project_id = ?', (concern, project)).fetchone()
                     original = offered[concern]
-                    if not row or row[1] != original[4] or row[2] or as_of <= row[3]:
+                    if row and row[2]:
+                        # A person's decision wins: there is nothing to do, so the line is never sent again.
+                        db.execute('INSERT OR IGNORE INTO concern_pm_lines VALUES (?, ?, ?)', (project, as_of, text))
+                        continue
+                    if not row or row[1] != original[4] or as_of <= row[3]:
+                        self._rejected(project, as_of, text, db)
                         continue
                 if choice == 'new':
                     concern = str(T6Id.mint(EntityKind.CONCERN))

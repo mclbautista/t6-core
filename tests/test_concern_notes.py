@@ -126,6 +126,33 @@ class ConcernNotesTests(unittest.TestCase):
         self.assertEqual(len(calls), 6)
         self.assertEqual(self.store.changes(self.project, '2026-01-01'), [])
 
+    def test_a_line_matched_to_a_concern_with_a_person_decision_is_sent_once(self) -> None:
+        self.process('Waiting on client', '2026-11-01', {'choice': 'new', 'quote': 'Waiting on client', 'waiting_on': 'client'})
+        concern = self.store.changes(self.project, '2026-01-01')[0]['concern_id']
+        with self.registry._transaction() as db:
+            db.execute('UPDATE concerns SET manual_override = 1 WHERE id = ?', (concern,))
+        calls = []
+        def answer(_: Any) -> Any:
+            calls.append(1)
+            return {'choice': 'settles', 'concern_id': concern, 'quote': 'Client delivered'}
+        for _ in range(4):
+            self.store.process_notes(self.project, 'coordinator', [{'text': 'Client delivered', 'as_of': '2026-11-08'}], answer)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(self.concern(concern)['state'], 'open')
+
+    def test_a_line_that_keeps_missing_its_concern_is_asked_three_times(self) -> None:
+        self.process('Waiting on client', '2026-11-01', {'choice': 'new', 'quote': 'Waiting on client', 'waiting_on': 'client'})
+        concern = self.store.changes(self.project, '2026-01-01')[0]['concern_id']
+        calls = []
+        def answer(_: Any) -> Any:
+            calls.append(1)
+            with self.registry._transaction() as db:
+                db.execute('UPDATE concerns SET revision = revision + 1 WHERE id = ?', (concern,))
+            return {'choice': 'continues', 'concern_id': concern, 'quote': 'Still waiting'}
+        for _ in range(6):
+            self.store.process_notes(self.project, 'coordinator', [{'text': 'Still waiting', 'as_of': '2026-11-08'}], answer)
+        self.assertEqual(len(calls), 3)
+
     def test_no_waiting_cue_rejects_a_false_new_answer(self) -> None:
         self.process('Color looks good', '2026-11-01', {'choice': 'new', 'quote': 'Color looks good', 'waiting_on': 'Color'})
         self.assertEqual(self.store.changes(self.project, '2026-01-01'), [])
