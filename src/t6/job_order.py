@@ -252,6 +252,9 @@ class JobOrderStore:
             else:
                 db.execute('INSERT INTO job_order_notes (job_order_id, text, actor, at) VALUES (?, ?, ?, ?)', (jo_id, values['text'], actor, now))
             assert jo_id is not None
+            if verb == 'close':
+                from t6.concern import settle_linked
+                settle_linked(db, jo_id, now)
             revision = db.execute('SELECT COALESCE(MAX(revision), 0) + 1 FROM sync_intents WHERE project_id = ?', (jo_id,)).fetchone()[0]
             _intend_sync(db, jo_id, revision, now)
             intent_id = db.execute('SELECT last_insert_rowid()').fetchone()[0]

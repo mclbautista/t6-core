@@ -21,6 +21,7 @@ from t6.worker.review_timer import ReviewTimerClient
 from t6.worker.review_target import ReviewTarget
 from t6.worker.registry import RegistryClient
 from t6.registry.sqlite import SqliteProjectRegistry
+from t6.registry import Registered
 from t6.server.app import Grant, ServerConfig, WebhookApp
 from test_frameio_worker import FakeTokens
 from test_server_app import (
@@ -263,7 +264,9 @@ class ReviewMessageTests(ServerTestCase):
 
     def test_linked_topic_and_general_and_inactive_fallback(self) -> None:
         registry = SqliteProjectRegistry(Path(self.directory.name) / "registry.sqlite3")
-        project = registry.register(actor="test", idempotency_key="register", notion_page_id="page-1", code="SHOW").project
+        registered = registry.register(actor="test", idempotency_key="register", notion_page_id="page-1", code="SHOW")
+        assert isinstance(registered, Registered)
+        project = registered.project
         config = ServerConfig(grants=(Grant(WORKER_SECRET, registry_read=True),))
         app = WebhookApp(self.queue, config, self.clock, registry=registry)
         registry_client = RegistryClient(InProcess(app), WORKER_SECRET)

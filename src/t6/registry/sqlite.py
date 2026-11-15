@@ -249,6 +249,13 @@ _MIGRATIONS = (
         recipient TEXT NOT NULL REFERENCES persons(id), note TEXT, spec TEXT NOT NULL,
         checklist TEXT NOT NULL, state TEXT NOT NULL, reason TEXT, revision INTEGER NOT NULL DEFAULT 1
     )"""),
+    (21, False, """CREATE TABLE concern_milestones (
+        concern_id TEXT PRIMARY KEY REFERENCES concerns(id), deliverable_id TEXT NOT NULL REFERENCES deliverables(id), milestone TEXT NOT NULL
+    );
+    CREATE TABLE concern_date_rules (
+        project_id TEXT NOT NULL REFERENCES projects(id), rule TEXT NOT NULL, concern_id TEXT NOT NULL REFERENCES concerns(id),
+        PRIMARY KEY (project_id, rule)
+    )"""),
 )
 
 
