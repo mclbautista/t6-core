@@ -129,3 +129,14 @@ Resolve is running when T6 reads it.**
 If conditions 2 or 3 are not acceptable, the proposed alternative is to keep
 the `t6t_` ID in a T6-owned table keyed by the timeline's Resolve UUID, with the
 timeline name as a hint only. That is a proposal, not a finding.
+
+**Cyril's view (2026-11-15):** the T6-owned table keyed by the timeline's Resolve
+UUID "sounds like a good idea". Nothing is decided or built from this note.
+
+**Open before that design can be chosen (not tested):** whether the timeline's
+Resolve UUID (the scripting API's `Timeline.GetUniqueId()`) stays the same, or
+changes, after a duplicate, a `.drt` export and import, a `.drp` project export
+and import, and a restore. If an import or a restore gives the timeline a NEW
+UUID, a table keyed by UUID loses the link, and T6 would need the marker stamp
+(or another hint such as the name) to re-link it. A test with a throwaway
+project, like the one above, would answer this.
