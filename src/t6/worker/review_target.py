@@ -13,6 +13,10 @@ class ReviewTarget:
         self._links = links
         self._registry = registry
 
+    def linked(self, frameio_project_id: str) -> bool:
+        """True when a Project holds this Frame.io project (an active Media location of kind frameio-project)."""
+        return any(link.ref == frameio_project_id for link in self._links.media_links("frameio-project"))
+
     def __call__(self, frameio_project_id: str) -> tuple[int, int | None] | None:
         for link in self._links.media_links("frameio-project"):
             if link.ref != frameio_project_id:

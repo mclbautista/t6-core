@@ -10,18 +10,28 @@ derived from the card and the choice, so a retry never changes anything twice.
 changes its code or rotation. A code is typed as `/project NEWCODE` after tapping
 Change code. A Project that cannot enter rotation because another holds its code
 gets explicit choices; nothing is moved or released without one.
+
+The project card also has Link Frame.io project (#272): it lists the Frame.io projects of the T6 account that no
+show holds, newest first, with a typed search (`/project TEXT`), and links the chosen one to the card's show
+with `frameio project link`. Any active staff Person may use it: a staff Person who is not an operator gets a
+`/project` card that has only that button. The `frameio_link` card is the other way in: the main worker offers
+it when review activity arrives for a Frame.io project no show holds, and a coordinator picks the show.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import html
 import time
+from typing import TYPE_CHECKING, Protocol
 
 from t6.domain.events import JsonValue
+from t6.media import MediaStore, active_links
 from t6.operator.store import Action, ActionStore, Claim
-from t6.person import People
+from t6.person import STAFF_RULE, People
+from t6.verbs import Done, Preview, Refused
 from t6.registry import (
     NOTION,
     Changed,
@@ -39,6 +49,10 @@ from t6.registry import (
     normalize_code,
 )
 
+if TYPE_CHECKING:  # t6.frameio imports t6.server, which imports this package, so the names are only for the checker
+    from t6.frameio.model import FrameioProject
+    from t6.frameio.requests import Failed
+
 __all__ = ["Button", "Card", "OperatorService", "TapResult", "PREFIX"]
 
 PREFIX = "op:"
@@ -48,7 +62,18 @@ Telegram allows 64 bytes in all, so 53 bytes are ours. A token is 22 characters.
 MAX_PAYLOAD = 53
 MAX_CANDIDATES = 5
 MAX_CODE_LENGTH = 40
+MAX_QUERY_LENGTH = 40
+FRAMEIO_COORDINATOR_RULE = "permission:coordinator"
+"""Who may pick a show on the card that waits for a Frame.io project's link."""
+_OPERATOR_ONLY = frozenset({"in", "out", "clr", "chg", "cclr", "bout"})
+"""The `manage` choices that change a Project's code or rotation: only a card made for an operator takes them."""
 DEFAULT_TTL_SECONDS = 7 * 24 * 3600.0
+
+
+class FrameioProjectList(Protocol):
+    """The Frame.io worker's read API (`t6.frameio.FrameioReader`): the projects of the configured T6 account."""
+
+    def projects(self) -> "tuple[FrameioProject, ...] | Failed": ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,11 +112,15 @@ class OperatorService:
         operators: Sequence[int],
         *,
         people: People | None = None,
+        frameio: FrameioProjectList | None = None,
         ttl: float = DEFAULT_TTL_SECONDS,
         clock: Callable[[], float] = time.time,
     ) -> None:
         if not operators:
             raise ValueError("at least one operator is needed")
+        if frameio is not None and people is None:
+            raise ValueError("Frame.io links are made as a Person, so they need people")
+        self._frameio = frameio
         self._people = people
         self._registry = registry
         self._store = store
@@ -140,6 +169,20 @@ class OperatorService:
         return self._store.create('approval', {'approval_id': approval['id'], 'gate': approval['gate'], 'target': approval['target']},
                                   chat=chat, offer_key='approval:' + str(approval['id']), ttl=self._ttl, allowed_tapper=rule)
 
+    def offer_frameio_link(self, frameio_project_id: str) -> tuple[Action, bool]:
+        """Ask a coordinator which show a Frame.io project belongs to. One live card per Frame.io project."""
+        if self._people is None:
+            raise ValueError("Frame.io link cards need people")
+        offer_key = f"frameio_link:{frameio_project_id}"
+        live = self._store.find_offer(offer_key)
+        if live is not None and live.state in {"pending", "claimed"} and live.expires_at > self._clock():
+            return live, False
+        found = self._frameio.projects() if self._frameio is not None else None
+        name = next((p.name for p in found if p.id == frameio_project_id), None) if isinstance(found, tuple) else None
+        params: dict[str, JsonValue] = {**self._listing("in", 0), "frameio_project_id": frameio_project_id, "frameio_name": name}
+        return self._store.create("frameio_link", params, chat=self._chat, offer_key=offer_key, ttl=self._ttl,
+                                  allowed_tapper=FRAMEIO_COORDINATOR_RULE)
+
     def approval_action(self, approval_id: str) -> Action | None:
         return self._store.find_offer('approval:' + approval_id)
 
@@ -171,12 +214,20 @@ class OperatorService:
     # -- the /project command ---------------------------------------------------
 
     def command(self, args: str, *, operator: int | None, chat: object, key: str) -> TapResult:
-        """`/project` opens a card to pick a Project. `/project NEWCODE` answers a card that asked for a code."""
-        if (operator is None or operator not in self._operators or chat != operator
-                or (self._people is not None and not self._people.allows_telegram(operator, 'permission:operator'))):
+        """`/project` opens a card to pick a Project. `/project TEXT` answers a card that asked for a code or a search.
+
+        An operator gets the full card. When Frame.io can be read, any other active staff Person who writes in
+        their own chat gets the same card with only Link Frame.io project on it.
+        """
+        is_operator = (operator is not None and operator in self._operators and chat == operator
+                       and (self._people is None or self._people.allows_telegram(operator, 'permission:operator')))
+        staff = (not is_operator and self._frameio is not None and self._people is not None and operator is not None
+                 and chat == operator and self._people.allows_telegram(operator, STAFF_RULE))
+        if not is_operator and not staff:
             reason = "wrong_chat" if operator in self._operators else "not_allowed"
             self._store.reject(reason, operator=operator, token=None, detail="command")
             return TapResult(True, "rejected")
+        assert operator is not None
         try:
             if self._store.command_seen(key):
                 return TapResult(True, "already_handled")
@@ -187,16 +238,19 @@ class OperatorService:
                 return TapResult(True, 'rejected')
             if waiting is None:
                 params = self._listing("in", 0)
-                if text:
+                if text and not staff:
                     params["unasked"] = True
-                opened, _ = self._store.create("manage", params, chat=operator, offer_key=f"manage:{key}", ttl=self._ttl)
+                opened, _ = self._store.create("manage", params, chat=operator, offer_key=f"manage:{key}", ttl=self._ttl,
+                                               allowed_tapper=STAFF_RULE if staff else "permission:operator")
                 return TapResult(True, "opened", opened, changed=True)
-            claim = self._store.claim(waiting.token, key, operator, "code")
+            claim = self._store.claim(waiting.token, key, operator, waiting.stage)
             refused = self._refused(claim)
             if refused is not None:
                 return refused
             assert claim.action is not None
             try:
+                if claim.action.stage == "fio_search":
+                    return self._typed_search(claim.action, text)
                 return self._typed_code(claim.action, text, f"telegram:{operator}")
             except RegistryUnavailable:
                 self._store.release(waiting.token)
@@ -309,9 +363,13 @@ class OperatorService:
         if action.kind == "classify" and choice in {"in", "out"}:
             return self._classify(action, Rotation(choice), actor, key)
         if action.kind == "manage":
-            managed = self._manage(action, choice, actor)
+            managed = self._manage(action, choice, actor, operator)
             if managed is not None:
                 return managed
+        if action.kind == "frameio_link":
+            picked = self._frameio_link(action, choice, operator)
+            if picked is not None:
+                return picked
         self._store.release(action.token)
         self._store.reject("unknown_choice", operator=operator, token=action.token, detail=choice[:20])
         return TapResult(True, "rejected", action)
@@ -384,9 +442,15 @@ class OperatorService:
 
     # -- a Project's code and rotation -------------------------------------------
 
-    def _manage(self, action: Action, choice: str, actor: str) -> TapResult | None:
+    def _manage(self, action: Action, choice: str, actor: str, operator: int) -> TapResult | None:
         """Carry out a choice on a `manage` card. None when the card does not offer it at this stage."""
         stage, params = action.stage, action.params
+        if choice in _OPERATOR_ONLY and action.allowed_tapper != "permission:operator":
+            return None  # a card made for any staff Person never changes a code or a rotation
+        if stage == "project" and choice == "fio" and self._frameio is not None:
+            return self._list_frameio(action, "", 0)
+        if stage in {"fio", "fio_search"}:
+            return self._manage_frameio(action, choice, operator)
         # The version goes up with every stage, so each step of one card has its own key.
         key = f"op:{action.token}:{action.version}:{choice}"
         if stage == "choose":
@@ -431,6 +495,106 @@ class OperatorService:
                 return self._done(action, {"outcome": "stale"})
             return self._enter(action, revision, actor, key, {"released": freed.project.id})
         return None
+
+    # -- Frame.io links (#272) --------------------------------------------------------
+
+    def _list_frameio(self, action: Action, query: str, page: int) -> TapResult:
+        """Show the Frame.io projects no show holds, newest first, narrowed by `query`, five to a page."""
+        assert self._frameio is not None and self._people is not None
+        from t6.frameio.client import SignInNeeded
+
+        found = self._frameio.projects()
+        params: dict[str, JsonValue] = {"revision": action.params["revision"], "query": query, "page": 0, "more": False, "candidates": []}
+        if not isinstance(found, tuple):
+            params["error"] = "sign_in" if isinstance(found, SignInNeeded) else "failed"
+        else:
+            held = {link.ref for link in active_links(self._people.registry, "frameio-project")}
+            wanted = query.casefold()
+            rows = sorted((p for p in found if p.id not in held and wanted in p.name.casefold()), key=lambda p: p.name)
+            rows.sort(key=lambda p: p.updated_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+            page = min(page, max((len(rows) - 1) // MAX_CANDIDATES, 0))
+            start = page * MAX_CANDIDATES
+            params["page"], params["more"] = page, len(rows) > start + MAX_CANDIDATES
+            params["candidates"] = [{"id": p.id, "name": p.name[:200]} for p in rows[start : start + MAX_CANDIDATES]]
+        moved = self._store.advance(action.token, stage="fio", params=params)
+        return TapResult(True, "frameio_list", moved, changed=True)
+
+    def _manage_frameio(self, action: Action, choice: str, operator: int) -> TapResult | None:
+        params = action.params
+        if choice == "back" and action.stage == "fio":
+            moved = self._store.advance(action.token, stage="project", params={"revision": params["revision"]})
+            return TapResult(True, "project", moved, changed=True)
+        if choice == "canc" and action.stage == "fio_search":
+            return self._list_frameio(action, str(params.get("query") or ""), 0)
+        if action.stage != "fio":
+            return None
+        if choice == "srch":
+            moved = self._store.advance(action.token, stage="fio_search", params=params)
+            return TapResult(True, "frameio_search", moved, changed=True)
+        if choice == "clrq":
+            return self._list_frameio(action, "", 0)
+        if choice in {"next", "prev"}:
+            page = int(str(params["page"])) + (1 if choice == "next" else -1)
+            return self._list_frameio(action, str(params.get("query") or ""), max(page, 0))
+        candidates = params.get("candidates")
+        if choice in _PICKS and isinstance(candidates, list) and int(choice[1:]) < len(candidates):
+            picked = candidates[int(choice[1:])]
+            assert isinstance(picked, dict)
+            key = f"op:{action.token}:{action.version}:{choice}"
+            return self._link_frameio(action, str(action.project_id), str(picked["id"]), str(picked["name"]), operator, key)
+        return None
+
+    def _typed_search(self, action: Action, text: str) -> TapResult:
+        """The person typed a search for the Frame.io list (`/project TEXT`)."""
+        return self._list_frameio(action, text[:MAX_QUERY_LENGTH], 0)
+
+    def _frameio_link(self, action: Action, choice: str, operator: int) -> TapResult | None:
+        """A choice on the card that waits for a show for a Frame.io project."""
+        params = action.params
+        frameio_project = str(params["frameio_project_id"])
+        if action.stage != "choose":
+            return None
+        if choice in {"lin", "lhist", "next", "prev"}:
+            which = str(params["list"])
+            if choice in {"lin", "lhist"}:
+                which, page = ("in" if choice == "lin" else "hist"), 0
+            else:
+                page = max(int(str(params["page"])) + (1 if choice == "next" else -1), 0)
+            listing = {**self._listing(which, page), "frameio_project_id": frameio_project, "frameio_name": params.get("frameio_name")}
+            return TapResult(True, "choose_project", self._store.advance(action.token, stage="choose", params=listing), changed=True)
+        candidates = params.get("candidates")
+        if choice in _PICKS and isinstance(candidates, list) and int(choice[1:]) < len(candidates):
+            picked = candidates[int(choice[1:])]
+            assert isinstance(picked, dict)
+            key = f"op:{action.token}:{action.version}:{choice}"
+            name = params.get("frameio_name")
+            return self._link_frameio(action, str(picked["project_id"]), frameio_project, name if isinstance(name, str) else frameio_project, operator, key)
+        return None
+
+    def _link_frameio(self, action: Action, project_id: str, frameio_project: str, name: str, operator: int, key: str) -> TapResult:
+        """Run `frameio project link` as the tapper, who must be an active staff Person. A refusal names the holder."""
+        assert self._people is not None
+        with self._people.registry._transaction() as db:
+            person = db.execute("SELECT id FROM persons WHERE telegram_id = ? AND active = 1", (operator,)).fetchone()
+        if person is None or self._people.authorize(person[0], "staff") is not None:
+            self._store.release(action.token)
+            self._store.reject("not_allowed", operator=operator, token=action.token, detail="not staff")
+            return TapResult(True, "rejected", action)
+        if self._registry.get(project_id) is None:
+            return self._done(action, {"outcome": "stale"})
+        media = MediaStore(self._people.registry, self._people.tokens)
+        values = {"project": project_id, "frameio_project": frameio_project}
+        outcome = media.frameio_project_write("link", values, actor=person[0], idempotency_key=key)
+        if isinstance(outcome, Preview):
+            outcome = media.frameio_project_write("link", values, actor=person[0], idempotency_key=key, confirm=outcome.token)
+        base: dict[str, JsonValue] = {"frameio_project": frameio_project, "frameio_name": name, "project_id": project_id}
+        if isinstance(outcome, Done):
+            return self._done(action, {"outcome": "frameio_linked", **base})
+        if isinstance(outcome, Refused) and outcome.rule == "frameio_project":
+            holder = next((link.project_id for link in active_links(self._people.registry, "frameio-project") if link.ref == frameio_project), None)
+            return self._done(action, {"outcome": "frameio_held", **base, "holder": holder})
+        reason = outcome.reason if isinstance(outcome, Refused) else "not linked"
+        return self._done(action, {"outcome": "frameio_refused", **base, "reason": reason})
 
     def _list(self, action: Action, which: str, page: int) -> TapResult:
         moved = self._store.advance(action.token, stage="choose", params=self._listing(which, page))
@@ -516,7 +680,7 @@ class OperatorService:
         if action is None:
             return None
         project = None if action.project_id is None else self._registry.get(action.project_id)
-        text, rows = _render(action, project, self._registry)
+        text, rows = _render(action, project, self._registry, self._frameio is not None)
         buttons = tuple(
             tuple(Button(label, f"{PREFIX}{token}:{choice}") for label, choice in row) for row in rows
         )
@@ -563,8 +727,10 @@ def _name(project: RegisteredProject) -> str:
 
 
 def _render(
-    action: Action, project: RegisteredProject | None, registry: ProjectRegistry
+    action: Action, project: RegisteredProject | None, registry: ProjectRegistry, frameio: bool = False
 ) -> tuple[str, list[list[tuple[str, str]]]]:
+    if action.kind == "frameio_link":
+        return _render_frameio_link(action, registry)
     if action.kind == 'approval':
         head = '<b>Approval: ' + html.escape(str(action.params['gate'])) + '</b>\n' + html.escape(str(action.params['target']))
         if action.state == 'done':
@@ -573,7 +739,7 @@ def _render(
             return head + '\nChoose a reason:', [[('Changes requested', 'changes'), ('Requirements not met', 'requirements')]]
         return head + '\nGrant this Approval?', [[('Grant', 'grant'), ('Deny', 'deny')]]
     if action.kind == "manage":
-        return _render_manage(action, project, registry)
+        return _render_manage(action, project, registry, frameio)
     label = html.escape(str(action.params.get("label") or "(untitled)"))
     result = action.result or {}
     outcome = str(result.get("outcome", ""))
@@ -624,7 +790,7 @@ def _button(project: RegisteredProject) -> str:
 
 
 def _render_manage(
-    action: Action, project: RegisteredProject | None, registry: ProjectRegistry
+    action: Action, project: RegisteredProject | None, registry: ProjectRegistry, frameio: bool = False
 ) -> tuple[str, list[list[tuple[str, str]]]]:
     params, result = action.params, action.result or {}
     if action.state == "done":
@@ -655,6 +821,8 @@ def _render_manage(
         rows.append([("Historical Projects", "lhist") if in_rotation else ("Projects in rotation", "lin")])
         return "\n".join(lines), rows + [[("Close", "skip")]]
     head = f"<b>Project</b> {_identity(project)}"
+    if action.stage in {"fio", "fio_search"}:
+        return _render_frameio_list(action, head)
     if action.stage == "code":
         lines = [head]
         if "refused" in params:
@@ -686,6 +854,9 @@ def _render_manage(
     if project is not None:
         text += "\n" + _SYNC_LINES[project.sync]
     rows = []
+    link = [[("Link Frame.io project", "fio")]] if frameio else []
+    if action.allowed_tapper != "permission:operator":
+        return text, link + [[("Close", "skip")]]  # a card made for any staff Person changes no code or rotation
     if project is None or project.rotation is not Rotation.IN:
         rows.append([("Put in rotation", "in")])
     if project is None or project.rotation is not Rotation.OUT:
@@ -693,7 +864,7 @@ def _render_manage(
     change = [("Change code", "chg")]
     if project is not None and project.code:
         change.append(("Clear code", "clr"))
-    return text, rows + [change, [("Close", "skip")]]
+    return text, rows + [change] + link + [[("Close", "skip")]]
 
 
 def _render_managed(
@@ -720,9 +891,93 @@ def _render_managed(
         "stale": "The Project changed since this card was sent. Nothing changed.",
         "expired": "This card expired. Nothing changed.",
     }
+    lines.update(_frameio_lines(result, registry))
     text = f"{head}\n<b>{lines.get(outcome, html.escape(outcome))}</b>"
     if project is not None and outcome in _SHOWS_SYNC:
         text += "\n" + _SYNC_LINES[project.sync]
         if released is not None:
             text += f"\n{html.escape(_button(released))}: {_SYNC_LINES[released.sync]}"
     return text
+
+
+def _frameio_lines(result: Mapping[str, JsonValue], registry: ProjectRegistry) -> dict[str, str]:
+    """What a used card says about a Frame.io link: the show it went to, or the show that already holds the project."""
+    name = html.escape(str(result.get("frameio_name") or result.get("frameio_project") or ""))
+    shown = registry.get(str(result["project_id"])) if result.get("project_id") else None
+    holder = registry.get(str(result["holder"])) if result.get("holder") else None
+    return {
+        "frameio_linked": f"Linked Frame.io project {name} to {_identity(shown)}. Waiting review activity is on its way.",
+        "frameio_held": f"Not linked: Frame.io project {name} already belongs to {_identity(holder)}. Nothing changed.",
+        "frameio_refused": f"Not linked: {html.escape(str(result.get('reason', '')))}",
+    }
+
+
+def _render_frameio_list(action: Action, head: str) -> tuple[str, list[list[tuple[str, str]]]]:
+    """The Frame.io projects no show holds, newest first, on the card of one show."""
+    params = action.params
+    if action.stage == "fio_search":
+        return f"{head}\nSend the search as <code>/project TEXT</code>.", [[("Cancel", "canc")]]
+    lines = [head, "<b>Link Frame.io project</b>"]
+    if params.get("error") == "sign_in":
+        lines.append("Frame.io needs a person to sign in on the Frame.io worker. Try again after that.")
+        return "\n".join(lines), [[("Back", "back")]]
+    if params.get("error"):
+        lines.append("Frame.io did not answer. Try again in a moment.")
+        return "\n".join(lines), [[("Back", "back")]]
+    query = str(params.get("query") or "")
+    if query:
+        lines.append(f"Search: <code>{html.escape(query)}</code>")
+    rows: list[list[tuple[str, str]]] = []
+    candidates = params.get("candidates")
+    for index, candidate in enumerate(candidates if isinstance(candidates, list) else []):
+        assert isinstance(candidate, dict)
+        lines.append(f"{index + 1}. {html.escape(str(candidate['name']))}")
+        rows.append([(str(candidate["name"])[:40], f"p{index}")])
+    if not rows:
+        lines.append("No unlinked Frame.io project matches that search." if query else "No unlinked Frame.io project in the T6 account.")
+    else:
+        lines.append("Newest first. Pick the one for this show.")
+    turn = [("Previous", "prev")] if int(str(params.get("page", 0))) > 0 else []
+    if params.get("more"):
+        turn.append(("Next", "next"))
+    if turn:
+        rows.append(turn)
+    rows.append([("Search", "srch")] + ([("Clear search", "clrq")] if query else []))
+    return "\n".join(lines), rows + [[("Back", "back")]]
+
+
+def _render_frameio_link(action: Action, registry: ProjectRegistry) -> tuple[str, list[list[tuple[str, str]]]]:
+    """The card for review activity on a Frame.io project no show holds: a show picker."""
+    params, result = action.params, action.result or {}
+    name = html.escape(str(params.get("frameio_name") or params.get("frameio_project_id")))
+    head = f"<b>Frame.io project needs a show</b>\nReview activity on <b>{name}</b> is waiting: no show holds this Frame.io project."
+    if action.state == "done":
+        outcome = str(result.get("outcome", ""))
+        done_lines = {
+            **_frameio_lines(result, registry),
+            "skipped": "Left as it is. The activity keeps waiting and this card comes back with the next event.",
+            "stale": "The show changed since this card was sent. Nothing changed.",
+            "expired": "This card expired. The activity keeps waiting and this card comes back with the next event.",
+        }
+        return f"{head}\n<b>{done_lines.get(outcome, html.escape(outcome))}</b>", []
+    in_rotation = params.get("list") == "in"
+    lines = [head, "<b>Shows in rotation</b>" if in_rotation else "<b>Historical shows</b> (not in rotation)"]
+    rows: list[list[tuple[str, str]]] = []
+    candidates = params.get("candidates")
+    for index, candidate in enumerate(candidates if isinstance(candidates, list) else []):
+        assert isinstance(candidate, dict)
+        found = registry.get(str(candidate["project_id"]))
+        if found is None:
+            continue
+        lines.append(_identity(found))
+        rows.append([(_button(found), f"p{index}")])
+    if not rows:
+        lines.append("None on this page.")
+    lines.append("Which show is it for?")
+    turn = [("Previous", "prev")] if int(str(params.get("page", 0))) > 0 else []
+    if params.get("more"):
+        turn.append(("Next", "next"))
+    if turn:
+        rows.append(turn)
+    rows.append([("Historical shows", "lhist") if in_rotation else ("Shows in rotation", "lin")])
+    return "\n".join(lines), rows + [[("Not now", "later")]]

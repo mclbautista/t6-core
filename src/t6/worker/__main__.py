@@ -201,6 +201,16 @@ def configured_handlers(
             from t6.registry.sqlite import SqliteProjectRegistry
             from t6.worker.linked_chats import LinkedChats
             track_send = LinkedChats(SqliteProjectRegistry(environ["T6_DATABASE"]), gateway).track_send
+        is_linked, hold = None, None
+        if environ.get("T6_DATABASE"):
+            # Review activity on a Frame.io project no show holds waits in the t6 database (this worker opens it)
+            # and one operator card per project asks for the show (#272).
+            from t6.frameio_hold import HeldActivity
+            from t6.registry.sqlite import SqliteProjectRegistry
+            from t6.worker.review_hold import HoldUnlinked
+
+            is_linked = target.linked
+            hold = HoldUnlinked(HeldActivity(SqliteProjectRegistry(environ["T6_DATABASE"])), operator.offer_frameio_link)
         review = ReviewMessage(
             GatewayClient(HttpTransport(gateway_url), gateway_secret),
             chat,
@@ -209,6 +219,8 @@ def configured_handlers(
             target=target,
             version=review_registry.review_version,
             track_send=track_send,
+            is_linked=is_linked,
+            hold=hold,
         )
         handlers.update(review.handlers())
     if environ.get("T6_DATABASE"):

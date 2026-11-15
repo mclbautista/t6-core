@@ -159,6 +159,20 @@ variables in the main worker's environment:
   `T6_FRAMEIO_READ_BIND` and `T6_FRAMEIO_READ_SECRET`).
 - `T6_FRAMEIO_READ_SECRET`: its bearer secret.
 
+Review activity on a Frame.io project that no show holds (#272) waits instead of going to the default review chat.
+The main worker with `T6_DATABASE` set keeps each `frameio.review_done` job in the `frameio_held_activity` table
+(migration 37; the Frame.io worker never opens the t6 database) and asks the API (`POST /operator/offers`, kind
+`frameio_link`) for one card per Frame.io project. The card goes to the first operator's chat like the other operator
+offers; a person with `permission:coordinator` (an operator has it) picks the show, which runs `frameio project link`
+as that Person (an active staff Person). The API releases each waiting row once, as a new `frameio.review_done` job
+in the internal job table under the key `held:<row>`, when its project is linked by the card, by the verb, or by any
+other way: it also checks at start. Without `T6_DATABASE` the main worker holds nothing and keeps the old behaviour.
+The `/project` card's Link Frame.io project button needs the API to read the Frame.io worker's `GET /frameio/projects`:
+set `T6_FRAMEIO_READ_URL` and `T6_FRAMEIO_READ_SECRET` in the API's environment too. The list is of the T6 account only,
+the one the Frame.io worker is configured for (`T6_FRAMEIO_ACCOUNT_ID`; with a sign-in that sees more than one account
+and no `T6_FRAMEIO_ACCOUNT_ID` the read fails and the card says Frame.io did not answer). Without the two variables the
+button is not offered and only operators use `/project`.
+
 With either variable unset, the main worker does not register `frameio.file_versioned`, so it claims no such
 job, and its start-up log says once that Versions from Frame.io events are off and names both variables. A 404
 for the file ends the job as ignored; any other read failure fails the job and it is retried.

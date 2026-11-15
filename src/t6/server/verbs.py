@@ -295,6 +295,8 @@ class VerbAPI:
                 if approval:
                     action, _ = self.tap_app._operator.offer_approval(approval)
                     self.tap_app._deliver(action.token, action.version)
+        if (entry.noun, entry.verb) == ('frameio', 'project link') and isinstance(outcome, Done) and self.tap_app:
+            self.tap_app.release_held_activity()  # review activity that waited for this Frame.io project goes out
         if (entry.noun, entry.verb) == ('project', 'start') and isinstance(outcome, Done) and outcome.result.get('approval_id') and self.tap_app:
             self.tap_app._redeliver_cards()  # the Approval the Start created gets its card
         return Response(200, outcome.model_dump(mode='json'))

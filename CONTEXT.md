@@ -383,6 +383,19 @@ fields, read from Notion) and `t6.registry` (identity).
 - **Review message**: the one Telegram message to the review chat that says a
   person has finished commenting on a Frame.io file. A **review timer** is
   kept per (file, commenting person) and restarts on each of their comments.
+- **Unlinked Frame.io activity**: review activity on a Frame.io project that
+  no Project holds (no active frameio-project Media location). The main worker
+  **holds** it in the t6 database (the Frame.io worker never opens it) and posts one
+  operator card per Frame.io project, a show picker that a coordinator
+  (`permission:coordinator`) answers. Tapping a show runs `frameio project link`; the
+  held activity is then **released**, each event once, whatever linked the project
+  (the card, the verb, or anything else). It is never dropped and no comment text is
+  stored with it. Skipping the card leaves it held and the next event posts a new card.
+- **Link Frame.io project**: a button on the `/project` card, for any active staff
+  Person (a staff Person who is not an operator gets the card with only this
+  button). It lists the Frame.io projects of the configured T6 Frame.io account that
+  no show holds, most recently updated first, five to a page, with a typed search.
+  A second show choosing a project another show holds is refused, naming the holder.
 - **Sign-in**: a person signing in to Adobe so the Frame.io worker has a
   token again. The **sign-in alert** is the Telegram message with the link.
 

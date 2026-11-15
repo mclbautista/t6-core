@@ -42,6 +42,7 @@ from t6.domain.events import (
     JsonValue,
 )
 from t6.domain.studio_people import operator_ids
+from t6.frameio_hold import HeldActivity
 from t6.operator import PREFIX as OPERATOR_PREFIX
 from t6.operator import Card, OperatorService, TapResult
 from t6.registry import (
@@ -62,6 +63,7 @@ from t6.registry import (
     Rotation,
     Shown,
 )
+from t6.registry.sqlite import SqliteProjectRegistry
 from t6.server.routes import Route
 from t6.server.queue import DIAGNOSTIC_QUEUE, FRAMEIO_QUEUE, MAIN_QUEUE, JobQueue, Submitted
 from t6.server.signatures import WebhookRejected, verify_frameio, verify_notion
@@ -240,6 +242,7 @@ class WebhookApp:
         self._on_notion_verification = on_notion_verification
         self._dispatch_sync()  # jobs for changes accepted before a restart
         self._redeliver_cards()
+        self.release_held_activity()  # Frame.io activity whose project was linked before a restart
 
     # -- public listener --------------------------------------------------------
 
@@ -488,6 +491,18 @@ class WebhookApp:
         except RegistryUnavailable:
             return
 
+    def release_held_activity(self) -> int:
+        """Send the Frame.io review activity that waited for a link, now that its project is linked (#272).
+
+        Safe to run any time and as often as wanted: each held row goes out once, whatever linked the project.
+        """
+        if not isinstance(self._registry, SqliteProjectRegistry):
+            return 0
+        try:
+            return HeldActivity(self._registry).release_linked(self._inside.submit)
+        except RegistryUnavailable:
+            return 0
+
     def _redeliver_cards(self) -> None:
         """Queue delivery again for cards Telegram never confirmed (a restore may have lost the job)."""
         if self._operator is None:
@@ -582,6 +597,7 @@ class WebhookApp:
         if result.changed and result.action is not None:
             self._deliver(result.action.token, result.action.version)
         self._dispatch_sync()
+        self.release_held_activity()
         return Response(200, {"outcome": result.outcome})
 
     def _deliver(self, token: str, version: int) -> None:
@@ -631,8 +647,13 @@ class WebhookApp:
             if maybe is None:
                 return Response(200, {"offered": False})
             offered = maybe
+        elif body.get("kind") == "frameio_link" and isinstance(body.get("frameio_project_id"), str) and body["frameio_project_id"].strip():
+            try:
+                offered = operator.offer_frameio_link(body["frameio_project_id"].strip())
+            except ValueError as error:
+                return Response(503, {"error": str(error)})
         else:
-            return Response(400, {"error": "kind is unbound_page (page_id) or classify (project_id)"})
+            return Response(400, {"error": "kind is unbound_page (page_id), classify (project_id) or frameio_link (frameio_project_id)"})
         action, created = offered
         self._deliver(action.token, action.version)
         return Response(200, {"offered": True, "created": created, "token": action.token})

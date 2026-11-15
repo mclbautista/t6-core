@@ -58,7 +58,14 @@ def main() -> int:
     operator = None
     if registry is not None and config.operator_ids:
         store = ActionStore(environ.get("T6_OPERATOR_DB", "t6-operator.sqlite"))
-        operator = OperatorService(registry, store, config.operator_ids, people=People(registry, PreviewTokens(signing_key)), ttl=config.operator_ttl_seconds)
+        frameio = None
+        read_url, read_secret = (environ.get("T6_FRAMEIO_READ_URL") or "").strip(), environ.get("T6_FRAMEIO_READ_SECRET") or ""
+        if read_url and read_secret:  # the Link Frame.io project button reads the T6 account's projects through the Frame.io worker
+            from t6.frameio.client import FrameioReader
+            from t6.worker.client import HttpTransport
+
+            frameio = FrameioReader(HttpTransport(read_url, timeout=30), read_secret)
+        operator = OperatorService(registry, store, config.operator_ids, people=People(registry, PreviewTokens(signing_key)), frameio=frameio, ttl=config.operator_ttl_seconds)
     app = WebhookApp(queue, config, on_notion_verification=lambda token: print(
         f"Notion verification token: {token}", file=sys.stderr, flush=True
     ), registry=registry, operator=operator, inside=inside)

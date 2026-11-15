@@ -321,6 +321,8 @@ _MIGRATIONS = (
     (36, False, """CREATE TABLE calendar_channels (channel_id TEXT PRIMARY KEY, calendar TEXT NOT NULL, resource_id TEXT NOT NULL, expires_at REAL NOT NULL, token_hash TEXT NOT NULL, active INTEGER NOT NULL);
     CREATE TABLE calendar_sync_tokens (calendar TEXT PRIMARY KEY, sync_token TEXT NOT NULL);
     CREATE TABLE calendar_event_versions (calendar TEXT NOT NULL, event TEXT NOT NULL, version TEXT NOT NULL, outcome TEXT NOT NULL, PRIMARY KEY (calendar, event, version))"""),
+    (37, False, """CREATE TABLE frameio_held_activity (id INTEGER PRIMARY KEY AUTOINCREMENT, frameio_project_id TEXT NOT NULL, dedupe_key TEXT NOT NULL UNIQUE, payload TEXT NOT NULL, held_at REAL NOT NULL, released_at REAL);
+    CREATE INDEX frameio_held_activity_by_project ON frameio_held_activity (frameio_project_id, released_at)"""),
 )
 
 

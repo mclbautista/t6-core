@@ -24,6 +24,8 @@ CALENDAR_ACTOR = 'google-calendar'  # inbound Google Calendar edits (#270): Goog
 INTERNAL_ACTORS: Mapping[str, frozenset[str]] = {CALENDAR_ACTOR: frozenset({'bookings'})}
 
 PERMISSIONS = frozenset({"operator", "coordinator", "bookings", "drives", "admin", "llm"})
+STAFF_RULE = "role:staff"
+"""An allowed-tapper rule: any active staff Person (a kind, not a permission, so it is not in `PERMISSIONS`)."""
 
 
 class People:
@@ -85,6 +87,8 @@ class People:
                 return bool(person_id == candidate[7:])
             if candidate.startswith('permission:'):
                 return self._authorize(db, person_id, candidate[11:]) is None
+            if candidate == STAFF_RULE:
+                return self._authorize(db, person_id, 'staff') is None
         if isinstance(candidate, dict) and isinstance(candidate.get('any_of'), list):
             return any(self._allows(db, person_id, child) for child in candidate['any_of'])
         return False

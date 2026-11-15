@@ -19,7 +19,7 @@ import time
 
 from t6.domain.events import JsonValue
 from t6.registry.core import RegistryUnavailable
-from t6.person import PERMISSIONS
+from t6.person import PERMISSIONS, STAFF_RULE
 
 __all__ = ["Action", "ActionStore", "Claim"]
 
@@ -67,10 +67,10 @@ _COLUMNS = (
 class Action:
     token: str
     kind: str
-    """`unbound_page`, `classify` or `manage` (a Project's code and rotation)."""
+    """`unbound_page`, `classify`, `manage` (a Project's code, rotation and Frame.io link) or `frameio_link` (a show for a Frame.io project)."""
     stage: str
     """`choose`, `pick` (a Project to bind to), `project`, `code` (waiting for a typed
-    code), `conflict`, or `done`."""
+    code), `conflict`, `fio` (a Frame.io project list), `fio_search` (waiting for a typed search), or `done`."""
     state: str
     """`pending`: waiting for a tap. `claimed`: a tap is being carried out. `done`: used."""
     params: Mapping[str, JsonValue]
@@ -125,6 +125,8 @@ def _action(row: tuple[object, ...]) -> Action:
 
 
 def _validate_rule(rule: JsonValue) -> None:
+    if rule == STAFF_RULE:
+        return
     if isinstance(rule, str) and ((rule.startswith("permission:") and rule[11:] in PERMISSIONS) or (rule.startswith("person:t6n_") and len(rule) > 11)):
         return
     if isinstance(rule, dict) and set(rule) == {"any_of"} and isinstance(rule["any_of"], list) and rule["any_of"]:
@@ -301,13 +303,13 @@ class ActionStore:
         return row is not None
 
     def waiting_for_code(self, operator: int, chat: int, key: str) -> Action | None:
-        """The newest card on which this operator asked to type a code, in this chat.
+        """The newest card on which this person asked to type a code or a Frame.io search, in this chat.
 
         A card this same command claimed earlier (a retry after a failure part way) counts too.
         """
         with self._transaction() as db:
             row = db.execute(
-                f"SELECT {_COLUMNS} FROM actions WHERE stage = 'code' AND operator = ? AND chat = ? "
+                f"SELECT {_COLUMNS} FROM actions WHERE stage IN ('code', 'fio_search') AND operator = ? AND chat = ? "
                 "AND (state = 'pending' OR (state = 'claimed' AND claimed_by = ?)) "
                 "ORDER BY created_at DESC, rowid DESC LIMIT 1",
                 (operator, chat, key),
