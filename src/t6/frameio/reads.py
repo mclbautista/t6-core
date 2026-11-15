@@ -273,7 +273,7 @@ class FrameioReads:
         """
         if self._links is None:
             raise RuntimeError(
-                "the briefing feed needs T6_SERVER_URL and T6_WORKER_SECRET (with registry read) on the Frame.io worker"
+                "the briefing feed needs T6_API_URL and T6_REGISTRY_READ_SECRET on the Frame.io worker"
             )
         now = self._now()
         pages_by_project: dict[str, tuple[str, ...]] = {}

@@ -16,6 +16,7 @@ from urllib.error import URLError
 from t6.domain.events import JsonValue
 from t6.frameio.readapi import ReadApi
 from t6.frameio.requests import FrameioRequest, ShareLinks, ask
+from t6.media_links import MediaLinks
 from t6.frameio.worker import ArmReviewTimer, FrameioWorker, Run, Tokens
 from t6.server.http import make_server
 from t6.server.queue import DIAGNOSTIC_QUEUE, FRAMEIO_QUEUE
@@ -173,7 +174,7 @@ def configured_handlers(
         review_registry = RegistryClient(transport, settings.secret)
         from t6.worker.review_target import ReviewTarget
 
-        target = ReviewTarget(review_registry, review_registry)
+        target = ReviewTarget(review_media_links(environ, review_registry), review_registry)
 
         track_send = None
         if environ.get("T6_DATABASE"):
@@ -193,14 +194,31 @@ def configured_handlers(
     return {"main": handlers} if handlers else {}
 
 
+def review_media_links(environ: Mapping[str, str], registry: MediaLinks) -> MediaLinks:
+    """Where the review message reads Media locations: the t6 database when `T6_DATABASE` is set.
+
+    The queue server this worker polls is the VPS edge in production and has no
+    registry, so only a worker without `T6_DATABASE` falls back to the HTTP route.
+    """
+    if not environ.get("T6_DATABASE"):
+        return registry
+    from t6.media import DatabaseMediaLinks
+    from t6.registry.sqlite import SqliteProjectRegistry
+
+    return DatabaseMediaLinks(SqliteProjectRegistry(environ["T6_DATABASE"]))
+
+
 def frameio_backend(environ: Mapping[str, str]) -> tuple[Tokens, Run]:
     """The Frame.io worker's token store and API.
 
     The token store signs in to Adobe with the OAuth Web App credential in the
     environment and keeps the token in `T6_FRAMEIO_TOKEN_FILE`. With
-    `T6_SERVER_URL` and `T6_WORKER_SECRET` (the secret needs registry read), the
-    briefing feed finds each Frame.io project's Project in the server's Media
-    locations. It writes nothing to Notion; without them the other reads still work.
+    `T6_API_URL` (the t6 API on Sixto, not the queue server) and
+    `T6_REGISTRY_READ_SECRET` (its read-only registry grant), used for this client
+    only, the briefing feed finds each Frame.io project's Project in the API's
+    Media locations; one without the other is a `ConfigError`. `T6_WORKER_SECRET`
+    is not used for it. It writes nothing to Notion; without them the other reads
+    still work.
     """
     names = ("T6_FRAMEIO_CLIENT_ID", "T6_FRAMEIO_CLIENT_SECRET", "T6_FRAMEIO_REDIRECT_URI", "T6_FRAMEIO_TOKEN_FILE")
     missing = [name for name in names if not environ.get(name)]
@@ -220,8 +238,11 @@ def frameio_backend(environ: Mapping[str, str]) -> tuple[Tokens, Run]:
     from t6.worker.registry import RegistryClient
 
     links = None
-    if environ.get("T6_SERVER_URL") and environ.get("T6_WORKER_SECRET"):
-        links = RegistryClient(HttpTransport(environ["T6_SERVER_URL"]), environ["T6_WORKER_SECRET"])
+    feed = [name for name in ("T6_API_URL", "T6_REGISTRY_READ_SECRET") if environ.get(name)]
+    if feed and len(feed) < 2:
+        raise ConfigError("the briefing feed needs both T6_API_URL and T6_REGISTRY_READ_SECRET")
+    if feed:
+        links = RegistryClient(HttpTransport(environ["T6_API_URL"]), environ["T6_REGISTRY_READ_SECRET"])
     from t6.frameio.api import FrameioApi
     from t6.frameio.reads import FrameioReads
 

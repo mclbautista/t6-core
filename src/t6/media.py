@@ -15,8 +15,17 @@ from t6.registry.sqlite import SqliteProjectRegistry
 from t6.registry.core import normalize_page_id
 from t6.verbs import Done, Outcome, Refused
 
-KINDS = {'drive', 'nas-path', 'frameio-project', 'frameio-folder', 'resolve-project', 'timeline'}
+KINDS = {'drive', 'nas-path', 'frameio-project', 'frameio-folder', 'resolve-project', 'timeline', 'instagantt-project'}
+# Kinds whose `ref` one Project holds at a time: the rule name and what the Refused reason calls it.
+ONE_PROJECT_KINDS = {'frameio-project': ('frameio_project', 'Frame.io project'), 'instagantt-project': ('instagantt_project', 'Instagantt project')}
 ROLES = {'master', 'backup', 'review', 'working', 'frameio-project'}
+
+
+# What the retired External Links rows called their System and Kind, and the Media location kind each became.
+# An Instagantt row of either Kind is an Instagantt project (not a t6t_ Timeline). Frame.io rows are found by
+# `external-link find` but the migration does not import them.
+_EXTERNAL_KINDS = {('frameio', 'project'): 'frameio-project', ('resolve', 'project'): 'resolve-project',
+                   ('instagantt', 'project'): 'instagantt-project', ('instagantt', 'timeline'): 'instagantt-project'}
 
 
 class MediaStore:
@@ -68,10 +77,11 @@ class MediaStore:
                 if values['kind'] == 'frameio-folder' and (not owner.startswith('t6v_') or values['role'] != 'review'):
                     return Refused(rule='frameio_folder', reason='Frame.io folders belong to a Deliverable with role review')
                 existing = db.execute('SELECT id, active FROM media_locations WHERE owner_id=? AND kind=? AND ref=? AND role=?', (owner, values['kind'], values['ref'], values['role'])).fetchone()
-                if values['kind'] == 'frameio-project':
-                    holder = db.execute("SELECT project_id FROM media_locations WHERE kind='frameio-project' AND ref=? AND active=1 AND project_id<>?", (values['ref'], project[0])).fetchone()
+                if values['kind'] in ONE_PROJECT_KINDS:
+                    rule, label = ONE_PROJECT_KINDS[values['kind']]
+                    holder = db.execute("SELECT project_id FROM media_locations WHERE kind=? AND ref=? AND active=1 AND project_id<>?", (values['kind'], values['ref'], project[0])).fetchone()
                     if holder:
-                        return Refused(rule='frameio_project', reason='Frame.io project belongs to ' + holder[0])
+                        return Refused(rule=rule, reason=label + ' belongs to ' + holder[0])
                 media_id = existing[0] if existing else str(T6Id.mint(EntityKind.MEDIA_LOCATION))
                 plan = {'media_id': media_id, 'project_id': project[0], **values, 'idempotency_key': key}
             else:
@@ -132,6 +142,7 @@ class MediaStore:
         snapshot = json.dumps(rows, sort_keys=True)
         with (self.registry._transaction() if _db is None else nullcontext(_db)) as db:
             entries: builtins.list[dict[str, Any]] = []
+            held_by: dict[str, str] = {}
             for row in rows:
                 page = normalize_page_id(row['page_id'])
                 previous = db.execute('SELECT id FROM media_locations WHERE source_page=?', (page,)).fetchone()
@@ -146,7 +157,7 @@ class MediaStore:
                     item['reason'] = 'Frame.io links are not migrated'
                 elif system == 'telegram':
                     item['reason'] = 'Telegram chats are not Media locations'
-                elif system != 'resolve' or kind != 'project' or not row.get('ref'):
+                elif (media_kind := _EXTERNAL_KINDS.get((system, kind))) is None or not row.get('ref'):
                     item['reason'] = 'Cannot classify External Links row'
                 else:
                     owners: builtins.list[str | None] = []
@@ -168,7 +179,15 @@ class MediaStore:
                     else:
                         owner = owners[0]
                         project = db.execute('SELECT id FROM projects WHERE id=? UNION ALL SELECT project_id FROM deliverables WHERE id=?', (owner, owner)).fetchone()
-                        item.update(action='register', owner=owner, project_id=project[0], kind='resolve-project', ref=row['ref'], role='working')
+                        holder = project[0]
+                        if media_kind == 'instagantt-project':  # one Instagantt project belongs to one Project at a time
+                            holder = held_by.setdefault(row['ref'], project[0])
+                            other = db.execute("SELECT project_id FROM media_locations WHERE kind=? AND ref=? AND active=1 AND project_id<>?", (media_kind, row['ref'], project[0])).fetchone()
+                            holder = other[0] if other else holder
+                        if holder != project[0]:
+                            item['reason'] = 'Instagantt project already belongs to another Project'
+                        else:
+                            item.update(action='register', owner=owner, project_id=project[0], kind=media_kind, ref=row['ref'], role='working')
                 entries.append(item)
             fingerprint = hashlib.sha256(json.dumps({'rows': rows, 'entries': entries}, sort_keys=True).encode()).hexdigest()
             if apply and digest != fingerprint:
@@ -245,9 +264,6 @@ def _link(registry: SqliteProjectRegistry, row: Any) -> MediaLink:
     return MediaLink(id=row[0], owner=row[1], project_id=row[2], kind=row[3], ref=row[4], role=row[5], pages=pages)
 
 
-# What the retired External Links rows called their System and Kind, and the Media location kind each became.
-_EXTERNAL_KINDS = {('frameio', 'project'): 'frameio-project', ('resolve', 'project'): 'resolve-project',
-                   ('instagantt', 'project'): 'timeline', ('instagantt', 'timeline'): 'timeline'}
 
 
 def find_external(registry: SqliteProjectRegistry, system: str, kind: str, external_id: str) -> MediaLink | None:
@@ -265,3 +281,13 @@ def external_link_result(registry: SqliteProjectRegistry, system: str, kind: str
         return None
     return {'page_id': found.id, 'ref': {'system': system, 'kind': kind, 'external_id': found.ref, 'url': None, 'internal_id': None},
             'active': True, 'last_activity': None, 'project_ids': [found.project_id]}
+
+
+class DatabaseMediaLinks:
+    """`MediaLinks` read straight from the t6 database, for a process that already opens it."""
+
+    def __init__(self, registry: SqliteProjectRegistry) -> None:
+        self._registry = registry
+
+    def media_links(self, kind: str, role: str | None = None) -> tuple[MediaLink, ...]:
+        return active_links(self._registry, kind, role)

@@ -25,7 +25,7 @@ class Task:
 class Timeline:
     """One Instagantt project and its tasks, in export order.
 
-    `external_id` is what a Media location of kind timeline stores as its `ref`:
+    `external_id` is what a Media location of kind instagantt-project stores as its `ref`:
     the export's project ID when it has one, otherwise the project name.
     """
 

@@ -114,7 +114,8 @@ Mac mini. Both use only the standard library.
 | `T6_FRAMEIO_REDIRECT_URI` | Frame.io worker: required, the `https://` address of the server's `/frameio/callback`, exactly as set on the Adobe credential |
 | `T6_FRAMEIO_TOKEN_FILE` | Frame.io worker: required, where the token is kept, on a volume only this worker mounts |
 | `T6_FRAMEIO_ACCOUNT_ID` | Frame.io worker: optional, the Frame.io account ID; needed only when the sign-in sees more than one account |
-| `T6_SERVER_URL`, `T6_WORKER_SECRET` (the secret needs registry read) | Frame.io worker: turn on the briefing feed from Media locations; main worker: resolve review messages to Project Chat links |
+| `T6_API_URL`, `T6_REGISTRY_READ_SECRET` | Frame.io worker: turn on the briefing feed from Media locations. `T6_API_URL` is the t6 API on Sixto, not the queue server; the secret is the API's read-only registry grant. Needed together, used for this client only; the worker's own `T6_WORKER_SECRET` and its `frameio` grant stay without registry read |
+| `T6_SERVER_URL`, `T6_WORKER_SECRET` (the secret needs registry read) | main worker: resolve review messages to Project Chat links. With `T6_DATABASE` set it reads Media locations from that database, not over HTTP |
 | `T6_FRAMEIO_READ_BIND`, `T6_FRAMEIO_READ_SECRET` | Frame.io worker: optional, turn on the [read API](#frameio): `host:port` on the LAN or tailnet address (never a public one) and the bearer secret callers send. Both are needed together |
 | `T6_FRAMEIO_READ_URL`, `T6_FRAMEIO_READ_SECRET` | t6 API: Frame.io worker read API URL and bearer secret, needed for `version add` to resolve the file and stack. |
 
@@ -710,8 +711,9 @@ if isinstance(result, Ok):
   linked to (the Media location of kind `frameio-project`), or none. The feed
   writes nothing, neither to Notion nor to t6: share links have no row and no
   Last Activity stamp, because activity is read from Frame.io each time, and
-  every live share is reported `active`. The feed needs `T6_SERVER_URL` and
-  `T6_WORKER_SECRET` on the Frame.io worker, and the secret needs registry read.
+  every live share is reported `active`. The feed needs `T6_API_URL` (the t6 API
+  on Sixto) and `T6_REGISTRY_READ_SECRET` (its read-only registry grant) on the
+  Frame.io worker; one without the other stops the worker at start-up.
   A feed over many share links can
   take minutes because of Frame.io's rate limit, so give `ask` a long
   `timeout`.
@@ -793,8 +795,10 @@ if isinstance(result, Ok):
 only; no Excel). `read_export(path)` / `parse_export(text)` return a
 `Timeline` per Instagantt project, each with its `Task`s (name, start, end; a
 blank end is a milestone). `link_timelines(timelines, links)`
-ties each timeline to its Project through Media locations (kind `timeline`,
-ref = the export's Project ID, which is the Timeline ID `t6t_`). A project with no Media location, or with
+ties each timeline to its Project through Media locations (kind
+`instagantt-project`, ref = the export's Project ID as Instagantt gives it, free
+text; kind `timeline` is for `t6t_` Resolve Timelines and is not read here). A
+project with no Media location, or with
 locations in several Projects, comes back in `unmapped` with
 a reason; nothing is guessed. It reads no Notion dates and writes nothing.
 The column names are assumed, not yet checked against a live export.

@@ -11,7 +11,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "instagantt_export.csv"
 
 
 def add_link(links: StaticMediaLinks, ref: str, project: str, role: str = "working") -> None:
-    links.add(MediaLink(id=f"t6m_{len(links.all())}", owner=project, project_id=project, kind="timeline",
+    links.add(MediaLink(id=f"t6m_{len(links.all())}", owner=project, project_id=project, kind="instagantt-project",
                         ref=ref, role=role, pages=()))
 
 
@@ -63,6 +63,14 @@ class LinkTests(unittest.TestCase):
             [("Show Beta", "no Media location"), ("Show Gamma", "no Media location")],
         )
 
+    def test_a_t6_timeline_location_is_not_an_instagantt_project(self) -> None:
+        links = StaticMediaLinks()
+        links.add(MediaLink(id="t6m_t", owner="t6p_t", project_id="t6p_t", kind="timeline",
+                            ref="ig-alpha", role="working", pages=()))
+        report = link_timelines(read_export(FIXTURE)[:1], links)
+        self.assertEqual(report.linked, ())
+        self.assertEqual([u.reason for u in report.unmapped], ["no Media location"])
+
     def test_a_timeline_in_several_projects_is_not_guessed(self) -> None:
         links = StaticMediaLinks()
         add_link(links, "ig-alpha", "t6p_1")
@@ -82,7 +90,7 @@ class LinkTests(unittest.TestCase):
         links = StaticMediaLinks()
         add_link(links, "ig-alpha", "t6p_1")
         link_timelines(read_export(FIXTURE), links)
-        self.assertEqual(links.calls, [("timeline", None)])
+        self.assertEqual(links.calls, [("instagantt-project", None)])
 
 
 if __name__ == "__main__":

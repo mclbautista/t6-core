@@ -326,6 +326,10 @@ FRAMEIO_ENVIRON = {
     "T6_WORKER_SECRET": FRAMEIO_WORKER_SECRET,
     "T6_WORKER_QUEUE": "frameio",
 }
+FEED_ENVIRON = {
+    "T6_API_URL": "http://api.invalid:8080",
+    "T6_REGISTRY_READ_SECRET": "registry-read-secret",
+}
 ADOBE_ENVIRON = {
     "T6_FRAMEIO_CLIENT_ID": "client-1",
     "T6_FRAMEIO_CLIENT_SECRET": "client-secret-1",
@@ -410,15 +414,15 @@ class EntrypointTests(FrameioWorkerTestCase):
         fake.add_project("fp1", "Example Show")
         fake.add_share("fp1", "s1", "Cut 1", last_viewed_at="2026-11-03T10:00:00Z")
         token_file = Path(self.directory.name) / "frameio-token.json"
-        environ = {**FRAMEIO_ENVIRON, **GATEWAY_ENVIRON, **ADOBE_ENVIRON, "T6_FRAMEIO_TOKEN_FILE": str(token_file)}
+        environ = {**FRAMEIO_ENVIRON, **FEED_ENVIRON, **GATEWAY_ENVIRON, **ADOBE_ENVIRON, "T6_FRAMEIO_TOKEN_FILE": str(token_file)}
         asked: list[str] = []
 
         class Registry:
             def __init__(self, base_url: str) -> None:
-                pass
+                self.base_url = base_url
 
             def send(self, method: str, path: str, headers: Any, body: bytes) -> tuple[int, dict[str, Any]]:
-                asked.append(f"{method} {path}")
+                asked.append(f"{self.base_url} {method} {path} {headers['Authorization']}")
                 link = {"id": "t6m_1", "owner": "t6p_1", "project": "t6p_1", "kind": "frameio-project",
                         "ref": "fp1", "role": "frameio-project", "pages": ["page-1"]}
                 return 200, {"links": [link]}
@@ -441,7 +445,18 @@ class EntrypointTests(FrameioWorkerTestCase):
         assert isinstance(feed, Ok)
         self.assertEqual([(show.frameio_project_id, show.project_page_ids) for show in decode(BriefingFeed, feed.value)],
                          [("fp1", ("page-1",))])
-        self.assertEqual(asked, ["GET /registry/media-links/frameio-project"])
+        self.assertEqual(asked, ["http://api.invalid:8080 GET /registry/media-links/frameio-project Bearer registry-read-secret"])
+
+    def test_the_briefing_feed_needs_both_api_variables_and_the_queue_variables_do_not_turn_it_on(self) -> None:
+        base = {**FRAMEIO_ENVIRON, **ADOBE_ENVIRON, "T6_FRAMEIO_TOKEN_FILE": str(Path(self.directory.name) / "t.json")}
+        for name in FEED_ENVIRON:
+            environ = {**base, **{key: value for key, value in FEED_ENVIRON.items() if key != name}}
+            with self.subTest(missing=name), self.assertRaisesRegex(ConfigError, "T6_API_URL.*T6_REGISTRY_READ_SECRET"):
+                frameio_backend(environ)
+        # Neither set: the feed is off, the other reads work, and T6_SERVER_URL / T6_WORKER_SECRET are not used for it.
+        _, reads = frameio_backend(base)
+        with self.assertRaisesRegex(RuntimeError, "T6_API_URL"):
+            reads(BriefingFeed(since=SINCE))
 
     def test_the_alert_needs_the_gateway_and_a_chat(self) -> None:
         for name in GATEWAY_ENVIRON:

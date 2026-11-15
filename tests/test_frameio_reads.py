@@ -252,7 +252,7 @@ class BriefingFeedTests(ReadsTestCase):
 
     def test_without_media_locations_the_feed_fails_and_the_reads_still_work(self) -> None:
         reads = FrameioReads(self.api, now=lambda: NOW)
-        with self.assertRaisesRegex(RuntimeError, "T6_SERVER_URL"):
+        with self.assertRaisesRegex(RuntimeError, "T6_API_URL"):
             reads(BriefingFeed(since=SINCE))
         self.assertEqual(len(decode(FrameioProjects, reads(FrameioProjects()))), 3)
 

@@ -1,7 +1,7 @@
 import unittest
 
 from t6.ids import EntityKind, T6Id
-from t6.media import MediaStore
+from t6.media import DatabaseMediaLinks, MediaStore
 from t6.preview import PreviewTokens
 from t6.registry import Registered
 from t6.verbs import Done, Preview
@@ -98,6 +98,7 @@ class MediaTests(unittest.TestCase):
         entry, = [v for v in catalogue() if (v['noun'], v['verb']) == ('media', 'link')]
         properties = entry['input_schema']['properties']
         self.assertEqual(set(properties['kind']['enum']), KINDS)
+        self.assertIn('instagantt-project', properties['kind']['enum'])
         self.assertEqual(set(properties['role']['enum']), ROLES)
 
     def test_all_kinds_and_roles_and_retry(self) -> None:
@@ -110,7 +111,7 @@ class MediaTests(unittest.TestCase):
         with registry._transaction() as db:
             db.execute('INSERT INTO deliverables VALUES (?, ?, ?, NULL, NULL, NULL)', (deliverable, project.project.id, 'FTR'))
         store = MediaStore(registry, PreviewTokens('secret'))
-        kinds = ['drive', 'nas-path', 'frameio-project', 'frameio-folder', 'resolve-project', 'timeline']
+        kinds = ['drive', 'nas-path', 'frameio-project', 'frameio-folder', 'resolve-project', 'timeline', 'instagantt-project']
         roles = ['master', 'backup', 'review', 'working', 'frameio-project']
         for index, kind in enumerate(kinds):
             role = 'review' if kind == 'frameio-folder' else roles[(index - (index > 3)) % len(roles)]
@@ -246,6 +247,61 @@ class ReaderTests(unittest.TestCase):
         assert isinstance(refused, Refused)
         self.assertEqual(refused.rule, 'frameio_project')
         self.assertIn(self.first, refused.reason)
+
+    def test_an_instagantt_project_id_as_exported_links_through_its_own_kind(self) -> None:
+        from t6.instagantt import link_timelines, parse_export
+        from t6.media import active_links
+        export = 'Project,Project ID,Task Name,Start Date,End Date\nShow Alpha,pr_8Kd2mXq41ZtYw,Cut,2026-01-05,2026-02-13\n'
+        media = linked(self.registry, self.store, self.first, 'instagantt-project', 'pr_8Kd2mXq41ZtYw', 'working')
+        self.assertEqual([l.id for l in active_links(self.registry, 'instagantt-project', 'working')], [media])
+        report = link_timelines(parse_export(export), DatabaseMediaLinks(self.registry))
+        self.assertEqual([(l.timeline.project, l.project_id) for l in report.linked], [('Show Alpha', self.first)])
+        self.assertEqual(report.unmapped, ())
+
+    def test_the_same_instagantt_id_as_kind_timeline_is_refused_at_media_link(self) -> None:
+        from t6.verbs import Refused
+        values = {'owner': self.first, 'kind': 'timeline', 'ref': 'pr_8Kd2mXq41ZtYw', 'role': 'working'}
+        refused = self.store.write('link', values, actor='person', idempotency_key='bad')
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'ref')
+
+    def test_an_instagantt_project_belongs_to_one_project_and_the_refusal_names_the_holder(self) -> None:
+        from t6.verbs import Refused
+        linked(self.registry, self.store, self.first, 'instagantt-project', 'pr_one', 'working')
+        values = {'owner': self.second, 'kind': 'instagantt-project', 'ref': 'pr_one', 'role': 'working'}
+        refused = self.store.write('link', values, actor='person', idempotency_key='second')
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'instagantt_project')
+        self.assertIn(self.first, refused.reason)
+        other = {'owner': self.second, 'kind': 'instagantt-project', 'ref': 'pr_two', 'role': 'working'}
+        self.assertIsInstance(self.store.write('link', other, actor='person', idempotency_key='other'), Preview)
+
+    def test_find_external_maps_both_old_instagantt_kinds_to_the_instagantt_project_kind(self) -> None:
+        from t6.media import find_external
+        media = linked(self.registry, self.store, self.second, 'instagantt-project', 'pr_x', 'working')
+        for kind in ('Project', 'Timeline'):
+            found = find_external(self.registry, 'Instagantt', kind, 'pr_x')
+            assert found is not None
+            self.assertEqual((found.id, found.kind, found.project_id), (media, 'instagantt-project', self.second))
+        self.assertIsNone(find_external(self.registry, 'Instagantt', 'project', 'missing'))
+
+    def test_migration_maps_active_instagantt_rows_to_the_instagantt_project_kind(self) -> None:
+        rows = [
+            {'page_id': 'ig-project', 'system': 'Instagantt', 'kind': 'project', 'ref': 'pr_a', 'active': True, 'projects': ['page-one'], 'deliverables': []},
+            {'page_id': 'ig-timeline', 'system': 'Instagantt', 'kind': 'timeline', 'ref': 'pr_b', 'active': True, 'projects': ['page-two'], 'deliverables': []},
+            {'page_id': 'ig-off', 'system': 'Instagantt', 'kind': 'project', 'ref': 'pr_c', 'active': False, 'projects': ['page-one'], 'deliverables': []},
+            {'page_id': 'ig-taken', 'system': 'Instagantt', 'kind': 'project', 'ref': 'pr_a', 'active': True, 'projects': ['page-two'], 'deliverables': []},
+        ]
+        preview = self.store.migrate(rows, actor='person')
+        self.assertEqual({e['page_id']: e['action'] for e in preview['entries']},
+                         {'ig-project': 'register', 'ig-timeline': 'register', 'ig-off': 'review', 'ig-taken': 'review'})
+        self.assertEqual({e['page_id']: e['reason'] for e in preview['review']},
+                         {'ig-off': 'Deactivated in External Links', 'ig-taken': 'Instagantt project already belongs to another Project'})
+        self.store.migrate(rows, actor='person', apply=True, digest=preview['digest'])
+        from t6.media import active_links
+        self.assertEqual([(l.ref, l.role, l.project_id) for l in active_links(self.registry, 'instagantt-project')],
+                         sorted([('pr_a', 'working', self.first), ('pr_b', 'working', self.second)]))
+        self.assertEqual(active_links(self.registry, 'timeline'), ())
 
     def test_find_external_answers_the_old_external_link_lookup_from_media_locations(self) -> None:
         from t6.media import find_external

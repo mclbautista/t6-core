@@ -1,8 +1,9 @@
 """Tie each Instagantt project to its Project through Media locations.
 
-Reads active Media locations of kind `timeline` only; an export's project ID
-is the Timeline ID (`t6t_`) of the location. It reads no Notion date
-properties, and it writes nothing.
+Reads active Media locations of kind `instagantt-project`: the location's
+`ref` is the Instagantt project ID as the export gives it (free text). Kind
+`timeline` is for `t6t_` Timelines (Resolve) and is never read here. It reads no
+Notion date properties, and it writes nothing.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from collections.abc import Iterable
 from t6.instagantt.model import LinkedTimeline, LinkReport, Timeline, Unmapped
 from t6.media_links import MediaLinks
 
-MEDIA_KIND = "timeline"
+MEDIA_KIND = "instagantt-project"
 
 
 def link_timelines(timelines: Iterable[Timeline], links: MediaLinks) -> LinkReport:

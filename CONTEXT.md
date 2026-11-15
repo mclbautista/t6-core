@@ -83,11 +83,14 @@ database; its migration maps rows by page ID only and sends rows it cannot
 classify to a review list.
 
 - **Kind**: what the `ref` points to: drive (a `t6d_` Drive ID), timeline (a
-  `t6t_` Timeline ID), nas-path, frameio-project, frameio-folder or
-  resolve-project.
+  `t6t_` Timeline ID), nas-path, frameio-project, frameio-folder,
+  resolve-project or instagantt-project (the `ref` is the Instagantt project ID
+  as an Instagantt export gives it, free text, role working). An Instagantt
+  project is not a Timeline: a Timeline is a Resolve timeline with a stamp.
 - **Role**: what the location is for: master, backup, review, working or
   frameio-project. These are not Drive Assignment roles.
-- A Frame.io project belongs to one Project at a time. A frameio-folder belongs
+- A Frame.io project, and an Instagantt project, belongs to one Project at a
+  time. A frameio-folder belongs
   to a Deliverable with role review.
 - **Unlink** makes a Media location inactive; it is never deleted. Linking the
   same owner, kind, ref and role again reactivates it. Its history is

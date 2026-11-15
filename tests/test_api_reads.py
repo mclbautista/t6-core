@@ -272,9 +272,9 @@ class ReadTests(unittest.TestCase):
         registered = self.registry.register(actor='setup', idempotency_key='timeline-project', notion_page_id=self.project['id'])
         assert isinstance(registered, Registered)
         project = registered.project.id
-        timeline = str(T6Id.mint(EntityKind.TIMELINE))
+        timeline = 'pr_8Kd2mXq41ZtYw'
         store = MediaStore(self.registry, PreviewTokens('key'))
-        values = {'owner': project, 'kind': 'timeline', 'ref': timeline, 'role': 'working'}
+        values = {'owner': project, 'kind': 'instagantt-project', 'ref': timeline, 'role': 'working'}
         preview = store.write('link', values, actor='person', idempotency_key='link-timeline')
         assert isinstance(preview, Preview)
         store.write('link', values, actor='person', idempotency_key='link-timeline', confirm=preview.token)

@@ -8,7 +8,9 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 - Frame.io reads, Resolve `map_projects`, Instagantt linking and the review message read Media locations (by kind and role) instead of the Notion External Links database (#261). The briefing feed writes nothing to Notion: no share-link rows, no Last Activity stamps; a live share is `active`.
 - `external-link find` is answered from Media locations; its `page_id` is the Media location ID.
-- The Frame.io worker needs `T6_SERVER_URL` and `T6_WORKER_SECRET` (registry read) for the briefing feed; `T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE` is no longer read by any worker.
+- The Frame.io worker's briefing feed reads Media locations from the t6 API on Sixto: it needs `T6_API_URL` and `T6_REGISTRY_READ_SECRET` (the API's read-only registry grant), both or neither; it no longer uses `T6_SERVER_URL` or `T6_WORKER_SECRET` for this. The `frameio` queue grant gets no registry read. `T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE` is no longer read by any worker.
+- The main worker reads Media locations for the review message from the t6 database when `T6_DATABASE` is set (the queue server it polls is the VPS edge and has no registry); HTTP only without `T6_DATABASE`.
+- New Media location kind `instagantt-project` (ref = the Instagantt project ID as exported, one Project at a time). Instagantt linking reads it, `external-link find` maps Instagantt rows to it and the External Links migration imports active Instagantt rows as it. Kind `timeline` stays for `t6t_` Timelines only.
 
 ### Removed
 
