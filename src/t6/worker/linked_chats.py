@@ -3,12 +3,14 @@ from __future__ import annotations
 
 from typing import Any
 import json
+import secrets
 from html import escape
 
 from t6.abang import record
 
 from t6.registry.sqlite import SqliteProjectRegistry
 from t6.worker.gateway import GatewayClient
+from t6.worker.client import WorkerJob
 
 
 class LinkedChats:
@@ -67,6 +69,17 @@ class LinkedChats:
                 edit_ref = self.gateway.edit(ref, 'Delivered', [], 'abang:delivered:' + request_id)
                 with self.registry._transaction() as db:
                     db.execute('UPDATE abang_requests SET edit_ref = ? WHERE id = ?', (edit_ref, request_id))
+        with self.registry._transaction() as db:
+            candidates = db.execute("SELECT c.id, c.request_id, c.message_id, r.source_chat, r.source_topic FROM abang_candidates c JOIN abang_requests r ON r.id = c.request_id WHERE c.state = 'pending' AND c.notify_ref IS NULL AND r.state = 'requested'").fetchall()
+        for candidate, request_id, message, chat, topic in candidates:
+            buttons = [[{'text': 'Yes', 'payload': f'abang:{candidate}:yes'}, {'text': 'No', 'payload': f'abang:{candidate}:no'}]]
+            with self.registry._transaction() as db:
+                current = db.execute("SELECT 1 FROM abang_candidates c JOIN abang_requests r ON r.id = c.request_id WHERE c.id = ? AND c.state = 'pending' AND r.state = 'requested'", (candidate,)).fetchone()
+                if current:
+                    link = f'https://t.me/c/{str(chat)[4:]}/{message}' if str(chat).startswith('-100') else None
+                    text = f'Is this it? <a href="{link}">View message</a>' if link else f'Is this it? Message {message}'
+                    ref = self.gateway.notify(chat, text, buttons, f'abang:candidate:{request_id}:{message}', topic)
+                    db.execute('UPDATE abang_candidates SET notify_ref = ? WHERE id = ?', (ref, candidate))
         self._notices()
 
     def _record(self, item: dict[str, Any]) -> bool:
@@ -115,7 +128,24 @@ class LinkedChats:
                 if row:
                     db.execute("UPDATE abang_requests SET state = 'forwarding', reply_id = ? WHERE id = ?", (item['message_id'], row[0]))
                     record(db, self.registry, row[0], 'forwarding', 'worker')
+                elif reply is None:
+                    rows = db.execute("SELECT r.id FROM abang_requests r JOIN persons p ON p.id = r.person_id WHERE r.state = 'requested' AND r.source_chat = ? AND (r.source_topic IS NULL OR r.source_topic = ?) AND p.telegram_id = ?", (chat, topic, sender.get('id'))).fetchall()
+                    for (request_id,) in rows:
+                        db.execute("INSERT OR IGNORE INTO abang_candidates (id, request_id, message_id, state) VALUES (?, ?, ?, 'pending')", (secrets.token_hex(8), request_id, item['message_id']))
             db.execute('UPDATE linked_chat_cursor SET seq = ? WHERE id = 1', (seq,))
+            return True
+
+    def nudge(self, job: WorkerJob) -> bool:
+        request = job.payload.get('request')
+        if not isinstance(request, str):
+            raise ValueError('Invalid abang nudge payload')
+        with self.registry._transaction() as db:
+            row = db.execute("SELECT r.source_chat, r.source_topic, p.telegram_id FROM abang_requests r JOIN persons p ON p.id = r.person_id WHERE r.id = ? AND r.state = 'requested'", (request,)).fetchone()
+            if row is None:
+                return False
+            chat, topic, telegram = row
+            text = f'<a href="tg://user?id={telegram}">File request reminder</a>'
+            self.gateway.notify(chat, text, [], 'abang:nudge:' + request, topic)
             return True
 
     def track_send(self, ref: int, chat: int, topic: int | None) -> None:

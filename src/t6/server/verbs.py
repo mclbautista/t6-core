@@ -568,6 +568,31 @@ class VerbAPI:
             response = self._dispatch(entry, {'project': args.strip(), 'chat': chat, 'topic': topic, 'idempotency_key': key}, person[0])
             return Response(200, {'outcome': 'accepted' if response.body.get('outcome') in ('preview', 'done') else 'rejected'})
         data = body.get('data')
+        if isinstance(data, str) and data.startswith('abang:'):
+            parts = data.split(':')
+            candidate = parts[1] if len(parts) == 3 else ''
+            decision = parts[2] if len(parts) == 3 else ''
+            with self.people.registry._transaction() as db:
+                row = db.execute("SELECT r.person_id FROM abang_candidates c JOIN abang_requests r ON r.id = c.request_id WHERE c.id = ?", (candidate,)).fetchone()
+                allowed = bool(row and self.people._allows(db, person[0], 'person:' + row[0]))
+                if not allowed:
+                    _audit(db, person[0], 'tap_rejected', person[0], self.people.registry._clock(), None, {'reason': 'not_allowed', 'data': data})
+            if not allowed:
+                return Response(200, {'outcome': 'rejected'})
+            key = request.header('idempotency-key') or body.get('idempotency_key')
+            if not isinstance(key, str) or not key or decision not in ('yes', 'no'):
+                return Response(200, {'outcome': 'rejected'})
+            values = {'candidate': candidate, 'decision': decision, 'idempotency_key': key}
+            entry = self.routes['/v1/abang/accept']
+            response = self._dispatch(entry, values, person[0])
+            if response.body.get('outcome') == 'preview':
+                values['confirm'] = response.body['token']
+                response = self._dispatch(entry, values, person[0])
+            outcome = 'accepted' if response.body.get('outcome') == 'done' else 'rejected'
+            if outcome == 'accepted':
+                with self.people.registry._transaction() as db:
+                    _audit(db, person[0], 'tap_accepted', person[0], self.people.registry._clock(), None, {'key': key, 'data': data, 'outcome': outcome})
+            return Response(200, {'outcome': outcome})
         if body.get('kind') != 'command' and (not isinstance(data, str) or not data.startswith('op:')):
             action, separator, target = data.partition(':') if isinstance(data, str) else ('', '', '')
             if action not in {'approve', 'retry'} or not separator or not target or not self.people.allows_telegram(telegram_id, 'permission:operator'):
