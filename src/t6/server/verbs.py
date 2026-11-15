@@ -119,7 +119,7 @@ class VerbAPI:
             inputs = entry.input_model.model_validate(data)
         except ValidationError as error:
             return Response(422, {'errors': cast(JsonValue, error.errors(include_url=False, include_context=False, include_input=False))})
-        if (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'flags'), ('project', 'resolve'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find'), ('version', 'get')}:
+        if (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'notes'), ('project', 'flags'), ('project', 'resolve'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find'), ('version', 'get')}:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._typed_read(entry.noun, entry.verb, inputs)
             if isinstance(outcome, Done) and entry.noun in {'project', 'jo', 'person', 'camera', 'deliverable', 'meeting-notes', 'external-link', 'studio'} and self.people.authorize(actor, 'operator'):
@@ -182,6 +182,25 @@ class VerbAPI:
                         outcome = store.deliver(inputs.model_dump(exclude={'idempotency_key', 'confirm'}), actor=actor, idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
                 except (OSError, ValueError, KeyError, NotionError) as error:
                     outcome = Refused(rule='spec', reason=str(error))
+        elif (entry.noun, entry.verb) == ('concern', 'scan'):
+            refusal = self.people.authorize(actor, entry.role)
+            if refusal:
+                outcome = refusal
+            elif self.llm_service is None:
+                outcome = Refused(rule='config', reason='LLM service is not configured')
+            else:
+                from t6.verbs import ProjectNotesInput
+                from t6.concern import ConcernStore
+                from t6.concern_task import classify
+                notes = self._typed_read('project', 'notes', ProjectNotesInput(project=inputs.project)) if inputs.owner in self._coordinators(inputs.project) else Refused(rule='owner', reason='Owner must be a Project coordinator')
+                if isinstance(notes, Done):
+                    try:
+                        ConcernStore(self.people.registry, self.people.tokens).process_notes(inputs.project, inputs.owner, notes.result['lines'], lambda payload: classify(self.llm_service, payload, actor=actor, registry=self.people.registry))
+                        outcome = Done(result={'project': inputs.project})
+                    except ValueError:
+                        outcome = Refused(rule='project', reason='Project and active coordinator are required')
+                else:
+                    outcome = notes
         elif (entry.noun, entry.verb) == ('llm', 'run'):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or (self.llm_service.run(inputs, actor=actor, registry=self.people.registry) if self.llm_service else Refused(rule='config', reason='LLM service is not configured'))
@@ -362,6 +381,37 @@ class VerbAPI:
         person = self.people.registry.bound_entity('notion', normalize_page_id(found.entity.page_id))
         return person if isinstance(person, str) else None
 
+    def scan_concerns(self) -> int:
+        """Scan the PM Notes of every Project in rotation for new Concern evidence; returns how many were scanned."""
+        from t6.concern import ConcernStore
+        from t6.concern_task import classify
+        from t6.registry import Rotation
+        from t6.verbs import ProjectNotesInput
+        if self.llm_service is None:
+            return 0
+        scanned = 0
+        for project in self.people.registry.list_projects(Rotation.IN):
+            owners = sorted(self._coordinators(project.id))
+            notes = self._typed_read('project', 'notes', ProjectNotesInput(project=project.id)) if owners else None
+            if not isinstance(notes, Done):
+                continue
+            owner = owners[0]
+            try:
+                ConcernStore(self.people.registry, self.people.tokens).process_notes(project.id, owner, notes.result['lines'], lambda payload: classify(self.llm_service, payload, actor=owner, registry=self.people.registry))
+                scanned += 1
+            except ValueError:
+                continue
+        return scanned
+
+    def _coordinators(self, project_id: str) -> set[str]:
+        """The Persons who coordinate a Project: its Notion post coordinators and its t6 coordinator roles."""
+        from t6.verbs import ProjectGetInput
+        read = self._typed_read('project', 'get', ProjectGetInput(project=project_id))
+        if not isinstance(read, Done):
+            return set()
+        project = read.result['project']
+        return set(project.post_coordinator_ids) | {r['person_id'] for r in project.project_roles if r['role'].casefold() in ('coordinator', 'post coordinator', 'post-coordinator')}
+
     def _typed_read(self, noun: str, verb: str, inputs: Any) -> Any:
         from datetime import date, datetime
         from dataclasses import asdict, replace
@@ -470,10 +520,14 @@ class VerbAPI:
                     return Done(result={'cameras': [{'page_id': c['id'], 'name': c['name'] or '', 'tags': c['tags']} for c in cameras]})
                 if noun == 'project':
                     projects = [project_result(p) for p in ProjectReader(client, self.data_sources['projects']).list()]
-                    if verb in ('get', 'flags'):
+                    if verb in ('get', 'notes', 'flags'):
                         pages = refs.pages(inputs.project)
                         active = (pages[0] if pages else inputs.project).replace('-', '').lower()
                         project = next((p for p in projects if p.page_id.replace('-', '').lower() == active), None)
+                        if verb == 'notes' and project:
+                            from t6.pm_notes import dated_lines
+                            from t6.domain.studio_time import MANILA
+                            return Done(result={'lines': dated_lines(project.pm_notes, datetime.fromtimestamp(self.people.registry._clock(), MANILA).date())})
                         if verb == 'flags' and project:
                             from t6.domain.project_rules import date_flags, health_missing
                             from t6.domain.studio_time import MANILA

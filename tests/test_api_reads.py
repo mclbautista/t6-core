@@ -63,6 +63,39 @@ class ReadTests(unittest.TestCase):
         assert isinstance(result, Done)
         self.assertEqual(result.result['projects'][1]['name'], 'Example Show')
 
+    def test_project_notes_returns_dated_lines(self) -> None:
+        from t6.verbs import ProjectListInput, ProjectNotesInput
+        from t6.notion.generated import ProjectsRow
+        self.notion.add_page('projects', {ProjectsRow.notion_name('name'): title('Notes show'), ProjectsRow.notion_name('pm_notes'): rich_text('As of Nov 1, 2026\n- Waiting kay client\nAs of 2026-11-09: Received na')})
+        projects = self.client.project_list(ProjectListInput())
+        assert isinstance(projects, Done)
+        page = next(p['page_id'] for p in projects.result['projects'] if p['name'] == 'Notes show')
+        result = self.client.project_notes(ProjectNotesInput(project=page))
+        assert isinstance(result, Done)
+        self.assertEqual(result.result['lines'], [{'as_of': '2026-11-01', 'text': 'Waiting kay client'}, {'as_of': '2026-11-09', 'text': 'Received na'}])
+
+    def test_concern_notes_scan_uses_masked_llm_and_records_change(self) -> None:
+        from t6.llm.testing import FakeProvider
+        from t6.server.llm import LLMService
+        from t6.registry import Registered
+        from t6.verbs import ConcernScanInput, ConcernChangesInput
+        from t6.notion.generated import ProjectsRow
+        provider = FakeProvider().reply('{"choice":"new","quote":"Waiting on [person 1]","waiting_on":"[person 1]"}')
+        self.api.llm_service = LLMService({'fake': provider}, 'fake', Registry(people=[Person(name='Client Corp')]))
+        page = self.notion.add_page('projects', {'Name': title('Scan'), ProjectsRow.notion_name('pm_notes'): rich_text('As of 2026-11-01\nWaiting on Client Corp')})
+        project = self.registry.register(actor='setup', idempotency_key='scan-project', notion_page_id=page['id'])
+        assert isinstance(project, Registered)
+        owner = 't6n_' + '1' * 32
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO project_person_roles VALUES (?, ?, 'coordinator')", (project.project.id, owner))
+        operator = Client(self.client.base_url, 'operator')
+        result = operator.concern_scan(ConcernScanInput(project=project.project.id, owner=owner))
+        assert isinstance(result, Done)
+        changes = operator.concern_changes(ConcernChangesInput(project=project.project.id, since='2020-01-01'))
+        assert isinstance(changes, Done)
+        self.assertEqual(changes.result['changes'][0]['quote'], 'Waiting on Client Corp')
+        self.assertNotIn('Client Corp', str(provider.calls[0].messages))
+
     def test_project_flags_are_read_without_ids_or_age(self) -> None:
         from t6.verbs import ProjectFlagsInput
         result = self.client.project_flags(ProjectFlagsInput(project=self.project['id']))

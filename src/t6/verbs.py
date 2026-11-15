@@ -639,6 +639,24 @@ class ConcernReopenInput(BaseModel):
     confirm: str | None = None
 
 
+class ConcernScanInput(BaseModel):
+    project: str
+    owner: str
+
+
+class ConcernChangesInput(BaseModel):
+    project: str
+    since: str
+
+
+class ConcernChangesOutput(BaseModel):
+    changes: list[dict[str, Any]]
+
+
+class ConcernScanOutput(BaseModel):
+    project: str
+
+
 class ConcernGetInput(BaseModel):
     concern: str
 
@@ -668,6 +686,18 @@ def concern_write(inputs: ConcernRaiseInput | ConcernNoteInput | ConcernResolveI
 def concern_for_message(inputs: ConcernForMessageInput, open_notion: Callable[..., Any]) -> Outcome:
     from t6.concern import ConcernStore
     return Done(result={'concern_ids': ConcernStore(_people().registry, _people().tokens).for_message(inputs.chat, inputs.message_id)})
+
+
+def concern_changes(inputs: ConcernChangesInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.concern import ConcernStore
+    try:
+        return Done(result={'changes': ConcernStore(_people().registry, _people().tokens).changes(inputs.project, inputs.since)})
+    except ValueError:
+        return Refused(rule='since', reason='Since must be an ISO date')
+
+
+def concern_scan(inputs: ConcernScanInput, open_notion: Callable[..., Any]) -> Outcome:
+    return Refused(rule='api', reason='Concern scanning runs on the t6 API')
 
 
 def concern_get(inputs: ConcernGetInput, open_notion: Callable[..., Any]) -> Outcome:
@@ -847,6 +877,14 @@ class PersonListInput(ReadInput):
 
 class ProjectGetInput(ReadInput):
     project: str
+
+
+class ProjectNotesInput(ReadInput):
+    project: str
+
+
+class ProjectNotesOutput(BaseModel):
+    lines: list[dict[str, str]]
 
 
 class ProjectFlagsInput(ReadInput):
@@ -1301,6 +1339,7 @@ VERBS = (
     Verb("studio", "notices", "Read studio notices", (), StudioNoticesInput, StudioNoticesOutput, "reader", "Read Project source notices.", api_read),
     Verb("external-link", "find", "Find an External Link", (), ExternalLinkFindInput, ExternalLinkFindOutput, "reader", "Resolve an external reference.", api_read),
     Verb("project", "get", "Get a Project", (), ProjectGetInput, ProjectGetOutput, "reader", "Read a Project.", api_read),
+    Verb("project", "notes", "Read dated PM Notes", (), ProjectNotesInput, ProjectNotesOutput, "reader", "Read dated PM Notes lines.", api_read),
     Verb("project", "flags", "Read Project flags", (), ProjectFlagsInput, ProjectFlagsOutput, "reader", "Recompute data gaps and date warnings.", api_read),
     Verb("person", "list", "List Contacts", (), PersonListInput, PersonListOutput, "reader", "Read Contacts.", api_read),
     Verb("standing-cc", "", "Get standing cc", (), StandingCcInput, StandingCcOutput, "reader", "Read configured standing cc.", None),
@@ -1346,6 +1385,8 @@ VERBS = (
     Verb('package', 'reject', 'Reject a Package', (), PackageRejectInput, PackageOutput, 'person', 'The recipient gives a reason.', package_write),
     Verb("concern", "for-message", "Find Concerns carried by a brief", (), ConcernForMessageInput, ConcernForMessageOutput, "reader", "Return Concern IDs for a brief message.", concern_for_message),
     Verb("concern", "record-message", "Record a Concern carried by a brief", (), ConcernRecordMessageInput, ConcernOutput, "coordinator", "Record a brief message reference without chat text.", concern_write),
+    Verb("concern", "scan", "Scan PM Notes for Concerns", (), ConcernScanInput, ConcernScanOutput, "coordinator", "Match new dated lines through llm run.", concern_scan),
+    Verb("concern", "changes", "Read automatic Concern changes", (), ConcernChangesInput, ConcernChangesOutput, "reader", "Read receipts since a date.", concern_changes),
     Verb("concern", "get", "Get a Concern", (), ConcernGetInput, ConcernGetOutput, "reader", "Read a Concern and its age.", concern_get),
     Verb("concern", "raise", "Raise a Concern", (), ConcernRaiseInput, ConcernOutput, "coordinator", "Record a line waiting on a party.", concern_write),
     Verb("concern", "note", "Add a Concern note", (), ConcernNoteInput, ConcernOutput, "coordinator", "Notes are append-only.", concern_write),

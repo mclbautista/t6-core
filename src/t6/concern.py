@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 import json
+import re
 import secrets
 from typing import Any
 
@@ -14,6 +15,7 @@ from t6.verbs import Done, Outcome, Refused
 from t6.domain.studio_time import MANILA
 
 WEEK = 7 * 24 * 60 * 60
+_WAITING = re.compile(r"\b(?:wait(?:ing)?|await(?:ing)?|pending|hinihintay|hinintay|inaantay|inaabangan|antay|abang)\b", re.IGNORECASE)
 
 
 PROJECT_DATES = ('playdate', 'submission_deadline', 'archival_deadline')
@@ -45,6 +47,91 @@ class ConcernStore:
             record['age_seconds'] = max(0, self.registry._clock() - record['opened_at'])
             record['notes'] = [dict(zip(('text', 'actor', 'at', 'message_id'), n)) for n in db.execute('SELECT text, actor, at, message_id FROM concern_notes WHERE concern_id = ? ORDER BY id', (concern,))]
             return record
+
+    def changes(self, project: str, since: str) -> list[dict[str, Any]]:
+        start = datetime.fromisoformat(since).replace(tzinfo=MANILA).timestamp()
+        with self.registry._transaction() as db:
+            rows = db.execute('SELECT id, concern_id, action, quote, at FROM concern_pm_changes WHERE project_id = ? AND at >= ? ORDER BY id', (project, start)).fetchall()
+            return [dict(zip(('id', 'concern_id', 'action', 'quote', 'at'), row)) for row in rows]
+
+    @staticmethod
+    def _pm_log(db: Any, project: str, concern: str, action: str, quote: str, now: float, before: Any) -> None:
+        ConcernStore._log(db, project, concern, 'Sixto (auto)', action, now, before, {'quote': quote}, quote)
+        db.execute('INSERT INTO concern_pm_changes (project_id, concern_id, action, quote, at) VALUES (?, ?, ?, ?, ?)', (project, concern, action, quote, now))
+
+    def apply_pending(self, project: str) -> None:
+        now = self.registry._clock()
+        with self.registry._transaction() as db:
+            rows = db.execute('SELECT p.concern_id, p.quote, p.revision, c.state, c.revision, c.manual_override FROM concern_pm_pending p JOIN concerns c ON c.id = p.concern_id WHERE c.project_id = ? AND p.due <= ?', (project, now)).fetchall()
+            for concern, quote, revision, state, current, override in rows:
+                if revision == current and not override and state != 'closed':
+                    db.execute("UPDATE concerns SET state = 'closed', revision = revision + 1 WHERE id = ?", (concern,))
+                    self._pm_log(db, project, concern, 'concern_auto_resolve', quote, now, state)
+                db.execute('DELETE FROM concern_pm_pending WHERE concern_id = ?', (concern,))
+
+    def process_notes(self, project: str, owner: str, lines: list[dict[str, str]], classify: Callable[[dict[str, Any]], Any]) -> None:
+        for line in sorted(lines, key=lambda item: item['as_of']):
+            text, as_of = line['text'], line['as_of']
+            try:
+                date.fromisoformat(as_of)
+            except ValueError:
+                continue
+            if not text.strip():
+                continue
+            with self.registry._transaction() as db:
+                if not db.execute('SELECT 1 FROM projects WHERE id = ?', (project,)).fetchone() or not db.execute('SELECT 1 FROM persons WHERE id = ? AND active = 1', (owner,)).fetchone():
+                    raise ValueError('Project and active coordinator are required')
+                if db.execute('SELECT 1 FROM concern_pm_lines WHERE project_id = ? AND as_of = ? AND line = ?', (project, as_of, text)).fetchone():
+                    continue
+                # The line a Concern was raised from is not new evidence; the same words on a later date are.
+                if db.execute('SELECT 1 FROM concerns WHERE project_id = ? AND anchor = ? AND as_of >= ?', (project, text, as_of)).fetchone():
+                    continue
+                rows = db.execute("SELECT id, anchor, as_of, state, revision, manual_override FROM concerns WHERE project_id = ? AND id NOT IN (SELECT concern_id FROM concern_date_rules)", (project,)).fetchall()
+            offered = {r[0]: r for r in rows if as_of > r[2]}
+            answer = classify({'line': text, 'as_of': as_of, 'concerns': [{'id': r[0], 'anchor': r[1], 'state': r[3], 'human_decision': bool(r[5])} for r in offered.values()]})
+            if not isinstance(answer, dict):
+                continue
+            choice, quote, concern = answer.get('choice'), answer.get('quote'), answer.get('concern_id')
+            waiting = answer.get('waiting_on')
+            if choice not in ('new', 'nothing', 'continues', 'settles') or not isinstance(quote, str) or not quote or quote not in text:
+                continue
+            repeated = next((r[0] for r in offered.values() if r[1] == text), None)
+            if choice == 'new' and repeated is not None:
+                # The same words on a later date are fresh evidence for the Concern they opened, never a second one.
+                choice, concern = 'continues', repeated
+            if choice in ('continues', 'settles') and concern not in offered:
+                continue
+            if choice == 'new' and (not isinstance(waiting, str) or not waiting.strip() or waiting not in quote or not _WAITING.search(quote)):
+                continue
+            now = self.registry._clock()
+            with self.registry._transaction() as db:
+                if db.execute('SELECT 1 FROM concern_pm_lines WHERE project_id = ? AND as_of = ? AND line = ?', (project, as_of, text)).fetchone():
+                    continue
+                if choice in ('continues', 'settles'):
+                    row = db.execute('SELECT state, revision, manual_override, as_of FROM concerns WHERE id = ? AND project_id = ?', (concern, project)).fetchone()
+                    original = offered[concern]
+                    if not row or row[1] != original[4] or row[2] or as_of <= row[3]:
+                        continue
+                if choice == 'new':
+                    concern = str(T6Id.mint(EntityKind.CONCERN))
+                    db.execute("INSERT INTO concerns (id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')", (concern, project, owner, waiting, quote, as_of, now, now))
+                    assert isinstance(concern, str)
+                    self._schedule(db, concern, now, 1)
+                    self._pm_log(db, project, concern, 'concern_auto_raise', quote, now, None)
+                elif choice == 'continues':
+                    assert isinstance(concern, str)
+                    state, revision = row[0], row[1]
+                    db.execute("UPDATE concerns SET as_of = ?, evidence_at = ?, state = 'open', revision = revision + 1 WHERE id = ?", (as_of, now, concern))
+                    db.execute('DELETE FROM concern_pm_pending WHERE concern_id = ?', (concern,))
+                    self._schedule(db, concern, now, revision + 1)
+                    self._pm_log(db, project, concern, 'concern_auto_continue', quote, now, state)
+                elif choice == 'settles' and row[0] != 'closed':
+                    assert isinstance(concern, str)
+                    db.execute('UPDATE concerns SET as_of = ?, revision = revision + 1 WHERE id = ?', (as_of, concern))
+                    db.execute('INSERT OR REPLACE INTO concern_pm_pending VALUES (?, ?, ?, ?, ?)', (concern, as_of, quote, now + WEEK, row[1] + 1))
+                    self._pm_log(db, project, concern, 'concern_auto_announce', quote, now, row[0])
+                    db.execute("INSERT INTO internal_jobs (queue, kind, dedupe_key, payload, run_at, state, created_at) VALUES ('main', 'concern_pm_close', ?, ?, ?, 'queued', ?)", (f'{concern}:{row[1] + 1}', json.dumps({'project': project}), now + WEEK, now))
+                db.execute('INSERT INTO concern_pm_lines VALUES (?, ?, ?)', (project, as_of, text))
 
     def for_message(self, chat: str, message_id: str) -> list[str]:
         with self.registry._transaction() as db:
@@ -145,7 +232,7 @@ class ConcernStore:
                     return Refused(rule='rule_made', reason='Date-sanity Concerns follow data only')
                 if verb == 'note' and (not isinstance(values.get('text'), str) or not values['text'].strip()):
                     return Refused(rule='note', reason='A note is required')
-                if verb == 'resolve' and state == 'closed' or verb == 'reopen' and state == 'open':
+                if verb == 'resolve' and state == 'closed' or verb == 'reopen' and state == 'open' and not db.execute('SELECT 1 FROM concern_pm_pending WHERE concern_id = ?', (concern,)).fetchone():
                     return Refused(rule='state', reason='Concern cannot make that transition')
             settles = values.get('settles_id')
             deliverable, milestone = values.get('settles_deliverable'), values.get('settles_milestone')
@@ -195,6 +282,7 @@ class ConcernStore:
                 self._schedule(db, concern, now, revision + 1)
             else:
                 db.execute('UPDATE concerns SET state = ?, manual_override = 1, settles_id = COALESCE(?, settles_id), revision = revision + 1 WHERE id = ?', ('closed' if verb == 'resolve' else 'open', settles, concern))
+                db.execute('DELETE FROM concern_pm_pending WHERE concern_id = ?', (concern,))
             assert isinstance(concern, str)
             self._log(db, project, concern, actor, 'concern_' + verb, now, state, values, f'Concern {verb}' + (f": {values['text']}" if verb == 'note' else ''))
             result = {**plan, 'concern_id': concern}
