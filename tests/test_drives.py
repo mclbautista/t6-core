@@ -187,8 +187,8 @@ class DuplicateTests(unittest.TestCase):
         self.assertTrue(issubclass(DuplicateSerial, ValueError))
 
 
-SHOW_A = Ref(page_id="project-page-a")
-SHOW_B = Ref(page_id="project-page-b")
+SHOW_A = Ref(page_id="t6p_aaaaaaaaaaaaaaaaaaaaaaaa")
+SHOW_B = Ref(page_id="t6p_bbbbbbbbbbbbbbbbbbbbbbbb")
 
 
 def assign(
@@ -218,7 +218,7 @@ class AssignmentFactsTests(unittest.TestCase):
             remarks="  first copy ",
         )
         self.assertEqual(assignment.label, "M01")
-        self.assertEqual(assignment.project.page_id, "project-page-a")
+        self.assertEqual(assignment.project.page_id, "t6p_aaaaaaaaaaaaaaaaaaaaaaaa")
         self.assertIs(assignment.role, Role.MASTER)
         self.assertEqual(assignment.start, date(2024, 5, 1))
         self.assertIsNone(assignment.end)

@@ -305,6 +305,11 @@ _MIGRATIONS = (
     CREATE TABLE media_history (id INTEGER PRIMARY KEY, media_id TEXT NOT NULL REFERENCES media_locations(id), action TEXT NOT NULL, actor TEXT NOT NULL, at REAL NOT NULL);
     CREATE TABLE media_previews (nonce TEXT PRIMARY KEY, snapshot TEXT NOT NULL);
     CREATE TABLE media_migration_receipts (digest TEXT PRIMARY KEY, snapshot TEXT NOT NULL, entries TEXT NOT NULL)"""),
+    (31, False, """CREATE TABLE drives (id TEXT PRIMARY KEY, serial TEXT UNIQUE, suspected_serial TEXT, data TEXT NOT NULL);
+    CREATE TABLE drive_assignments (id INTEGER PRIMARY KEY, drive_id TEXT NOT NULL REFERENCES drives(id), data TEXT NOT NULL);
+    CREATE TABLE drive_events (id INTEGER PRIMARY KEY, drive_id TEXT NOT NULL REFERENCES drives(id), shipment_id TEXT, data TEXT NOT NULL);
+    CREATE TABLE drive_imports (row_key TEXT PRIMARY KEY, drive_id TEXT NOT NULL REFERENCES drives(id), workbook TEXT, sheet TEXT, row INTEGER);
+    CREATE TABLE drive_exceptions (workbook TEXT NOT NULL, sheet TEXT NOT NULL, row INTEGER NOT NULL, reason TEXT NOT NULL, detail TEXT NOT NULL, PRIMARY KEY(workbook, sheet, row, reason, detail))"""),
 )
 
 
@@ -324,6 +329,10 @@ def _migrate(db: sqlite3.Connection) -> None:
                     for operation in ("UPDATE", "DELETE"):
                         db.execute(f"CREATE TRIGGER {table}_no_{operation.lower()} BEFORE {operation} ON {table} "
                                    f"BEGIN SELECT RAISE(ABORT, '{table} is append-only'); END")
+            if version == 31:
+                for operation in ("UPDATE", "DELETE"):
+                    db.execute(f"CREATE TRIGGER drive_events_no_{operation.lower()} BEFORE {operation} ON drive_events "
+                               "BEGIN SELECT RAISE(ABORT, 'drive events are append-only'); END")
             if version == 30:
                 for operation in ("UPDATE", "DELETE"):
                     db.execute(f"CREATE TRIGGER media_history_no_{operation.lower()} BEFORE {operation} ON media_history "

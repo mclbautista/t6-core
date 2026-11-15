@@ -3,8 +3,8 @@
 A Drive is a physical external drive (portable or powered desktop), owned by
 T6, owned by a Studio, or of unknown ownership. It is never Google Drive. Identity is a permanent opaque ID;
 accepted and suspected serials are correctable facts. It is not a
-Notion entity: it has no Notion row. Relations, such as the owning Studio, are
-Notion page IDs.
+Notion entity: it has no Notion row. Relations, such as the owning Studio, may use Notion page IDs. Assignments in
+the t6 database use registered T6 Project IDs.
 
 Records live in a store that implements `DriveStore`. `t6.drives.testing`
 provides an in-memory fake for tests.
@@ -17,7 +17,10 @@ import re
 from uuid import uuid4
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Iterable, Protocol, Sequence
+from typing import TYPE_CHECKING, Iterable, Protocol, Sequence
+
+if TYPE_CHECKING:
+    from t6.drives.importer import ReviewItem
 
 __all__ = [
     "Assignment",
@@ -34,6 +37,7 @@ __all__ = [
     "PartyKind",
     "Ref",
     "Role",
+    "SourceRow",
     "UnknownDrive",
     "derive_status",
     "normalize_serial",
@@ -285,8 +289,8 @@ class Role(enum.Enum):
 class Assignment:
     """One stretch of a Drive's life on one Project, under one label.
 
-    `project` is a `Ref`: a Notion page ID, or the Project's name as text when
-    it could not be resolved. An Assignment with no `end` is open: the Drive is
+    `project` is a `Ref`: a T6 Project ID in the t6 database, or the Project's
+    name as text when it could not be resolved. An Assignment with no `end` is open: the Drive is
     still out for that Project. The same label may be on different Drives in
     different Projects. `role` and `start` are None when they were never
     recorded, as in rows imported from the old workbooks.
@@ -309,6 +313,14 @@ class Assignment:
     @property
     def is_open(self) -> bool:
         return self.end is None
+
+
+@dataclass(frozen=True, slots=True)
+class SourceRow:
+    """Private workbook location of an imported row."""
+    workbook: str
+    sheet: str
+    row: int
 
 
 class UnknownDrive(LookupError):
@@ -380,7 +392,8 @@ class DriveStore(Protocol):
         ...
 
     def import_row(
-        self, row_key: str, drive: Drive, assignment: Assignment, events: Sequence[CustodyEvent]
+        self, row_key: str, drive: Drive, assignment: Assignment, events: Sequence[CustodyEvent],
+        *, source: SourceRow | None = None
     ) -> None:
         """Atomically import a row and its receipt, or do nothing if already recorded.
 
@@ -390,6 +403,22 @@ class DriveStore(Protocol):
         Distinct row keys preserve repeated events, even with identical facts.
         Persist all changes and the receipt in one transaction; failure writes nothing.
         """
+        ...
+
+    def resolve_project(self, project: Ref, fallback: str) -> Ref:
+        """Resolve a source Project reference or preserve the original text."""
+        ...
+
+    def record_exceptions(self, items: Sequence[ReviewItem]) -> None:
+        """Preserve traceable import review evidence without duplicating a rerun."""
+        ...
+
+    def exceptions(self) -> tuple[ReviewItem, ...]:
+        """Return private import review evidence."""
+        ...
+
+    def sources(self, drive_id: str) -> tuple[SourceRow, ...]:
+        """Return source rows that produced this Drive."""
         ...
 
     def append_event(self, drive_id: str, event: CustodyEvent) -> None:

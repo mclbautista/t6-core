@@ -5,6 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import replace
 from datetime import date
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from t6.drives.importer import ReviewItem
+
+from t6.ids import EntityKind, T6Id
 
 from t6.drives import (
     Assignment,
@@ -15,6 +21,7 @@ from t6.drives import (
     DuplicateSerial,
     Party,
     Ref,
+    SourceRow,
     UnknownDrive,
     derive_status,
     normalize_serial,
@@ -24,12 +31,18 @@ from t6.drives import (
 class InMemoryDriveStore:
     """In-memory ID-addressed fake; optional same_project resolves Project aliases."""
 
-    def __init__(self, same_project: Callable[[str | None, str | None], bool] | None = None) -> None:
+    def __init__(self, same_project: Callable[[str | None, str | None], bool] | None = None, *,
+                 project_bindings: dict[str, str] | None = None) -> None:
         self._same_project = same_project or (lambda a, b: a == b)
+        self._project_bindings = dict(project_bindings or {})
+        for identifier in self._project_bindings.values():
+            T6Id.parse(identifier, EntityKind.PROJECT)
         self._drives: dict[str, Drive] = {}
         self._events: dict[str, list[CustodyEvent]] = {}
         self._assignments: dict[str, list[Assignment]] = {}
         self._imports: dict[str, str] = {}
+        self._sources: dict[str, list[SourceRow]] = {}
+        self._exceptions: list[ReviewItem] = []
         self._shipments = 0
         self._shipped: list[tuple[str, CustodyEvent]] = []
 
@@ -94,10 +107,12 @@ class InMemoryDriveStore:
         return any(d.suspected_serial == normalized for d in self._drives.values())
 
     def import_row(
-        self, row_key: str, drive: Drive, assignment: Assignment, events: Sequence[CustodyEvent]
+        self, row_key: str, drive: Drive, assignment: Assignment, events: Sequence[CustodyEvent],
+        *, source: SourceRow | None = None
     ) -> None:
         if row_key in self._imports:
             return
+        self._check_project(assignment.project)
         held = self.find_by_serial(drive.serial) if drive.serial else None
         if held is None:
             if drive.id in self._drives:
@@ -122,6 +137,8 @@ class InMemoryDriveStore:
         self._events[held.id] = history
         self._shipped = shipped
         self._imports[row_key] = held.id
+        if source is not None:
+            self._sources.setdefault(held.id, []).append(source)
 
     def append_event(self, drive_id: str, event: CustodyEvent) -> None:
         self._log(drive_id).append(event)
@@ -163,8 +180,15 @@ class InMemoryDriveStore:
     def status(self, drive_id: str) -> DriveStatus | None:
         return derive_status(self._log(drive_id))
 
+    @staticmethod
+    def _check_project(project: Ref) -> None:
+        if project.page_id is not None:
+            T6Id.parse(project.page_id, EntityKind.PROJECT)
+
     def add_assignment(self, drive_id: str, assignment: Assignment) -> None:
-        self._assigned(drive_id).append(assignment)
+        assigned = self._assigned(drive_id)
+        self._check_project(assignment.project)
+        assigned.append(assignment)
 
     def open_assignments(self, project: Ref) -> list[tuple[Drive, Assignment]]:
         found = [
@@ -180,7 +204,9 @@ class InMemoryDriveStore:
     def _matches(self, held: Ref, asked: Ref) -> bool:
         if held.page_id is None or asked.page_id is None:
             return held == asked  # unresolved text is compared as text
-        return self._same_project(held.page_id, asked.page_id)
+        held_id = self._project_bindings.get(held.page_id, held.page_id)
+        asked_id = self._project_bindings.get(asked.page_id, asked.page_id)
+        return held_id == asked_id or self._same_project(held_id, asked_id)
 
     def assignment_history(self, drive_id: str) -> list[Assignment]:
         # sorted() is stable: assignments with the same start keep entry order
@@ -197,3 +223,23 @@ class InMemoryDriveStore:
         if key not in self._events:
             raise UnknownDrive(key)
         return self._events[key]
+
+    def sources(self, drive_id: str) -> tuple[SourceRow, ...]:
+        self._drive(drive_id)
+        return tuple(self._sources.get(drive_id, ()))
+
+    def resolve_project(self, project: Ref, fallback: str) -> Ref:
+        if project.page_id is None:
+            return project
+        identifier = self._project_bindings.get(project.page_id)
+        if identifier is None and project.page_id in self._project_bindings.values():
+            identifier = project.page_id
+        return Ref(page_id=identifier) if identifier else Ref(text=fallback)
+
+    def record_exceptions(self, items: Sequence[ReviewItem]) -> None:
+        for item in items:
+            if item not in self._exceptions:
+                self._exceptions.append(item)
+
+    def exceptions(self) -> tuple[ReviewItem, ...]:
+        return tuple(self._exceptions)

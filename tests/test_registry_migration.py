@@ -382,8 +382,8 @@ class NotionRelationsTests(MigrationTestCase):
         store = InMemoryDriveStore(ProjectRefs(self.registry).same)
         first = store.add_drive(Drive(serial="D1"))
         second = store.add_drive(Drive(serial="D2"))
-        store.add_assignment(first.id, Assignment(label="M01", project=Ref(page_id=PAGE), role=Role.MASTER, start=date(2026, 1, 1)))
-        store.add_assignment(second.id, Assignment(label="M01", project=Ref(page_id=OTHER_PAGE), role=Role.MASTER, start=date(2026, 1, 1)))
+        store.add_assignment(first.id, Assignment(label="M01", project=Ref(page_id=ids[PAGE]), role=Role.MASTER, start=date(2026, 1, 1)))
+        store.add_assignment(second.id, Assignment(label="M01", project=Ref(page_id=ids[OTHER_PAGE]), role=Role.MASTER, start=date(2026, 1, 1)))
         store.add_assignment(second.id, Assignment(label="U1", project=Ref(text="Unresolved show"), role=Role.BACKUP, start=date(2026, 1, 1)))
         for ref in (Ref(page_id=ids[PAGE]), Ref(page_id=PAGE_DASHED)):
             self.assertEqual([d.serial for d, _ in store.open_assignments(ref)], ["D1"], ref)

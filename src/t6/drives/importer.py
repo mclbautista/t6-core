@@ -38,6 +38,7 @@ from t6.drives import (
     Party,
     PartyKind,
     Ref,
+    SourceRow,
     Role,
     parse_capacity_tb,
     normalize_serial,
@@ -96,6 +97,8 @@ class _Row:
     cells: dict[str, Any]
     released_on: date | None = None  # the date on a tab that lists one released batch
     workbook: str = ""
+    raw_values: tuple[Any, ...] = ()
+    previously_imported: bool = False
 
     @property
     def import_key(self) -> str:
@@ -138,12 +141,14 @@ def import_per_project_workbook(
     use row receipts and append no duplicate history. See docs/drive-identity.md.
     """
     rows, review = _read_per_project(Path(path))
+    rows = _mark_receipts(store, rows)
     imported = _import_drive_rows(
         rows,
         lambda row, problems: _per_project_facts(row, lookup, logged_by, problems),
         store,
         review,
     )
+    _preserve_exceptions(store, review, rows)
     return ImportResult(imported, tuple(review))
 
 
@@ -157,7 +162,9 @@ def import_log_sheet_workbook(
     preserved in the local report. T6 IN means receipt, including undated ones.
     Distinct movement rows remain distinct events; unchanged reruns add nothing.
     """
-    drive_rows, movements = _read_log_sheet(Path(path))
+    drive_rows, movements, unparsed = _read_log_sheet(Path(path))
+    drive_rows = _mark_receipts(store, drive_rows)
+    movements = _mark_receipts(store, movements)
     review: list[ReviewItem] = []
     imported = _import_drive_rows(
         drive_rows, lambda row, problems: _inventory_facts(row, lookup, logged_by, problems), store, review
@@ -169,7 +176,32 @@ def import_log_sheet_workbook(
                        or not _SERIAL.fullmatch((row.text(_SERIAL_COLUMN) or "").upper()))
     }
     imported += _import_movements(movements, store, lookup, logged_by, review, uncertain_serials)
+    _preserve_exceptions(store, [*unparsed, *review], [*drive_rows, *movements])
     return ImportResult(imported, tuple(review))
+
+
+def _mark_receipts(store: DriveStore, rows: list[_Row]) -> list[_Row]:
+    return [replace(row, previously_imported=store.imported_drive(row.import_key) is not None) for row in rows]
+
+
+def _preserve_exceptions(store: DriveStore, review: list[ReviewItem], rows: list[_Row]) -> None:
+    evidence = {(row.workbook, row.sheet, row.number): row.evidence() + "\n" + json.dumps(row.raw_values, default=str, ensure_ascii=False) for row in rows}
+    existing = {(row.workbook, row.sheet, row.number) for row in rows if row.previously_imported}
+    blocks: dict[tuple[str, str, int], list[bool]] = {}
+    for row in rows:
+        blocks.setdefault((row.workbook, row.sheet, row.project_row), []).append(row.previously_imported)
+    completed_blocks = {key for key, receipts in blocks.items() if all(receipts)}
+    stored = []
+    for item in review:
+        key = (item.workbook, item.sheet, item.row)
+        if key in existing or (item.reason == "unresolved project" and key in completed_blocks):
+            continue
+        cells = evidence.get((item.workbook, item.sheet, item.row))
+        detail = item.detail
+        if cells and cells not in detail:
+            detail = f'{detail}\n{cells}' if detail else cells
+        stored.append(replace(item, detail=detail))
+    store.record_exceptions(stored)
 
 
 # Reading the workbooks
@@ -238,7 +270,7 @@ def _read_per_project(path: Path) -> tuple[list[_Row], list[ReviewItem]]:
                     project_row = number
             elif columns is not None and _filled(values):
                 rows.append(
-                    _Row(sheet.title, number, project or sheet.title, project_row, _cells(columns, values))
+                    _Row(sheet.title, number, project or sheet.title, project_row, _cells(columns, values), raw_values=values)
                 )
             if columns is None:
                 unparsed = ([*first_lines[1:], *values[1:]] if named else values)
@@ -253,9 +285,10 @@ def _read_per_project(path: Path) -> tuple[list[_Row], list[ReviewItem]]:
     return [replace(row, workbook=str(path.resolve())) for row in rows], review
 
 
-def _read_log_sheet(path: Path) -> tuple[list[_Row], list[_Row]]:
+def _read_log_sheet(path: Path) -> tuple[list[_Row], list[_Row], list[ReviewItem]]:
     """The inventory rows and the movement rows of the log sheet workbook."""
     drive_rows, movements = [], []
+    unparsed: list[ReviewItem] = []
     workbook = load_workbook(path, read_only=True, data_only=True)
     for sheet in workbook.worksheets:
         project, project_row = sheet.title, 1
@@ -268,21 +301,24 @@ def _read_log_sheet(path: Path) -> tuple[list[_Row], list[_Row]]:
                 try:
                     released_on = _date(dated.group(1))
                 except ValueError:
-                    pass  # not a date line after all
+                    unparsed.append(ReviewItem(sheet.title, number, "unreadable", json.dumps(values, default=str, ensure_ascii=False), str(path.resolve())))
             elif _LABEL in (text.upper() for text in texts):
                 columns = _columns(values)
             elif columns is not None and _filled(values):
-                row = _Row(sheet.title, number, project, project_row, _cells(columns, values), released_on)
+                row = _Row(sheet.title, number, project, project_row, _cells(columns, values), released_on, raw_values=values)
                 if "IN/OUT" in columns:
                     movements.append(row)
                 elif row.text(_LABEL) and not row.text(_SERIAL_COLUMN) and row.text("QUANTITY"):
                     project, project_row = row.text(_LABEL) or project, number  # a group heading
                 elif _filled(values):
                     drive_rows.append(row)
+            elif columns is None and _filled(values):
+                unparsed.append(ReviewItem(sheet.title, number, "unreadable", json.dumps(values, default=str, ensure_ascii=False), str(path.resolve())))
     workbook.close()
     return (
         [replace(row, workbook=str(path.resolve())) for row in drive_rows],
         [replace(row, workbook=str(path.resolve())) for row in movements],
+        unparsed,
     )
 
 
@@ -340,7 +376,7 @@ def _import_drive_rows(
             continue
         if problems:
             review.append(_unreadable(row, problems))
-        _write(store, row, drive, assignment, events, review)
+        assignment = _write(store, row, drive, assignment, events, review)
         imported += 1
         if assignment.project.unresolved and (row.sheet, row.project_row) not in unresolved:
             unresolved.add((row.sheet, row.project_row))
@@ -474,22 +510,32 @@ def _inventory_facts(row: _Row, lookup: Lookup, logged_by: Ref, problems: list[s
 def _write(
     store: DriveStore, row: _Row, drive: Drive, assignment: Assignment,
     events: list[CustodyEvent], review: list[ReviewItem]
-) -> None:
+) -> Assignment:
     """A row receipt makes reruns independent of mutable facts or serial edits.
 
     Events from distinct rows are preserved even when their facts are identical.
     Matching a clean serial does not overwrite existing physical facts: additional
     observations stay traceable in the local review report instead.
     """
+    project = store.resolve_project(assignment.project, row.text("PROJECT NAME") or row.project)
+    assignment = replace(assignment, project=project)
+    events = [replace(event, project=project) for event in events]
     held = store.find_by_serial(drive.serial) if drive.serial else None
     if held is not None and any(
         getattr(drive, field) is not None and getattr(drive, field) != getattr(held, field)
         for field in ("label", "description", "brand", "model", "capacity_tb", "format", "remarks")
     ):
         review.append(row.review("additional drive facts", row.evidence()))
-    if store.imported_drive(row.import_key) is not None:
-        return
-    store.import_row(row.import_key, drive, assignment, events)
+    if not row.previously_imported:
+        pending = [item for item in review if (item.workbook, item.sheet, item.row) == (row.workbook, row.sheet, row.number)]
+        if assignment.project.unresolved:
+            if "IN/OUT" in row.cells:
+                pending.append(row.review("unresolved project", assignment.project.text or ""))
+            else:
+                pending.append(ReviewItem(row.sheet, row.project_row, "unresolved project", row.project, row.workbook))
+        _preserve_exceptions(store, pending, [row])
+        store.import_row(row.import_key, drive, assignment, events, source=SourceRow(row.workbook, row.sheet, row.number))
+    return assignment
 
 
 # Importing the monthly log: one row per movement
@@ -529,7 +575,7 @@ def _import_movements(
             continue
         if problems:
             review.append(_unreadable(row, problems))
-        _write(store, row, drive, assignment, [event], review)
+        assignment = _write(store, row, drive, assignment, [event], review)
         imported += 1
         name = assignment.project.text
         if name is not None and name not in unresolved:
