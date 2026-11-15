@@ -233,10 +233,10 @@ def drift_markdown(report: JSON) -> str:
     ]
     body = ["Live Notion no longer matches the schema snapshot.", "", *lines]
     if renamed:
-        body += ["", "Renamed (no drift; `t6 schema-check --fix-snapshot` updates the names):", *renamed]
+        body += ["", "Renamed (no drift; `t6 admin schema-check --fix-snapshot` updates the names):", *renamed]
     body += [
         "",
-        "A deleted or new property needs a t6-core change, then `t6 schema-snapshot` and "
+        "A deleted or new property needs a t6-core change, then `t6 admin snapshot` and "
         "`scripts/generate_models.py`.",
     ]
     return "\n".join(body) + "\n"

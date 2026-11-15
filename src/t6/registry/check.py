@@ -1,6 +1,6 @@
 """Audit the registry against the Notion Projects pages. Standard library only.
 
-This is the Project half of `t6 schema-check`. It reads the registry and the
+This is the Project half of `t6 admin schema-check`. It reads the registry and the
 page IDs Notion shows and reports each kind of problem under its own name, so
 each has its own action. It writes nothing.
 

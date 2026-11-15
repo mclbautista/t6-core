@@ -904,7 +904,7 @@ option names, because they contain show and client names. A property or option
 keeps its ID when it is renamed in Notion, so t6-core addresses by ID and the
 name is for display and errors. After a rename, run
 `t6 admin snapshot --data-sources FILE --out FILE` (same file format as
-`schema-check`) and regenerate; no code changes. A property whose entry has no
+`admin schema-check`) and regenerate; no code changes. A property whose entry has no
 ID yet is addressed by name. The `t6.notion.generated`
 module has one model per database, such as `BaysRow` and `JobOrdersRow`. Run
 `uv run python scripts/generate_models.py` after the snapshot changes. A test
@@ -1441,8 +1441,8 @@ Job Order, its T6 ID, active page, assignee Person and append-only notes. A
 Telegram Key is `<chat_id>:<message_id>`; put a negative chat ID after `--`.
 For an unbound legacy page, get still returns its existing Notion fields.
 
-`t6 jo raise --file jo.json --data-sources FILE` previews a new Job Order;
-`jo create` is an alias. The JSON accepts the previous create fields, including
+`t6 jo raise --file jo.json --data-sources FILE` previews a new Job Order.
+The JSON accepts the previous create fields, including
 `project_id` (a registered T6 Project ID or its Notion page), Contact page IDs
 in `assigned_ids`, and `source_text`. Dates without a time zone are Manila;
 the Department is checked against Notion's options, standing cc is added and
@@ -1657,7 +1657,9 @@ against the live server.
 
 ### CLI rename table
 
-The old commands remain available until 0.5.0 and print a deprecation notice on stderr.
+Release 0.5.0 removed the old commands. Each now fails with exit status 2 and
+an error naming the new command, for example `t6 jo create was renamed to t6 jo
+raise`; the error stays for one more release.
 
 | Previous command | Current command |
 | --- | --- |
