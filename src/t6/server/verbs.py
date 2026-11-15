@@ -123,10 +123,10 @@ class VerbAPI:
             inputs = entry.input_model.model_validate(data)
         except ValidationError as error:
             return Response(422, {'errors': cast(JsonValue, error.errors(include_url=False, include_context=False, include_input=False))})
-        if (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'notes'), ('project', 'flags'), ('project', 'resolve'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find'), ('version', 'get')}:
+        if (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'notes'), ('project', 'flags'), ('project', 'resolve'), ('concern', 'list'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find'), ('version', 'get')}:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._typed_read(entry.noun, entry.verb, inputs)
-            if isinstance(outcome, Done) and entry.noun in {'project', 'jo', 'person', 'camera', 'deliverable', 'meeting-notes', 'external-link', 'studio'} and self.people.authorize(actor, 'operator'):
+            if isinstance(outcome, Done) and entry.noun in {'project', 'concern', 'jo', 'person', 'camera', 'deliverable', 'meeting-notes', 'external-link', 'studio'} and self.people.authorize(actor, 'operator'):
                 if self.privacy_registry is None:
                     outcome = Refused(rule='masking', reason='Read privacy registry is not configured')
                 else:
@@ -429,6 +429,9 @@ class VerbAPI:
         from t6.registry import ProjectRefs
         from t6.registry.core import normalize_page_id
         from t6.cli import TOKEN_VARIABLE
+        if (noun, verb) == ('concern', 'list'):
+            from t6.concern import ConcernStore
+            return Done(result={'concerns': ConcernStore(self.people.registry, self.people.tokens).raise_at_psr(inputs.project)}) if inputs.raise_at_psr else Refused(rule='raise_at_psr', reason='Only the Raise at PSR list is available: pass raise_at_psr')
         if noun == 'standing-cc':
             from t6.domain.studio_people import standing_cc
             page = standing_cc()

@@ -135,6 +135,22 @@ class ConcernTests(unittest.TestCase):
         assert record is not None
         self.assertEqual(record['state'], 'closed')
 
+    def test_raise_at_psr_is_quiet_concerns_never_old_ones(self) -> None:
+        old = self.raise_concern()
+        self.now += 6 * WEEK
+        with self.registry._transaction() as db:
+            db.execute('UPDATE concerns SET evidence_at = ? WHERE id = ?', (self.now - WEEK, old))
+        self.assertEqual(self.store.raise_at_psr(self.project), [])
+        quiet = str(self.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'lab', 'anchor': 'Waiting on lab', 'as_of': '2026-11-01'}, 'quiet')['concern_id'])
+        with self.registry._transaction() as db:
+            db.execute("UPDATE concerns SET state = 'quiet' WHERE id = ?", (quiet,))
+        listed = self.store.raise_at_psr(self.project)
+        self.assertEqual([(c['id'], c['label'], c['owner_id'], c['waiting_on']) for c in listed], [(quiet, 'no news for 2 weeks', 'coordinator', 'lab')])
+        self.assertEqual(self.store.raise_at_psr('other-project'), [])
+        with self.registry._transaction() as db:
+            db.execute("UPDATE concerns SET state = 'expired' WHERE id = ?", (quiet,))
+        self.assertEqual(self.store.raise_at_psr(), [])
+
     def test_validation_and_catalogue(self) -> None:
         result = self.store.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': '', 'anchor': 'hello', 'as_of': '2026-01-01'}, actor='person')
         self.assertIsInstance(result, Refused)
@@ -143,7 +159,7 @@ class ConcernTests(unittest.TestCase):
         self.assertEqual(elsewhere.rule, 'waiting_on')
         for line, party in (('Client has not sent the KDM', 'CLIENT'), ('For approval ni direk', 'direk'), ('Wala pa yung files kay client', 'client')):
             self.assertIsInstance(self.store.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': party, 'anchor': line, 'as_of': '2026-01-01'}, actor='person'), Preview)
-        self.assertTrue({'raise', 'note', 'resolve', 'reopen'} <= {v['verb'] for v in catalogue() if v['noun'] == 'concern'})
+        self.assertTrue({'raise', 'note', 'resolve', 'reopen', 'list'} <= {v['verb'] for v in catalogue() if v['noun'] == 'concern'})
 
     def test_date_sanity_follows_data_and_keeps_age(self) -> None:
         dates = {'playdate': '2026-12-10', 'submission_deadline': '2026-12-01', 'archival_deadline': '2026-11-20'}
