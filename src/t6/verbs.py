@@ -1386,6 +1386,12 @@ class TranscriptCreateInput(BaseModel):
     confirm: str | None = None
 
 
+class TranscriptSpeakersInput(BaseModel):
+    transcript: str
+    csv: str
+    confirm: str | None = None
+
+
 class TranscriptGetInput(BaseModel):
     transcript: str
 
@@ -1406,6 +1412,7 @@ def transcript_get(inputs: TranscriptGetInput, open_notion: Callable[..., Any]) 
 
 VERBS = (
     Verb('transcript', 'create', 'Create a Transcript', (), TranscriptCreateInput, TranscriptCreateOutput, 'reader', 'Preview and confirm a transcription job.', api_read),
+    Verb('transcript', 'speakers', 'Name Transcript speakers', (), TranscriptSpeakersInput, TranscriptCreateOutput, 'reader', 'Preview and confirm speaker names.', api_read),
     Verb('transcript', 'get', 'Get a Transcript', (), TranscriptGetInput, TranscriptGetOutput, 'reader', 'Read progress and summary.', transcript_get),
     Verb('media', 'link', 'Link a Media location', (), MediaLinkInput, MediaWriteOutput, 'coordinator', 'Preview and confirm the link.', media_write),
     Verb('media', 'unlink', 'Unlink a Media location', (), MediaUnlinkInput, MediaWriteOutput, 'coordinator', 'Preview and confirm the unlink.', media_write),
@@ -1602,6 +1609,9 @@ def add_parsers(commands: Any) -> None:
                 parser.add_argument('--max-hours', type=float)
             else:
                 parser.add_argument('transcript')
+                if entry.verb == 'speakers':
+                    parser.add_argument('csv')
+                    parser.add_argument('--confirm')
             parser.add_argument('--json', action='store_true')
             parser.set_defaults(registered_verb=entry)
             continue
@@ -1838,6 +1848,9 @@ def add_parsers(commands: Any) -> None:
 
 def run(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
     entry: Verb = args.registered_verb
+    if entry.noun == 'transcript' and entry.verb == 'speakers':
+        from pathlib import Path
+        args.csv = Path(args.csv).read_text(encoding='utf-8-sig')
     inputs = (LegacyPersonGetInput(person_id=args.person_id, data_sources=args.data_sources) if entry.handler is person_get and args.data_sources else
               LegacyDepartmentsInput(data_sources=args.data_sources) if entry.handler is departments and args.data_sources else
               entry.input_model.model_validate({name: getattr(args, name) for name in entry.input_model.model_fields}))

@@ -72,6 +72,69 @@ class TranscriptWorker:
                                       'skipped': plan.already_done, 'audio_hours': plan.pending_hours,
                                       'estimated_cost': plan.estimated_cost})
 
+    def _speakers_plan(self, job: WorkerJob) -> tuple[list[tuple[Path, str, dict[str, Any]]], dict[str, Any]]:
+        from t6.transcribe.folder import _load_transcript, _output
+        from t6.transcribe.speakers import parse_speaker_map, speaker_name
+        root = Path(str(job.payload['audio_folder'])).resolve(strict=True)
+        output = root / '_transcripts'
+        if output.is_symlink() or not output.resolve().is_relative_to(root):
+            raise ValueError('Transcript output escapes audio folder')
+        new = parse_speaker_map(str(job.payload['csv']))
+        old = parse_speaker_map(str(job.payload['previous_map'])) if job.payload.get('previous_map') else {}
+        digest = hashlib.sha256(str(job.payload.get('previous_map', '')).encode())
+        clips = []
+        changes = []
+        for audio in sorted(root.rglob('*')):
+            if not audio.is_file() or audio.suffix.lower() != '.wav' or not audio.resolve().is_relative_to(root) or output in audio.parents:
+                continue
+            source = str(audio.relative_to(root))
+            path = _output(output, Path(source), '.json')
+            if not path.exists():
+                continue
+            transcript = _load_transcript(path)
+            if transcript is None:
+                raise ValueError('Invalid stored transcript')
+            digest.update(source.encode())
+            digest.update(path.read_bytes())
+            clips.append((path, source, transcript))
+            speakers = sorted({word.get('speaker_id') for word in transcript['words'] if word.get('speaker_id')})
+            for speaker in speakers:
+                before, after = speaker_name(speaker, source, old), speaker_name(speaker, source, new)
+                if before != after:
+                    changes.append({'source': source, 'speaker': speaker, 'from': before, 'to': after})
+        return clips, {'changes': changes, 'snapshot': digest.hexdigest()}
+
+    def speakers_preview(self, job: WorkerJob) -> None:
+        _, plan = self._speakers_plan(job)
+        self.report(job, 'preview', plan)
+
+    def speakers_run(self, job: WorkerJob) -> None:
+        import tempfile
+        from t6.transcribe.docx import render_docx
+        from t6.transcribe.folder import _output, _valid_output, _write
+        from t6.transcribe.speakers import parse_speaker_map
+        from t6.transcribe.srt import render_srt
+        clips, plan = self._speakers_plan(job)
+        if plan['snapshot'] != job.payload.get('snapshot'):
+            self.report(job, 'failed', {'rule': 'input_changed'})
+            return
+        output = Path(str(job.payload['audio_folder'])).resolve() / '_transcripts'
+        speaker_map = parse_speaker_map(str(job.payload['csv']))
+        offset = str(job.payload.get('start_timecode') or '00:00:00:00')
+        rendered = []
+        with tempfile.TemporaryDirectory() as directory:
+            for _, source, transcript in clips:
+                for suffix, content in (('.srt', render_srt(transcript, speaker_map=speaker_map, source=source, offset=offset).encode()),
+                                        ('.docx', render_docx(transcript, speaker_map=speaker_map, source=source, offset=offset))):
+                    staged = Path(directory) / ('output' + suffix)
+                    staged.write_bytes(content)
+                    if not _valid_output(staged, suffix):
+                        raise ValueError('Invalid rendered output')
+                    rendered.append((_output(output, Path(source), suffix), content))
+            for path, content in rendered:
+                _write(output, path, content)
+        self.report(job, 'complete', {})
+
 
 class TranscribeQueue:
     """Use the API for all job claims and reports."""
@@ -101,4 +164,4 @@ def configured(environ: Mapping[str, str], queue: TranscribeQueue) -> dict[str, 
         raise ValueError('Transcribe worker key is required')
     from elevenlabs.client import ElevenLabs
     worker = TranscriptWorker(ElevenLabs(api_key=key), queue.report)
-    return {'transcript.preview': worker.preview, 'transcript.run': worker.run}
+    return {'transcript.preview': worker.preview, 'transcript.run': worker.run, 'transcript.speakers.preview': worker.speakers_preview, 'transcript.speakers.run': worker.speakers_run}

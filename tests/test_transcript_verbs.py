@@ -27,7 +27,7 @@ class TranscriptVerbTests(unittest.TestCase):
 
     def test_catalogue_exposes_typed_create_and_get(self) -> None:
         entries = {entry['verb']: entry for entry in catalogue() if entry['noun'] == 'transcript'}
-        self.assertEqual(set(entries), {'create', 'get'})
+        self.assertEqual(set(entries), {'create', 'get', 'speakers'})
         create = entries['create']
         self.assertIn('media', create['input_schema']['properties'])
         self.assertIn('confirm', create['input_schema']['properties'])
@@ -130,7 +130,7 @@ class TranscriptVerbTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'audio'
             root.mkdir()
-            wav(root / 'one.wav')
+            wav(root / 'one.WAV')
             with registry._transaction() as db:
                 db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', NULL, 0, 1)", (person,))
                 db.execute("INSERT INTO media_locations VALUES (?, ?, ?, 'nas-path', ?, 'master', 1, NULL)", (media, project.project.id, project.project.id, str(root)))
@@ -141,7 +141,7 @@ class TranscriptVerbTests(unittest.TestCase):
                     return response.status, dict(response.body)
             transport = InProcess()
             queue = TranscribeQueue(transport, 'worker-secret')
-            client = FakeElevenLabs([{'words': [{'type': 'word', 'text': 'synthetic', 'start': 0, 'end': 1}]}])
+            client = FakeElevenLabs([{'words': [{'type': 'word', 'text': 'synthetic', 'start': 0, 'end': 1, 'speaker_id': 'speaker_0'}]}])
             progress: list[dict[str, Any]] = []
             def request(path: str, data: dict[str, Any]) -> dict[str, Any]:
                 return dict(api(Request('POST', path, {'Authorization': 'Bearer person-secret'}, json.dumps(data).encode())).body)
@@ -150,7 +150,7 @@ class TranscriptVerbTests(unittest.TestCase):
                 if kind == 'progress':
                     progress.append(request('/v1/transcript/get', {'transcript': job.payload['transcript_id']}))
             worker = TranscriptWorker(client, report)
-            runner = Worker(queue, 'transcribe', {'transcript.preview': worker.preview, 'transcript.run': worker.run})
+            runner = Worker(queue, 'transcribe', {'transcript.preview': worker.preview, 'transcript.run': worker.run, 'transcript.speakers.preview': worker.speakers_preview, 'transcript.speakers.run': worker.speakers_run})
             def preview() -> dict[str, Any]:
                 job_id = request('/v1/transcript/create', {'media': media, 'formats': ['srt']})['result']['job_id']
                 self.assertTrue(runner.run_once())
@@ -165,14 +165,39 @@ class TranscriptVerbTests(unittest.TestCase):
             self.assertEqual(result['summary']['clips_done'], 1)
             self.assertAlmostEqual(result['summary']['estimated_cost'], 0.4 / 3600)
             self.assertTrue((root / '_transcripts/one.srt').exists())
+            import zipfile
+            bad = request('/v1/transcript/speakers', {'transcript': identifier, 'csv': 'source,speaker,name\n,speaker_0,\n'})
+            self.assertEqual(bad['outcome'], 'refused')
+            self.assertIn('line 2', bad['reason'])
+            for name, previous in [('Character A', 'speaker_0'), ('Character B', 'Character A')]:
+                csv = f'source,speaker,name\n,speaker_0,{name}\n'
+                job_id = request('/v1/transcript/speakers', {'transcript': identifier, 'csv': csv})['result']['job_id']
+                self.assertTrue(runner.run_once())
+                plan = request('/v1/transcript/get', {'transcript': str(job_id)})
+                self.assertEqual(plan['plan']['changes'], [{'source': 'one.WAV', 'speaker': 'speaker_0', 'from': previous, 'to': name}])
+                competing_id = request('/v1/transcript/speakers', {'transcript': identifier, 'csv': csv})['result']['job_id']
+                self.assertTrue(runner.run_once())
+                competing = request('/v1/transcript/get', {'transcript': str(competing_id)})
+                run = request('/v1/transcript/speakers', {'transcript': identifier, 'csv': csv, 'confirm': plan['token']})
+                self.assertEqual(request('/v1/transcript/speakers', {'transcript': identifier, 'csv': csv, 'confirm': competing['token']})['rule'], 'transcript_running')
+                self.assertEqual(request('/v1/transcript/speakers', {'transcript': identifier, 'csv': csv, 'confirm': plan['token']})['rule'], 'token_used')
+                self.assertTrue(runner.run_once())
+                self.assertEqual(request('/v1/transcript/get', {'transcript': str(run['result']['job_id'])})['outcome'], 'done')
+                self.assertIn(name, (root / '_transcripts/one.srt').read_text())
+                with zipfile.ZipFile(root / '_transcripts/one.docx') as doc:
+                    self.assertIn(name, doc.read('word/document.xml').decode())
+            history = request('/v1/transcript/get', {'transcript': identifier})['result']['transcript']['history']
+            self.assertEqual([entry['map'] for entry in history if entry['action'] == 'speakers changed'], ['source,speaker,name\n,speaker_0,Character A\n', 'source,speaker,name\n,speaker_0,Character B\n'])
+            self.assertEqual([e.action for e in registry.activity(project.project.id)][:2], ['transcript_speakers changed'] * 2)
+            self.assertEqual(len(client.calls), 1)
             second = preview()
             self.assertEqual(second['plan']['already_done'], 1)
             again = request('/v1/transcript/create', {'media': media, 'formats': ['srt'], 'confirm': second['token']})
             self.assertEqual(again['result']['transcript_id'], identifier)
             self.assertTrue(runner.run_once())
             self.assertEqual(len(client.calls), 1)
-            self.assertEqual([entry['action'] for entry in request('/v1/transcript/get', {'transcript': identifier})['result']['transcript']['history']], ['created', 're-run'])
-            self.assertEqual([e.action for e in registry.activity(project.project.id)][:2], ['transcript_re-run', 'transcript_created'])
+            self.assertEqual([entry['action'] for entry in request('/v1/transcript/get', {'transcript': identifier})['result']['transcript']['history']], ['created', 'speakers changed', 'speakers changed', 're-run'])
+            self.assertEqual([e.action for e in registry.activity(project.project.id)][:2], ['transcript_re-run', 'transcript_speakers changed'])
             wav(root / 'two.wav')
             client.outcomes.append(RuntimeError('synthetic failure'))
             third = preview()

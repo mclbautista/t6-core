@@ -21,7 +21,7 @@ class TranscriptStore:
             result = dict(zip(('id', 'media_id', 'deliverable_id', 'project_id', 'settings', 'state', 'progress', 'summary'), row))
             for key in ('settings', 'progress', 'summary'):
                 result[key] = json.loads(result[key])
-            result['history'] = [dict(zip(('action', 'actor', 'at'), entry)) for entry in db.execute('SELECT action, actor, at FROM transcript_history WHERE transcript_id=? ORDER BY id', (identifier,))]
+            result['history'] = [dict(zip(('action', 'actor', 'at', 'map'), entry)) for entry in db.execute('SELECT h.action, h.actor, h.at, m.csv FROM transcript_history h LEFT JOIN transcript_speaker_maps m ON m.history_id=h.id WHERE h.transcript_id=? ORDER BY h.id', (identifier,))]
             return result
 
     def start(self, media: str, deliverable: str | None, settings: dict[str, Any], *, actor: str, _db: Any = None) -> str:
@@ -43,9 +43,11 @@ class TranscriptStore:
             self._entry(db, identifier, project, 're-run' if existing else 'created', actor)
             return str(identifier)
 
-    def _entry(self, db: Any, identifier: str, project: str, action: str, actor: str) -> None:
+    def _entry(self, db: Any, identifier: str, project: str, action: str, actor: str, speaker_map: str | None = None) -> None:
         now = self.registry._clock()
-        db.execute('INSERT INTO transcript_history (transcript_id, action, actor, at) VALUES (?, ?, ?, ?)', (identifier, action, actor, now))
+        history = db.execute('INSERT INTO transcript_history (transcript_id, action, actor, at) VALUES (?, ?, ?, ?)', (identifier, action, actor, now))
+        if speaker_map is not None:
+            db.execute('INSERT INTO transcript_speaker_maps VALUES (?, ?)', (history.lastrowid, speaker_map))
         audit = db.execute("INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, NULL, '{}')", (identifier, 'transcript_' + action, actor, now))
         db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (project, identifier, now, actor, 'transcript_' + action, 'transcript ' + action, audit.lastrowid))
 

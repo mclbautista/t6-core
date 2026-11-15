@@ -313,6 +313,7 @@ _MIGRATIONS = (
     (32, False, """CREATE TABLE transcripts (id TEXT PRIMARY KEY, media_id TEXT NOT NULL UNIQUE REFERENCES media_locations(id), deliverable_id TEXT REFERENCES deliverables(id), project_id TEXT NOT NULL REFERENCES projects(id), settings TEXT NOT NULL, state TEXT NOT NULL, progress TEXT NOT NULL, summary TEXT NOT NULL);
     CREATE TABLE transcript_history (id INTEGER PRIMARY KEY, transcript_id TEXT NOT NULL REFERENCES transcripts(id), action TEXT NOT NULL, actor TEXT NOT NULL, at REAL NOT NULL);
     CREATE TABLE transcript_previews (nonce TEXT PRIMARY KEY, snapshot TEXT NOT NULL)"""),
+    (33, False, """CREATE TABLE transcript_speaker_maps (history_id INTEGER PRIMARY KEY REFERENCES transcript_history(id), csv TEXT NOT NULL)"""),
 )
 
 
@@ -336,6 +337,10 @@ def _migrate(db: sqlite3.Connection) -> None:
                 for operation in ("UPDATE", "DELETE"):
                     db.execute(f"CREATE TRIGGER drive_events_no_{operation.lower()} BEFORE {operation} ON drive_events "
                                "BEGIN SELECT RAISE(ABORT, 'drive events are append-only'); END")
+            if version == 33:
+                for operation in ("UPDATE", "DELETE"):
+                    db.execute(f"CREATE TRIGGER transcript_speaker_maps_no_{operation.lower()} BEFORE {operation} ON transcript_speaker_maps "
+                               "BEGIN SELECT RAISE(ABORT, 'transcript speaker maps are append-only'); END")
             if version == 32:
                 for operation in ("UPDATE", "DELETE"):
                     db.execute(f"CREATE TRIGGER transcript_history_no_{operation.lower()} BEFORE {operation} ON transcript_history "
