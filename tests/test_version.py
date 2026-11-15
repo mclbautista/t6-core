@@ -65,3 +65,22 @@ class VersionTests(unittest.TestCase):
         with self.registry._transaction() as db:
             self.assertEqual(db.execute('SELECT version_id FROM version_locks').fetchone()[0], ids[1])
         self.assertEqual({v['verb'] for v in catalogue() if v['noun'] == 'version'}, {'add', 'lock', 'find'})
+
+    def waiting_concern(self, deliverable: str, milestone: str) -> str:
+        with self.registry._transaction() as db:
+            project = db.execute('SELECT project_id FROM deliverables WHERE id = ?', (deliverable,)).fetchone()[0]
+            db.execute("INSERT INTO concerns (id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state) VALUES ('concern', ?, 'owner', 'editor', 'Waiting', '2026-11-01', 0, 0, 'open')", (project,))
+            db.execute("INSERT INTO concern_milestones VALUES ('concern', ?, ?)", (deliverable, milestone))
+        return 'concern'
+
+    def concern_state(self) -> str:
+        with self.registry._transaction() as db:
+            state: str = db.execute("SELECT state FROM concerns WHERE id = 'concern'").fetchone()[0]
+        return state
+
+    def test_lock_settles_a_concern_waiting_on_piclock(self) -> None:
+        version = self.write('add', {'deliverable': self.deliverable, 'frameio_file': 'a', 'note': None}, 'a').result['version_id']
+        self.waiting_concern(self.deliverable, 'piclock')
+        self.assertEqual(self.concern_state(), 'open')
+        self.write('lock', {'version': version}, 'lock')
+        self.assertEqual(self.concern_state(), 'closed')

@@ -30,6 +30,17 @@ def film_stage(facts: list[dict[str, Any]]) -> dict[str, Any]:
                        for track, milestone in FILM_TRACKS.items()}}
 
 
+def write_milestone(db: Any, deliverable: str, name: str, on: str, actor: str, now: float) -> str:
+    """Append a milestone and settle the Concerns waiting on it, in the caller's transaction."""
+    from t6.concern import settle_concern
+
+    identifier = str(T6Id.mint(EntityKind.MILESTONE))
+    db.execute('INSERT INTO milestones VALUES (?, ?, ?, ?, ?, ?)', (identifier, deliverable, name, on, actor, now))
+    for (concern,) in db.execute('SELECT concern_id FROM concern_milestones WHERE deliverable_id = ? AND milestone = ?', (deliverable, name)).fetchall():
+        settle_concern(db, concern, now, identifier)
+    return identifier
+
+
 class DeliverableStore:
     def __init__(self, registry: SqliteProjectRegistry, tokens: PreviewTokens) -> None:
         self.registry, self.tokens = registry, tokens
@@ -166,8 +177,7 @@ class DeliverableStore:
             if plan['deliverable_id'] != row[0]:
                 return Refused(rule='deliverable_changed', reason='Deliverable changed since preview')
             now = self.registry._clock()
-            identifier = str(T6Id.mint(EntityKind.MILESTONE))
-            db.execute('INSERT INTO milestones VALUES (?, ?, ?, ?, ?, ?)', (identifier, row[0], name, plan['on'], actor, now))
+            identifier = write_milestone(db, row[0], name, plan['on'], actor, now)
             result = {**plan, 'milestone_id': identifier}
             cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, NULL, ?)', (row[0], 'milestone_record', actor, now, json.dumps(result)))
             db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (row[1], row[0], now, actor, 'milestone_record', f'milestone recorded: {name}', cursor.lastrowid))

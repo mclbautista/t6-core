@@ -757,6 +757,20 @@ class WebhookApp:
                 registry.report_status_sync(intent_id)
                 return Response(200, {})
             return Response(405)
+        if len(steps) == 2 and steps[0] == "notion-project-dates":
+            if not any(g.registry_sync for g in grants):
+                return Response(403, {"error": "registry sync not allowed"})
+            if request.method != 'POST':
+                return Response(405)
+            dates_body = _json_object(request.body) or {}
+            dates, coordinators = dates_body.get('dates'), dates_body.get('coordinators')
+            if not isinstance(dates, dict) or not all(k in ('playdate', 'submission_deadline', 'archival_deadline') and (v is None or isinstance(v, str)) for k, v in dates.items()) or not isinstance(coordinators, list) or not all(isinstance(p, str) for p in coordinators):
+                return Response(400, {'error': 'invalid Project dates'})
+            from t6.notion_edits import NotionEdits
+            from t6.registry.sqlite import SqliteProjectRegistry
+            if not isinstance(registry, SqliteProjectRegistry):
+                return Response(503, {'error': 'Notion edits unavailable'})
+            return Response(200, NotionEdits(registry).project_dates(steps[1], dates, coordinators))
         if len(steps) == 2 and steps[0] == "notion-project-status":
             if not any(g.registry_sync for g in grants):
                 return Response(403, {"error": "registry sync not allowed"})

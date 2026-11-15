@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any
 
 from t6.domain.studio_time import MANILA
+from t6.deliverable import write_milestone
 from t6.ids import EntityKind, T6Id
 from t6.registry.core import normalize_page_id
 from t6.registry.sqlite import SqliteProjectRegistry
@@ -103,8 +104,7 @@ class VersionStore:
                 changed = saved['previous_version_id'] != row[0]
                 result = saved
                 if changed:
-                    milestone = str(T6Id.mint(EntityKind.MILESTONE))
-                    db.execute('INSERT INTO milestones VALUES (?, ?, ?, ?, ?, ?)', (milestone, row[1], 'piclock', datetime.fromtimestamp(now, MANILA).date().isoformat(), actor, now))
+                    milestone = write_milestone(db, row[1], 'piclock', datetime.fromtimestamp(now, MANILA).date().isoformat(), actor, now)
                     db.execute('INSERT INTO version_locks VALUES (?, ?) ON CONFLICT(deliverable_id) DO UPDATE SET version_id=excluded.version_id', (row[1], row[0]))
                     result = {**saved, 'milestone_id': milestone}
             if changed:

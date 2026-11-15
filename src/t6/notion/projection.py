@@ -136,6 +136,15 @@ class ProjectProjection:
             changed = [key for key, name in (("t6_id", T6_ID), ("code", ProjectsProperties.PROJECT_CODE), ("rotation", ROTATION))
                        if any(unquote(str(item)) in (name, unquote(str((properties.get(name) or {}).get("id", "")))) for item in updated)]
         outcome = self._registry.observed(page_id, available=True, shown=shown, editor=editor, changed=changed, editor_id=editor_id)
+        if outcome != 'unbound':
+            from datetime import datetime
+            from t6.domain.studio_time import MANILA
+            row = ProjectsRow.from_page(page)
+            def day(value: Any) -> str | None:
+                if isinstance(value, datetime):
+                    value = value.astimezone(MANILA).date() if value.tzinfo else value.date()
+                return value.isoformat() if value else None
+            self._registry.observe_project_dates(page_id, {name: day(getattr(row, name)) for name in ('playdate', 'submission_deadline', 'archival_deadline')}, list(row.t6_post_coordinator))
         for field in ('status', 'health'):
             prop_id = ProjectsRow.notion_id(field)
             prop: JSON = next((p for p in properties.values() if unquote(str(p.get('id', ''))) == unquote(str(prop_id))), {})
