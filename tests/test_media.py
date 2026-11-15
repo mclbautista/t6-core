@@ -299,9 +299,22 @@ class ReaderTests(unittest.TestCase):
                          {'ig-off': 'Deactivated in External Links', 'ig-taken': 'Instagantt project already belongs to another Project'})
         self.store.migrate(rows, actor='person', apply=True, digest=preview['digest'])
         from t6.media import active_links
-        self.assertEqual([(l.ref, l.role, l.project_id) for l in active_links(self.registry, 'instagantt-project')],
+        self.assertEqual(sorted((l.ref, l.role, l.project_id) for l in active_links(self.registry, 'instagantt-project')),
                          sorted([('pr_a', 'working', self.first), ('pr_b', 'working', self.second)]))
         self.assertEqual(active_links(self.registry, 'timeline'), ())
+
+    def test_a_row_migrated_earlier_and_deactivated_later_goes_to_review_and_is_not_unlinked(self) -> None:
+        from t6.media import active_links
+        row = {'page_id': 'ig-project', 'system': 'Instagantt', 'kind': 'project', 'ref': 'pr_a', 'active': True, 'projects': ['page-one'], 'deliverables': []}
+        first = self.store.migrate([row], actor='person')
+        self.store.migrate([row], actor='person', apply=True, digest=first['digest'])
+        (kept,) = active_links(self.registry, 'instagantt-project')
+        later = self.store.migrate([{**row, 'active': False}], actor='person')
+        (entry,) = later['entries']
+        self.assertEqual((entry['action'], entry['reason']), ('review', 'Deactivated after migration'))
+        self.assertEqual(later['review'], [entry])
+        self.store.migrate([{**row, 'active': False}], actor='person', apply=True, digest=later['digest'])
+        self.assertEqual([link.id for link in active_links(self.registry, 'instagantt-project')], [kept.id])
 
     def test_find_external_answers_the_old_external_link_lookup_from_media_locations(self) -> None:
         from t6.media import find_external
@@ -376,6 +389,44 @@ class FrameioProjectLinkTests(unittest.TestCase):
         assert isinstance(refused, Refused)
         self.assertEqual(refused.rule, 'frameio_project')
         self.assertIn(self.first, refused.reason)
+
+    def test_an_unlink_retried_with_the_same_key_returns_the_original_result(self) -> None:
+        self.write('link', self.first, 'fp1', 'one')
+        done = self.write('unlink', self.first, 'fp1', 'two')
+        values = {'project': self.first, 'frameio_project': 'fp1'}
+        replay = self.store.frameio_project_write('unlink', values, actor='person', idempotency_key='two')
+        assert isinstance(replay, Preview)
+        again = self.store.frameio_project_write('unlink', values, actor='person', idempotency_key='two', confirm=replay.token)
+        assert isinstance(again, Done)
+        self.assertEqual(again.result, done.result)
+        self.assertEqual(self.audit_actions(), ['frameio_project_link', 'frameio_project_unlink'])
+        from t6.verbs import Refused
+        other = self.store.frameio_project_write('unlink', values, actor='person', idempotency_key='fresh')
+        self.assertIsInstance(other, Refused)  # a new key still sees that nothing is linked
+
+    def test_the_frameio_project_ref_is_trimmed_and_must_have_the_shape_of_an_id(self) -> None:
+        from t6.media import active_links
+        from t6.verbs import Refused
+        for bad in ('', '   ', 'two words', 'fp/1', 'fp1?x=1', 'a' * 129):
+            refused = self.store.frameio_project_write('link', {'project': self.first, 'frameio_project': bad}, actor='person', idempotency_key='bad')
+            self.assertIsInstance(refused, Refused, bad)
+            refused = self.store.write('link', {'owner': self.first, 'kind': 'frameio-project', 'ref': bad, 'role': 'frameio-project'}, actor='person', idempotency_key='bad2')
+            self.assertIsInstance(refused, Refused, bad)
+        self.write('link', self.first, ' fp1 ', 'one')
+        self.assertEqual([l.ref for l in active_links(self.registry, 'frameio-project')], ['fp1'])
+        self.write('unlink', self.first, ' fp1', 'two')
+        self.assertEqual(active_links(self.registry, 'frameio-project'), ())
+
+    def test_a_padded_frameio_ref_cannot_have_a_second_holder_by_either_verb(self) -> None:
+        from t6.verbs import Refused
+        self.write('link', self.first, 'fp1', 'one')
+        padded = self.store.frameio_project_write('link', {'project': self.second, 'frameio_project': ' fp1'}, actor='person', idempotency_key='two')
+        assert isinstance(padded, Refused)
+        self.assertEqual(padded.rule, 'frameio_project')
+        media = self.store.write('link', {'owner': self.second, 'kind': 'frameio-project', 'ref': ' fp1', 'role': 'frameio-project'}, actor='person', idempotency_key='three')
+        assert isinstance(media, Refused)
+        self.assertEqual(media.rule, 'frameio_project')
+        self.assertIn(self.first, media.reason)
 
     def test_moving_is_unlink_then_link_as_two_audited_steps(self) -> None:
         from t6.media import active_links

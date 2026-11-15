@@ -51,7 +51,7 @@ because the old draft used a Notion client.
 | reports #116 | Job Order data source query for snapshots | `jo list` |
 | reports #116 | Meeting Notes queries by title, date or readiness; `list_block_children` for note bodies | `meeting-notes list` |
 | reports #116 | Project data source description for leave and upcoming notices | `studio notices` |
-| reports #116 | `link_timelines()` | `external-link find`, now answered from Media locations (kind `timeline`); `media list` is the replacement |
+| reports #116 | `link_timelines()` | `external-link find`, now answered from Media locations (kind `instagantt-project`); `media list` is the replacement |
 | reports #116 | Meeting Notes create, append, trash and mark sent | Writes; outside this read ticket. |
 | [munki #17](https://github.com/mclbautista/t6-munki-repo/pull/17) | Imports `t6.notion.writes` result types; its `Fleet.sync()` performs Bays matching and writes internally | No direct `t6.notion` read call in the draft. Fleet sync is a write, outside this read ticket. |
 

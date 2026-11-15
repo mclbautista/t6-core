@@ -380,6 +380,18 @@ class ReviewMessageTests(ServerTestCase):
         self.assertEqual(InProcess(edge).send("GET", "/registry/media-links/frameio-project",
                                               {"Authorization": "Bearer registry-read-secret"}, b"")[0], 503)
 
+    def test_a_404_from_the_media_locations_route_is_an_error_not_no_links(self) -> None:
+        from t6.worker.registry import RegistryRejected
+        config = ServerConfig(edge_routes=(), grants=(Grant(WORKER_SECRET, registry_read=True),))
+        edge = WebhookApp(self.queue, config, self.clock)
+        self.assertEqual(InProcess(edge).send("GET", "/registry/media-links/frameio-project",
+                                              {"Authorization": f"Bearer {WORKER_SECRET}"}, b"")[0], 404)
+        with self.assertRaises(RegistryRejected) as caught:
+            RegistryClient(InProcess(edge), WORKER_SECRET).media_links("frameio-project")
+        self.assertEqual(caught.exception.status, 404)
+        with self.assertRaises(RegistryRejected):
+            RegistryClient(InProcess(edge), WORKER_SECRET).media_links("frameio-project", "review")
+
     def test_the_main_worker_reads_media_locations_from_its_database_not_over_http(self) -> None:
         from t6.media import MediaStore
         from t6.preview import PreviewTokens

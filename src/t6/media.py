@@ -5,6 +5,7 @@ import builtins
 from contextlib import nullcontext
 import hashlib
 import json
+import re
 import secrets
 from typing import Any
 
@@ -18,6 +19,8 @@ from t6.verbs import Done, Outcome, Refused
 KINDS = {'drive', 'nas-path', 'frameio-project', 'frameio-folder', 'resolve-project', 'timeline', 'instagantt-project'}
 # Kinds whose `ref` one Project holds at a time: the rule name and what the Refused reason calls it.
 ONE_PROJECT_KINDS = {'frameio-project': ('frameio_project', 'Frame.io project'), 'instagantt-project': ('instagantt_project', 'Instagantt project')}
+# A Frame.io project ID: one token of letters, digits, `-` and `_` (real ones are UUIDs). Trimmed before the check.
+_FRAMEIO_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}')
 ROLES = {'master', 'backup', 'review', 'working', 'frameio-project'}
 
 
@@ -42,6 +45,11 @@ class MediaStore:
             return Refused(rule='input', reason='A valid actor and verb are required')
         if verb == 'link' and (values.get('kind') not in KINDS or values.get('role') not in ROLES or not isinstance(values.get('owner'), str) or not isinstance(values.get('ref'), str) or not values['ref'].strip()):
             return Refused(rule='input', reason='A valid owner, kind, ref and role are required')
+        if verb == 'link' and values['kind'] == 'frameio-project':
+            ref = values['ref'].strip()
+            if not _FRAMEIO_ID.fullmatch(ref):
+                return Refused(rule='ref', reason='Reference must be a Frame.io project ID')
+            values = {**values, 'ref': ref}
         if verb == 'link' and values.get('kind') in ('drive', 'timeline'):
             try:
                 T6Id.parse(values['ref'], EntityKind.DRIVE if values['kind'] == 'drive' else EntityKind.TIMELINE)
@@ -122,6 +130,9 @@ class MediaStore:
         project, ref = values.get('project'), values.get('frameio_project')
         if verb not in ('link', 'unlink') or not isinstance(ref, str) or not ref.strip() or not isinstance(project, str):
             return Refused(rule='input', reason='A valid verb, Project and Frame.io project are required')
+        ref = ref.strip()
+        if not _FRAMEIO_ID.fullmatch(ref):
+            return Refused(rule='ref', reason='Reference must be a Frame.io project ID')
         try:
             T6Id.parse(project, EntityKind.PROJECT)
         except ValueError:
@@ -131,6 +142,9 @@ class MediaStore:
                               actor=actor, idempotency_key=idempotency_key, confirm=confirm, noun='frameio project')
         with self.registry._transaction() as db:
             row = db.execute("SELECT id FROM media_locations WHERE owner_id=? AND kind='frameio-project' AND ref=? AND active=1", (project, ref)).fetchone()
+            if not row and idempotency_key and db.execute('SELECT 1 FROM verb_requests WHERE idempotency_key=?', (idempotency_key,)).fetchone():
+                # A retry of an unlink already done: the replay check in `write` answers it, before any link lookup (ADR 0005).
+                row = db.execute("SELECT id FROM media_locations WHERE owner_id=? AND kind='frameio-project' AND ref=? AND active=0", (project, ref)).fetchone()
         if not row:
             return Refused(rule='frameio_project', reason='Frame.io project is not linked to this Project')
         return self.write('unlink', {'media': row[0]}, actor=actor, idempotency_key=idempotency_key, confirm=confirm, noun='frameio project')
@@ -149,7 +163,9 @@ class MediaStore:
                 item: dict[str, Any] = {'page_id': page, 'action': 'review', 't6_id': None}
                 system = str(row.get('system') or '').casefold().replace('.', '').replace(' ', '')
                 kind = str(row.get('kind') or '').casefold()
-                if previous:
+                if previous and row.get('active', True) is not True:
+                    item.update(t6_id=previous[0], reason='Deactivated after migration')  # a person decides; no automatic unlink
+                elif previous:
                     item.update(action='keep', t6_id=previous[0])
                 elif row.get('active', True) is not True:
                     item['reason'] = 'Deactivated in External Links'
