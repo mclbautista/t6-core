@@ -17,6 +17,19 @@ class NotionEdits:
         self.registry = registry
         self.orders = JobOrderStore(registry, PreviewTokens('internal-notion-reconciliation'))
 
+    def project_dates(self, page: str, dates: dict[str, str | None], coordinators: list[str]) -> dict[str, Any]:
+        from t6.concern import ConcernStore
+        project = self.registry.get_by_page(normalize_page_id(page))
+        if project is None:
+            return {'outcome': 'unbound'}
+        people = {self.registry.bound_entity('notion', normalize_page_id(p)) for p in coordinators}
+        people.discard(None)
+        if len(people) != 1:
+            return {'outcome': 'coordinator_unavailable'}
+        owner = next(iter(people))
+        assert owner is not None
+        return {'outcome': 'reconciled', 'concerns': ConcernStore(self.registry, self.orders.tokens).reconcile_dates(project.id, owner, dates)}
+
     def job_order(self, page: str, shown: dict[str, Any], changed: list[str], editor: str, event: str, *, editor_id: str | None = None) -> dict[str, Any]:
         page = normalize_page_id(page)
         jo = self.orders.get(page)

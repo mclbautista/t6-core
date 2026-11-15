@@ -578,6 +578,8 @@ class ConcernRaiseInput(BaseModel):
     anchor: str
     as_of: str
     settles_id: str | None = None
+    settles_deliverable: str | None = None
+    settles_milestone: str | None = None
     idempotency_key: str | None = None
     confirm: str | None = None
 
@@ -829,6 +831,14 @@ class PersonListInput(ReadInput):
 
 class ProjectGetInput(ReadInput):
     project: str
+
+
+class ProjectFlagsInput(ReadInput):
+    project: str
+
+
+class ProjectFlagsOutput(BaseModel):
+    flags: list[dict[str, Any]]
 
 
 class ProjectResolveInput(ReadInput):
@@ -1208,6 +1218,7 @@ VERBS = (
     Verb("studio", "notices", "Read studio notices", (), StudioNoticesInput, StudioNoticesOutput, "reader", "Read Project source notices.", api_read),
     Verb("external-link", "find", "Find an External Link", (), ExternalLinkFindInput, ExternalLinkFindOutput, "reader", "Resolve an external reference.", api_read),
     Verb("project", "get", "Get a Project", (), ProjectGetInput, ProjectGetOutput, "reader", "Read a Project.", api_read),
+    Verb("project", "flags", "Read Project flags", (), ProjectFlagsInput, ProjectFlagsOutput, "reader", "Recompute data gaps and date warnings.", api_read),
     Verb("person", "list", "List Contacts", (), PersonListInput, PersonListOutput, "reader", "Read Contacts.", api_read),
     Verb("standing-cc", "", "Get standing cc", (), StandingCcInput, StandingCcOutput, "reader", "Read configured standing cc.", None),
     Verb("jo", "list", "List Job Orders", (), JoListInput, JoListOutput, "reader", "Filter by Project, assignee or status group.", api_read),

@@ -37,7 +37,7 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(project.id, 't6p_0123456789abcdef01234567')
             self.assertEqual(registry.activity('t6p_0123456789abcdef01234567')[0].actor, 'legacy')
             with sqlite3.connect(path) as db:
-                self.assertEqual(db.execute('SELECT version, forward_only FROM schema_version ORDER BY version').fetchall(), [(1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (6, 0), (7, 0), (8, 0), (9, 0), (10, 0), (11, 0), (12, 0), (13, 0), (14, 0), (15, 0), (16, 0), (17, 0), (18, 0), (19, 0), (20, 0), (21, 0), (22, 1), (23, 0), (24, 0)])
+                self.assertEqual(db.execute('SELECT version, forward_only FROM schema_version ORDER BY version').fetchall(), [(1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (6, 0), (7, 0), (8, 0), (9, 0), (10, 0), (11, 0), (12, 0), (13, 0), (14, 0), (15, 0), (16, 0), (17, 0), (18, 0), (19, 0), (20, 0), (21, 0), (22, 1), (23, 0), (24, 0), (25, 0)])
             SqliteProjectRegistry(path)
 
     def test_previous_release_write_is_reconciled_on_reopen(self) -> None:
@@ -64,7 +64,7 @@ class MigrationTests(unittest.TestCase):
                 db.execute('INSERT INTO schema_version VALUES (1, 0)')
             SqliteProjectRegistry(path)
             with sqlite3.connect(path) as db:
-                self.assertEqual(db.execute('SELECT version FROM schema_version ORDER BY version').fetchall(), [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,), (10,), (11,), (12,), (13,), (14,), (15,), (16,), (17,), (18,), (19,), (20,), (21,), (22,), (23,), (24,)])
+                self.assertEqual(db.execute('SELECT version FROM schema_version ORDER BY version').fetchall(), [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,), (10,), (11,), (12,), (13,), (14,), (15,), (16,), (17,), (18,), (19,), (20,), (21,), (22,), (23,), (24,), (25,)])
                 self.assertIn('project_id', [row[1] for row in db.execute('PRAGMA table_info(bindings)')])
 
     def test_version_fifteen_upgrades_with_all_features(self) -> None:
@@ -78,7 +78,7 @@ class MigrationTests(unittest.TestCase):
                 tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
                 self.assertTrue({'concerns', 'concern_notes', 'project_archives', 'project_person_roles', 'approvals', 'deliverables', 'deliverable_sync_intents', 'deliverable_migration_receipts', 'concern_brief_messages', 'chat_links', 'chat_link_history', 'chat_link_previews', 'milestones', 'packages'} <= tables)
                 self.assertIn('message_id', [row[1] for row in db.execute('PRAGMA table_info(concern_notes)')])
-                self.assertEqual(db.execute('SELECT MAX(version) FROM schema_version').fetchone(), (24,))
+                self.assertEqual(db.execute('SELECT MAX(version) FROM schema_version').fetchone(), (25,))
 
     def test_version_sixteen_upgrades_concern_messages(self) -> None:
         from t6.registry import sqlite as migrations
@@ -88,7 +88,7 @@ class MigrationTests(unittest.TestCase):
                 SqliteProjectRegistry(path)
             SqliteProjectRegistry(path)
             with sqlite3.connect(path) as db:
-                self.assertEqual(db.execute('SELECT MAX(version) FROM schema_version').fetchone(), (24,))
+                self.assertEqual(db.execute('SELECT MAX(version) FROM schema_version').fetchone(), (25,))
                 self.assertIn('message_id', [row[1] for row in db.execute('PRAGMA table_info(concern_notes)')])
                 self.assertIsNotNone(db.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'concern_brief_messages'").fetchone())
 
@@ -102,7 +102,7 @@ class MigrationTests(unittest.TestCase):
             with sqlite3.connect(path) as db:
                 tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
                 self.assertTrue({'chat_links', 'chat_link_history', 'chat_link_previews'} <= tables)
-                self.assertEqual(db.execute('SELECT MAX(version) FROM schema_version').fetchone(), (24,))
+                self.assertEqual(db.execute('SELECT MAX(version) FROM schema_version').fetchone(), (25,))
 
     def test_version_eighteen_upgrades_milestones(self) -> None:
         from t6.registry import sqlite as migrations
@@ -112,7 +112,7 @@ class MigrationTests(unittest.TestCase):
                 SqliteProjectRegistry(path)
             SqliteProjectRegistry(path)
             with sqlite3.connect(path) as db:
-                self.assertEqual(db.execute('SELECT MAX(version) FROM schema_version').fetchone(), (24,))
+                self.assertEqual(db.execute('SELECT MAX(version) FROM schema_version').fetchone(), (25,))
                 self.assertIsNotNone(db.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'milestones'").fetchone())
 
     def test_version_nineteen_upgrades_packages(self) -> None:
@@ -123,7 +123,7 @@ class MigrationTests(unittest.TestCase):
                 SqliteProjectRegistry(path)
             SqliteProjectRegistry(path)
             with sqlite3.connect(path) as db:
-                self.assertEqual(db.execute('SELECT MAX(version) FROM schema_version').fetchone(), (24,))
+                self.assertEqual(db.execute('SELECT MAX(version) FROM schema_version').fetchone(), (25,))
                 self.assertIsNotNone(db.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'packages'").fetchone())
 
     def test_version_twenty_one_upgrades_delivery(self) -> None:
@@ -137,9 +137,9 @@ class MigrationTests(unittest.TestCase):
             SqliteProjectRegistry(path)
             with sqlite3.connect(path) as db:
                 self.assertEqual(db.execute('SELECT id, recipient FROM packages').fetchall(), [('package', 'recipient')])
-                self.assertEqual(db.execute('SELECT version, forward_only FROM schema_version WHERE version >= 21 ORDER BY version').fetchall(), [(21, 0), (22, 1), (23, 0), (24, 0)])
+                self.assertEqual(db.execute('SELECT version, forward_only FROM schema_version WHERE version >= 21 ORDER BY version').fetchall(), [(21, 0), (22, 1), (23, 0), (24, 0), (25, 0)])
                 tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-                self.assertTrue({'deliverable_date_moves', 'deliverable_misses', 'delivery_carriers', 'linked_chat_cursor', 'linked_chat_messages', 'linked_chat_members', 'versions', 'version_locks'} <= tables)
+                self.assertTrue({'deliverable_date_moves', 'deliverable_misses', 'delivery_carriers', 'linked_chat_cursor', 'linked_chat_messages', 'linked_chat_members', 'versions', 'version_locks', 'concern_milestones', 'concern_date_rules'} <= tables)
 
     def test_non_project_bindings_keep_legacy_pages(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -173,10 +173,10 @@ class MigrationTests(unittest.TestCase):
             path = Path(directory) / 'db'
             SqliteProjectRegistry(path)
             with sqlite3.connect(path) as db:
-                db.execute('INSERT INTO schema_version VALUES (25, 0)')
+                db.execute('INSERT INTO schema_version VALUES (26, 0)')
             SqliteProjectRegistry(path)
             with sqlite3.connect(path) as db:
-                db.execute('INSERT INTO schema_version VALUES (26, 1)')
+                db.execute('INSERT INTO schema_version VALUES (27, 1)')
             with self.assertRaises(RegistryError):
                 SqliteProjectRegistry(path)
 
@@ -186,7 +186,7 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'db'
             SqliteProjectRegistry(path)
-            with patch.object(migrations, '_MIGRATIONS', migrations._MIGRATIONS + ((25, True, "CREATE TABLE incompatible (id INTEGER)"),)):
+            with patch.object(migrations, '_MIGRATIONS', migrations._MIGRATIONS + ((26, True, "CREATE TABLE incompatible (id INTEGER)"),)):
                 SqliteProjectRegistry(path)
             with self.assertRaises(RegistryError):
                 SqliteProjectRegistry(path)

@@ -282,6 +282,13 @@ _MIGRATIONS = (
     )"""),
     (24, False, """CREATE TABLE versions (id TEXT PRIMARY KEY, deliverable_id TEXT NOT NULL REFERENCES deliverables(id), frameio_file_id TEXT NOT NULL UNIQUE, frameio_stack_id TEXT, source_timeline_id TEXT, note TEXT);
         CREATE TABLE version_locks (deliverable_id TEXT PRIMARY KEY REFERENCES deliverables(id), version_id TEXT NOT NULL REFERENCES versions(id))"""),
+    (25, False, """CREATE TABLE concern_milestones (
+        concern_id TEXT PRIMARY KEY REFERENCES concerns(id), deliverable_id TEXT NOT NULL REFERENCES deliverables(id), milestone TEXT NOT NULL
+    );
+    CREATE TABLE concern_date_rules (
+        project_id TEXT NOT NULL REFERENCES projects(id), rule TEXT NOT NULL, concern_id TEXT NOT NULL REFERENCES concerns(id),
+        PRIMARY KEY (project_id, rule)
+    )"""),
 )
 
 

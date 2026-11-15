@@ -1794,3 +1794,20 @@ items prevent handoff. The recipient uses `package accept <package-id>` or
 `package reject <package-id> --reason <reason>`. These writes use the usual
 preview, confirmation token, and idempotency key. `package get <package-id>`
 shows the snapshot, checklist, and derived `kasado` readiness.
+
+## Concern settlement and Project flags
+
+Concerns may link to a Job Order, Approval, or to a Deliverable and an
+awaited Milestone kind. Recording the matching fact settles the Concern and
+adds an Activity entry attributed to `Sixto (auto)`; a manual reopen retains
+its original age and takes precedence over later automatic settlement.
+Date sanity compares Submission Deadline with Playdate and Archival Deadline
+with Submission Deadline. Bound Project page observations reconcile those
+rule-made Concerns when a single bound coordinator and both dates are known.
+
+`project flags` recomputes date warnings and missing health from the current
+Project data, without Concern IDs or ages. Health-vs-evidence and source
+conflict are judgments supplied by the reports app. Its stale-milestone
+judgment also depends on dated notes and later mentions, which are not stored
+as structured milestone expectations in t6; the read cannot infer that flag
+from a Deliverable deadline alone.

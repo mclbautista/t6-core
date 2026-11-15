@@ -166,6 +166,10 @@ class DeliverableStore:
             now = self.registry._clock()
             identifier = str(T6Id.mint(EntityKind.MILESTONE))
             db.execute('INSERT INTO milestones VALUES (?, ?, ?, ?, ?, ?)', (identifier, row[0], name, plan['on'], actor, now))
+            from t6.concern import settle_concern, settle_linked
+            settle_linked(db, identifier, now)
+            for (concern,) in db.execute('SELECT concern_id FROM concern_milestones WHERE deliverable_id = ? AND milestone = ?', (row[0], name)).fetchall():
+                settle_concern(db, concern, now, identifier)
             result = {**plan, 'milestone_id': identifier}
             cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, NULL, ?)', (row[0], 'milestone_record', actor, now, json.dumps(result)))
             db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (row[1], row[0], now, actor, 'milestone_record', f'milestone recorded: {name}', cursor.lastrowid))

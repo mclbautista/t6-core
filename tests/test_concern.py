@@ -94,10 +94,84 @@ class ConcernTests(unittest.TestCase):
         assert record is not None
         self.assertEqual(record['state'], 'closed')
 
+    def test_jo_done_closes_linked_concern_and_manual_reopen_sticks(self) -> None:
+        from t6.job_order import JobOrderStore
+        jo = str(T6Id.mint(EntityKind.JOB_ORDER))
+        with self.registry._transaction() as db:
+            db.execute('INSERT INTO job_orders VALUES (?, ?, NULL, NULL, ?)', (jo, self.project, '{"status":"In progress"}'))
+        concern = self.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'editor', 'anchor': 'Waiting', 'as_of': '2026-11-01', 'settles_id': jo}, 'linked')['concern_id']
+        orders = JobOrderStore(self.registry, self.store.tokens)
+        preview = orders.write('close', {'jo': jo}, actor='person', idempotency_key='close-jo')
+        assert isinstance(preview, Preview)
+        self.now += 100
+        self.assertIsInstance(orders.write('close', {'jo': jo}, actor='person', idempotency_key='close-jo', confirm=preview.token), Done)
+        record = self.store.get(concern)
+        assert record is not None
+        self.assertEqual((record['state'], record['age_seconds']), ('closed', 100))
+        self.assertTrue(any(a.actor == 'Sixto (auto)' and a.subject_id == concern for a in self.registry.activity(self.project)))
+        self.write('reopen', {'concern': concern}, 'reopen-linked')
+        from t6.concern import settle_linked
+        with self.registry._transaction() as db:
+            settle_linked(db, jo, self.now)
+        record = self.store.get(concern)
+        assert record is not None
+        self.assertEqual((record['state'], record['age_seconds']), ('open', 100))
+
+    def test_approval_grant_closes_linked_concern(self) -> None:
+        from t6.approval import Approvals
+        approvals = Approvals(self.registry, self.store.tokens)
+        person = str(T6Id.mint(EntityKind.PERSON))
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', NULL, 0, 1)", (person,))
+        request = {'gate': 'grade', 'target': self.project, 'tapper_rule': 'person:' + person}
+        preview = approvals.write('request', request, actor=person, idempotency_key='approval-request')
+        assert isinstance(preview, Preview)
+        done = approvals.write('request', request, actor=person, idempotency_key='approval-request', confirm=preview.token)
+        assert isinstance(done, Done)
+        approval = done.result['approval_id']
+        concern = self.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'client', 'anchor': 'Waiting', 'as_of': '2026-11-01', 'settles_id': approval}, 'approval-concern')['concern_id']
+        decision = {'approval': approval}
+        preview = approvals.write('grant', decision, actor=person, idempotency_key='approval-grant')
+        assert isinstance(preview, Preview)
+        self.assertIsInstance(approvals.write('grant', decision, actor=person, idempotency_key='approval-grant', confirm=preview.token), Done)
+        record = self.store.get(concern)
+        assert record is not None
+        self.assertEqual(record['state'], 'closed')
+
     def test_validation_and_catalogue(self) -> None:
         result = self.store.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': '', 'anchor': 'hello', 'as_of': '2026-01-01'}, actor='person')
         self.assertIsInstance(result, Refused)
         self.assertTrue({'raise', 'note', 'resolve', 'reopen'} <= {v['verb'] for v in catalogue() if v['noun'] == 'concern'})
+
+    def test_date_sanity_follows_data_and_keeps_age(self) -> None:
+        dates = {'playdate': '2026-12-10', 'submission_deadline': '2026-12-01', 'archival_deadline': '2026-11-20'}
+        ids = self.store.reconcile_dates(self.project, 'coordinator', dates)
+        self.assertEqual(len(ids), 2)
+        first = ids['submission_before_playdate']
+        self.assertEqual(self.store.get(first)['state'], 'open')  # type: ignore[index]
+        self.now += 100
+        dates['submission_deadline'] = '2026-12-15'
+        self.store.reconcile_dates(self.project, 'coordinator', dates)
+        self.assertEqual(self.store.get(first)['state'], 'closed')  # type: ignore[index]
+        dates['submission_deadline'] = '2026-12-01'
+        self.assertEqual(self.store.reconcile_dates(self.project, 'coordinator', dates)['submission_before_playdate'], first)
+        record = self.store.get(first)
+        assert record is not None
+        self.assertEqual((record['state'], record['age_seconds']), ('open', 100))
+        self.assertIsInstance(self.store.write('resolve', {'concern': first}, actor='person'), Refused)
+
+    def test_notion_project_date_observation_reconciles_rules(self) -> None:
+        from t6.notion_edits import NotionEdits
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', 'coordinator-page', 'coordinator', ?, 1)", (self.now,))
+        edits = NotionEdits(self.registry)
+        dates = {'playdate': '2026-12-10', 'submission_deadline': '2026-12-01', 'archival_deadline': None}
+        result = edits.project_dates('project', dates, ['coordinator-page'])
+        concern = result['concerns']['submission_before_playdate']
+        self.assertEqual(self.store.get(concern)['state'], 'open')  # type: ignore[index]
+        dates['submission_deadline'] = '2026-12-11'
+        edits.project_dates('project', dates, ['coordinator-page'])
+        self.assertEqual(self.store.get(concern)['state'], 'closed')  # type: ignore[index]
 
     def test_brief_reply_is_the_only_chat_text_kept(self) -> None:
         concern = self.raise_concern()

@@ -105,3 +105,6 @@ class RegistryClient:
 
     def observe_project_status(self, page_id: str, status: str | None, editor: str, event: str, editor_id: str | None, field: str = "status") -> dict[str, Any]:
         return self._call("POST", f"/registry/notion-project-status/{page_id}", {"status": status, "editor": editor, "event": event, "editor_id": editor_id, "field": field}) or {}
+
+    def observe_project_dates(self, page_id: str, dates: Mapping[str, str | None], coordinators: list[str]) -> dict[str, Any]:
+        return self._call('POST', f'/registry/notion-project-dates/{page_id}', {'dates': dict(dates), 'coordinators': coordinators}) or {}
