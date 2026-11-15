@@ -3,6 +3,7 @@ import os
 import tempfile
 import threading
 import unittest
+from typing import Any
 from unittest.mock import patch
 
 from t6.client import Client
@@ -41,7 +42,7 @@ class ReadTests(unittest.TestCase):
             db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', NULL, 0, 1)", (operator,))
             db.execute("INSERT INTO person_permissions VALUES (?, 'operator')", (operator,))
         self.api = VerbAPI(People(registry, PreviewTokens('key')), JobQueue(self.tmp.name + '/queue'),
-                           {'secret': 'reports', 'operator': operator}, lambda _: self.notion.client(),
+                           {'secret': 'reports', 'operator': operator, 'mcp-secret': 'mcp'}, lambda _: self.notion.client(),
                            privacy_registry=Registry(people=[Person(name='Client Corp')]),
                            data_sources={name: name for name in ('projects', 'job_orders', 'deliverables', 'meeting_notes', 'contacts', 'cameras')})
         env = patch.dict(os.environ, {'T6_NOTION_TOKEN': 'fake'})
@@ -133,6 +134,29 @@ class ReadTests(unittest.TestCase):
         self.assertEqual((row['label'], row['owner_id']), ('no news for 2 weeks', owner))
         self.assertNotIn('Client Corp', str(row))
         self.assertIsInstance(self.client.concern_list(ConcernListInput(project=project.project.id)), Refused)
+
+    def test_the_three_main_reads_are_masked_for_the_mcp_service(self) -> None:
+        import json
+        from t6.registry import Registered
+        from t6.notion.generated import ProjectsRow
+        from t6.server.app import Request
+        page = self.notion.add_page('projects', {'Name': title('Masked'), ProjectsRow.notion_name('pm_notes'): rich_text('As of 2026-11-01\nWaiting on Client Corp')})
+        project = self.registry.register(actor='setup', idempotency_key='masked-project', notion_page_id=page['id'])
+        assert isinstance(project, Registered)
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO concerns (id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state) VALUES ('t6c_m', ?, ?, 'Client Corp', 'Waiting on Client Corp', '2026-11-01', 0, 0, 'quiet')", (project.project.id, 't6n_' + '1' * 32))
+            db.execute("INSERT INTO concern_pm_changes (project_id, concern_id, action, quote, at) VALUES (?, 't6c_m', 'raised', 'Waiting on Client Corp', 4000000000.0)", (project.project.id,))
+        for path, body in (('/v1/concern/list', {'raise_at_psr': True, 'project': project.project.id}),
+                           ('/v1/concern/changes', {'project': project.project.id, 'since': '2020-01-01'}),
+                           ('/v1/project/notes', {'project': page['id']})):
+            with self.subTest(path):
+                def call(secret: str, header: bool, path: str = path, body: Any = body) -> str:
+                    headers = {'Authorization': 'Bearer ' + secret, **({'X-T6-MCP': '1'} if header else {})}
+                    return json.dumps(self.api(Request('POST', path, headers, json.dumps(body).encode())).body)
+                self.assertNotIn('Client Corp', call('mcp-secret', False))
+                self.assertNotIn('Client Corp', call('mcp-secret', True))
+                self.assertIn('Client Corp', call('operator', True))
+                self.assertIn('Client Corp', call('operator', False))
 
     def test_project_flags_are_read_without_ids_or_age(self) -> None:
         from t6.verbs import ProjectFlagsInput

@@ -512,6 +512,15 @@ class UnlinkedActivityTests(MainWorkerCase):
         self.app.after_verb('project', 'archive', Done(result={}))
         self.assertEqual((len(self.waiting_rows('fp-1')), len(self.registry.undispatched_status_sync())), (0, 0))
 
+    def test_after_verb_does_nothing_after_concern_list_concern_changes_or_project_notes(self) -> None:
+        self.event('fp-1', 'evt-1')
+        self.drain()
+        self.link(self.show_a, 'fp-1')  # the activity waits for something to release it
+        for noun, verb in (('concern', 'list'), ('concern', 'changes'), ('project', 'notes')):
+            with self.subTest(noun=noun, verb=verb):
+                self.app.after_verb(noun, verb, Done(result={}))
+                self.assertEqual(len(self.waiting_rows('fp-1')), 1)
+
     def test_an_error_in_after_verb_is_logged_and_the_committed_verb_still_answers_done(self) -> None:
         def failing() -> int:
             raise RuntimeError('the hook broke')

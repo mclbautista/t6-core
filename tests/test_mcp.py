@@ -63,11 +63,11 @@ class MCPTests(unittest.TestCase):
         self.assertIn('Client Corp', call('operator-secret'))
 
     TOOL_NAMES = [
-        'booking__get', 'booking__list', 'camera__get', 'concern__for-message', 'concern__get', 'deliverable__bangko',
+        'booking__get', 'booking__list', 'camera__get', 'concern__changes', 'concern__for-message', 'concern__get', 'concern__list', 'deliverable__bangko',
         'deliverable__get', 'deliverable__hand-to-mouth', 'deliverable__list', 'deliverable__sabit', 'departments',
         'external-link__find', 'jo__find', 'jo__get', 'jo__list', 'media__list', 'meeting-notes__list', 'package__get',
         'package__list', 'person__find', 'person__get', 'person__list', 'project__activity', 'project__flags',
-        'project__get', 'project__list', 'project__resolve', 'standing-cc', 'studio__notices', 'swing__overdue', 'timeline__list', 'transcript__get',
+        'project__get', 'project__list', 'project__notes', 'project__resolve', 'standing-cc', 'studio__notices', 'swing__overdue', 'timeline__list', 'transcript__get',
         'version__find', 'version__get']
 
     def test_tool_list_is_the_written_list_of_read_tools_and_has_no_writes(self) -> None:
@@ -110,6 +110,12 @@ class MCPTests(unittest.TestCase):
                 self.assertNotIn('Client Corp', call('staff-secret', True))
                 self.assertIn('Client Corp', call('staff-secret', False))
                 self.assertIn('Client Corp', call('operator-secret', True))
+
+    def test_every_reader_verb_is_read_only_except_the_written_exception(self) -> None:
+        from t6.verbs import VERBS
+        written_exception = {('jo', 'format')}  # formats a draft and writes nothing, but is a local helper with no API read
+        unmarked = {(v.noun, v.verb) for v in VERBS if v.role == 'reader' and not v.read_only}
+        self.assertEqual(unmarked, written_exception)
 
     def test_a_reader_role_alone_does_not_make_a_tool(self) -> None:
         from dataclasses import replace
