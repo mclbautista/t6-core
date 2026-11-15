@@ -2,6 +2,8 @@ import json
 import sqlite3
 import unittest
 from collections.abc import Iterator, Mapping
+import tempfile
+from unittest.mock import patch
 from contextlib import contextmanager
 from typing import Any
 
@@ -96,6 +98,105 @@ class AbangTests(unittest.TestCase):
         self.worker.tick()
         self.assertEqual(self.db.db.execute('SELECT state FROM abang_requests').fetchone()[0], 'delivered')
         self.assertEqual(self.db.db.execute('SELECT state FROM abang_history ORDER BY id').fetchall(), [('requested',), ('forwarding',), ('delivered',)])
+
+    def test_non_reply_file_offers_candidate_card(self) -> None:
+        rid = self.write('request', {'person': 'vendor', 'destination': '-200', 'note': None}, 'candidate')
+        self.worker.tick()
+        self.gateway.items = [{'seq': 1, 'kind': 'update', 'chat': -100, 'message_id': 104, 'from': {'id': 42}, 'has_file': True}]
+        self.worker.tick()
+        cards = [call[2] for call in self.gateway.calls if call[1] == '/notify' and call[2]['text'].startswith('Is this it?')]
+        self.assertEqual(len(cards), 1)
+        self.assertEqual([button['text'] for button in cards[0]['buttons'][0]], ['Yes', 'No'])
+        self.assertFalse(any(call[1] == '/forward' for call in self.gateway.calls))
+        self.assertTrue(cards[0]['buttons'][0][0]['payload'].startswith('abang:'))
+
+    def test_a_file_replying_to_another_message_is_a_candidate(self) -> None:
+        self.write('request', {'person': 'vendor', 'destination': '-200', 'note': None}, 'other-reply')
+        self.worker.tick()
+        self.gateway.items = [{'seq': 1, 'kind': 'update', 'chat': -100, 'message_id': 106, 'reply_to_message_id': 555, 'from': {'id': 42}, 'has_file': True}]
+        self.worker.tick()
+        cards = [call[2] for call in self.gateway.calls if call[1] == '/notify' and call[2]['text'].startswith('Is this it?')]
+        self.assertEqual(len(cards), 1)
+        self.assertFalse(any(call[1] == '/forward' for call in self.gateway.calls))
+
+    def test_candidate_taps_allow_only_freelancer_and_forward_once(self) -> None:
+        from t6.person import People
+        from t6.server import Request, ServerConfig, WebhookApp
+        from t6.server.queue import JobQueue
+        from t6.server.verbs import VerbAPI
+        self.db.db.execute("INSERT INTO persons VALUES ('coordinator', 'staff', '[]', '[]', 43, 0, 1)")
+        self.db.db.commit()
+        self.write('request', {'person': 'vendor', 'destination': '-200', 'note': None}, 'candidate')
+        self.worker.tick()
+        self.gateway.items = [{'seq': 1, 'kind': 'update', 'chat': -100, 'message_id': 104, 'from': {'id': 42}, 'has_link': True}]
+        self.worker.tick()
+        card = next(call[2] for call in self.gateway.calls if call[1] == '/notify' and call[2]['text'].startswith('Is this it?'))
+        yes = card['buttons'][0][0]['payload']
+        with tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ', {'T6_PREVIEW_SIGNING_KEY': 'secret'}):
+            queue = JobQueue(tmp + '/queue')
+            api = VerbAPI(People(self.db, PreviewTokens('secret')), queue, {'gateway': 'gateway'}, lambda _: None, WebhookApp(queue, ServerConfig(), registry=self.db))
+            def tap(who: int, key: str) -> Any:
+                body = {'data': yes, 'from': {'id': who}}
+                headers = {'Authorization': 'Bearer gateway', 'X-Telegram-User-Id': str(who), 'Idempotency-Key': key}
+                return api(Request('POST', '/tap', headers, json.dumps(body).encode())).body['outcome']
+            self.assertEqual(tap(43, 'denied'), 'rejected')
+            self.assertEqual(tap(42, 'yes'), 'accepted')
+            self.assertIn(tap(42, 'again'), ('already_handled', 'rejected'))
+        self.worker.tick()
+        self.worker.tick()
+        self.assertEqual(len([call for call in self.gateway.calls if call[1] == '/forward']), 1)
+        self.assertEqual(self.db.db.execute("SELECT actor FROM abang_history WHERE state = 'forwarding'").fetchone()[0], 'vendor')
+        self.assertEqual(self.db.db.execute("SELECT count(*) FROM audit WHERE action = 'tap_rejected'").fetchone()[0], 1)
+
+    def test_no_keeps_request_open_for_a_later_reply(self) -> None:
+        from t6.person import People
+        from t6.server import Request, ServerConfig, WebhookApp
+        from t6.server.queue import JobQueue
+        from t6.server.verbs import VerbAPI
+        self.write('request', {'person': 'vendor', 'destination': '-200', 'note': None}, 'no-case')
+        self.worker.tick()
+        self.gateway.items = [{'seq': 1, 'kind': 'update', 'chat': -100, 'message_id': 104, 'from': {'id': 42}, 'has_file': True}]
+        self.worker.tick()
+        card = next(call[2] for call in self.gateway.calls if call[1] == '/notify' and call[2]['text'].startswith('Is this it?'))
+        with tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ', {'T6_PREVIEW_SIGNING_KEY': 'secret'}):
+            queue = JobQueue(tmp + '/queue')
+            api = VerbAPI(People(self.db, PreviewTokens('secret')), queue, {'gateway': 'gateway'}, lambda _: None, WebhookApp(queue, ServerConfig(), registry=self.db))
+            body = {'data': card['buttons'][0][1]['payload'], 'from': {'id': 42}}
+            headers = {'Authorization': 'Bearer gateway', 'X-Telegram-User-Id': '42', 'Idempotency-Key': 'no'}
+            self.assertEqual(api(Request('POST', '/tap', headers, json.dumps(body).encode())).body['outcome'], 'accepted')
+        self.gateway.items.append({'seq': 2, 'kind': 'update', 'chat': -100, 'message_id': 105, 'reply_to_message_id': 101, 'from': {'id': 42}, 'has_file': True})
+        self.worker.tick()
+        forwards = [call[2] for call in self.gateway.calls if call[1] == '/forward']
+        self.assertEqual([call['message_id'] for call in forwards], [105])
+
+    def test_nudge_at_three_days_and_not_after_cancel_or_delivery(self) -> None:
+        from t6.worker.internal_queue import InternalJobQueue, InternalQueueClient
+        from t6.worker.runner import Worker
+        now = [123.0]
+        self.db._clock = lambda: now[0]
+        queue = InternalJobQueue.__new__(InternalJobQueue)
+        queue._db, queue._clock, queue._max_attempts = self.db, self.db._clock, 3
+        client = InternalQueueClient(queue)
+        runner = Worker(client, 'main', {'abang_nudge': self.worker.nudge})
+        with self.db._transaction() as db:
+            db.execute("INSERT INTO persons VALUES ('coordinator', 'staff', '[]', '[]', 7, 0, 1)")
+        self.write('request', {'person': 'vendor', 'destination': '-200', 'note': None}, 'completed')
+        self.worker.tick()
+        self.gateway.items = [{'seq': 1, 'kind': 'update', 'chat': -100, 'message_id': 103, 'reply_to_message_id': 101, 'from': {'id': 42}, 'has_file': True}]
+        self.worker.tick()
+        self.write('request', {'person': 'vendor', 'destination': '-200', 'note': None}, 'nudge')
+        cancelled = self.write('request', {'person': 'vendor', 'destination': '-200', 'note': None}, 'cancelled')
+        self.write('cancel', {'request': cancelled}, 'stop')
+        self.worker.tick()
+        now[0] += 3 * 86400 - 1
+        self.assertFalse(runner.run_once())
+        now[0] += 1
+        while runner.run_once():
+            pass
+        nudges = [call for call in self.gateway.calls if call[1] == '/notify' and 'no file for 3 days' in call[2]['text']]
+        self.assertEqual(len(nudges), 1)
+        self.assertEqual(nudges[0][2]['to'], 7)
+        self.assertFalse(runner.run_once())
 
     def test_missing_person_and_cancel(self) -> None:
         self.assertIsInstance(self.store.write('request', {'person': '@handle', 'destination': '-200', 'note': None}, actor='coordinator', idempotency_key='x', confirm=None), NeedsPerson)

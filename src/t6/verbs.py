@@ -1250,6 +1250,7 @@ def api_write(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
 class AbangRequestInput(BaseModel):
     person: str
     destination: str
+    source: str | None = None
     note: str | None = None
     idempotency_key: str | None = None
     confirm: str | None = None
@@ -1257,6 +1258,13 @@ class AbangRequestInput(BaseModel):
 
 class AbangCancelInput(BaseModel):
     request: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class AbangAcceptInput(BaseModel):
+    candidate: str
+    decision: str
     idempotency_key: str | None = None
     confirm: str | None = None
 
@@ -1272,8 +1280,8 @@ def abang_write(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
     key = os.environ.get('T6_PREVIEW_SIGNING_KEY', '')
     if not key:
         return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
-    assert isinstance(inputs, (AbangRequestInput, AbangCancelInput))
-    verb = 'request' if isinstance(inputs, AbangRequestInput) else 'cancel'
+    assert isinstance(inputs, (AbangRequestInput, AbangCancelInput, AbangAcceptInput))
+    verb = 'request' if isinstance(inputs, AbangRequestInput) else 'accept' if isinstance(inputs, AbangAcceptInput) else 'cancel'
     values = inputs.model_dump(exclude={'confirm', 'idempotency_key'})
     return Abang(_registry.get(), PreviewTokens(key)).write(verb, values, actor=_actor.get(),
         idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
@@ -1282,6 +1290,7 @@ def abang_write(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
 VERBS = (
     Verb("version", "get", "Get a Version", (), VersionGetInput, VersionFindOutput, "reader", "Read a Version and its Approvals.", api_read),
     Verb('abang', 'request', 'Request a file relay', (), AbangRequestInput, AbangOutput, 'coordinator', 'Request a file from a vendor.', abang_write),
+    Verb('abang', 'accept', 'Decide an abang candidate', (), AbangAcceptInput, AbangOutput, 'person', 'Only the freelancer may decide.', abang_write),
     Verb('abang', 'cancel', 'Cancel a file relay', (), AbangCancelInput, AbangOutput, 'coordinator', 'Cancel a pending relay.', abang_write),
     Verb("version", "find", "Find a Version by Frame.io file", (), VersionFindInput, VersionFindOutput, "reader", "Resolve a review file to its Version.", api_read),
     Verb("version", "add", "Add a Version", (), VersionAddInput, VersionOutput, "coordinator", "Preview and confirm a Frame.io file.", version_write),
@@ -1371,8 +1380,8 @@ def invoke(entry: Verb, inputs: BaseModel, *, actor: str, people: People,
         person = people.get(actor)
         if not person or not person['active']:
             return Refused(rule='person', reason='An active replier Person is required')
-    refusal = (None if entry.noun in ('approval', 'package') and entry.role == 'person' and (person := people.get(actor)) and person['active'] else
-               Refused(rule='person', reason='An active Person is required') if entry.noun in ('approval', 'package') and entry.role == 'person' else
+    refusal = (None if entry.noun in ('approval', 'package', 'abang') and entry.role == 'person' and (person := people.get(actor)) and person['active'] else
+               Refused(rule='person', reason='An active Person is required') if entry.noun in ('approval', 'package', 'abang') and entry.role == 'person' else
                people.authorize(actor, 'reader' if isinstance(inputs, ConcernNoteInput) and inputs.from_reply is not None else entry.role))
     if refusal:
         return refusal
@@ -1489,7 +1498,9 @@ def add_parsers(commands: Any) -> None:
             aliases = [alias.split(' ', 1)[1] for alias in entry.aliases] if entry.handler is approval_write and entry.verb != 'request' else []
             parser = parser.add_parser(entry.verb, aliases=aliases, help="[verb] " + entry.description)
         if entry.handler is abang_write:
-            parser.add_argument('person' if entry.verb == 'request' else 'request')
+            parser.add_argument('person' if entry.verb == 'request' else 'candidate' if entry.verb == 'accept' else 'request')
+            if entry.verb == 'accept':
+                parser.add_argument('decision', choices=('yes', 'no'))
             if entry.verb == 'request':
                 parser.add_argument('--destination', required=True)
                 parser.add_argument('--note')
