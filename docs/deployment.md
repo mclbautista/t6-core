@@ -194,7 +194,22 @@ The `main` jobs the API starts itself go to the internal job table in the t6 dat
 
 ### Project Start plans (main worker and API only)
 
-`project start` queues a `project_start.preview` internal job on the `main` queue. The main worker with `T6_DATABASE` set builds the plan and answers with the Preview and its token; the caller reads it with `t6 project start <project> --job <id>`. The worker needs `T6_PREVIEW_SIGNING_KEY` (the same key the API signs with, so the API accepts the token at confirm) and `T6_NOTION_TOKEN` (it reads the Project Type to choose the milestone template). Without the signing key the plan jobs stay queued and the worker's start-up log says `project start` plans are off. The plan lists the steps a person does by hand (NAS folders, the Resolve project, the Resolve timelines with their stamps); no worker writes to the NAS or to Resolve.
+`project start` queues a `project_start.preview` internal job on the `main` queue. The main worker with `T6_DATABASE` set builds the plan and answers with the Preview and its token; the caller reads it with `t6 project start <project> --job <id>`. The worker needs `T6_PREVIEW_SIGNING_KEY` (the same key the API signs with, so the API accepts the token at confirm) and `T6_NOTION_TOKEN` (it reads the Project Type to choose the milestone template). Without the signing key the plan jobs stay queued and the worker's start-up log says `project start` plans are off. The plan lists the steps a person does by hand (NAS folders, the Resolve project, the Resolve timelines with their stamps); no worker writes to the NAS or to Resolve. The plan also reads the Project's name from Notion (`ProjectsRow.name`) for the Frame.io project.
+
+#### Project Start and Frame.io (netops note; no live setting is changed by the code)
+
+At confirm the API (not the main worker) asks the Frame.io worker for the Frame.io project and one folder per Deliverable (request `frameio.create_project_folders`, a write). The API holds no Frame.io token and the Frame.io worker still never opens the t6 database: the API records the answer as Media locations. Set these on the API (`t6.server`):
+
+- `T6_FRAMEIO_QUEUE_URL` and `T6_FRAMEIO_QUEUE_SECRET`: the queue server the Frame.io worker polls (the VPS) and a queue grant whose `submit` includes `frameio`. Without them the API uses its own queue file, which only works when the Frame.io worker polls that same queue. Without a reachable Frame.io worker the confirm is refused (rule `frameio`) after `T6_FRAMEIO_WRITE_TIMEOUT_SECONDS` (default 60) and t6 is unchanged; a retry is safe.
+
+Set these on the Frame.io worker:
+
+- `T6_FRAMEIO_ACCOUNT_ID`: the T6 account (as for reads). A sign-in that sees more than one account needs it.
+- `T6_FRAMEIO_WORKSPACE_ID`: the workspace a new project goes in. Needed only when the account has more than one workspace; with one, the worker uses it.
+
+The Frame.io sign-in (Adobe OAuth Web App credential) needs write scopes. Today it reads only. Creating projects and folders needs the Frame.io V4 project and asset write scopes (create projects, create folders), in addition to the read scopes of the share, comment, file and account reads. Check the scope names against the Adobe Developer Console and Frame.io V4 reference when you change the credential; the routes below are a reconstruction of the V4 API and were not called live. No scope for creating shares is needed, and none is used. After a scope change the Frame.io worker must sign in again (the old token keeps the old scopes).
+
+The routes used (reconstructed, no live call): `GET /v4/accounts/{account}/workspaces`, `POST /v4/accounts/{account}/workspaces/{workspace}/projects` (body `{"data": {"name": ...}}`), `GET /v4/accounts/{account}/projects/{project}`, `GET /v4/accounts/{account}/folders/{folder}/children`, `POST /v4/accounts/{account}/folders/{folder}/folders`.
 
 ### Booking calendars (main worker and API only)
 

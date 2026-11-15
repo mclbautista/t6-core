@@ -1,12 +1,14 @@
 """Runs one typed request against Frame.io V4: the Frame.io worker's `run`.
 
 `FrameioReads(api)` answers projects, share links, comments, versions and
-approvals as JSON lists of the objects in `t6.frameio.model`. With `links`
+approvals as JSON lists of the objects in `t6.frameio.model`. The one write is
+`CreateProjectFolders` (Project Start, #275): a project and its folders, never a share. With `links`
 (the Media locations in t6, kind `frameio-project`) it also answers the briefing
 feed. Nothing is written to Notion or to t6: the link lives only in t6.
 
 The T6 account is found from the token (`GET /v4/accounts`). A token that sees
-more than one account needs `account_id`.
+more than one account needs `account_id`. A new project goes in the account's one
+workspace (`GET /v4/accounts/{id}/workspaces`); more than one needs `workspace_id`.
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ from t6.frameio.requests import (
     Approvals,
     BriefingFeed,
     Comments,
+    CreateProjectFolders,
     FileInfo,
     FileLocate,
     FrameioProjects,
@@ -91,7 +94,9 @@ class FrameioReads:
         share_cache_seconds: float = SHARE_CACHE_SECONDS,
         share_scan_limit: int = SHARE_SCAN_LIMIT,
         clock: Callable[[], float] = time.monotonic,
+        workspace_id: str | None = None,
     ) -> None:
+        self._workspace_id = workspace_id
         self._api = api
         self._links = links
         self._account_id = account_id
@@ -121,7 +126,9 @@ class FrameioReads:
             return [approval.to_json() for approval in self.approvals(request.file_id)]
         if isinstance(request, BriefingFeed):
             return [show.to_json() for show in self.briefing_feed(request.since)]
-        raise NotImplementedError(f"{request.kind} is not built yet (t6-core#23)")
+        if isinstance(request, CreateProjectFolders):
+            return self.create_project_folders(request)
+        raise NotImplementedError(f"{request.kind} is not built yet")
 
     def _account(self) -> str:
         if self._account_id is None:
@@ -132,6 +139,64 @@ class FrameioReads:
                 )
             self._account_id = accounts[0]
         return f"/v4/accounts/{_id(self._account_id)}"
+
+    def _workspace(self) -> str:
+        if self._workspace_id is None:
+            workspaces = [str(item["id"]) for item in self._api.pages(f"{self._account()}/workspaces")]
+            if len(workspaces) != 1:
+                raise RuntimeError(
+                    f"the Frame.io account has {len(workspaces)} workspaces; set T6_FRAMEIO_WORKSPACE_ID to the T6 workspace"
+                )
+            self._workspace_id = workspaces[0]
+        return self._workspace_id
+
+    def create_project_folders(self, request: CreateProjectFolders) -> dict[str, JsonValue]:
+        """The Frame.io project and a folder per name, made only when missing (see `CreateProjectFolders`).
+
+        Every write is preceded by a read of what exists, so a retry after a crash, a timeout or a redelivered job
+        finds the project and the folders and makes nothing. Raises ValueError when the project cannot be told
+        (two have the name) and FrameioError when Frame.io refuses a read or a write; nothing is retried here.
+        """
+        created_project = False
+        if request.known_project_id is not None:
+            found = self._api.get(f"{self._account()}/projects/{_id(request.known_project_id)}").get("data")
+            if not isinstance(found, dict):
+                raise ValueError(f"Frame.io gave no project {request.known_project_id}")
+            project = FrameioProject.from_api({"id": request.known_project_id, **found})
+        else:
+            same = [p for p in self.projects() if p.name == request.name and p.id not in request.taken]
+            if len(same) > 1:
+                raise ValueError(f"more than one Frame.io project is named {request.name!r}: {', '.join(p.id for p in same)}")
+            if same:
+                project = same[0]
+            else:
+                made = self._api.post(f"{self._account()}/workspaces/{_id(self._workspace())}/projects", {"name": request.name}).get("data")
+                if not isinstance(made, dict) or not made.get("id"):
+                    raise ValueError("Frame.io gave no project after creating one")
+                project = FrameioProject.from_api(made)
+                created_project = True
+        if project.root_folder_id is None:
+            raise ValueError(f"Frame.io project {project.id} has no root folder")
+        existing: dict[str, str] = {}
+        if not created_project:
+            for child in self._api.pages(f"{self._account()}/folders/{_id(project.root_folder_id)}/children"):
+                name, found_id = _text(child.get("name")), _text(child.get("id"))
+                if child.get("type", "folder") == "folder" and name and found_id:
+                    if name in existing and name in request.folders:
+                        raise ValueError(f"more than one folder named {name!r} in Frame.io project {project.id}")
+                    existing.setdefault(name, found_id)
+        folders: dict[str, JsonValue] = {}
+        created: list[JsonValue] = []
+        for name in request.folders:
+            if name in existing:
+                folders[name] = existing[name]
+                continue
+            made = self._api.post(f"{self._account()}/folders/{_id(project.root_folder_id)}/folders", {"name": name}).get("data")
+            if not isinstance(made, dict) or not made.get("id"):
+                raise ValueError(f"Frame.io gave no folder after creating {name!r}")
+            folders[name] = str(made["id"])
+            created.append(name)
+        return {"frameio_project_id": project.id, "folders": folders, "created_project": created_project, "created_folders": created}
 
     def projects(self) -> tuple[FrameioProject, ...]:
         return tuple(FrameioProject.from_api(raw) for raw in self._api.pages(f"{self._account()}/projects"))

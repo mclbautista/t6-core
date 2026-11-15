@@ -71,11 +71,18 @@ def main() -> int:
     ), registry=registry, operator=operator, inside=inside)
     if registry is not None:
         sources, privacy_registry = read_config_from_env(environ)
+        frameio_queue = None
+        queue_url, queue_secret = (environ.get('T6_FRAMEIO_QUEUE_URL') or '').strip(), environ.get('T6_FRAMEIO_QUEUE_SECRET') or ''
+        if queue_url and queue_secret:  # Project Start asks the Frame.io worker through the queue server the worker polls
+            from t6.worker.client import HttpTransport, QueueClient
+
+            frameio_queue = QueueClient(HttpTransport(queue_url, timeout=30), queue_secret)
         api = VerbAPI(People(registry, PreviewTokens(signing_key),
                              service_permissions_from_env(environ)),
                       queue, secrets_from_env(environ), _open_notion, app,
                       llm_service=service_from_env(environ), data_sources=sources, privacy_registry=privacy_registry,
                       transcribe_rate=float(environ.get('T6_TRANSCRIBE_RATE', '0.4')),
+                      frameio_timeout=float(environ.get('T6_FRAMEIO_WRITE_TIMEOUT_SECONDS', '60')), frameio_queue=frameio_queue,
                       translate_enabled=environ.get('T6_TRANSCRIPT_TRANSLATE', '').lower() == 'true')
         def tailnet(request: Request) -> Response:
             if request.path.split("?", 1)[0].startswith("/v1/") or request.path.split("?", 1)[0] in {"/health", "/tap"}:

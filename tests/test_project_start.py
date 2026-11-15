@@ -9,6 +9,11 @@ from unittest.mock import patch
 
 from cli_api_fake import client_patch
 from t6.bay import BayStore
+from t6.frameio import CreateProjectFolders, Failed
+from t6.frameio.api import FrameioApi
+from t6.frameio.project_folders import ProjectFolders
+from t6.frameio.reads import FrameioReads
+from t6.frameio.testing import FakeFrameio, StaticTokens
 from t6.ids import EntityKind, T6Id
 from t6.notion.generated import BaysRow, ProjectsRow
 from t6.notion.testing import FakeNotion, project_properties, title
@@ -25,6 +30,28 @@ EPISODES = [{'code': 'Ep01', 'episode': 'Episode 1', 'due': '2026-12-01', 'air':
             {'code': 'Ep02', 'episode': 'Episode 2', 'due': '2026-12-08', 'air': None}]
 MEDIA = [{'kind': 'nas-path', 'ref': '/nas/Show', 'role': 'master'},
          {'kind': 'drive', 'ref': 't6d_0123456789abcdef0123456789abcdef', 'role': 'backup'}]
+
+
+class FakeFrameioWriter:
+    """What the API asks through the `frameio` queue, answered by the real Frame.io reads on the fake Frame.io API."""
+
+    def __init__(self, frameio: FakeFrameio) -> None:
+        self.reads = FrameioReads(FrameioApi(StaticTokens(), frameio.fetch, lambda _: None, send=frameio.send))
+        self.calls: list[tuple[str, str, tuple[str, ...]]] = []
+        self.calls_known: list[str | None] = []
+        self.calls_taken: list[tuple[str, ...]] = []
+        self.failure: Failed | None = None
+
+    def create_project_folders(self, project_id: str, name: str, folders: tuple[str, ...], *,
+                               known_project_id: str | None = None, taken: tuple[str, ...] = ()) -> ProjectFolders | Failed:
+        self.calls.append((project_id, name, folders))
+        self.calls_known.append(known_project_id)
+        self.calls_taken.append(taken)
+        if self.failure is not None:
+            return self.failure
+        found = self.reads(CreateProjectFolders(project_id=project_id, name=name, folders=folders, known_project_id=known_project_id, taken=taken))
+        assert isinstance(found, dict)
+        return ProjectFolders.from_json(found)
 
 
 class ProjectStartTests(unittest.TestCase):
@@ -54,14 +81,18 @@ class ProjectStartTests(unittest.TestCase):
         bays = BayStore(self.registry)
         rows = [BaysRow.from_page(self.fake.add_page('bays', {BaysRow.notion_name('name'): title('Bay')})) for _ in range(2)]
         self.bays = [e['t6_id'] for e in bays.migrate(rows, actor='setup', apply=True, digest=bays.migrate(rows, actor='setup')['digest'])['entries']]
-        self.store = ProjectStartStore(self.registry, self.people.tokens, lambda page: ProjectsRow.from_page(self.client.retrieve_page(page)).project_type)
+        self.store = ProjectStartStore(self.registry, self.people.tokens, lambda page: ProjectsRow.from_page(self.client.retrieve_page(page)).project_type,
+                                       lambda page: ProjectsRow.from_page(self.client.retrieve_page(page)).name)
+        self.frameio = FakeFrameio()
+        self.writer = FakeFrameioWriter(self.frameio)
         self.queue = InternalJobQueue(self.registry, clock=self.registry._clock)
         self.values: dict[str, Any] = {'project': self.project, 'deliverables': EPISODES, 'media': MEDIA, 'bookings': [
             {'bay': self.bays[0], 'person': 'editor', 'start': '2026-11-20T10:00:00+08:00', 'end': '2026-11-20T18:00:00+08:00'}]}
 
-    def call(self, values: dict[str, Any], actor: str = 'starter') -> Any:
+    def call(self, values: dict[str, Any], actor: str = 'starter', frameio: Any = 'default') -> Any:
         entry = next(e for e in VERBS if (e.noun, e.verb) == ('project', 'start'))
-        return invoke(entry, entry.input_model.model_validate(values), actor=actor, people=self.people, open_notion=lambda _: None)
+        return invoke(entry, entry.input_model.model_validate(values), actor=actor, people=self.people, open_notion=lambda _: None,
+                      frameio=self.writer if frameio == 'default' else frameio)
 
     def work(self) -> None:
         worker = Worker(InternalQueueClient(self.queue), 'main', {'project_start.preview': lambda job: self.store.run_preview(job.payload)})
@@ -94,8 +125,11 @@ class ProjectStartTests(unittest.TestCase):
         preview = self.preview()
         steps = preview.plan['steps']
         self.assertEqual([s['step'] for s in steps], ['approval', 'nas folders', 'frameio', 'resolve project', 'resolve timelines', 'media locations', 'milestone template', 'bookings'])
-        self.assertEqual([s['kind'] for s in steps], ['t6', 'manual', 'later', 'manual', 'manual', 't6', 't6', 't6'])
-        self.assertIn('#275', steps[2]['detail'])
+        self.assertEqual([s['kind'] for s in steps], ['t6', 'manual', 'frameio', 'manual', 'manual', 't6', 't6', 't6'])
+        self.assertEqual(steps[2]['label'], 'Frame.io project and per-Deliverable folder')
+        self.assertEqual((steps[2]['project_name'], steps[2]['folders']), ('Show', ['Ep01', 'Ep02']))
+        self.assertEqual(self.writer.calls, [])  # the preview asks Frame.io for nothing
+        self.assertEqual(self.frameio.requests + [str(p) for p, _ in self.frameio.posts], [])
         self.assertEqual(preview.plan['manual_steps'], ['NAS folders', 'Resolve project', 'Resolve timelines with their stamps'])
         template = steps[6]
         self.assertEqual(template['template'], 'film')
@@ -110,7 +144,7 @@ class ProjectStartTests(unittest.TestCase):
         confirm = {**self.values, 'idempotency_key': 'start', 'confirm': preview.token}
         done = self.call(confirm)
         assert isinstance(done, Done), done
-        self.assertEqual((self.count('approvals'), self.count('deliverables'), self.count('media_locations'), self.count('bookings')), (1, 2, 2, 1))
+        self.assertEqual((self.count('approvals'), self.count('deliverables'), self.count('media_locations'), self.count('bookings')), (1, 2, 5, 1))
         self.assertEqual(len(done.result['deliverable_ids']), 2)
         self.assertTrue(done.result['approval_id'].startswith('t6a_'))
         with self.registry._transaction() as db:
@@ -118,8 +152,127 @@ class ProjectStartTests(unittest.TestCase):
             self.assertEqual({r[0] for r in db.execute('SELECT template FROM deliverable_templates')}, {'film'})
         used = self.count('used_preview_tokens')
         self.assertEqual(done, self.call(confirm))
-        self.assertEqual((self.count('approvals'), self.count('deliverables'), self.count('media_locations'), self.count('bookings')), (1, 2, 2, 1))
+        self.assertEqual((self.count('approvals'), self.count('deliverables'), self.count('media_locations'), self.count('bookings')), (1, 2, 5, 1))
         self.assertEqual(self.count('used_preview_tokens'), used)
+
+    def locations(self, kind: str) -> list[tuple[str, str, str]]:
+        with self.registry._transaction() as db:
+            return [tuple(r) for r in db.execute('SELECT owner_id, ref, role FROM media_locations WHERE kind=? AND active=1 ORDER BY ref', (kind,))]
+
+    def confirm(self, key: str = 'start') -> Any:
+        return self.call({**self.values, 'idempotency_key': key, 'confirm': self.preview(key=key).token})
+
+    def test_confirm_makes_one_frameio_project_and_one_folder_per_deliverable_and_records_them(self) -> None:
+        done = self.confirm()
+        assert isinstance(done, Done), done
+        self.assertEqual(len(self.frameio.projects), 1)
+        project = next(iter(self.frameio.projects.values()))
+        self.assertEqual(project['name'], 'Show')
+        self.assertEqual(self.locations('frameio-project'), [(self.project, project['id'], 'frameio-project')])
+        folders = self.frameio.folders[project['root_folder_id']]
+        self.assertEqual(sorted(f['name'] for f in folders), ['Ep01', 'Ep02'])
+        by_code = {f['name']: f['id'] for f in folders}
+        with self.registry._transaction() as db:
+            owners = dict(db.execute("SELECT code, id FROM deliverables WHERE project_id=?", (self.project,)).fetchall())
+        self.assertEqual(self.locations('frameio-folder'), sorted(((owners[code], by_code[code], 'review') for code in ('Ep01', 'Ep02')), key=lambda row: row[1]))
+        self.assertEqual(len(done.result['frameio_media_ids']), 3)
+        self.assertEqual(done.result['frameio_project_id'], project['id'])
+        self.assertEqual(self.writer.calls, [(self.project, 'Show', ('Ep01', 'Ep02'))])
+
+    def test_a_repeated_confirm_creates_nothing_new_in_frameio_or_t6(self) -> None:
+        preview = self.preview()
+        confirm = {**self.values, 'idempotency_key': 'start', 'confirm': preview.token}
+        first = self.call(confirm)
+        posts, media = len(self.frameio.posts), self.count('media_locations')
+        self.assertEqual(self.call(confirm), first)
+        self.assertEqual((len(self.frameio.posts), self.count('media_locations'), len(self.writer.calls)), (posts, media, 1))
+
+    def test_a_crash_between_the_frameio_call_and_the_t6_record_creates_no_duplicate_on_retry(self) -> None:
+        from t6.media import MediaStore
+        preview = self.preview()
+        confirm = {**self.values, 'idempotency_key': 'start', 'confirm': preview.token}
+        real = MediaStore.write
+
+        def crash(store: Any, verb: str, values: dict[str, Any], **kwargs: Any) -> Any:
+            if values.get('kind') == 'frameio-folder':
+                raise RuntimeError('process died after the Frame.io call')
+            return real(store, verb, values, **kwargs)
+
+        with patch.object(MediaStore, 'write', crash), self.assertRaises(RuntimeError):
+            self.call(confirm)
+        project = next(iter(self.frameio.projects.values()))
+        made = len(self.frameio.posts)
+        self.assertEqual(made, 3)  # one project and two folders
+        self.assertEqual(self.locations('frameio-folder'), [])
+        done = self.call(confirm)
+        assert isinstance(done, Done), done
+        self.assertEqual((len(self.frameio.projects), len(self.frameio.posts)), (1, made))
+        self.assertEqual(self.locations('frameio-project')[0][1], project['id'])
+        self.assertEqual(len(self.locations('frameio-folder')), 2)
+
+    def test_a_frameio_failure_refuses_the_confirm_and_changes_nothing_in_t6_so_a_retry_works(self) -> None:
+        preview = self.preview()
+        confirm = {**self.values, 'idempotency_key': 'start', 'confirm': preview.token}
+        self.writer.failure = Failed('no answer from the Frame.io worker within 60 seconds')
+        refused = self.call(confirm)
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'frameio')
+        self.assertIn('no answer', refused.reason)
+        self.assertEqual((self.count('approvals'), self.count('deliverables'), self.count('media_locations'), self.count('used_preview_tokens')), (0, 0, 0, 0))
+        self.writer.failure = None
+        self.assertIsInstance(self.call(confirm), Done)
+        self.assertEqual((len(self.frameio.projects), self.count('media_locations')), (1, 5))
+
+    def test_with_no_frameio_worker_configured_confirm_is_refused_and_changes_nothing(self) -> None:
+        preview = self.preview()
+        refused = self.call({**self.values, 'idempotency_key': 'start', 'confirm': preview.token}, frameio=None)
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'config')
+        self.assertEqual((self.count('approvals'), self.count('media_locations')), (0, 0))
+
+    def test_no_share_is_created_and_nothing_is_uploaded(self) -> None:
+        self.confirm()
+        self.assertEqual(self.frameio.shares_created, 0)
+        self.assertFalse([path for path, _ in self.frameio.posts if 'share' in path])
+        self.assertFalse([path for path in self.frameio.requests if 'share' in path])
+        self.assertTrue(all(path.endswith(('/projects', '/folders')) for path, _ in self.frameio.posts))
+
+    def link_by_hand(self, project: str, frameio_project: str) -> None:
+        from t6.media import MediaStore
+        store = MediaStore(self.registry, self.people.tokens)
+        values = {'project': project, 'frameio_project': frameio_project}
+        preview = store.frameio_project_write('link', values, actor='starter', idempotency_key='hand-' + frameio_project)
+        assert isinstance(preview, Preview)
+        assert isinstance(store.frameio_project_write('link', values, actor='starter', idempotency_key='hand-' + frameio_project, confirm=preview.token), Done)
+
+    def test_a_frameio_project_that_belongs_to_another_project_is_not_adopted_by_its_name(self) -> None:
+        other = self.registry.register(actor='setup', idempotency_key='other', notion_page_id=str(self.fake.add_page('projects', project_properties(name='Show', project_type='Feature Film'))['id']))
+        assert isinstance(other, Registered)
+        self.frameio.add_project('fp-existing', 'Show')
+        self.link_by_hand(other.project.id, 'fp-existing')
+        done = self.confirm()
+        assert isinstance(done, Done), done
+        self.assertEqual(len(self.frameio.projects), 2)
+        self.assertNotEqual(done.result['frameio_project_id'], 'fp-existing')
+        self.assertEqual(self.frameio.folders.get('root-fp-existing', []), [])
+        self.assertEqual(self.writer.calls_taken, [('fp-existing',)])
+
+    def test_a_project_already_linked_by_hand_keeps_its_frameio_project_and_gets_only_folders(self) -> None:
+        self.frameio.add_project('fp-hand', 'A Different Name')
+        self.link_by_hand(self.project, 'fp-hand')
+        preview = self.preview()
+        done = self.call({**self.values, 'idempotency_key': 'start', 'confirm': preview.token})
+        assert isinstance(done, Done), done
+        self.assertEqual(len(self.frameio.projects), 1)
+        self.assertEqual(sorted(f['name'] for f in self.frameio.folders['root-fp-hand']), ['Ep01', 'Ep02'])
+        self.assertEqual(self.locations('frameio-project'), [(self.project, 'fp-hand', 'frameio-project')])
+        self.assertEqual(self.writer.calls_known, ['fp-hand'])
+
+    def test_a_project_with_no_name_in_notion_cannot_be_planned(self) -> None:
+        self.store.project_name = lambda page: None
+        refused = self.preview(key='noname')
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'project_name')
 
     def test_a_spent_token_cannot_start_another_key(self) -> None:
         preview = self.preview()
@@ -197,9 +350,10 @@ class ProjectStartTests(unittest.TestCase):
         overlap = self.preview({**self.values, 'bookings': self.values['bookings'] + [clash]}, key='o')
         assert isinstance(overlap, Refused)
         self.assertEqual(overlap.rule, 'overlap')
-        frameio = self.preview({**self.values, 'media': [{'kind': 'frameio-project', 'ref': 'abc', 'role': 'review'}]}, key='f')
-        assert isinstance(frameio, Refused)
-        self.assertEqual(frameio.rule, 'frameio')
+        for kind in ('frameio-project', 'frameio-folder'):  # the Frame.io locations come from the Frame.io step only
+            frameio = self.preview({**self.values, 'media': [{'kind': kind, 'ref': 'abc', 'role': 'review'}]}, key='f' + kind)
+            assert isinstance(frameio, Refused)
+            self.assertEqual(frameio.rule, 'frameio')
         duplicate = self.preview({**self.values, 'deliverables': EPISODES[:1] * 2}, key='d')
         assert isinstance(duplicate, Refused)
         self.assertEqual(duplicate.rule, 'deliverable_code')
@@ -270,7 +424,7 @@ class ProjectStartWorkerTests(unittest.TestCase):
                                'media': [], 'bookings': []}, actor='starter', idempotency_key='k')
         assert isinstance(started, Done)
         handlers = self.handlers(self.environ)
-        with patch('t6.notion.NotionClient', return_value=self.fake.client()):  # the handler closes it
+        with patch('t6.notion.NotionClient', side_effect=lambda token: self.fake.client()):  # each read closes its own
             worker = Worker(InternalQueueClient(InternalJobQueue(self.path)), 'main', handlers)
             self.assertTrue(worker.run_once())
         preview = store.job_result(started.result['job_id'], actor='starter')
@@ -278,9 +432,10 @@ class ProjectStartWorkerTests(unittest.TestCase):
         template = next(step for step in preview.plan['steps'] if step['step'] == 'milestone template')
         self.assertEqual(template['template'], 'tvc')
         confirmed = store.confirm({'project': self.project, 'deliverables': [{'code': 'Spot', 'episode': None, 'due': None, 'air': None}],
-                                   'media': [], 'bookings': []}, actor='starter', idempotency_key='k', token=preview.token)
-        assert isinstance(confirmed, Done)
+                                   'media': [], 'bookings': []}, actor='starter', idempotency_key='k', token=preview.token, frameio=FakeFrameioWriter(FakeFrameio()))
+        assert isinstance(confirmed, Done), confirmed
         self.assertEqual(len(confirmed.result['deliverable_ids']), 1)
+        self.assertEqual(next(step['project_name'] for step in preview.plan['steps'] if step['step'] == 'frameio'), 'Show')  # read from Notion by the worker
 
     def test_without_the_signing_key_plans_are_off_and_the_log_says_so(self) -> None:
         errors = io.StringIO()

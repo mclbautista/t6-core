@@ -150,7 +150,8 @@ class ApprovalCardTests(unittest.TestCase):
         self.actions = ActionStore(self.tmp.name + '/actions')
         service = OperatorService(self.registry, self.actions, (42,), people=self.people)
         self.queue = JobQueue(self.tmp.name + '/queue')
-        config = ServerConfig(operator_ids=(42,), grants=(Grant('worker', operator=True, claim=frozenset({'main'}), submit=frozenset({'main'})),))
+        config = ServerConfig(operator_ids=(42,), grants=(Grant('worker', operator=True, claim=frozenset({'main'}), submit=frozenset({'main'})),
+                                                          Grant('frameio-worker', claim=frozenset({'frameio'}))))
         self.app = WebhookApp(self.queue, config, registry=self.registry, operator=service)
         self.api = VerbAPI(self.people, self.queue, {'person': self.actor, 'gateway': 'gateway'}, lambda _: None, self.app)
         self.gateway = FakeGateway()
@@ -222,11 +223,26 @@ class ApprovalCardTests(unittest.TestCase):
         from t6.worker import Worker
         from t6.worker.internal_queue import InternalJobQueue, InternalQueueClient
         self.registry._new_id = lambda: 't6p_' + '4' * 24
-        project = self.registry.register(actor=self.actor, idempotency_key='start-project')
+        project = self.registry.register(actor=self.actor, idempotency_key='start-project', notion_page_id='11111111-1111-1111-1111-111111111111')
         assert isinstance(project, Registered)
         with self.registry._transaction() as db:
             db.execute("INSERT INTO person_permissions VALUES (?, 'operator')", (self.actor,))
-        store = ProjectStartStore(self.registry, self.people.tokens)
+        store = ProjectStartStore(self.registry, self.people.tokens, None, lambda page: 'Example Show')
+        # The confirm asks the Frame.io worker through the `frameio` queue, which a worker on a fake Frame.io API serves.
+        from t6.frameio import FrameioWorker
+        from t6.frameio.api import FrameioApi
+        from t6.frameio.project_folders import LocalFrameioQueue, QueueFrameioWriter
+        from t6.frameio.reads import FrameioReads
+        from t6.frameio.testing import FakeFrameio, StaticTokens
+        from t6.worker import QueueClient, Worker
+        from test_frameio_worker import FakeTokens
+        from test_server_app import InProcess
+        fake = FakeFrameio()
+        frameio = FrameioWorker(FakeTokens(), FrameioReads(FrameioApi(StaticTokens(), fake.fetch, lambda _: None, send=fake.send)), lambda text, key: None)
+        served = Worker(QueueClient(InProcess(self.app), 'frameio-worker'), 'frameio', frameio.handlers())
+        def serve(_seconds: float) -> None:
+            served.run_once()
+        self.api.frameio = QueueFrameioWriter(LocalFrameioQueue(self.queue), sleep=serve)
         values = {'project': project.project.id, 'idempotency_key': 'start'}
         job = self.send('/v1/project/start', values)['result']['job_id']
         Worker(InternalQueueClient(InternalJobQueue(self.registry)), 'main', {JOB_KIND: lambda claimed: store.run_preview(claimed.payload)}).run_once()
@@ -239,6 +255,7 @@ class ApprovalCardTests(unittest.TestCase):
         self.assertEqual(self.send('/v1/project/start', {**values, 'confirm': preview['token']}), done)
         self.drain()
         self.assertEqual(self.gateway.sends, 1)
+        self.assertEqual((len(fake.projects), done['result']['frameio_project_id'] in fake.projects, len(fake.posts), fake.shares_created), (1, True, 1, 0))
 
     def test_card_denial_records_selected_reason(self) -> None:
         values = {'gate': 'grade', 'target': 'cut', 'tapper_rule': 'person:' + self.actor, 'idempotency_key': 'denial'}

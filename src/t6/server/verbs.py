@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
+from t6.frameio.project_folders import LocalFrameioQueue, QueueFrameioWriter
 from t6.person import PERMISSIONS, SERVICES, People
 from t6.privacy import Registry as PrivacyRegistry, Session
 from t6.server.app import Request, Response, WebhookApp
@@ -26,7 +27,8 @@ class VerbAPI:
                  open_notion: Callable[..., Any], tap_app: WebhookApp | None = None,
                  *, llm_service: Any = None, data_sources: Mapping[str, str] | None = None,
                  privacy_registry: PrivacyRegistry | None = None, transcribe_rate: float = 0.4,
-                 translate_enabled: bool = False) -> None:
+                 translate_enabled: bool = False, frameio_timeout: float = 60.0,
+                 frameio_queue: Any = None) -> None:
         import math
         if not math.isfinite(transcribe_rate) or transcribe_rate < 0:
             raise ValueError('Transcription rate must be finite and non-negative')
@@ -40,6 +42,7 @@ class VerbAPI:
         self.privacy_registry = privacy_registry
         self.transcribe_rate = transcribe_rate
         self.translate_enabled = translate_enabled
+        self.frameio = QueueFrameioWriter(frameio_queue or LocalFrameioQueue(queue), timeout=frameio_timeout)  # asks the Frame.io worker; holds no token
         self.routes = {f'/v1/{v.noun}' + ('/' + v.verb.replace(' ', '/') if v.verb else ''): v for v in VERBS}
         for verb in VERBS:
             if verb.noun == 'approval':
@@ -287,7 +290,7 @@ class VerbAPI:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._legacy_read(entry.noun, entry.verb, inputs)
         else:
-            outcome = invoke(entry, inputs, actor=actor, people=self.people, open_notion=self.open_notion)
+            outcome = invoke(entry, inputs, actor=actor, people=self.people, open_notion=self.open_notion, frameio=self.frameio)
         if entry.noun == 'project' and entry.verb in ('link-chat', 'unlink-chat') and isinstance(outcome, Preview):
             if self.tap_app and self.tap_app._operator and outcome.plan.get('approval_id'):
                 from t6.approval import Approvals

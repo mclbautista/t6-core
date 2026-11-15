@@ -289,7 +289,20 @@ def project_start_handler(environ: Mapping[str, str]) -> Handler:
         except NotionError as error:
             raise ValueError(f"could not read the Project Type from Notion: {error}") from error
 
-    store = ProjectStartStore(SqliteProjectRegistry(environ["T6_DATABASE"]), PreviewTokens(environ["T6_PREVIEW_SIGNING_KEY"]), project_type)
+    def project_name(page: str) -> str | None:
+        token = environ.get("T6_NOTION_TOKEN")
+        if not token:
+            raise ValueError("missing environment variable: T6_NOTION_TOKEN (the plan reads the Project name for Frame.io)")
+        from t6.notion import NotionClient, NotionError
+        from t6.notion.generated import ProjectsRow
+
+        try:
+            with NotionClient(token) as client:
+                return ProjectsRow.from_page(client.retrieve_page(page)).name
+        except NotionError as error:
+            raise ValueError(f"could not read the Project name from Notion: {error}") from error
+
+    store = ProjectStartStore(SqliteProjectRegistry(environ["T6_DATABASE"]), PreviewTokens(environ["T6_PREVIEW_SIGNING_KEY"]), project_type, project_name)
     return lambda job: store.run_preview(job.payload)
 
 
@@ -423,6 +436,7 @@ def frameio_backend(environ: Mapping[str, str]) -> tuple[Tokens, Run]:
         FrameioApi(tokens),
         links,
         environ.get("T6_FRAMEIO_ACCOUNT_ID") or None,
+        workspace_id=environ.get("T6_FRAMEIO_WORKSPACE_ID") or None,
         share_cache_seconds=_number_setting(environ, "T6_FRAMEIO_SHARE_CACHE_SECONDS", SHARE_CACHE_SECONDS, minimum=0),
         share_scan_limit=int(_number_setting(environ, "T6_FRAMEIO_SHARE_SCAN_LIMIT", SHARE_SCAN_LIMIT, minimum=1)),
     )

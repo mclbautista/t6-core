@@ -40,6 +40,13 @@ class MediaStore:
             return [dict(zip(('id', 'owner', 'kind', 'ref', 'role'), row)) for row in db.execute(
                 'SELECT id, owner_id, kind, ref, role FROM media_locations WHERE (owner_id=? OR owner_id=(SELECT project_id FROM deliverables WHERE id=?)) AND active=1 ORDER BY id', (owner, owner))]
 
+    def frameio_projects(self, project: str) -> tuple[str | None, tuple[str, ...]]:
+        """This Project's linked Frame.io project (None when it has none), and the Frame.io projects of every other Project."""
+        with self.registry._transaction() as db:
+            rows = db.execute("SELECT ref, project_id FROM media_locations WHERE kind='frameio-project' AND active=1 ORDER BY id").fetchall()
+        mine = [ref for ref, owner in rows if owner == project]
+        return (mine[0] if mine else None), tuple(sorted({ref for ref, owner in rows if owner != project}))
+
     def write(self, verb: str, values: dict[str, Any], *, actor: str, idempotency_key: str | None = None, confirm: str | None = None, noun: str = 'media') -> Outcome:
         if not actor.strip() or verb not in ('link', 'unlink'):
             return Refused(rule='input', reason='A valid actor and verb are required')

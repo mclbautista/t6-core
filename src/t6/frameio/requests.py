@@ -13,21 +13,31 @@ come back as `Failed` with a reason.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, fields
+from dataclasses import MISSING, dataclass, fields
 from datetime import datetime
 import time
-from typing import ClassVar, TypeAlias
+from typing import ClassVar, Protocol, TypeAlias
 import uuid
 
 from t6.domain.events import JsonValue
 from t6.server.queue import FRAMEIO_QUEUE
-from t6.worker.client import QueueClient
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 
 
+class RequestQueue(Protocol):
+    """What `ask` needs of a queue: the methods of `t6.worker.QueueClient`."""
+
+    def submit(self, queue: str, kind: str, dedupe_key: str, payload: Mapping[str, JsonValue] | None = None) -> int: ...
+
+    def result(self, queue: str, job_id: int) -> tuple[str, JsonValue] | None: ...
+
+
 class _Request:
-    """Every text field must be non-blank, and every time must carry a time zone."""
+    """Every text field must be non-blank, every time must carry a time zone, and every text in a list must be non-blank.
+
+    A field whose default is None may be left out.
+    """
 
     __slots__ = ()
     kind: ClassVar[str]
@@ -35,9 +45,14 @@ class _Request:
     def __post_init__(self) -> None:
         for spec in fields(self):  # type: ignore[arg-type]
             value = getattr(self, spec.name)
+            if value is None and spec.default is None:
+                continue
             if isinstance(value, datetime):
                 if value.tzinfo is None:
                     raise ValueError(f"{spec.name} must carry a time zone")
+            elif isinstance(value, tuple):
+                if not all(isinstance(item, str) and item.strip() for item in value):
+                    raise ValueError(f"{spec.name} must hold non-blank text only")
             elif not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{spec.name} must be non-blank text")
 
@@ -121,17 +136,37 @@ class BriefingFeed(_Request):
 
 @dataclass(frozen=True, slots=True)
 class CreateProjectFolders(_Request):
-    """Project Start's Frame.io folder step for one T6 Project.
+    """Project Start's Frame.io step for one T6 Project: its Frame.io project, and one folder per Deliverable code.
 
-    It can be delivered twice, and a caller that timed out may ask again, so
-    whatever runs it must create nothing the second time.
+    This is a write, and the one place the Frame.io worker creates anything. It can be delivered twice, and a
+    caller that timed out may ask again, so it creates nothing that exists:
+
+    - the project is `known_project_id` when the caller has one stored (the id is never searched for by name);
+    - otherwise the project in the T6 account named exactly `name`, unless its id is in `taken` (a Frame.io
+      project that belongs to another T6 Project);
+    - otherwise a new project. Two projects with the name, or an unknown `known_project_id`, fail the request:
+      the worker never guesses and never makes a second one.
+
+    A folder is found by its exact name under the project's root folder, or made there. No share is made.
+    The answer is `{"frameio_project_id", "folders": {code: folder id}, "created_project", "created_folders"}`.
     """
 
     kind: ClassVar[str] = "frameio.create_project_folders"
     project_id: str
-    """The T6 Project ID (`t6p_...`)."""
+    """The T6 Project ID (`t6p_...`). Frame.io never sees it."""
     name: str
-    """What the Frame.io project is called."""
+    """What the Frame.io project is called: the Project's name."""
+    folders: tuple[str, ...]
+    """Folder names, one per Deliverable code. Each is unique."""
+    known_project_id: str | None = None
+    """The Frame.io project T6 already records for this Project."""
+    taken: tuple[str, ...] = ()
+    """Frame.io projects T6 records for other Projects."""
+
+    def __post_init__(self) -> None:
+        _Request.__post_init__(self)
+        if len(set(self.folders)) != len(self.folders):
+            raise ValueError("folders must be unique")
 
 
 FrameioRequest: TypeAlias = (
@@ -170,7 +205,7 @@ def to_payload(request: FrameioRequest) -> dict[str, JsonValue]:
     payload: dict[str, JsonValue] = {}
     for spec in fields(request):
         value = getattr(request, spec.name)
-        payload[spec.name] = value.isoformat() if isinstance(value, datetime) else value
+        payload[spec.name] = value.isoformat() if isinstance(value, datetime) else list(value) if isinstance(value, tuple) else value
     return payload
 
 
@@ -186,6 +221,14 @@ def from_job(kind: str, payload: Mapping[str, JsonValue]) -> FrameioRequest:
             if not isinstance(value, str):
                 raise ValueError(f"{spec.name} must be an ISO 8601 time")
             values[spec.name] = datetime.fromisoformat(value)
+        elif spec.type == "tuple[str, ...]":
+            if value is None and spec.default is not MISSING:
+                continue
+            if not isinstance(value, list):
+                raise ValueError(f"{spec.name} must be a list")
+            values[spec.name] = tuple(value)
+        elif value is None and spec.default is not MISSING:
+            continue
         else:
             values[spec.name] = value
     return cls(**values)  # type: ignore[arg-type]
@@ -214,7 +257,7 @@ FrameioResult: TypeAlias = Ok | Failed
 
 
 def ask(
-    client: QueueClient,
+    client: RequestQueue,
     request: FrameioRequest,
     *,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,

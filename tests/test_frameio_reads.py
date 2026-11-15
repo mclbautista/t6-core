@@ -102,10 +102,6 @@ class ReadTests(ReadsTestCase):
             self.reads(ShareLinks(frameio_project_id="fp1/shares/../.."))
         self.assertNotIn("..", self.frameio.requests[-1].split("/"))
 
-    def test_the_folder_step_is_not_a_read(self) -> None:
-        with self.assertRaisesRegex(NotImplementedError, "t6-core#23"):
-            self.reads(CreateProjectFolders(project_id="t6p_1", name="Example Show"))
-
     def test_a_sign_in_that_sees_two_accounts_needs_the_account_named(self) -> None:
         self.frameio.accounts.append({"id": "acc-2"})
         with self.assertRaisesRegex(RuntimeError, "T6_FRAMEIO_ACCOUNT_ID"):

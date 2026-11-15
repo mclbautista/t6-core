@@ -174,11 +174,28 @@ applies the **t6 steps**; a changed input is refused. Role: operator, and the
 - **Manual steps** the plan lists and does not do: creating the NAS folders, the
   Resolve project, the Resolve timelines with their stamps (manual stamping).
   Confirm records each in Activity (`project_start_manual`) with `project_start`.
+- **Frame.io step**: confirm asks the Frame.io worker (the only token holder)
+  through the `frameio` queue for one Frame.io project and one folder per
+  Deliverable, and records them as Media locations: the project as the
+  Project's frameio-project (the `frameio project link` rules, role
+  frameio-project), and one frameio-folder with role review per Deliverable.
+  The Frame.io project is named by the Project's name (read from Notion by the
+  plan) and each folder by its Deliverable code, in the configured T6 Frame.io
+  account. Confirm asks first: a Frame.io failure refuses the confirm and leaves
+  t6 unchanged. The step is safe to repeat. The Frame.io worker uses the
+  Frame.io project the Project already holds, else the one in the account with
+  exactly that name that no other Project holds, else makes one; it never
+  guesses between two. A folder is found by exact name or made. So a repeated
+  confirm, or a retry after a crash between the Frame.io call and the t6
+  record, creates nothing new. No share is made (a share always needs a
+  person's yes), nothing is uploaded (the editor uploads), and version stacks
+  form as cuts arrive.
 - **Plan order**: approval, NAS folders, Frame.io project and per-Deliverable
-  folder (listed as coming with #275, not built here), Resolve project, Resolve
-  timelines, Media locations, milestone template, Bookings.
+  folder, Resolve project, Resolve timelines, Media locations, milestone
+  template, Bookings.
 - A Project is started once: a second Start, or a Start of an archived Project,
-  is refused. Frame.io Media locations are refused in a Start.
+  is refused. Frame.io Media locations are refused in the `media` input of a
+  Start: they come from the Frame.io step only.
 
 ## Floor reads
 
@@ -387,7 +404,9 @@ fields, read from Notion) and `t6.registry` (identity).
   sent as a job on the `frameio` queue. Its **result** is `Ok` or `Failed`.
   A **Frame.io project** is Frame.io's own object, never a T6 Project.
 - **Caller**: any part of T6 that asks the Frame.io worker and waits for the
-  result: the main worker, t6-notion-reports.
+  result: the main worker, the API (Project Start confirm), t6-notion-reports.
+  Almost every request is a read; `CreateProjectFolders` is the one **write**
+  request (a Frame.io project and its folders, never a share).
 - **Review message**: the one Telegram message to the review chat that says a
   person has finished commenting on a Frame.io file. A **review timer** is
   kept per (file, commenting person) and restarts on each of their comments.

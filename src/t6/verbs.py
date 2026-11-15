@@ -33,6 +33,8 @@ if TYPE_CHECKING:
 
 _actor: ContextVar[str] = ContextVar("verb_actor", default="")
 _registry: ContextVar[Any] = ContextVar("verb_registry", default=None)
+_frameio: ContextVar[Any] = ContextVar("verb_frameio", default=None)
+"""The way to ask the Frame.io worker (`t6.frameio.project_folders.FrameioProjectWriter`), set by the API; None in a process that has none."""
 
 
 class Preview(BaseModel):
@@ -194,6 +196,9 @@ class ProjectStartOutput(BaseModel):
     idempotency_key: str | None = None
     approval_id: str | None = None
     deliverable_ids: list[str] = Field(default_factory=list)
+    frameio_project_id: str | None = None
+    frameio_folders: dict[str, str] = Field(default_factory=dict)
+    frameio_media_ids: list[str] = Field(default_factory=list)
     media_ids: list[str] = Field(default_factory=list)
     booking_ids: list[str] = Field(default_factory=list)
     manual_steps: list[str] = Field(default_factory=list)
@@ -210,7 +215,7 @@ def project_start(inputs: ProjectStartInput, open_notion: Callable[..., Any]) ->
     if inputs.job is not None:
         return store.job_result(inputs.job, actor=_actor.get())
     if inputs.confirm:
-        return store.confirm(values, actor=_actor.get(), idempotency_key=inputs.idempotency_key, token=inputs.confirm)
+        return store.confirm(values, actor=_actor.get(), idempotency_key=inputs.idempotency_key, token=inputs.confirm, frameio=_frameio.get())
     return store.start(values, actor=_actor.get(), idempotency_key=inputs.idempotency_key)
 
 
@@ -1834,7 +1839,7 @@ VERBS = (
 
 def invoke(entry: Verb, inputs: BaseModel, *, actor: str, people: People,
            open_notion: Callable[..., Any],
-           legacy: Callable[[], int] | None = None) -> Outcome:
+           legacy: Callable[[], int] | None = None, frameio: Any = None) -> Outcome:
     """Authorize an authenticated Person before invoking a registered verb."""
     if isinstance(inputs, ConcernNoteInput) and inputs.from_reply is not None:
         person = people.get(actor)
@@ -1852,11 +1857,13 @@ def invoke(entry: Verb, inputs: BaseModel, *, actor: str, people: People,
         return Done(result=legacy()) if legacy is not None else Refused(rule='verb', reason='Verb has no registered handler')
     token = _actor.set(actor)
     registry_token = _registry.set(people.registry)
+    frameio_token = _frameio.set(frameio)
     try:
         return entry.handler(inputs, open_notion)
     finally:
         _actor.reset(token)
         _registry.reset(registry_token)
+        _frameio.reset(frameio_token)
 
 
 def catalogue() -> list[dict[str, Any]]:

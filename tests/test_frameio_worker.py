@@ -53,7 +53,8 @@ REQUESTS: tuple[FrameioRequest, ...] = (
     Versions(file_id="f1"),
     Approvals(file_id="f1"),
     BriefingFeed(since=SINCE),
-    CreateProjectFolders(project_id="t6p_1", name="Show One"),
+    CreateProjectFolders(project_id="t6p_1", name="Show One", folders=("Ep01", "Ep02")),
+    CreateProjectFolders(project_id="t6p_1", name="Show One", folders=(), known_project_id="fp1", taken=("fp2",)),
 )
 
 
