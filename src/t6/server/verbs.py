@@ -119,7 +119,7 @@ class VerbAPI:
             inputs = entry.input_model.model_validate(data)
         except ValidationError as error:
             return Response(422, {'errors': cast(JsonValue, error.errors(include_url=False, include_context=False, include_input=False))})
-        if (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'resolve'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find')}:
+        if (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'flags'), ('project', 'resolve'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find')}:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._typed_read(entry.noun, entry.verb, inputs)
             if isinstance(outcome, Done) and entry.noun in {'project', 'jo', 'person', 'camera', 'deliverable', 'meeting-notes', 'external-link', 'studio'} and self.people.authorize(actor, 'operator'):
@@ -355,10 +355,18 @@ class VerbAPI:
                     return Done(result={'cameras': [{'page_id': c['id'], 'name': c['name'] or '', 'tags': c['tags']} for c in cameras]})
                 if noun == 'project':
                     projects = [project_result(p) for p in ProjectReader(client, self.data_sources['projects']).list()]
-                    if verb == 'get':
+                    if verb in ('get', 'flags'):
                         pages = refs.pages(inputs.project)
-                        active = pages[0].replace('-', '').lower() if pages else ''
+                        active = (pages[0] if pages else inputs.project).replace('-', '').lower()
                         project = next((p for p in projects if p.page_id.replace('-', '').lower() == active), None)
+                        if verb == 'flags' and project:
+                            from t6.domain.project_rules import date_flags, health_missing
+                            from t6.domain.studio_time import MANILA
+                            today = datetime.fromtimestamp(self.people.registry._clock(), MANILA).date()
+                            flags = [{'kind': 'data_gap' if f.kind == 'missing' else f.kind, 'field': f.field, 'detail': f.kind, **({'days': f.days} if f.days is not None else {})} for f in date_flags(project, today)]
+                            if health_missing(project):
+                                flags.append({'kind': 'data_gap', 'field': 'health', 'detail': 'missing health update'})
+                            return Done(result={'flags': flags})
                         return Done(result={'project': project}) if project else Refused(rule='project', reason='Project not found')
                     if verb == 'resolve':
                         from t6.lookup import Index, Lookup

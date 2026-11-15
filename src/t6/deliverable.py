@@ -36,6 +36,17 @@ def intend_status_change(db: Any, identifier: str, before: str, now: float) -> N
         db.execute('INSERT INTO deliverable_sync_intents (intent_id) VALUES (last_insert_rowid())')
 
 
+def write_milestone(db: Any, deliverable: str, name: str, on: str, actor: str, now: float) -> str:
+    """Append a milestone and settle the Concerns waiting on it, in the caller's transaction."""
+    from t6.concern import settle_concern
+
+    identifier = str(T6Id.mint(EntityKind.MILESTONE))
+    db.execute('INSERT INTO milestones VALUES (?, ?, ?, ?, ?, ?)', (identifier, deliverable, name, on, actor, now))
+    for (concern,) in db.execute('SELECT concern_id FROM concern_milestones WHERE deliverable_id = ? AND milestone = ?', (deliverable, name)).fetchall():
+        settle_concern(db, concern, now, identifier)
+    return identifier
+
+
 class DeliverableStore:
     def __init__(self, registry: SqliteProjectRegistry, tokens: PreviewTokens, project_type: Callable[[str], str | None] | None = None) -> None:
         self.registry, self.tokens, self.project_type = registry, tokens, project_type
@@ -188,9 +199,8 @@ class DeliverableStore:
             if plan['deliverable_id'] != row[0]:
                 return Refused(rule='deliverable_changed', reason='Deliverable changed since preview')
             now = self.registry._clock()
-            identifier = str(T6Id.mint(EntityKind.MILESTONE))
             before = deliverable_status(db, row[0])
-            db.execute('INSERT INTO milestones VALUES (?, ?, ?, ?, ?, ?)', (identifier, row[0], name, plan['on'], actor, now))
+            identifier = write_milestone(db, row[0], name, plan['on'], actor, now)
             intend_status_change(db, row[0], before, now)
             result = {**plan, 'milestone_id': identifier}
             cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, NULL, ?)', (row[0], 'milestone_record', actor, now, json.dumps(result)))

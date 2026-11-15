@@ -1,7 +1,8 @@
 """Concern records, human decisions, and silence timers."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
+from collections.abc import Mapping
 import json
 import secrets
 from typing import Any
@@ -10,8 +11,25 @@ from t6.ids import EntityKind, T6Id
 from t6.preview import PreviewTokens
 from t6.registry.sqlite import SqliteProjectRegistry
 from t6.verbs import Done, Outcome, Refused
+from t6.domain.studio_time import MANILA
 
 WEEK = 7 * 24 * 60 * 60
+
+
+PROJECT_DATES = ('playdate', 'submission_deadline', 'archival_deadline')
+
+def settle_linked(db: Any, settles_id: str, now: float) -> None:
+    """Close eligible linked Concerns in the settling event's transaction."""
+    rows = db.execute("SELECT id, project_id, state FROM concerns WHERE settles_id = ? AND manual_override = 0 AND state != 'closed'", (settles_id,)).fetchall()
+    for concern, _, _ in rows:
+        settle_concern(db, concern, now, settles_id)
+
+
+def settle_concern(db: Any, concern: str, now: float, evidence: str) -> None:
+    row = db.execute("SELECT project_id, state FROM concerns WHERE id = ? AND manual_override = 0 AND state != 'closed'", (concern,)).fetchone()
+    if row:
+        db.execute("UPDATE concerns SET state = 'closed', revision = revision + 1 WHERE id = ?", (concern,))
+        ConcernStore._log(db, row[0], concern, 'Sixto (auto)', 'concern_auto_resolve', now, row[1], {'evidence': evidence}, f'Concern resolved by {evidence}')
 
 
 class ConcernStore:
@@ -31,6 +49,46 @@ class ConcernStore:
     def for_message(self, chat: str, message_id: str) -> list[str]:
         with self.registry._transaction() as db:
             return [row[0] for row in db.execute('SELECT concern_id FROM concern_brief_messages WHERE chat = ? AND message_id = ? ORDER BY concern_id', (chat, message_id))]
+
+    def settle_dates(self, project: str, dates: Mapping[str, str | None]) -> None:
+        """Close the Concerns that waited for a Project date which is now filled."""
+        now = self.registry._clock()
+        with self.registry._transaction() as db:
+            for concern, field in db.execute('SELECT concern_id, field FROM concern_dates WHERE project_id = ?', (project,)).fetchall():
+                if dates.get(field):
+                    settle_concern(db, concern, now, f'{field} ({dates[field]})')
+
+    def reconcile_dates(self, project: str, owner: str, dates: Mapping[str, str | None]) -> dict[str, str]:
+        """Apply date-order rules only when both precise dates are available."""
+        parsed: dict[str, date | None] = {}
+        for field in PROJECT_DATES:
+            value = dates.get(field)
+            try:
+                parsed[field] = date.fromisoformat(value) if value else None
+            except ValueError:
+                parsed[field] = None
+        now = self.registry._clock()
+        today = datetime.fromtimestamp(now, MANILA).date().isoformat()
+        with self.registry._transaction() as db:
+            if not db.execute('SELECT 1 FROM projects WHERE id = ?', (project,)).fetchone() or not db.execute('SELECT 1 FROM persons WHERE id = ? AND active = 1', (owner,)).fetchone():
+                raise ValueError('Project and active coordinator are required')
+            for rule, first, second in (('submission_before_playdate', 'submission_deadline', 'playdate'), ('archival_before_submission', 'archival_deadline', 'submission_deadline')):
+                a, b = parsed[first], parsed[second]
+                if a is None or b is None:
+                    continue
+                row = db.execute('SELECT c.id, c.state FROM concern_date_rules r JOIN concerns c ON c.id = r.concern_id WHERE r.project_id = ? AND r.rule = ?', (project, rule)).fetchone()
+                evidence = f'{first} ({a}) is before {second} ({b})'
+                if a < b and row is None:
+                    concern = str(T6Id.mint(EntityKind.CONCERN))
+                    db.execute("INSERT INTO concerns (id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')", (concern, project, owner, 'data', evidence, today, now, now))
+                    db.execute('INSERT INTO concern_date_rules VALUES (?, ?, ?)', (project, rule, concern))
+                    self._log(db, project, concern, 'Sixto (auto)', 'concern_auto_raise', now, None, evidence, evidence)
+                elif a < b and row and row[1] == 'closed':
+                    db.execute("UPDATE concerns SET state = 'open', revision = revision + 1 WHERE id = ?", (row[0],))
+                    self._log(db, project, row[0], 'Sixto (auto)', 'concern_auto_reopen', now, 'closed', evidence, evidence)
+                elif a >= b and row:
+                    settle_concern(db, row[0], now, f'{first} ({a}), {second} ({b})')
+            return {r[0]: r[1] for r in db.execute('SELECT rule, concern_id FROM concern_date_rules WHERE project_id = ?', (project,))}
 
     def write(self, verb: str, values: dict[str, Any], *, actor: str, idempotency_key: str | None = None, confirm: str | None = None) -> Outcome:
         if verb not in ('raise', 'note', 'resolve', 'reopen', 'record-message') or not actor.strip():
@@ -83,11 +141,21 @@ class ConcernStore:
                 if not row:
                     return Refused(rule='concern', reason='Concern not found')
                 project, state, revision = row
+                if verb in ('resolve', 'reopen') and db.execute('SELECT 1 FROM concern_date_rules WHERE concern_id = ?', (concern,)).fetchone():
+                    return Refused(rule='rule_made', reason='Date-sanity Concerns follow data only')
                 if verb == 'note' and (not isinstance(values.get('text'), str) or not values['text'].strip()):
                     return Refused(rule='note', reason='A note is required')
                 if verb == 'resolve' and state == 'closed' or verb == 'reopen' and state == 'open':
                     return Refused(rule='state', reason='Concern cannot make that transition')
             settles = values.get('settles_id')
+            deliverable, milestone = values.get('settles_deliverable'), values.get('settles_milestone')
+            if deliverable is not None or milestone is not None:
+                from t6.deliverable import MILESTONES
+                if verb != 'raise' or settles is not None or milestone not in MILESTONES or not db.execute('SELECT 1 FROM deliverables WHERE id = ? AND project_id = ?', (deliverable, project)).fetchone():
+                    return Refused(rule='settlement', reason='A Project Deliverable and valid milestone are required')
+            awaited = values.get('settles_date')
+            if awaited is not None and (verb != 'raise' or settles is not None or deliverable is not None or awaited not in PROJECT_DATES):
+                return Refused(rule='settlement', reason='An awaited date is a Project date and the only settlement of a new Concern')
             if settles is not None:
                 try:
                     kind = next(k for k in (EntityKind.JOB_ORDER, EntityKind.APPROVAL, EntityKind.MILESTONE) if isinstance(settles, str) and settles.startswith('t6' + k.value + '_'))
@@ -110,6 +178,14 @@ class ConcernStore:
                 concern = str(T6Id.mint(EntityKind.CONCERN))
                 db.execute('INSERT INTO concerns (id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state, settles_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (concern, project, values['owner'], values['waiting_on'], values['anchor'], values['as_of'], now, now, 'open', settles))
                 self._schedule(db, concern, now, 1)
+                if deliverable is not None:
+                    db.execute('INSERT INTO concern_milestones VALUES (?, ?, ?)', (concern, deliverable, milestone))
+                    if db.execute('SELECT 1 FROM milestones WHERE deliverable_id = ? AND milestone = ?', (deliverable, milestone)).fetchone():
+                        settle_concern(db, concern, now, f'{deliverable}: {milestone}')
+                if awaited is not None:
+                    db.execute('INSERT INTO concern_dates VALUES (?, ?, ?)', (concern, project, awaited))
+                if settles and (db.execute("SELECT 1 FROM jo_state WHERE job_order_id = ? AND status = 'Done'", (settles,)).fetchone() or db.execute("SELECT 1 FROM approvals WHERE id = ? AND state = 'granted'", (settles,)).fetchone() or db.execute('SELECT 1 FROM milestones WHERE id = ?', (settles,)).fetchone()):
+                    settle_linked(db, settles, now)
             elif verb == 'record-message':
                 db.execute('INSERT OR IGNORE INTO concern_brief_messages (chat, message_id, concern_id) VALUES (?, ?, ?)', (values['chat'], values['message_id'], concern))
             elif verb == 'note':

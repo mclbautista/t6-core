@@ -17,6 +17,7 @@ message is sent anyway with "unknown" where the answer is missing.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 from datetime import datetime, timezone
 import html
 
@@ -49,6 +50,7 @@ class ReviewMessage:
         ask_frameio: Callable[[FrameioRequest], FrameioResult],
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         target: Callable[[str], tuple[int, int | None] | None] | None = None,
+        version: Callable[[str], dict[str, Any] | None] | None = None,
     ) -> None:
         self._gateway = gateway
         self._chat = chat
@@ -56,6 +58,7 @@ class ReviewMessage:
         self._ask = ask_frameio
         self._now = now
         self._target = target
+        self._version = version
 
     def handlers(self) -> dict[str, Handler]:
         return {JobKind.FRAMEIO_REVIEW_DONE.value: self.notify}
@@ -80,6 +83,7 @@ class ReviewMessage:
         comments = "1 comment" if count == 1 else f"{count} comments"
         text = (
             f"<b>{who}</b> finished commenting on <b>{html.escape(title, quote=False)}</b>\n"
+            f"{self._version_line(file_id, job.attempt)}"
             f"Share link: {self._share_text(shares, {file_id, *([file.parent_id] if file is not None and file.parent_id else [])})}\n"
             f"Frame.io link: {asset}\n"
             f"Started: {long_date(first)}\n"
@@ -90,6 +94,25 @@ class ReviewMessage:
         chat, topic = target if target is not None else (self._chat, self._topic)
         ref = self._gateway.notify(chat, text, [], f"frameio-review:{job.dedupe_key}", topic=topic)
         return {"message_ref": ref, "count": count}
+
+    def _version_line(self, file_id: str, attempt: int) -> str:
+        """The file's Version as a line of the message, or nothing when t6 has no Version for it.
+
+        A lookup that fails is tried again with the job; the last try sends without the line.
+        """
+        if self._version is None:
+            return ""
+        try:
+            version = self._version(file_id)
+        except Exception as error:
+            if attempt < SEND_ANYWAY_AT_ATTEMPT:
+                raise RuntimeError("t6 did not answer for the Version; the message is sent after the last try") from error
+            return ""
+        if version is None:
+            return ""
+        parts = [str(version["deliverable"]), *([str(version["note"])] if version.get("note") else []), str(version["id"])]
+        locked = " (locked)" if version.get("locked") else ""
+        return f"Version: {html.escape(', '.join(parts), quote=False)}{locked}\n"
 
     def _read_file(self, file_id: str) -> FrameioFile | None:
         result = self._ask(FileInfo(file_id=file_id))

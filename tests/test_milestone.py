@@ -70,3 +70,20 @@ class MilestoneTests(unittest.TestCase):
         self.assertIsInstance(self.store.record_milestone({'deliverable': self.identifier, 'milestone': 'unknown'}, actor='alice'), Refused)
         self.assertEqual(len(MILESTONES), 12)
         self.assertTrue(any(v['noun'] == 'deliverable' and v['verb'] == 'milestone record' for v in catalogue()))
+
+    def test_recording_awaited_milestone_settles_concern(self) -> None:
+        from t6.concern import ConcernStore
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES ('owner', 'staff', '[]', '[]', NULL, 0, 1)")
+        concerns = ConcernStore(self.registry, self.store.tokens)
+        values = {'project': self.project, 'owner': 'owner', 'waiting_on': 'editor', 'anchor': 'Waiting for piclock', 'as_of': '2026-11-01', 'settles_deliverable': self.identifier, 'settles_milestone': 'piclock'}
+        preview = concerns.write('raise', values, actor='alice', idempotency_key='concern')
+        assert isinstance(preview, Preview)
+        result = concerns.write('raise', values, actor='alice', idempotency_key='concern', confirm=preview.token)
+        assert isinstance(result, Done)
+        concern = result.result['concern_id']
+        self.record('synced', 'other')
+        self.assertEqual(concerns.get(concern)['state'], 'open')  # type: ignore[index]
+        self.record('piclock', 'match')
+        self.assertEqual(concerns.get(concern)['state'], 'closed')  # type: ignore[index]
+        self.assertTrue(any(a.subject_id == concern and a.actor == 'Sixto (auto)' for a in self.registry.activity(self.project)))

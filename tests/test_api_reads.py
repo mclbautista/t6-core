@@ -63,6 +63,13 @@ class ReadTests(unittest.TestCase):
         assert isinstance(result, Done)
         self.assertEqual(result.result['projects'][1]['name'], 'Example Show')
 
+    def test_project_flags_are_read_without_ids_or_age(self) -> None:
+        from t6.verbs import ProjectFlagsInput
+        result = self.client.project_flags(ProjectFlagsInput(project=self.project['id']))
+        assert isinstance(result, Done)
+        self.assertIn({'kind': 'data_gap', 'field': 'health', 'detail': 'missing health update'}, result.result['flags'])
+        self.assertTrue(all('id' not in flag and 'age' not in flag for flag in result.result['flags']))
+
     def test_jo_get_includes_t6_state_for_t6_reference(self) -> None:
         from t6.job_order import JobOrderStore
         from t6.notion.job_orders import JobOrders

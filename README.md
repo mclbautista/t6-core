@@ -776,7 +776,10 @@ if isinstance(result, Ok):
   commented, when they started and stopped (Manila time), how many comments they
   made and how many the file has in total, and two links: the newest share
   that is on, not expired and made from the file (its short URL, or "no share
-  link"), and the internal Frame.io link for signed-in people. No share
+  link"), and the internal Frame.io link for signed-in people. When t6 has a
+  Version for the file (`version add`), the message also names it: the
+  Deliverable code, the polish note, the Version ID, and "(locked)" when it is
+  the locked Version. No share
   password. The title, links and share come from the Frame.io worker through
   the `frameio` queue; when it cannot answer, the job is tried again every 30
   seconds and the third try sends the message with "unknown" in place of what
@@ -1804,3 +1807,22 @@ items prevent handoff. The recipient uses `package accept <package-id>` or
 `package reject <package-id> --reason <reason>`. These writes use the usual
 preview, confirmation token, and idempotency key. `package get <package-id>`
 shows the snapshot, checklist, and derived `kasado` readiness.
+
+## Concern settlement and Project flags
+
+Concerns may link to a Job Order, Approval, to a Deliverable and an
+awaited Milestone kind, or to an awaited Project date (`settles_date`:
+`playdate`, `submission_deadline` or `archival_deadline`). Recording the
+matching fact, or observing the date filled in Notion, settles the Concern and
+adds an Activity entry attributed to `Sixto (auto)`; a manual reopen retains
+its original age and takes precedence over later automatic settlement.
+Date sanity compares Submission Deadline with Playdate and Archival Deadline
+with Submission Deadline. Bound Project page observations reconcile those
+rule-made Concerns when a single bound coordinator and both dates are known.
+
+`project flags` recomputes date warnings and missing health from the current
+Project data, without Concern IDs or ages. Health-vs-evidence and source
+conflict are judgments supplied by the reports app. Its stale-milestone
+judgment also depends on dated notes and later mentions, which are not stored
+as structured milestone expectations in t6; the read cannot infer that flag
+from a Deliverable deadline alone.
