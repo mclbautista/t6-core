@@ -1726,11 +1726,14 @@ and frame-rate options as SRT. Neither renderer calls ElevenLabs.
 
 `t6 transcript translate <transcript> [--confirm TOKEN]` writes `.en.srt` and
 `.en.docx` beside a Transcript's outputs under `_transcripts`, translating cue by
-cue through the API's `llm run`. It is off unless the API server has
+cue through the API's `llm run`. The worker reaches the LLM only through the API route
+`POST /v1/transcribe/llm`, which accepts the transcribe worker alone and only with the live
+lease of a translate run job. It is off unless the API server has
 `T6_TRANSCRIPT_TRANSLATE=true`; until then it returns Refused (`translate_disabled`).
 The first call queues a preview (clips, cue count, estimated tokens); the same call
 with the signed single-use `--confirm` token translates and records a `translated`
-history entry and an Activity entry. The transcribe worker holds no provider
+history entry and an Activity entry. A failed translate run records a `failed` history
+entry. The transcribe worker holds no provider
 credentials; the API masks registered names, Project codes and credentials.
 Synthetic eval cases and code graders are in `t6.transcribe.translate_evals`.
 A recorded live run (#213) must pass before the task is released.

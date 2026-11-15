@@ -346,6 +346,9 @@ class VerbAPI:
                     db.execute('UPDATE internal_jobs SET lease_until=? WHERE id=?', (self.people.registry._clock() + 300, job_id))
                     return Response(200, {'accepted': True})
                 if action == 'fail':
+                    if row[0] == 'transcript.translate.run':
+                        from t6.transcript import TranscriptStore
+                        TranscriptStore(self.people.registry).fail_translation(db, payload['transcript'], actor=payload['actor'])
                     if row[0] == 'transcript.run':
                         identifier = payload['transcript_id']
                         project = db.execute('SELECT project_id FROM transcripts WHERE id=?', (identifier,)).fetchone()
@@ -384,6 +387,8 @@ class VerbAPI:
                         TranscriptStore(self.people.registry)._entry(db, payload['transcript'], project[0], 'translated', payload['actor'])
                         result = {'outcome': 'done', 'result': {'job_id': job_id, 'transcript_id': payload['transcript']}}
                     else:
+                        from t6.transcript import TranscriptStore
+                        TranscriptStore(self.people.registry).fail_translation(db, payload['transcript'], actor=payload['actor'])
                         result = {'outcome': 'refused', 'rule': data.get('rule', 'translation'), 'reason': 'Translation failed'}
                     db.execute("UPDATE internal_jobs SET state='done', result=?, lease_token=NULL, lease_until=NULL WHERE id=?", (json.dumps(result), job_id))
                     return Response(200, {'accepted': True})

@@ -1,12 +1,15 @@
 """Cue-by-cue translation: the task definition, SRT cues and the structure check.
 
-The worker sends one cue's text at a time to the API's ``llm run``. Timecodes,
+The worker has no LLM credential (ADR 0003). It sends one cue's text at a time to the API's
+lease-checked route ``POST /v1/transcribe/llm``, which only the transcribe worker may call, only with
+the live lease of a ``transcript.translate.run`` job, and which runs the ``llm run`` task below. Timecodes,
 indexes and speaker labels never go to the model; they are copied from the
 source cue, so they cannot change.
 """
 from __future__ import annotations
 
 import re
+import textwrap
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -38,16 +41,23 @@ class Cue:
     text: str
 
 
+def _label_end(lines: list[str]) -> int | None:
+    """Index of the last label line when the cue starts with a label in the exact form the renderer writes, else None."""
+    for end in range(2, len(lines) - 1):
+        label = lines[2:end + 1]
+        if label[-1].endswith(':') and label == textwrap.wrap(' '.join(label), width=42):
+            return end
+    return None
+
+
 def parse_srt(value: str) -> list[Cue]:
-    """Parse cues; a speaker label is the leading lines up to the first line ending in a colon."""
+    """Parse cues; a speaker label is only what the renderer writes: the first text lines, wrapped at 42, ending in a colon."""
     cues = []
     for block in re.split(r'\n\s*\n', value.strip()):
         lines = block.splitlines()
         if len(lines) < 3 or not lines[0].isdigit() or not _TIMECODE.fullmatch(lines[1]):
             raise ValueError('Invalid SRT cue')
-        end = next((i for i, line in enumerate(lines[2:], 2) if line.endswith(':')), None)
-        if end is not None and end == len(lines) - 1:
-            end = None
+        end = _label_end(lines)
         speaker = '\n'.join(lines[2:end + 1]) if end is not None else ''
         text = '\n'.join(lines[(end + 1 if end is not None else 2):])
         if not text.strip():

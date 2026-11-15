@@ -26,6 +26,12 @@ class CueTests(unittest.TestCase):
         self.assertEqual(cues[1].speaker, '')
         self.assertEqual(render_srt(cues), text)
 
+    def test_unlabelled_cue_with_a_line_ending_in_a_colon_is_translated_in_full(self) -> None:
+        text = '1\n00:00:01,000 --> 00:00:02,000\nSabi niya sa akin\nang sagot ay ito:\nOo na\n\n'
+        cue = parse_srt(text)[0]
+        self.assertEqual((cue.speaker, cue.text), ('', 'Sabi niya sa akin\nang sagot ay ito:\nOo na'))
+        self.assertEqual(render_srt(parse_srt(text)), text)
+
     def test_translate_cues_keeps_structure_and_rejects_bad_replies(self) -> None:
         cues = parse_srt(TWO_CUES)
         result = translate_cues(cues, lambda text: text.upper())
@@ -50,7 +56,7 @@ class EvalCaseTests(unittest.TestCase):
         self.assertEqual(
             {c.id for c in CASES},
             {'taglish-terms', 'code-switching', 'speaker-labels', 'timecodes-line-breaks', 'numbers-dates',
-             'profanity-slang', 'no-merge-no-invention', 'character-name'})
+             'profanity-slang', 'no-merge-no-invention', 'character-name', 'unlabelled-colon'})
         self.assertEqual(MUST_PASS, {c.id for c in CASES})
 
     def test_offline_harness_runs_cases_through_the_task_with_the_scripted_fake_llm(self) -> None:
@@ -245,7 +251,7 @@ class TranslateFlowTests(unittest.TestCase):
         outcome = self.request('/v1/transcript/get', {'transcript': str(run['result']['job_id'])})
         self.assertEqual((outcome['outcome'], outcome['rule']), ('refused', 'translation'))
         self.assertFalse((self.root / '_transcripts/one.en.srt').exists())
-        self.assertEqual(self.history(), [])
+        self.assertEqual(self.history(), ['failed'])
 
     def test_changed_original_between_preview_and_confirm_is_refused(self) -> None:
         self.source()
@@ -256,7 +262,7 @@ class TranslateFlowTests(unittest.TestCase):
         self.assertTrue(self.runner.run_once())
         outcome = self.request('/v1/transcript/get', {'transcript': str(run['result']['job_id'])})
         self.assertEqual(outcome['rule'], 'input_changed')
-        self.assertEqual(self.history(), [])
+        self.assertEqual(self.history(), ['failed'])
 
     def test_reply_that_changes_line_count_fails_the_job(self) -> None:
         self.source()
@@ -265,6 +271,7 @@ class TranslateFlowTests(unittest.TestCase):
         run = self.translate(confirm=plan['token'])
         self.assertTrue(self.runner.run_once())
         self.assertEqual(self.request('/v1/transcript/get', {'transcript': str(run['result']['job_id'])})['rule'], 'translation')
+        self.assertEqual(self.history(), ['failed'])
         self.assertEqual(sorted(p.name for p in (self.root / '_transcripts').iterdir()), ['one.srt'])
 
     def test_llm_route_belongs_to_the_worker_with_a_live_translate_lease(self) -> None:

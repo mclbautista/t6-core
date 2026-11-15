@@ -16,7 +16,7 @@ project and together are the one holder for their credentials.
 | Credential | Holder | What an app does instead |
 | --- | --- | --- |
 | Notion | t6 API and main worker | Call the t6 API for Notion work. |
-| LLM providers | t6 API and main worker | Call `llm run` on the API with the task definition. |
+| LLM providers | t6 API and main worker | Call `llm run` on the API with the task definition. The transcribe worker uses the lease-checked route `POST /v1/transcribe/llm` for `transcript translate`. |
 | Google | t6 API and main worker | Call the t6 API for Google work. |
 | ElevenLabs | Transcribe worker | Request transcription through t6. |
 | Telegram | Gateway | Request Telegram transport through the gateway. |

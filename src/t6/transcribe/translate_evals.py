@@ -56,6 +56,8 @@ _SOURCES: dict[str, tuple[list[str], str]] = {
                                    (_D, 'Guest:\nO, tapos na.'))),
     'character-name': (['A character name in dialogue passes through unchanged'],
                        _srt((_A, 'Guest:\nSabi ni Kapitan Bagwis, huwag kang aalis.'))),
+    'unlabelled-colon': (['A cue with no speaker label whose text has a line ending in a colon is translated in full'],
+                         _srt((_A, 'Sabi niya sa akin\nang sagot ay ito:\nOo na, sige.'))),
 }
 
 OFFLINE_REPLIES: dict[str, list[str]] = {
@@ -69,6 +71,7 @@ OFFLINE_REPLIES: dict[str, list[str]] = {
     'profanity-slang': ["Fucking hell, the audio is ugly, goddamn it.", 'That shot is stunning, solid!'],
     'no-merge-no-invention': ['Yes.', 'Yes indeed.', 'Okay.', 'Right, that is all.'],
     'character-name': ['Captain Bagwis said, do not leave.'],
+    'unlabelled-colon': ["He told me\nthe answer is this:\nYes, okay, fine."],
 }
 
 CASES = [_case(case_id, [*properties, 'Same cue count, timecodes, speaker labels and line breaks'], srt)

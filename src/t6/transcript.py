@@ -84,6 +84,12 @@ class TranscriptStore:
             db.execute("UPDATE transcripts SET state='failed' WHERE id=?", (identifier,))
             self._entry(db, identifier, row[0], 'failed', actor)
 
+    def fail_translation(self, db: Any, identifier: str, *, actor: str) -> None:
+        """Write a `failed` history entry for a translate run that failed; the Transcript's state stays as it was."""
+        row = db.execute('SELECT project_id FROM transcripts WHERE id=?', (identifier,)).fetchone()
+        if row is not None:
+            self._entry(db, identifier, row[0], 'failed', actor)
+
     def speaker_map(self, identifier: str, *, _db: Any = None) -> str:
         """The latest speaker map applied to this Transcript, or an empty string."""
         with (self.registry._transaction() if _db is None else nullcontext(_db)) as db:
