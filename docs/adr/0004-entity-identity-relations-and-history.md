@@ -39,3 +39,6 @@ the changed property but does not supply its old value.
   rule-breaking changes for a person.
 - T6 commits its own changes and sync intent before projecting them to Notion,
   preserving ADR 0001's commit-first boundary.
+- Linked chats and topics keep only ids, flags and membership facts, never
+  message text, apart from one brief-reply exception; see
+  [ADR 0007](0007-no-chat-text.md).
