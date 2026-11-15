@@ -571,17 +571,13 @@ def main(
     route(drive_commands, "import", commands.choices["drives-import-dry-run"], "Import legacy Drive workbooks")
     for new, old in (("person", "contacts"), ("project", "projects"), ("camera", "cameras")):
         route(commands, new, commands.choices[old], new.title() + " commands")
-    route(commands, "check", commands.choices["schema-check"], "Deprecated alias for admin schema-check")
     camera_commands = next(a for a in cameras._actions if isinstance(a, argparse._SubParsersAction))
     route(camera_commands, "enrich", camera_commands.choices["update"], "Enrich a Camera")
-    jo_commands = next(a for a in commands.choices["jo"]._actions if isinstance(a, argparse._SubParsersAction))
-    route(jo_commands, "create", jo_commands.choices["raise"], "Raise a Job Order")
 
     raw = list(sys.argv[1:] if argv is None else argv)
     renames = {
-        ("jo", "create"): "jo raise", ("contacts", "find"): "person find",
-        ("projects", "resolve"): "project resolve", ("cameras", "get"): "camera get",
-        ("cameras", "update"): "camera enrich", ("camera", "update"): "camera enrich",
+        ("jo", "create"): "jo raise", ("cameras", "update"): "camera enrich", ("camera", "update"): "camera enrich",
+        ("contacts",): "person", ("projects",): "project", ("cameras",): "camera",
         ("migrate-projects",): "admin registry migrate", ("classify-projects",): "admin registry classify",
         ("schema-check",): "admin schema-check", ("check",): "admin schema-check", ("schema-snapshot",): "admin snapshot",
         ("backup",): "admin backup", ("restore",): "admin restore",
@@ -589,8 +585,9 @@ def main(
     }
     for old_parts, new_name in renames.items():
         if tuple(raw[:len(old_parts)]) == old_parts:
-            print(f"Deprecated: t6 {' '.join(old_parts)}; use t6 {new_name} until 0.5.0", file=sys.stderr)
-            break
+            # A renamed group keeps its subcommand: `contacts find` becomes `person find`.
+            rest = raw[len(old_parts):len(old_parts) + 1] if len(old_parts) == 1 and new_name in ("person", "project", "camera") else []
+            return _fail(f"t6 {' '.join([*old_parts, *rest])} was renamed to t6 {' '.join([new_name, *rest])}")
     args = parser.parse_args(raw)
     if args.command == "admin":
         args.command = {"registry": {"migrate": "migrate-projects", "classify": "classify-projects"},
@@ -604,7 +601,7 @@ def main(
     if getattr(args, "admin_command", None) == "jo":
         return _migrate_job_orders(args, open_notion)
     args.person_lookup = args.command == "person"
-    args.command = {"check": "schema-check", "person": "contacts", "project": "projects", "camera": "cameras"}.get(args.command, args.command)
+    args.command = {"person": "contacts", "project": "projects", "camera": "cameras"}.get(args.command, args.command)
     if getattr(args, "cameras_command", None) == "enrich":
         args.cameras_command = "update"
     if args.command == "commands":

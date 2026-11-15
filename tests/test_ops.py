@@ -172,9 +172,9 @@ class CommandTests(OpsTestCase):
         env = {"T6_REGISTRY_DB": str(live["registry"]), "T6_QUEUE_DB": str(live["queue"]), "T6_OPERATOR_DB": str(live["operator"])}
         backup = Path(self.directory.name) / "backup"
         with mock.patch.dict(os.environ, env), mock.patch("t6.client.Client.health", return_value={"version": "test", "schema_version": 1}):
-            self.assertEqual(cli_main(["backup", "--into", str(backup)]), 0)
+            self.assertEqual(cli_main(["admin", "backup", "--into", str(backup)]), 0)
             self.assertEqual(cli_main(["health"]), 0)
-            self.assertEqual(cli_main(["restore", "--from", str(backup)]), 2)  # the databases exist: refused
+            self.assertEqual(cli_main(["admin", "restore", "--from", str(backup)]), 2)  # the databases exist: refused
         with mock.patch.dict(os.environ, env), mock.patch("t6.client.Client.health", side_effect=AssertionError("must not call the API")):
             self.assertEqual(cli_main(["health", "--local"]), 0)
             self.assertEqual(cli_main(["health", "--local", "--ignore-history"]), 0)
@@ -183,4 +183,4 @@ class CommandTests(OpsTestCase):
         target = self.paths("restored")
         env = {"T6_REGISTRY_DB": str(target["registry"]), "T6_QUEUE_DB": str(target["queue"]), "T6_OPERATOR_DB": str(target["operator"])}
         with mock.patch.dict(os.environ, env):
-            self.assertEqual(cli_main(["restore", "--from", str(backup)]), 0)
+            self.assertEqual(cli_main(["admin", "restore", "--from", str(backup)]), 0)
