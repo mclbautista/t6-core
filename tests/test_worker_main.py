@@ -106,7 +106,7 @@ class LoopTests(ServerTestCase):
         job_id = submitter.submit("main", "frameio.share_viewed", "edge:/webhook/frameio/shares:event-1", body)
         with tempfile.TemporaryDirectory() as folder:
             code, _ = run_main(
-                {**ENVIRON, "T6_DATABASE": str(Path(folder) / "t6.sqlite")},
+                {**ENVIRON, "T6_API_URL": "http://api.invalid", "T6_DATABASE": str(Path(folder) / "t6.sqlite")},
                 None,  # type: ignore[arg-type]
                 transport=InProcess(self.app),
                 stop=RecordingStop(),

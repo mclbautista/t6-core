@@ -17,6 +17,7 @@ def transcribe(
     client: Any,
     *,
     language: str = "fil",
+    diarize: bool = True,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     """Transcribe one WAV using a caller-configured ElevenLabs client.
@@ -32,7 +33,7 @@ def transcribe(
                     model_id="scribe_v3",
                     language_code=language,
                     secondary_language_codes=["eng"],
-                    diarize=True,
+                    diarize=diarize,
                     tag_audio_events=False,
                     timestamps_granularity="word",
                     request_options={"max_retries": 0},

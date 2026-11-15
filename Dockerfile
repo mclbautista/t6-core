@@ -7,7 +7,7 @@ WORKDIR /src
 COPY pyproject.toml README.md ./
 COPY src ./src
 RUN python -m venv /opt/t6 \
- && /opt/t6/bin/pip install --no-cache-dir ".[server,worker,notion,privacy,llm,frameio]"
+ && /opt/t6/bin/pip install --no-cache-dir ".[server,worker,notion,privacy,llm,frameio,google,lookup]"
 
 FROM python:3.12-slim-bookworm
 ENV PATH=/opt/t6/bin:$PATH \

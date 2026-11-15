@@ -1,24 +1,19 @@
-"""Exercise the Instagantt export reader and its External Links linking."""
+"""Exercise the Instagantt export reader and its linking through Media locations."""
 
 import unittest
 from datetime import date
 from pathlib import Path
 
 from t6.instagantt import InstaganttError, Task, link_timelines, parse_export, read_export
-from t6.notion.external_links import ExternalLinks
-from t6.notion.testing import FakeNotion, external_link_properties
+from t6.media_links import MediaLink
+from t6.testing import StaticMediaLinks
 
 FIXTURE = Path(__file__).parent / "fixtures" / "instagantt_export.csv"
-LINKS = "ds-external-links"
 
 
-def add_link(fake: FakeNotion, external_id: str, projects: list[str]) -> None:
-    fake.add_page(
-        LINKS,
-        external_link_properties(
-            system="instagantt", kind="project", external_id=external_id, projects=projects
-        ),
-    )
+def add_link(links: StaticMediaLinks, ref: str, project: str, role: str = "working") -> None:
+    links.add(MediaLink(id=f"t6m_{len(links.all())}", owner=project, project_id=project, kind="instagantt-project",
+                        ref=ref, role=role, pages=()))
 
 
 class ParseTests(unittest.TestCase):
@@ -56,41 +51,47 @@ class ParseTests(unittest.TestCase):
 
 
 class LinkTests(unittest.TestCase):
-    def test_projects_resolve_through_external_links_and_unmapped_are_reported(self) -> None:
-        fake = FakeNotion()
-        fake.add_data_source(LINKS)
-        add_link(fake, "ig-alpha", ["notion-alpha"])
-        add_link(fake, "ig-beta", [])
-        # ig-gamma has no row at all
-        with fake.client() as client:
-            report = link_timelines(read_export(FIXTURE), ExternalLinks(client, LINKS))
-        self.assertEqual([(l.timeline.project, l.project_id) for l in report.linked], [("Show Alpha", "notion-alpha")])
+    def test_projects_resolve_through_media_locations_and_unmapped_are_reported(self) -> None:
+        links = StaticMediaLinks()
+        add_link(links, "ig-alpha", "t6p_alpha")
+        links.add(MediaLink(id="t6m_x", owner="t6p_x", project_id="t6p_x", kind="resolve-project",
+                            ref="ig-beta", role="working", pages=()))  # another kind is not an Instagantt link
+        # ig-gamma has no Media location at all
+        report = link_timelines(read_export(FIXTURE), links)
+        self.assertEqual([(l.timeline.project, l.project_id) for l in report.linked], [("Show Alpha", "t6p_alpha")])
         self.assertEqual(
             [(u.timeline.project, u.reason) for u in report.unmapped],
-            [
-                ("Show Beta", "External Links row has no Project"),
-                ("Show Gamma", "no External Links row"),
-            ],
+            [("Show Beta", "no Media location"), ("Show Gamma", "no Media location")],
         )
 
-    def test_a_row_with_several_projects_is_not_guessed(self) -> None:
-        fake = FakeNotion()
-        fake.add_data_source(LINKS)
-        add_link(fake, "ig-alpha", ["p1", "p2"])
-        with fake.client() as client:
-            report = link_timelines(read_export(FIXTURE)[:1], ExternalLinks(client, LINKS))
+    def test_a_t6_timeline_location_is_not_an_instagantt_project(self) -> None:
+        links = StaticMediaLinks()
+        links.add(MediaLink(id="t6m_t", owner="t6p_t", project_id="t6p_t", kind="timeline",
+                            ref="ig-alpha", role="working", pages=()))
+        report = link_timelines(read_export(FIXTURE)[:1], links)
+        self.assertEqual(report.linked, ())
+        self.assertEqual([u.reason for u in report.unmapped], ["no Media location"])
+
+    def test_a_timeline_in_several_projects_is_not_guessed(self) -> None:
+        links = StaticMediaLinks()
+        add_link(links, "ig-alpha", "t6p_1")
+        add_link(links, "ig-alpha", "t6p_2", role="backup")
+        report = link_timelines(read_export(FIXTURE)[:1], links)
         self.assertEqual(report.linked, ())
         self.assertIn("several", report.unmapped[0].reason)
 
-    def test_only_the_external_links_source_is_queried(self) -> None:
-        fake = FakeNotion()
-        fake.add_data_source(LINKS)
-        add_link(fake, "ig-alpha", ["notion-alpha"])
-        with fake.client() as client:
-            link_timelines(read_export(FIXTURE), ExternalLinks(client, LINKS))
-        self.assertTrue(fake.requests)
-        for request in fake.requests:
-            self.assertIn(LINKS, request.url.path)
+    def test_one_project_with_two_locations_for_a_timeline_is_one_link(self) -> None:
+        links = StaticMediaLinks()
+        add_link(links, "ig-alpha", "t6p_1")
+        add_link(links, "ig-alpha", "t6p_1", role="backup")
+        report = link_timelines(read_export(FIXTURE)[:1], links)
+        self.assertEqual([l.project_id for l in report.linked], ["t6p_1"])
+
+    def test_only_active_timeline_locations_are_asked_for(self) -> None:
+        links = StaticMediaLinks()
+        add_link(links, "ig-alpha", "t6p_1")
+        link_timelines(read_export(FIXTURE), links)
+        self.assertEqual(links.calls, [("instagantt-project", None)])
 
 
 if __name__ == "__main__":

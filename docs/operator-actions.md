@@ -54,11 +54,12 @@ Person can tap; a missing Person is refused and recorded.
 
 | Answer | Meaning |
 | --- | --- |
-| 200 `{"outcome": ...}` | decided: `registered`, `bound`, `classified`, `choose_project`, `skipped`, `no_candidates`, `page_taken`, `code_held`, `stale`, `expired`, `already_handled`, `busy` or `rejected`. The gateway stops retrying |
+| 200 `{"outcome": ...}` | decided: `registered`, `bound`, `classified`, `choose_project`, `skipped`, `no_candidates`, `page_taken`, `code_held`, `frameio_list`, `frameio_search`, `frameio_linked`, `frameio_held`, `frameio_refused`, `stale`, `expired`, `already_handled`, `busy` or `rejected`. The gateway stops retrying |
 | 503 | not decided (card not confirmed yet, registry unavailable, operator actions off). The gateway retries |
 
 Each action stores an allowed-tapper rule. The default is `permission:operator`;
-other rules are `person:<t6n_ID>`, `permission:<name>`, or
+other rules are `person:<t6n_ID>`, `permission:<name>`, `role:staff` (any active staff
+Person), or
 `{"any_of": [<rule>, ...]}`. At tap time core resolves the Telegram ID to an
 active Person and checks their current permissions. A refused tap records the
 rule in `rejections`. A wrong chat or message, unknown token, or unknown choice
@@ -90,6 +91,24 @@ Any other pushed command answers `200 {"outcome": "ignored"}`.
 
 The Project is picked from a list core keeps with the card, by T6 ID and
 revision. The button label is only a display.
+
+**Link Frame.io project (#272).** With the API able to read the Frame.io worker
+(`T6_FRAMEIO_READ_URL`, `T6_FRAMEIO_READ_SECRET`), a Project's card has this button. It
+lists the Frame.io projects of the configured T6 account that no show holds (every project
+with an active frameio-project Media location is hidden), most recently updated first, five
+to a page. **Search** waits for `/project TEXT` and narrows the list by name; **Clear search**
+brings it back. Tapping a project runs `frameio project link` for the card's Project as the
+tapper. If another show holds it by then, nothing changes and the card names the holder
+(`frameio_held`). Any active staff Person may use it: a staff Person who is not an operator
+sends `/project` in their own chat and gets the card with only this button (rule `role:staff`);
+the code and rotation buttons are refused on such a card.
+
+**A Frame.io project with no show.** When review activity arrives for a Frame.io project no
+show holds, the main worker holds it and asks (`POST /operator/offers`,
+`{"kind": "frameio_link", "frameio_project_id": ...}`) for one card per Frame.io project, with
+rule `permission:coordinator`. The card lists shows (in rotation first, five to a page);
+tapping one runs `frameio project link`, and the held activity is then delivered once. **Not
+now** leaves it held.
 
 **A held code.** When a Project cannot enter rotation because its code is held,
 nothing changes and the card asks how to resolve it:
@@ -140,7 +159,7 @@ it. Cards already sent stay answerable while core runs this version.
 
 An Approval is a t6 database record, independent of Frame.io. `approval request`
 accepts the gates `vfx-committee`, `client-cut`, `grade`, `delivery-sign-off`,
-`drive-wipe`, and `fleet-promotion`; the corresponding `request-<gate>` aliases
+`drive-wipe`, `fleet-promotion`, and `project-start` (the Approval `project start` creates); the corresponding `request-<gate>` aliases
 supply the gate. The target can be a T6 ID or a free reference. The optional
 `--tapper-rule` accepts the same rules as operator actions (JSON for `any_of`)
 and defaults to `permission:operator`. A single `person:<id>` rule sends the

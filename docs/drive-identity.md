@@ -157,12 +157,17 @@ listed blockers; the custodian session and per-item approval are not gates.
 
 ## Compatibility decision and consumers
 
-Repository discovery at baseline `71e9724` found only the DriveStore protocol,
-the in-memory fake, importer, manifest helper, CLI dry-run and tests (including
-Project registry alias integration). There is no durable Drive store or Drive
-schema in this repository. The CLI uses the updated fake and serializes the
-report as before, now also including `workbook`. Tests and public examples move
-to permanent IDs. No persisted deployment is assumed and no data migration runs.
+The t6 database provides `t6.drives.sqlite.SqliteDriveStore`, alongside the
+in-memory fake. Its import receipts retain workbook, sheet and row for each
+imported Drive. Import review evidence, including unreadable or unattached
+rows, is stored in a private exception queue in the same database. Actual
+workbooks, database files and exception evidence must remain outside the
+repository. Resolved Assignment Projects use registered `t6p_` IDs; a source
+Project without a registry binding remains unresolved text. `Ref.page_id` holds
+the t6 Project ID in these Assignments, despite its historical name.
+
+The CLI dry-run continues to use the fake. No production workbook import or
+cutover is performed by this implementation.
 
 This is a documented breaking API change: remove `provisional_id`; replace
 `get_drive(serial)` with `find_by_serial(serial)` followed by `.id` for subsequent

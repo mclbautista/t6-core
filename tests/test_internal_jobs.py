@@ -63,6 +63,19 @@ class InternalJobsTests(unittest.TestCase):
         with closing(sqlite3.connect(self.path)) as db, db:
             self.assertEqual(db.execute('SELECT state FROM internal_jobs').fetchone()[0], 'dead')
 
+    def test_a_job_ended_with_finish_reads_back_through_result_like_an_acked_one(self) -> None:
+        acked = self.queue.submit('main', 'x', 'acked')
+        claim = self.queue.claim('main', 10)
+        assert claim is not None
+        self.assertTrue(self.queue.ack(claim.job_id, claim.token, {'outcome': 'preview'}))
+        finished = self.queue.submit('main', 'x', 'finished')
+        self.queue.finish(finished.job_id, {'outcome': 'preview'})
+        broke = self.queue.submit('main', 'x', 'broke')
+        self.queue.finish(broke.job_id, {'outcome': 'refused'}, state='failed')
+        read = [self.queue.result(job, 'main') for job in (acked.job_id, finished.job_id, broke.job_id)]
+        self.assertEqual([(r.status, r.value) if r else None for r in read],
+                         [('ok', {'outcome': 'preview'}), ('ok', {'outcome': 'preview'}), ('failed', {'outcome': 'refused'})])
+
     def test_expired_final_lease_goes_dead(self) -> None:
         job = self.queue.submit('main', 'x', 'k')
         for _ in range(2):
@@ -98,3 +111,57 @@ class MixedWorkerTests(ServerTestCase):
             worker = Worker(QueueClient(Down(), WORKER_SECRET), 'main', {'x': lambda job: seen.append(job.kind)}, internal_client=InternalQueueClient(local))
             self.assertTrue(worker.run_once())
             self.assertEqual(seen, ['x'])
+
+
+class JobLookupTests(unittest.TestCase):
+    """`get`, `find`, `finish` and `settle`: what callers need so they never read the jobs table themselves."""
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.now = [100.0]
+        self.queue = InternalJobQueue(directory.name + '/db', clock=lambda: self.now[0], max_attempts=1)
+
+    def test_get_returns_the_job_only_for_the_kind_and_queue_asked_for(self) -> None:
+        job = self.queue.submit('q', 'a.kind', 'k1', {'who': 'x'})
+        record = self.queue.get(job.job_id, kind='a.kind', queue='q')
+        assert record is not None
+        self.assertEqual((record.payload, record.state, record.lease_token, record.result), ({'who': 'x'}, 'queued', None, None))
+        self.assertIsNone(self.queue.get(job.job_id, kind='other'))
+        self.assertIsNone(self.queue.get(job.job_id, queue='other'))
+        self.assertIsNone(self.queue.get(999))
+
+    def test_find_narrows_by_state_later_id_and_payload(self) -> None:
+        first = self.queue.submit('q', 'a.kind', 'k1', {'t': '1'}).job_id
+        second = self.queue.submit('q', 'a.kind', 'k2', {'t': '2'}).job_id
+        self.queue.submit('q', 'b.kind', 'k3', {'t': '1'})
+        self.assertEqual([j.job_id for j in self.queue.find('a.kind')], [first, second])
+        self.assertEqual([j.job_id for j in self.queue.find('a.kind', payload={'t': '2'})], [second])
+        self.assertEqual([j.job_id for j in self.queue.find('a.kind', after=first)], [second])
+        self.assertEqual(self.queue.find('a.kind', states=['dead']), [])
+
+    def test_finish_stores_the_outcome_as_an_ok_result_and_settle_is_once_only_for_a_dead_job(self) -> None:
+        job = self.queue.submit('q', 'a.kind', 'k1').job_id
+        self.queue.finish(job, {'outcome': 'done'})
+        record = self.queue.get(job)
+        assert record is not None
+        read = self.queue.result(job, 'q')
+        assert read is not None
+        self.assertEqual((record.state, read.status, read.value), ('done', 'ok', {'outcome': 'done'}))
+        self.assertFalse(self.queue.settle(job))  # not dead
+        dead = self.queue.submit('q', 'a.kind', 'k2').job_id
+        self.queue.claim('q', 10)  # the finished job is not claimable, so this takes `dead`
+        self.now[0] += 20
+        self.queue.claim('q', 10)  # its lease expired at the last allowed attempt: dead
+        self.assertEqual([j.job_id for j in self.queue.find('a.kind', states=['dead'])], [dead])
+        self.assertTrue(self.queue.settle(dead))
+        self.assertFalse(self.queue.settle(dead))
+
+
+class OneWriterOfInternalJobs(unittest.TestCase):
+    def test_only_the_internal_job_queue_inserts_into_the_job_table(self) -> None:
+        from pathlib import Path
+        root = Path(__file__).parents[1] / 'src' / 't6'
+        writers = sorted(str(path.relative_to(root)) for path in root.rglob('*.py') if 'INSERT INTO internal_jobs' in path.read_text(encoding='utf-8'))
+        # registry/sqlite.py: main's migration 30 (0.5.0) queues the 3-day nudge of abang requests already open, once, as a one-off backfill.
+        self.assertEqual(writers, ['registry/sqlite.py', 'worker/internal_queue.py'])

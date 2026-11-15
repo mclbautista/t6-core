@@ -6,6 +6,7 @@ from collections.abc import Mapping
 import json
 from typing import Any
 
+from t6.media_links import MediaLink
 from t6.worker.client import Transport
 
 
@@ -22,11 +23,11 @@ class RegistryClient:
         self._transport = transport
         self._headers = {"Authorization": f"Bearer {secret}", "Content-Type": "application/json"}
 
-    def _call(self, method: str, path: str, body: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
+    def _call(self, method: str, path: str, body: Mapping[str, Any] | None = None, *, missing_is_none: bool = True) -> dict[str, Any] | None:
         status, answer = self._transport.send(
             method, path, self._headers, json.dumps(body).encode() if body is not None else b""
         )
-        if status == 404:
+        if status == 404 and missing_is_none:
             return None
         if status != 200:
             raise RegistryRejected(status, str(answer.get("error", answer)))
@@ -41,6 +42,17 @@ class RegistryClient:
         from urllib.parse import quote
         answer = self._call("GET", f"/registry/review-chat/{quote(page_id, safe='')}")
         return [] if answer is None else answer["links"]
+
+    def media_links(self, kind: str, role: str | None = None) -> tuple[MediaLink, ...]:
+        """The active Media locations of `kind` (and `role`), from the server. Needs a grant with registry read."""
+        from urllib.parse import quote
+        path = f"/registry/media-links/{quote(kind, safe='')}" + (f"/{quote(role, safe='')}" if role else "")
+        answer = self._call("GET", path, missing_is_none=False)  # a 404 is a server without the route, never "no links"
+        return tuple(
+            MediaLink(id=item["id"], owner=item["owner"], project_id=item["project"], kind=item["kind"],
+                      ref=item["ref"], role=item["role"], pages=tuple(item["pages"]))
+            for item in (answer or {"links": []})["links"]
+        )
 
     def review_version(self, frameio_file_id: str) -> dict[str, Any] | None:
         """The Version a Frame.io file belongs to, or None when t6 has none or this worker may not read it."""

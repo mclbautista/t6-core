@@ -157,7 +157,8 @@ class ConcernStore:
                     db.execute('UPDATE concerns SET as_of = ?, revision = revision + 1 WHERE id = ?', (as_of, concern))
                     db.execute('INSERT OR REPLACE INTO concern_pm_pending VALUES (?, ?, ?, ?, ?)', (concern, as_of, quote, now + WEEK, row[1] + 1))
                     self._pm_log(db, project, concern, 'concern_auto_announce', quote, now, row[0])
-                    db.execute("INSERT INTO internal_jobs (queue, kind, dedupe_key, payload, run_at, state, created_at) VALUES ('main', 'concern_pm_close', ?, ?, ?, 'queued', ?)", (f'{concern}:{row[1] + 1}', json.dumps({'project': project}), now + WEEK, now))
+                    from t6.worker.internal_queue import InternalJobQueue
+                    InternalJobQueue(self.registry, clock=lambda: now).submit('main', 'concern_pm_close', f'{concern}:{row[1] + 1}', {'project': project}, run_at=now + WEEK, db=db)
                 db.execute('INSERT INTO concern_pm_lines VALUES (?, ?, ?)', (project, as_of, text))
 
     def for_message(self, chat: str, message_id: str) -> list[str]:
@@ -319,10 +320,11 @@ class ConcernStore:
             db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(result)))
             return Done(result=result)
 
-    @staticmethod
-    def _schedule(db: Any, concern: str, now: float, revision: int) -> None:
+    def _schedule(self, db: Any, concern: str, now: float, revision: int) -> None:
+        from t6.worker.internal_queue import InternalJobQueue
+        queue = InternalJobQueue(self.registry, clock=lambda: now)
         for weeks, target in ((2, 'quiet'), (4, 'expired')):
-            db.execute("INSERT INTO internal_jobs (queue, kind, dedupe_key, payload, run_at, state, created_at) VALUES ('main', 'concern_silence', ?, ?, ?, 'queued', ?)", (f'{concern}:{revision}:{target}', json.dumps({'concern': concern, 'evidence_at': now, 'target': target}), now + weeks * WEEK, now))
+            queue.submit('main', 'concern_silence', f'{concern}:{revision}:{target}', {'concern': concern, 'evidence_at': now, 'target': target}, run_at=now + weeks * WEEK, db=db)
 
     @staticmethod
     def _log(db: Any, project: str, concern: str, actor: str, action: str, now: float, before: Any, after: Any, summary: str) -> None:

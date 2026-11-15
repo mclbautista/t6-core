@@ -325,6 +325,32 @@ _MIGRATIONS = (
     CREATE TABLE concern_pm_pending (concern_id TEXT PRIMARY KEY REFERENCES concerns(id), as_of TEXT NOT NULL, quote TEXT NOT NULL, due REAL NOT NULL, revision INTEGER NOT NULL);
     CREATE TABLE concern_pm_changes (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL REFERENCES projects(id), concern_id TEXT NOT NULL REFERENCES concerns(id), action TEXT NOT NULL, quote TEXT NOT NULL, at REAL NOT NULL)"""),
     (32, False, """CREATE TABLE concern_pm_attempts (project_id TEXT NOT NULL REFERENCES projects(id), as_of TEXT NOT NULL, line TEXT NOT NULL, attempts INTEGER NOT NULL, PRIMARY KEY (project_id, as_of, line))"""),
+    (33, False, """CREATE TABLE bays (id TEXT PRIMARY KEY);
+    CREATE TABLE bay_migration_receipts (digest TEXT PRIMARY KEY, snapshot TEXT NOT NULL, entries TEXT NOT NULL);
+    CREATE TABLE bookings (id TEXT PRIMARY KEY, bay_id TEXT NOT NULL REFERENCES bays(id), person_id TEXT NOT NULL REFERENCES persons(id), project_id TEXT NOT NULL REFERENCES projects(id), start TEXT NOT NULL, end TEXT NOT NULL, forced INTEGER NOT NULL, cancelled INTEGER NOT NULL);
+    CREATE TABLE booking_previews (nonce TEXT PRIMARY KEY, plan TEXT NOT NULL)"""),
+    (34, False, """CREATE TABLE media_locations (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id), kind TEXT NOT NULL, ref TEXT NOT NULL, role TEXT NOT NULL, active INTEGER NOT NULL, source_page TEXT UNIQUE);
+    CREATE TABLE media_history (id INTEGER PRIMARY KEY, media_id TEXT NOT NULL REFERENCES media_locations(id), action TEXT NOT NULL, actor TEXT NOT NULL, at REAL NOT NULL);
+    CREATE TABLE media_previews (nonce TEXT PRIMARY KEY, snapshot TEXT NOT NULL);
+    CREATE TABLE media_migration_receipts (digest TEXT PRIMARY KEY, snapshot TEXT NOT NULL, entries TEXT NOT NULL)"""),
+    (35, False, """CREATE TABLE drives (id TEXT PRIMARY KEY, serial TEXT UNIQUE, suspected_serial TEXT, data TEXT NOT NULL);
+    CREATE TABLE drive_assignments (id INTEGER PRIMARY KEY, drive_id TEXT NOT NULL REFERENCES drives(id), data TEXT NOT NULL);
+    CREATE TABLE drive_events (id INTEGER PRIMARY KEY, drive_id TEXT NOT NULL REFERENCES drives(id), shipment_id TEXT, data TEXT NOT NULL);
+    CREATE TABLE drive_imports (row_key TEXT PRIMARY KEY, drive_id TEXT NOT NULL REFERENCES drives(id), workbook TEXT, sheet TEXT, row INTEGER);
+    CREATE TABLE drive_exceptions (workbook TEXT NOT NULL, sheet TEXT NOT NULL, row INTEGER NOT NULL, reason TEXT NOT NULL, detail TEXT NOT NULL, PRIMARY KEY(workbook, sheet, row, reason, detail))"""),
+    (36, False, """CREATE TABLE transcripts (id TEXT PRIMARY KEY, media_id TEXT NOT NULL UNIQUE REFERENCES media_locations(id), deliverable_id TEXT REFERENCES deliverables(id), project_id TEXT NOT NULL REFERENCES projects(id), settings TEXT NOT NULL, state TEXT NOT NULL, progress TEXT NOT NULL, summary TEXT NOT NULL);
+    CREATE TABLE transcript_history (id INTEGER PRIMARY KEY, transcript_id TEXT NOT NULL REFERENCES transcripts(id), action TEXT NOT NULL, actor TEXT NOT NULL, at REAL NOT NULL);
+    CREATE TABLE transcript_previews (nonce TEXT PRIMARY KEY, snapshot TEXT NOT NULL)"""),
+    (37, False, """CREATE TABLE transcript_speaker_maps (history_id INTEGER PRIMARY KEY REFERENCES transcript_history(id), csv TEXT NOT NULL)"""),
+    (38, False, """CREATE TABLE drive_previews (nonce TEXT PRIMARY KEY, snapshot TEXT NOT NULL);
+    CREATE TABLE delivery_drives (package_id TEXT NOT NULL REFERENCES packages(id), drive_id TEXT NOT NULL REFERENCES drives(id), PRIMARY KEY (package_id, drive_id))"""),
+    (39, False, """CREATE TABLE timelines (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), resolve_media_id TEXT NOT NULL REFERENCES media_locations(id), label TEXT NOT NULL);
+    CREATE TABLE timeline_previews (nonce TEXT PRIMARY KEY, snapshot TEXT NOT NULL)"""),
+    (40, False, """CREATE TABLE calendar_channels (channel_id TEXT PRIMARY KEY, calendar TEXT NOT NULL, resource_id TEXT NOT NULL, expires_at REAL NOT NULL, token_hash TEXT NOT NULL, active INTEGER NOT NULL);
+    CREATE TABLE calendar_sync_tokens (calendar TEXT PRIMARY KEY, sync_token TEXT NOT NULL);
+    CREATE TABLE calendar_event_versions (calendar TEXT NOT NULL, event TEXT NOT NULL, version TEXT NOT NULL, outcome TEXT NOT NULL, PRIMARY KEY (calendar, event, version))"""),
+    (41, False, """CREATE TABLE frameio_held_activity (id INTEGER PRIMARY KEY AUTOINCREMENT, frameio_project_id TEXT NOT NULL, dedupe_key TEXT NOT NULL UNIQUE, payload TEXT NOT NULL, held_at REAL NOT NULL, released_at REAL);
+    CREATE INDEX frameio_held_activity_by_project ON frameio_held_activity (frameio_project_id, released_at)"""),
 )
 
 
@@ -344,6 +370,22 @@ def _migrate(db: sqlite3.Connection) -> None:
                     for operation in ("UPDATE", "DELETE"):
                         db.execute(f"CREATE TRIGGER {table}_no_{operation.lower()} BEFORE {operation} ON {table} "
                                    f"BEGIN SELECT RAISE(ABORT, '{table} is append-only'); END")
+            if version == 35:
+                for operation in ("UPDATE", "DELETE"):
+                    db.execute(f"CREATE TRIGGER drive_events_no_{operation.lower()} BEFORE {operation} ON drive_events "
+                               "BEGIN SELECT RAISE(ABORT, 'drive events are append-only'); END")
+            if version == 37:
+                for operation in ("UPDATE", "DELETE"):
+                    db.execute(f"CREATE TRIGGER transcript_speaker_maps_no_{operation.lower()} BEFORE {operation} ON transcript_speaker_maps "
+                               "BEGIN SELECT RAISE(ABORT, 'transcript speaker maps are append-only'); END")
+            if version == 36:
+                for operation in ("UPDATE", "DELETE"):
+                    db.execute(f"CREATE TRIGGER transcript_history_no_{operation.lower()} BEFORE {operation} ON transcript_history "
+                               "BEGIN SELECT RAISE(ABORT, 'transcript history is append-only'); END")
+            if version == 34:
+                for operation in ("UPDATE", "DELETE"):
+                    db.execute(f"CREATE TRIGGER media_history_no_{operation.lower()} BEFORE {operation} ON media_history "
+                               "BEGIN SELECT RAISE(ABORT, 'media history is append-only'); END")
             if version == 17:
                 for operation in ("UPDATE", "DELETE"):
                     db.execute(f"CREATE TRIGGER milestones_no_{operation.lower()} BEFORE {operation} ON milestones "
@@ -360,7 +402,12 @@ def _migrate(db: sqlite3.Connection) -> None:
 
     jo_filter = ("NOT EXISTS (SELECT 1 FROM job_orders WHERE job_orders.id = audit.project_id) AND "
                  if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'job_orders'").fetchone() else "")
+    jo_filter += "NOT EXISTS (SELECT 1 FROM bookings WHERE bookings.id = audit.project_id) AND " if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bookings'").fetchone() else ""
+    jo_filter += "NOT EXISTS (SELECT 1 FROM bays WHERE bays.id = audit.project_id) AND " if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bays'").fetchone() else ""
     jo_filter += "NOT EXISTS (SELECT 1 FROM deliverables WHERE deliverables.id = audit.project_id) AND " if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'deliverables'").fetchone() else ""
+    jo_filter += "NOT EXISTS (SELECT 1 FROM media_locations WHERE media_locations.id = audit.project_id) AND " if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'media_locations'").fetchone() else ""
+    jo_filter += "NOT EXISTS (SELECT 1 FROM transcripts WHERE transcripts.id = audit.project_id) AND " if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'transcripts'").fetchone() else ""
+    jo_filter += "NOT EXISTS (SELECT 1 FROM drives WHERE drives.id = audit.project_id) AND " if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'drives'").fetchone() else ""
     db.execute("INSERT INTO activity (project_id, at, actor, action, summary, audit_id) "
                "SELECT project_id, at, actor, action, REPLACE(action, '_', ' '), id FROM audit "
                f"WHERE {jo_filter}NOT EXISTS (SELECT 1 FROM activity WHERE activity.audit_id = audit.id)")

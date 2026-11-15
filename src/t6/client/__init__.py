@@ -15,15 +15,20 @@ from t6.verbs import (
     Ambiguous, Done, NeedsPerson, Outcome, Preview, Refused,
     AbangRequestInput, AbangCancelInput, AbangAcceptInput,
     VersionAddInput, VersionLockInput, VersionFindInput, VersionGetInput,
+    MediaLinkInput, MediaUnlinkInput, TimelineLinkInput, TimelineListInput, FrameioProjectInput, MediaListInput, MediaMigrateInput,
+    TranscriptCreateInput, TranscriptGetInput, TranscriptSpeakersInput, TranscriptTranslateInput,
+    DriveReceiveInput, DriveReleaseInput, DriveReturnInput, DriveRetireInput, DriveAssignInput, DriveUnassignInput,
+    SwingAssignInput, SwingUnassignInput, SwingReturnInput, SwingOverdueInput,
+    BayBookInput, BookingMoveInput, BookingExtendInput, BookingCancelInput, BookingGetInput, BookingListInput,
     DeliverableDeliverInput, PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
     ConcernScanInput, ConcernListInput, ConcernChangesInput, ConcernForMessageInput, ConcernRecordMessageInput, ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
-    JoListInput, JoFindInput, DeliverableListInput, DeliverableGetInput, DeliverableDefineInput, DeliverableRebindInput, DeliverableMissInput, DeliverableDelayInput, MilestoneRecordInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, ProjectNotesInput, ProjectFlagsInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
+    JoListInput, JoFindInput, DeliverableListInput, FloorReadInput, DeliverableGetInput, DeliverableDefineInput, DeliverableRebindInput, DeliverableMissInput, DeliverableDelayInput, MilestoneRecordInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, ProjectNotesInput, ProjectFlagsInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
     JoSubmitInput, JoCloseInput, JoBlockInput, JoUnblockInput, JoDelayInput, JoCancelInput,
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
     LLMRunInput, PersonAddInput, PersonCreateInput, PersonFindInput,
     PersonGetInput, PersonProjectRoleInput, PersonPermissionInput, PersonRebindInput, PersonShiftInput, PersonClassifyInput,
-    PersonTelegramInput, ProjectChatInput, ProjectHoldInput, ProjectResolveInput, ProjectResumeInput,
+    PersonTelegramInput, ProjectChatInput, ProjectHoldInput, ProjectResolveInput, ProjectResumeInput, ProjectStartInput,
 )
 
 
@@ -43,12 +48,25 @@ _outcome: TypeAdapter[Outcome] = TypeAdapter(Outcome)
 
 
 class Client:
+    def transcript_create(self, inputs: TranscriptCreateInput) -> Result:
+        return self.call('transcript', 'create', inputs)
+
+    def transcript_speakers(self, inputs: TranscriptSpeakersInput) -> Result:
+        return self.call('transcript', 'speakers', inputs)
+
+    def transcript_translate(self, inputs: TranscriptTranslateInput) -> Result:
+        return self.call('transcript', 'translate', inputs)
+
+    def transcript_get(self, inputs: TranscriptGetInput) -> Result:
+        return self.call('transcript', 'get', inputs)
+
     def __init__(self, base_url: str | None = None, secret: str | None = None, *, timeout: float = 10,
-                 telegram_user_id: int | None = None) -> None:
+                 telegram_user_id: int | None = None, mcp: bool = False) -> None:
         self.base_url = (base_url or os.environ.get('T6_API_URL', '')).rstrip('/')
         self.secret = secret if secret is not None else os.environ.get('T6_API_SECRET', '')
         self.timeout = timeout
         self.telegram_user_id = telegram_user_id
+        self.mcp = mcp
 
     def _request(self, path: str, inputs: BaseModel | dict[str, Any] | None = None,
                  *, idempotency_key: str | None = None) -> Any:
@@ -56,6 +74,8 @@ class Client:
             return Unavailable('Set T6_API_URL and T6_API_SECRET to use the t6 API',
                                idempotency_key or (inputs.get('idempotency_key') if isinstance(inputs, dict) else getattr(inputs, 'idempotency_key', None)))
         headers = {'Authorization': 'Bearer ' + self.secret}
+        if self.mcp:
+            headers['X-T6-MCP'] = '1'
         if self.telegram_user_id is not None:
             headers['X-Telegram-User-Id'] = str(self.telegram_user_id)
         data = None
@@ -103,6 +123,78 @@ class Client:
     def tap(self, payload: dict[str, Any], *, idempotency_key: str) -> dict[str, Any] | Unavailable:
         """Deliver a gateway tap with its retry key and configured Telegram identity."""
         return cast(dict[str, Any] | Unavailable, self._request('/tap', payload, idempotency_key=idempotency_key))
+
+    def admin_media_migrate(self, inputs: MediaMigrateInput) -> Result:
+        return self.call('admin/media', 'migrate', inputs)
+
+    def drive_receive(self, inputs: DriveReceiveInput) -> Result:
+        return self.call('drive', 'receive', inputs)
+
+    def drive_release(self, inputs: DriveReleaseInput) -> Result:
+        return self.call('drive', 'release', inputs)
+
+    def drive_return(self, inputs: DriveReturnInput) -> Result:
+        return self.call('drive', 'return', inputs)
+
+    def drive_retire(self, inputs: DriveRetireInput) -> Result:
+        return self.call('drive', 'retire', inputs)
+
+    def drive_assign(self, inputs: DriveAssignInput) -> Result:
+        return self.call('drive', 'assign', inputs)
+
+    def drive_unassign(self, inputs: DriveUnassignInput) -> Result:
+        return self.call('drive', 'unassign', inputs)
+
+    def swing_assign(self, inputs: SwingAssignInput) -> Result:
+        return self.call('swing', 'assign', inputs)
+
+    def swing_unassign(self, inputs: SwingUnassignInput) -> Result:
+        return self.call('swing', 'unassign', inputs)
+
+    def swing_return(self, inputs: SwingReturnInput) -> Result:
+        return self.call('swing', 'return', inputs)
+
+    def swing_overdue(self, inputs: SwingOverdueInput) -> Result:
+        return self.call('swing', 'overdue', inputs)
+
+    def media_link(self, inputs: MediaLinkInput) -> Result:
+        return self.call('media', 'link', inputs)
+
+    def media_unlink(self, inputs: MediaUnlinkInput) -> Result:
+        return self.call('media', 'unlink', inputs)
+
+    def frameio_project_link(self, inputs: FrameioProjectInput) -> Result:
+        return self.call('frameio', 'project link', inputs)
+
+    def frameio_project_unlink(self, inputs: FrameioProjectInput) -> Result:
+        return self.call('frameio', 'project unlink', inputs)
+
+    def timeline_link(self, inputs: TimelineLinkInput) -> Result:
+        return self.call('timeline', 'link', inputs)
+
+    def timeline_list(self, inputs: TimelineListInput) -> Result:
+        return self.call('timeline', 'list', inputs)
+
+    def media_list(self, inputs: MediaListInput) -> Result:
+        return self.call('media', 'list', inputs)
+
+    def bay_book(self, inputs: BayBookInput) -> Result:
+        return self.call('bay', 'book', inputs)
+
+    def booking_move(self, inputs: BookingMoveInput) -> Result:
+        return self.call('booking', 'move', inputs)
+
+    def booking_extend(self, inputs: BookingExtendInput) -> Result:
+        return self.call('booking', 'extend', inputs)
+
+    def booking_cancel(self, inputs: BookingCancelInput) -> Result:
+        return self.call('booking', 'cancel', inputs)
+
+    def booking_get(self, inputs: BookingGetInput) -> Result:
+        return self.call('booking', 'get', inputs)
+
+    def booking_list(self, inputs: BookingListInput) -> Result:
+        return self.call('booking', 'list', inputs)
 
     def llm_run(self, inputs: LLMRunInput) -> Result:
         return self.call('llm', 'run', inputs)
@@ -230,6 +322,15 @@ class Client:
     def deliverable_list(self, inputs: DeliverableListInput) -> Result:
         return self.call('deliverable', 'list', inputs)
 
+    def deliverable_bangko(self, inputs: FloorReadInput) -> Result:
+        return self.call('deliverable', 'bangko', inputs)
+
+    def deliverable_hand_to_mouth(self, inputs: FloorReadInput) -> Result:
+        return self.call('deliverable', 'hand-to-mouth', inputs)
+
+    def deliverable_sabit(self, inputs: FloorReadInput) -> Result:
+        return self.call('deliverable', 'sabit', inputs)
+
     def meeting_notes_list(self, inputs: MeetingNotesListInput) -> Result:
         return self.call('meeting-notes', 'list', inputs)
 
@@ -244,6 +345,9 @@ class Client:
 
     def project_archive(self, inputs: ProjectResumeInput) -> Result:
         return self.call('project', 'archive', inputs)
+
+    def project_start(self, inputs: ProjectStartInput) -> Result:
+        return self.call('project', 'start', inputs)
 
     def project_hold(self, inputs: ProjectHoldInput) -> Result:
         return self.call('project', 'hold', inputs)

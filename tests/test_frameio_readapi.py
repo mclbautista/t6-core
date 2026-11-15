@@ -15,12 +15,12 @@ from t6.frameio import (
     SignInRequired,
 )
 from t6.frameio.api import FrameioApi
-from t6.frameio.model import Approval, BriefingShow, Comment, FrameioProject, ShareLink
+from t6.frameio.model import Approval, FileLocation, BriefingShow, Comment, FrameioProject, ShareLink
 from t6.frameio.readapi import ReadApi
 from t6.frameio.reads import FrameioReads
+from t6.frameio.requests import FileNotFound
 from t6.frameio.testing import FakeFrameio, StaticTokens
-from t6.notion.external_links import ExternalLinks
-from t6.notion.testing import FakeNotion
+from t6.testing import StaticMediaLinks
 from t6.server.app import Request
 from t6.server.http import make_server
 from t6.worker.__main__ import ConfigError, read_api_server
@@ -67,13 +67,9 @@ class ReadApiTestCase(unittest.TestCase):
         self.frameio.add_file("f1", "Cut 1.mov")
         self.frameio.add_comment("f1", "c1", "Example comment")
         self.frameio.set_status("f1", "Approved")
-        self.notion = FakeNotion()
-        self.notion.add_data_source("ds-links")
-        client = self.notion.client()
-        self.addCleanup(client.close)
         reads = FrameioReads(
             FrameioApi(StaticTokens(), self.frameio.fetch, lambda _: None),
-            ExternalLinks(client, "ds-links"),
+            StaticMediaLinks(),
             now=lambda: NOW,
         )
         self.alerts: list[tuple[str, str]] = []
@@ -86,6 +82,44 @@ class ReadApiTestCase(unittest.TestCase):
         headers = {} if secret is None else {"Authorization": f"Bearer {secret}"}
         answer = self.api.handle(Request(method, path, headers, b""))
         return answer.status, answer.body
+
+
+class FileLocationTests(ReadApiTestCase):
+    """`GET /frameio/files/<id>/location` (#360): the folder, and the version stack when there is one."""
+
+    def test_a_plain_file_answers_its_folder_and_no_stack(self) -> None:
+        self.assertEqual(self.call("GET", "/frameio/files/f1/location"), (200, {"value": {"folder_id": "folder-1", "stack_id": None}}))
+
+    def test_a_stacked_file_answers_the_stack_and_the_stacks_own_parent_folder(self) -> None:
+        self.frameio.add_file("f2", "Cut 2.mov")
+        self.frameio.add_version_stack("stack-1", ["f2"], parent_id="folder-7")
+        self.assertEqual(
+            self.call("GET", "/frameio/files/f2/location"), (200, {"value": {"folder_id": "folder-7", "stack_id": "stack-1"}})
+        )
+
+    def test_a_file_frameio_does_not_know_answers_404(self) -> None:
+        self.assertEqual(self.call("GET", "/frameio/files/nope/location")[0], 404)
+
+    def test_other_frameio_failures_are_not_404(self) -> None:
+        self.frameio.refuse_next(500)
+        self.assertEqual(self.call("GET", "/frameio/files/f1/location")[0], 502)
+
+    def test_without_the_secret_it_answers_401(self) -> None:
+        self.assertEqual(self.call("GET", "/frameio/files/f1/location", None)[0], 401)
+        self.assertEqual(self.call("GET", "/frameio/files/f1/location", "wrong")[0], 401)
+
+    def test_the_reader_returns_the_location(self) -> None:
+        self.frameio.add_file("f2", "Cut 2.mov")
+        self.frameio.add_version_stack("stack-1", ["f2"], parent_id="folder-7")
+        self.assertEqual(self.reader.file_location("f1"), FileLocation(folder_id="folder-1"))
+        self.assertEqual(self.reader.file_location("f2"), FileLocation(folder_id="folder-7", stack_id="stack-1"))
+
+    def test_the_reader_tells_a_missing_file_from_a_failure(self) -> None:
+        self.assertIsInstance(self.reader.file_location("nope"), FileNotFound)
+        self.frameio.refuse_next(500)
+        failed = self.reader.file_location("f1")
+        self.assertIsInstance(failed, Failed)
+        self.assertNotIsInstance(failed, FileNotFound)
 
 
 class ReaderTests(ReadApiTestCase):

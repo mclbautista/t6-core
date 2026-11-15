@@ -5,6 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import replace
 from datetime import date
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from t6.drives.importer import ReviewItem
+
+from t6.ids import EntityKind, T6Id
+from t6.registry.core import normalize_page_id
 
 from t6.drives import (
     Assignment,
@@ -12,26 +19,49 @@ from t6.drives import (
     CustodyKind,
     Drive,
     DriveStatus,
+    DuplicateAssignment,
     DuplicateSerial,
     Party,
     Ref,
+    SourceRow,
     UnknownDrive,
     derive_status,
     normalize_serial,
+    open_duplicate,
 )
 
 
 class InMemoryDriveStore:
     """In-memory ID-addressed fake; optional same_project resolves Project aliases."""
 
-    def __init__(self, same_project: Callable[[str | None, str | None], bool] | None = None) -> None:
+    def __init__(self, same_project: Callable[[str | None, str | None], bool] | None = None, *,
+                 project_bindings: dict[str, str] | None = None,
+                 person_bindings: dict[str, str] | None = None,
+                 deliveries: dict[str, tuple[str, str]] | None = None) -> None:
         self._same_project = same_project or (lambda a, b: a == b)
+        self._project_bindings = dict(project_bindings or {})
+        for identifier in self._project_bindings.values():
+            T6Id.parse(identifier, EntityKind.PROJECT)
+        self._person_bindings = dict(person_bindings or {})
+        for identifier in self._person_bindings.values():
+            T6Id.parse(identifier, EntityKind.PERSON)
+        self._deliveries = dict(deliveries or {})
+        self._delivery_drives: dict[str, set[str]] = {}
         self._drives: dict[str, Drive] = {}
         self._events: dict[str, list[CustodyEvent]] = {}
         self._assignments: dict[str, list[Assignment]] = {}
         self._imports: dict[str, str] = {}
+        self._sources: dict[str, list[SourceRow]] = {}
+        self._exceptions: list[ReviewItem] = []
+        self._previews: dict[str, str] = {}
         self._shipments = 0
         self._shipped: list[tuple[str, CustodyEvent]] = []
+
+    def save_preview(self, nonce: str, snapshot: str) -> None:
+        self._previews[nonce] = snapshot
+
+    def preview(self, nonce: str) -> str | None:
+        return self._previews.get(nonce)
 
     def add_drive(self, drive: Drive) -> Drive:
         if drive.id in self._drives:
@@ -94,10 +124,13 @@ class InMemoryDriveStore:
         return any(d.suspected_serial == normalized for d in self._drives.values())
 
     def import_row(
-        self, row_key: str, drive: Drive, assignment: Assignment, events: Sequence[CustodyEvent]
+        self, row_key: str, drive: Drive, assignment: Assignment | None, events: Sequence[CustodyEvent],
+        *, source: SourceRow | None = None
     ) -> None:
         if row_key in self._imports:
             return
+        if assignment is not None:
+            self._check_project(assignment.project)
         held = self.find_by_serial(drive.serial) if drive.serial else None
         if held is None:
             if drive.id in self._drives:
@@ -111,7 +144,7 @@ class InMemoryDriveStore:
         # Consume the complete source and stage every collection before publishing.
         incoming_events = list(events)
         assignments = list(self._assignments.get(held.id, ()))
-        if assignment not in assignments:
+        if assignment is not None and assignment not in assignments:
             assignments.append(assignment)
         history = [*self._events.get(held.id, ()), *incoming_events]
         shipped = self._shipped + [
@@ -122,6 +155,8 @@ class InMemoryDriveStore:
         self._events[held.id] = history
         self._shipped = shipped
         self._imports[row_key] = held.id
+        if source is not None:
+            self._sources.setdefault(held.id, []).append(source)
 
     def append_event(self, drive_id: str, event: CustodyEvent) -> None:
         self._log(drive_id).append(event)
@@ -129,7 +164,8 @@ class InMemoryDriveStore:
             self._shipped.append((drive_id, event))
 
     def release_shipment(
-        self, drive_ids: Iterable[str], *, on: date, party: Party, project: Ref, logged_by: Ref
+        self, drive_ids: Iterable[str], *, on: date, party: Party, project: Ref, logged_by: Ref,
+        shipment_id: str | None = None
     ) -> str:
         keys = list(dict.fromkeys(drive_id for drive_id in drive_ids))
         if not keys:
@@ -143,7 +179,7 @@ class InMemoryDriveStore:
             party=party,
             project=project,
             logged_by=logged_by,
-            shipment_id=f"shipment-{self._shipments}",
+            shipment_id=shipment_id or f"shipment-{self._shipments}",
         )
         for key in keys:
             self.append_event(key, event)
@@ -163,15 +199,71 @@ class InMemoryDriveStore:
     def status(self, drive_id: str) -> DriveStatus | None:
         return derive_status(self._log(drive_id))
 
+    @staticmethod
+    def _check_project(project: Ref | None) -> None:
+        if project is not None and project.page_id is not None:
+            T6Id.parse(project.page_id, EntityKind.PROJECT)
+
     def add_assignment(self, drive_id: str, assignment: Assignment) -> None:
-        self._assigned(drive_id).append(assignment)
+        assigned = self._assigned(drive_id)
+        self._check_project(assignment.project)
+        clash = open_duplicate(assigned, assignment)
+        if clash is not None:
+            raise DuplicateAssignment(clash.label)
+        assigned.append(assignment)
+
+    def check_project(self, project: Ref) -> None:
+        self._check_project(project)
+
+    def list_assignments(self, drive_id: str) -> tuple[Assignment, ...]:
+        return tuple(self._assigned(drive_id))
+
+    def end_assignment(self, drive_id: str, number: int, end: date) -> Assignment:
+        assigned = self._assigned(drive_id)
+        if not 1 <= number <= len(assigned):
+            raise ValueError(f"the Drive has no Assignment number {number}")
+        if not assigned[number - 1].is_open:
+            raise ValueError(f"Assignment number {number} is already ended")
+        ended = replace(assigned[number - 1], end=end)
+        assigned[number - 1] = ended
+        return ended
+
+    def drop_return_date(self, drive_id: str, number: int) -> Assignment:
+        assigned = self._assigned(drive_id)
+        if not 1 <= number <= len(assigned):
+            raise ValueError(f"the Drive has no Assignment number {number}")
+        assigned[number - 1] = replace(assigned[number - 1], return_date=None)
+        return assigned[number - 1]
+
+    def overdue_returns(self, today: date) -> list[tuple[Drive, Assignment]]:
+        found = [(self._drives[key], a) for key, items in self._assignments.items() for a in items
+                 if a.is_open and a.return_date is not None and a.return_date < today]
+        return sorted(found, key=lambda pair: (pair[1].return_date or date.min, pair[1].label or "", pair[0].key))
+
+    def resolve_person(self, contact_page_id: str) -> str | None:
+        return self._person_bindings.get(normalize_page_id(contact_page_id))
+
+    def check_person(self, person_id: str) -> None:
+        T6Id.parse(person_id, EntityKind.PERSON)
+
+    def link_delivery(self, delivery_id: str, drive_ids: Iterable[str]) -> None:
+        keys = list(dict.fromkeys(drive_ids))
+        for key in keys:
+            self._drive(key)
+        self._delivery_drives.setdefault(delivery_id, set()).update(keys)
+
+    def delivery_drives(self, delivery_id: str) -> tuple[str, ...]:
+        return tuple(sorted(self._delivery_drives.get(delivery_id, ())))
+
+    def delivery_carrier(self, delivery_id: str) -> tuple[str, str] | None:
+        return self._deliveries.get(delivery_id)
 
     def open_assignments(self, project: Ref) -> list[tuple[Drive, Assignment]]:
         found = [
             (self._drives[key], assignment)
             for key, assignments in self._assignments.items()
             for assignment in assignments
-            if assignment.is_open and self._matches(assignment.project, project)
+            if assignment.is_open and assignment.project is not None and self._matches(assignment.project, project)
         ]
         return sorted(
             found, key=lambda pair: (pair[1].start or date.min, pair[1].label or "", pair[0].key)
@@ -180,7 +272,9 @@ class InMemoryDriveStore:
     def _matches(self, held: Ref, asked: Ref) -> bool:
         if held.page_id is None or asked.page_id is None:
             return held == asked  # unresolved text is compared as text
-        return self._same_project(held.page_id, asked.page_id)
+        held_id = self._project_bindings.get(held.page_id, held.page_id)
+        asked_id = self._project_bindings.get(asked.page_id, asked.page_id)
+        return held_id == asked_id or self._same_project(held_id, asked_id)
 
     def assignment_history(self, drive_id: str) -> list[Assignment]:
         # sorted() is stable: assignments with the same start keep entry order
@@ -197,3 +291,23 @@ class InMemoryDriveStore:
         if key not in self._events:
             raise UnknownDrive(key)
         return self._events[key]
+
+    def sources(self, drive_id: str) -> tuple[SourceRow, ...]:
+        self._drive(drive_id)
+        return tuple(self._sources.get(drive_id, ()))
+
+    def resolve_project(self, project: Ref, fallback: str) -> Ref:
+        if project.page_id is None:
+            return project
+        identifier = self._project_bindings.get(project.page_id)
+        if identifier is None and project.page_id in self._project_bindings.values():
+            identifier = project.page_id
+        return Ref(page_id=identifier) if identifier else Ref(text=fallback)
+
+    def record_exceptions(self, items: Sequence[ReviewItem]) -> None:
+        for item in items:
+            if item not in self._exceptions:
+                self._exceptions.append(item)
+
+    def exceptions(self) -> tuple[ReviewItem, ...]:
+        return tuple(self._exceptions)

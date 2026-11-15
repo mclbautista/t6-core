@@ -2,7 +2,8 @@
 
 The API owns the Notion token. Set `T6_READ_DATA_SOURCES` to the path of a
 server-side JSON object whose keys are `projects`, `contacts`, `job_orders`,
-`deliverables`, `meeting_notes`, `cameras`, and `external_links`; values are
+`deliverables`, `meeting_notes`, `cameras`, and `external_links` (read once by
+`t6 admin media migrate`; no read verb uses it); values are
 Notion data source IDs. Configure only the sources the deployment uses.
 `T6_NOTION_TOKEN` is also set on the API host. Neither source IDs nor Notion
 filters are accepted in read requests.
@@ -50,7 +51,7 @@ because the old draft used a Notion client.
 | reports #116 | Job Order data source query for snapshots | `jo list` |
 | reports #116 | Meeting Notes queries by title, date or readiness; `list_block_children` for note bodies | `meeting-notes list` |
 | reports #116 | Project data source description for leave and upcoming notices | `studio notices` |
-| reports #116 | `ExternalLinks.find()` through `link_timelines()` | `external-link find` |
+| reports #116 | `link_timelines()` | `external-link find`, now answered from Media locations (kind `instagantt-project`); `media list` is the replacement |
 | reports #116 | Meeting Notes create, append, trash and mark sent | Writes; outside this read ticket. |
 | [munki #17](https://github.com/mclbautista/t6-munki-repo/pull/17) | Imports `t6.notion.writes` result types; its `Fleet.sync()` performs Bays matching and writes internally | No direct `t6.notion` read call in the draft. Fleet sync is a write, outside this read ticket. |
 

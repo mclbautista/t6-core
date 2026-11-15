@@ -25,6 +25,7 @@ from types import UnionType
 
 from pydantic import BaseModel, Field, ConfigDict
 from t6.domain import Project, JobOrder, Deliverable, MeetingNote, Contact, Camera, ExternalRef
+from t6.vocabulary import DRIVE_ROLES, DriveRole, MediaKind, MediaRole
 from t6.llm.api import Done as Done, LLMRunInput as LLMRunInput, LLMRunOutput as LLMRunOutput
 
 if TYPE_CHECKING:
@@ -33,6 +34,8 @@ if TYPE_CHECKING:
 
 _actor: ContextVar[str] = ContextVar("verb_actor", default="")
 _registry: ContextVar[Any] = ContextVar("verb_registry", default=None)
+_frameio: ContextVar[Any] = ContextVar("verb_frameio", default=None)
+"""The way to ask the Frame.io worker (`t6.frameio.project_folders.FrameioProjectWriter`), set by the API; None in a process that has none."""
 
 
 class Preview(BaseModel):
@@ -153,6 +156,68 @@ def project_activity(inputs: ActivityInput, open_notion: Callable[..., Any]) -> 
     except (ValueError, OSError, RegistryError) as error:
         return Refused(rule="input", reason=str(error))
 
+
+
+class ProjectStartDeliverable(BaseModel):
+    code: str
+    episode: str | None = None
+    due: str | None = None
+    air: str | None = None
+
+
+class ProjectStartMedia(BaseModel):
+    kind: MediaKind
+    ref: str
+    role: MediaRole
+
+
+class ProjectStartBooking(BaseModel):
+    bay: str
+    person: str
+    start: str
+    end: str | None = None
+    shift: Literal['day', 'night'] | None = None
+    force: bool = False
+
+
+class ProjectStartInput(BaseModel):
+    project: str
+    deliverables: list[ProjectStartDeliverable] = Field(default_factory=list)
+    media: list[ProjectStartMedia] = Field(default_factory=list)
+    bookings: list[ProjectStartBooking] = Field(default_factory=list)
+    job: int | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class ProjectStartOutput(BaseModel):
+    job_id: int | None = None
+    state: str | None = None
+    project_id: str | None = None
+    idempotency_key: str | None = None
+    approval_id: str | None = None
+    deliverable_ids: list[str] = Field(default_factory=list)
+    frameio_project_id: str | None = None
+    frameio_folders: dict[str, str] = Field(default_factory=dict)
+    frameio_media_ids: list[str] = Field(default_factory=list)
+    media_ids: list[str] = Field(default_factory=list)
+    booking_ids: list[str] = Field(default_factory=list)
+    manual_steps: list[str] = Field(default_factory=list)
+
+
+def project_start(inputs: ProjectStartInput, open_notion: Callable[..., Any]) -> Outcome:
+    """Queue the plan job, read its Preview with `job`, or apply the t6 steps with `confirm`; the rules are in `t6.project_start`."""
+    from t6.project_start import ProjectStartStore
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    people = _people()
+    store = ProjectStartStore(people.registry, people.tokens)
+    values = inputs.model_dump(exclude={'job', 'idempotency_key', 'confirm'})
+    if inputs.job is not None:
+        return store.job_result(inputs.job, actor=_actor.get())
+    if inputs.confirm:
+        return store.confirm(values, actor=_actor.get(), idempotency_key=inputs.idempotency_key, token=inputs.confirm, frameio=_frameio.get())
+    return store.start(values, actor=_actor.get(), idempotency_key=inputs.idempotency_key)
 
 
 class ProjectHoldInput(BaseModel):
@@ -439,6 +504,7 @@ class Verb:
     rule: str
     handler: Callable[..., Outcome] | None
     local_only: bool = False
+    read_only: bool = False
 
 
 class PersonWriteOutput(BaseModel):
@@ -1017,6 +1083,7 @@ class VersionAddInput(BaseModel):
     deliverable: str
     frameio_file: str
     note: str | None = None
+    timeline: str | None = None
     idempotency_key: str | None = None
     confirm: str | None = None
 
@@ -1056,7 +1123,7 @@ def version_write(inputs: VersionAddInput | VersionLockInput, open_notion: Calla
     reader = FrameioReader(HttpTransport(url), secret) if url and secret else None
     return VersionStore(_people().registry, _people().tokens, reader).write(
         'add' if isinstance(inputs, VersionAddInput) else 'lock',
-        inputs.model_dump(exclude={'confirm', 'idempotency_key'}), actor=_actor.get(),
+        inputs.model_dump(exclude={'confirm', 'idempotency_key'} | ({'timeline'} if getattr(inputs, 'timeline', None) is None else set())), actor=_actor.get(),
         idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
 
 
@@ -1172,6 +1239,43 @@ def deliverable_define(inputs: DeliverableDefineInput, open_notion: Callable[...
 
 class DeliverableListInput(ReadInput):
     project: str
+
+
+class FloorReadInput(ReadInput):
+    project: str | None = None
+
+
+class FloorReadOutput(BaseModel):
+    margin_days: int | None = None
+    deliverables: list[dict[str, Any]]
+
+
+def _floor(read: str, inputs: FloorReadInput) -> Outcome:
+    from t6.floor import FloorMargins, FloorReads
+    try:
+        margins = FloorMargins.from_environ(os.environ)
+        reads = FloorReads(_people().registry, margins)
+        if read == 'sabit':
+            return Done(result={'deliverables': reads.sabit(inputs.project)})
+        if read == 'bangko':
+            return Done(result={'margin_days': margins.bangko_days, 'deliverables': reads.bangko(inputs.project)})
+        return Done(result={'margin_days': margins.hand_to_mouth_days, 'deliverables': reads.hand_to_mouth(inputs.project)})
+    except ValueError as error:
+        return Refused(rule='config', reason=str(error))
+    except LookupError as error:
+        return Refused(rule='project', reason=str(error))
+
+
+def floor_bangko(inputs: FloorReadInput, open_notion: Callable[..., Any]) -> Outcome:
+    return _floor('bangko', inputs)
+
+
+def floor_hand_to_mouth(inputs: FloorReadInput, open_notion: Callable[..., Any]) -> Outcome:
+    return _floor('hand-to-mouth', inputs)
+
+
+def floor_sabit(inputs: FloorReadInput, open_notion: Callable[..., Any]) -> Outcome:
+    return _floor('sabit', inputs)
 
 
 class MeetingNotesListInput(ReadInput):
@@ -1310,8 +1414,30 @@ class AbangRequestInput(BaseModel):
     confirm: str | None = None
 
 
+class BayBookInput(BaseModel):
+    bay: str
+    person: str
+    project: str
+    start: str
+    end: str | None = None
+    shift: Literal['day', 'night'] | None = None
+    force: bool = False
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
 class AbangCancelInput(BaseModel):
     request: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class BookingMoveInput(BaseModel):
+    booking: str
+    start: str
+    end: str
+    bay: str | None = None
+    force: bool = False
     idempotency_key: str | None = None
     confirm: str | None = None
 
@@ -1322,6 +1448,381 @@ class AbangAcceptInput(BaseModel):
     idempotency_key: str | None = None
     confirm: str | None = None
 
+
+class BookingExtendInput(BaseModel):
+    booking: str
+    end: str
+    force: bool = False
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class BookingCancelInput(BaseModel):
+    booking: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class BookingGetInput(BaseModel):
+    booking: str
+
+
+class BookingListInput(BaseModel):
+    pass
+
+
+class BookingOutput(BaseModel):
+    booking_id: str
+    bay_id: str
+    person_id: str
+    project_id: str
+    start: str
+    end: str
+    forced: bool
+    cancelled: bool
+    idempotency_key: str
+
+
+class BookingGetOutput(BaseModel):
+    booking: dict[str, Any]
+
+
+class BookingListOutput(BaseModel):
+    bookings: list[dict[str, Any]]
+
+
+def booking_write(inputs: BayBookInput | BookingMoveInput | BookingExtendInput | BookingCancelInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.bay import BookingStore
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    people = _people()
+    verb = 'book' if isinstance(inputs, BayBookInput) else 'move' if isinstance(inputs, BookingMoveInput) else 'extend' if isinstance(inputs, BookingExtendInput) else 'cancel'
+    return BookingStore(people.registry, people.tokens).write(verb, inputs.model_dump(exclude={'idempotency_key', 'confirm'}), actor=_actor.get(), idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
+def booking_read(inputs: BookingGetInput | BookingListInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.bay import BookingStore
+    people = _people()
+    store = BookingStore(people.registry, people.tokens)
+    if isinstance(inputs, BookingListInput):
+        return Done(result={'bookings': store.list()})
+    booking = store.get(inputs.booking)
+    return Done(result={'booking': booking}) if booking else Refused(rule='booking', reason='Booking not found')
+
+
+class MediaMigrateInput(BaseModel):
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class MediaMigrateOutput(BaseModel):
+    digest: str
+    entries: list[dict[str, Any]]
+    review: list[dict[str, Any]]
+    idempotency_key: str
+
+
+class MediaLinkInput(BaseModel):
+    owner: str
+    kind: MediaKind
+    ref: str
+    role: MediaRole
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class MediaUnlinkInput(BaseModel):
+    media: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class FrameioProjectInput(BaseModel):
+    project: str
+    frameio_project: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class MediaListInput(BaseModel):
+    owner: str
+
+
+class MediaWriteOutput(BaseModel):
+    media_id: str
+    project_id: str
+    idempotency_key: str
+
+
+class MediaListOutput(BaseModel):
+    locations: list[dict[str, Any]]
+
+
+def media_write(inputs: MediaLinkInput | MediaUnlinkInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.media import MediaStore
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    people = _people()
+    person = people.get(_actor.get())
+    if not person or not person['active']:
+        return Refused(rule='person', reason='An active Person is required')
+    return MediaStore(people.registry, people.tokens).write(
+        'link' if isinstance(inputs, MediaLinkInput) else 'unlink',
+        inputs.model_dump(exclude={'confirm', 'idempotency_key'}), actor=_actor.get(),
+        idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
+def _frameio_project(verb: str, inputs: FrameioProjectInput) -> Outcome:
+    from t6.media import MediaStore
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    people = _people()
+    return MediaStore(people.registry, people.tokens).frameio_project_write(
+        verb, inputs.model_dump(exclude={'confirm', 'idempotency_key'}), actor=_actor.get(),
+        idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
+def frameio_project_link(inputs: FrameioProjectInput, open_notion: Callable[..., Any]) -> Outcome:
+    return _frameio_project('link', inputs)
+
+
+def frameio_project_unlink(inputs: FrameioProjectInput, open_notion: Callable[..., Any]) -> Outcome:
+    return _frameio_project('unlink', inputs)
+
+
+def media_list(inputs: MediaListInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.media import MediaStore
+    people = _people()
+    return Done(result={'locations': MediaStore(people.registry, people.tokens).list(inputs.owner)})
+
+
+class TimelineLinkInput(BaseModel):
+    project: str
+    timeline: str
+    stamp: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class TimelineWriteOutput(BaseModel):
+    timeline_id: str
+    project_id: str
+    created: bool
+    idempotency_key: str
+
+
+class TimelineListInput(BaseModel):
+    project: str
+
+
+class TimelineListOutput(BaseModel):
+    timelines: list[dict[str, Any]]
+
+
+def timeline_write(inputs: TimelineLinkInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.timeline import TimelineStore
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    people = _people()
+    return TimelineStore(people.registry, people.tokens).write(
+        inputs.model_dump(exclude={'confirm', 'idempotency_key'}), actor=_actor.get(),
+        idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
+def timeline_list(inputs: TimelineListInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.timeline import TimelineStore
+    people = _people()
+    try:
+        return Done(result={'timelines': TimelineStore(people.registry, people.tokens).list(inputs.project)})
+    except LookupError as error:
+        return Refused(rule='project', reason=str(error))
+
+
+class DriveReceiveInput(BaseModel):
+    drive: str
+    project: str
+    party: str | None = None
+    party_kind: Literal['contact', 'studio'] | None = None
+    on: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class DriveReturnInput(DriveReceiveInput):
+    pass
+
+
+class DriveReleaseInput(BaseModel):
+    drives: list[str]
+    project: str
+    party: str
+    party_kind: Literal['contact', 'studio']
+    on: str | None = None
+    delivery: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class DriveRetireInput(BaseModel):
+    drive: str
+    project: str
+    reason: str
+    on: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class DriveAssignInput(BaseModel):
+    drive: str
+    project: str
+    label: str
+    role: DriveRole
+    start: str | None = None
+    end: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class DriveUnassignInput(BaseModel):
+    drive: str
+    project: str
+    label: str | None = None
+    role: DriveRole | None = None
+    assignment: int | None = None
+    end: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class DriveWriteOutput(BaseModel):
+    action: str
+    drive_ids: list[str]
+    project_id: str
+    on: str | None = None
+    shipment_id: str | None = None
+    delivery_id: str | None = None
+    label: str | None = None
+    role: str | None = None
+    assignment: int | None = None
+    start: str | None = None
+    end: str | None = None
+    idempotency_key: str
+
+
+def drive_write(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.drive_verbs import DriveVerbs
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    people = _people()
+    verb = next(name for model, name in ((DriveReceiveInput, 'receive'), (DriveReleaseInput, 'release'), (DriveReturnInput, 'return'),
+                                         (DriveRetireInput, 'retire'), (DriveAssignInput, 'assign'), (DriveUnassignInput, 'unassign'))
+                if type(inputs) is model)
+    return DriveVerbs(people.registry, people.tokens).write(
+        verb, inputs.model_dump(exclude={'idempotency_key', 'confirm'}, exclude_none=True), actor=_actor.get(),
+        idempotency_key=getattr(inputs, 'idempotency_key'), confirm=getattr(inputs, 'confirm'))
+
+
+class SwingAssignInput(BaseModel):
+    drive: str
+    target: str
+    project: str | None = None
+    label: str | None = None
+    start: str | None = None
+    return_date: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class SwingUnassignInput(BaseModel):
+    drive: str
+    project: str | None = None
+    person: str | None = None
+    assignment: int | None = None
+    end: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class SwingReturnInput(SwingUnassignInput):
+    pass
+
+
+class SwingWriteOutput(DriveWriteOutput):
+    project_id: str | None = None  # type: ignore[assignment]
+    holder: str | None = None
+    return_date: str | None = None
+
+
+class SwingOverdueInput(BaseModel):
+    pass
+
+
+class SwingOverdueOutput(BaseModel):
+    today: str
+    overdue: list[dict[str, Any]]
+
+
+def swing_write(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.drive_verbs import DriveVerbs
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    people = _people()
+    verb = next(name for model, name in ((SwingAssignInput, 'swing_assign'), (SwingUnassignInput, 'swing_unassign'), (SwingReturnInput, 'swing_return'))
+                if type(inputs) is model)
+    return DriveVerbs(people.registry, people.tokens).write(
+        verb, inputs.model_dump(exclude={'idempotency_key', 'confirm'}, exclude_none=True), actor=_actor.get(),
+        idempotency_key=getattr(inputs, 'idempotency_key'), confirm=getattr(inputs, 'confirm'))
+
+
+def swing_overdue(inputs: SwingOverdueInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.drive_verbs import DriveVerbs
+    people = _people()
+    return Done(result=DriveVerbs(people.registry, people.tokens).overdue())
+
+
+class TranscriptCreateInput(BaseModel):
+    media: str
+    deliverable: str | None = None
+    manifest: str | None = None
+    language: str = 'fil'
+    no_diarize: bool = False
+    formats: list[str] = Field(default_factory=lambda: ['srt', 'docx'])
+    start_timecode: str | None = None
+    max_hours: float | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class TranscriptSpeakersInput(BaseModel):
+    transcript: str
+    csv: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class TranscriptTranslateInput(BaseModel):
+    transcript: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class TranscriptGetInput(BaseModel):
+    transcript: str
+
+
+class TranscriptCreateOutput(BaseModel):
+    job_id: int
+    transcript_id: str | None = None
+
+
+class TranscriptGetOutput(BaseModel):
+    transcript: dict[str, Any]
+
+
+def transcript_get(inputs: TranscriptGetInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.transcript import TranscriptStore
+    result = TranscriptStore(_people().registry).get(inputs.transcript)
+    return Done(result={'transcript': result}) if result else Refused(rule='transcript', reason='Transcript not found')
 
 class AbangOutput(BaseModel):
     request_id: str
@@ -1342,35 +1843,65 @@ def abang_write(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
 
 
 VERBS = (
-    Verb("version", "get", "Get a Version", (), VersionGetInput, VersionFindOutput, "reader", "Read a Version and its Approvals.", api_read),
+    Verb('transcript', 'create', 'Create a Transcript', (), TranscriptCreateInput, TranscriptCreateOutput, 'staff', 'Preview and confirm a transcription job.', api_read),
+    Verb('transcript', 'speakers', 'Name Transcript speakers', (), TranscriptSpeakersInput, TranscriptCreateOutput, 'staff', 'Preview and confirm speaker names.', api_read),
+    Verb('transcript', 'translate', 'Translate a Transcript', (), TranscriptTranslateInput, TranscriptCreateOutput, 'staff', 'Preview and confirm translation.', api_read),
+    Verb('transcript', 'get', 'Get a Transcript', (), TranscriptGetInput, TranscriptGetOutput, 'reader', 'Read progress and summary.', transcript_get, read_only=True),
+    Verb('drive', 'receive', 'Receive a Drive into custody', (), DriveReceiveInput, DriveWriteOutput, 'drives', 'Preview and confirm; appends a received event.', drive_write),
+    Verb('drive', 'release', 'Release Drives in one shipment', (), DriveReleaseInput, DriveWriteOutput, 'drives', 'Preview and confirm; one released event per Drive, grouped by shipment.', drive_write),
+    Verb('drive', 'return', 'Return a Drive to custody', (), DriveReturnInput, DriveWriteOutput, 'drives', 'Preview and confirm; appends a returned event.', drive_write),
+    Verb('drive', 'retire', 'Retire a Drive', (), DriveRetireInput, DriveWriteOutput, 'drives', 'Needs a reason; a later receive or return brings the Drive back.', drive_write),
+    Verb('drive', 'assign', 'Assign a Drive to a Project', (), DriveAssignInput, DriveWriteOutput, 'drives', 'Preview and confirm; adds an Assignment with label and role.', drive_write),
+    Verb('drive', 'unassign', 'End a Drive Assignment', (), DriveUnassignInput, DriveWriteOutput, 'drives', 'Ends the open Assignment and keeps it in history; when several are open, pick by label, role or assignment number.', drive_write),
+    Verb('swing', 'assign', 'Assign a swing Drive to a Person or Project', (), SwingAssignInput, SwingWriteOutput, 'drives', 'Preview and confirm; adds a swing Assignment, with an optional return date. A Person target needs no Project; --project may be added.', swing_write),
+    Verb('swing', 'unassign', 'End a swing Assignment', (), SwingUnassignInput, SwingWriteOutput, 'drives', 'Ends the open swing Assignment and keeps it, with its return date, in history. When several are open, pick by --project, --person or --assignment.', swing_write),
+    Verb('swing', 'return', 'Return a swing Drive', (), SwingReturnInput, SwingWriteOutput, 'drives', 'Ends the open swing Assignment and clears its return date.', swing_write),
+    Verb('swing', 'overdue', 'List swing Drives past their return date', (), SwingOverdueInput, SwingOverdueOutput, 'reader', 'Open swing Assignments due back before today (Asia/Manila).', swing_overdue, read_only=True),
+    Verb('media', 'link', 'Link a Media location', (), MediaLinkInput, MediaWriteOutput, 'coordinator', 'Preview and confirm the link.', media_write),
+    Verb('media', 'unlink', 'Unlink a Media location', (), MediaUnlinkInput, MediaWriteOutput, 'coordinator', 'Preview and confirm the unlink.', media_write),
+    Verb('frameio', 'project link', 'Link a Frame.io project to a Project', (), FrameioProjectInput, MediaWriteOutput, 'staff', 'One Frame.io project belongs to one Project. Preview and confirm.', frameio_project_link),
+    Verb('frameio', 'project unlink', 'Unlink a Frame.io project from a Project', (), FrameioProjectInput, MediaWriteOutput, 'staff', 'Moving is unlink then link. Preview and confirm.', frameio_project_unlink),
+    Verb('timeline', 'link', 'Record a hand-written Timeline stamp', (), TimelineLinkInput, TimelineWriteOutput, 'staff', 'The stamp is written by hand in Resolve; one Timeline per stamp. Without --stamp t6 creates the stamp and the preview shows it. Preview and confirm.', timeline_write),
+    Verb('timeline', 'list', 'List Timelines of a Project', (), TimelineListInput, TimelineListOutput, 'reader', 'Read Timelines with their canonical copy.', timeline_list, read_only=True),
+    Verb('media', 'list', 'List Media locations', (), MediaListInput, MediaListOutput, 'reader', 'Read Media locations.', media_list, read_only=True),
+    Verb('bay', 'book', 'Book a Bay', (), BayBookInput, BookingOutput, 'bookings', 'Overlaps require force.', booking_write),
+    Verb('booking', 'move', 'Move a Booking', (), BookingMoveInput, BookingOutput, 'bookings', 'Overlaps require force.', booking_write),
+    Verb('booking', 'extend', 'Extend a Booking', (), BookingExtendInput, BookingOutput, 'bookings', 'Overlaps require force.', booking_write),
+    Verb('booking', 'cancel', 'Cancel a Booking', (), BookingCancelInput, BookingOutput, 'bookings', 'Cancel an active Booking.', booking_write),
+    Verb('booking', 'get', 'Get a Booking', (), BookingGetInput, BookingGetOutput, 'reader', 'Read a Booking.', booking_read, read_only=True),
+    Verb('booking', 'list', 'List Bookings', (), BookingListInput, BookingListOutput, 'reader', 'Read Bookings.', booking_read, read_only=True),
+    Verb("version", "get", "Get a Version", (), VersionGetInput, VersionFindOutput, "reader", "Read a Version and its Approvals.", api_read, read_only=True),
     Verb('abang', 'request', 'Request a file relay', (), AbangRequestInput, AbangOutput, 'coordinator', 'Request a file from a vendor.', abang_write),
     Verb('abang', 'accept', 'Decide an abang candidate', (), AbangAcceptInput, AbangOutput, 'person', 'Only the freelancer may decide.', abang_write),
     Verb('abang', 'cancel', 'Cancel a file relay', (), AbangCancelInput, AbangOutput, 'coordinator', 'Cancel a pending relay.', abang_write),
-    Verb("version", "find", "Find a Version by Frame.io file", (), VersionFindInput, VersionFindOutput, "reader", "Resolve a review file to its Version.", api_read),
+    Verb("version", "find", "Find a Version by Frame.io file", (), VersionFindInput, VersionFindOutput, "reader", "Resolve a review file to its Version.", api_read, read_only=True),
     Verb("version", "add", "Add a Version", (), VersionAddInput, VersionOutput, "coordinator", "Preview and confirm a Frame.io file.", version_write),
     Verb("version", "lock", "Lock a Version", (), VersionLockInput, VersionOutput, "coordinator", "Record picture lock.", version_write),
-    Verb('approval', 'request', 'Request an Approval', tuple('approval request-' + gate for gate in ('vfx-committee', 'client-cut', 'grade', 'delivery-sign-off', 'drive-wipe', 'fleet-promotion')), ApprovalRequestInput, ApprovalOutput, 'person', 'An active Person may request an Approval.', approval_write),
-    Verb('approval', 'grant', 'Grant an Approval', tuple('approval grant-' + gate for gate in ('vfx-committee', 'client-cut', 'grade', 'delivery-sign-off', 'drive-wipe', 'fleet-promotion')), ApprovalGrantInput, ApprovalOutput, 'person', 'The allowed-tapper rule applies.', approval_write),
-    Verb('approval', 'deny', 'Deny an Approval', tuple('approval deny-' + gate for gate in ('vfx-committee', 'client-cut', 'grade', 'delivery-sign-off', 'drive-wipe', 'fleet-promotion')), ApprovalDenyInput, ApprovalOutput, 'person', 'The allowed-tapper rule and a reason are required.', approval_write),
-    Verb("studio", "notices", "Read studio notices", (), StudioNoticesInput, StudioNoticesOutput, "reader", "Read Project source notices.", api_read),
-    Verb("external-link", "find", "Find an External Link", (), ExternalLinkFindInput, ExternalLinkFindOutput, "reader", "Resolve an external reference.", api_read),
-    Verb("project", "get", "Get a Project", (), ProjectGetInput, ProjectGetOutput, "reader", "Read a Project.", api_read),
-    Verb("project", "notes", "Read dated PM Notes", (), ProjectNotesInput, ProjectNotesOutput, "reader", "Read dated PM Notes lines.", api_read),
-    Verb("project", "flags", "Read Project flags", (), ProjectFlagsInput, ProjectFlagsOutput, "reader", "Recompute data gaps and date warnings.", api_read),
-    Verb("person", "list", "List Contacts", (), PersonListInput, PersonListOutput, "reader", "Read Contacts.", api_read),
-    Verb("standing-cc", "", "Get standing cc", (), StandingCcInput, StandingCcOutput, "reader", "Read configured standing cc.", None),
-    Verb("jo", "list", "List Job Orders", (), JoListInput, JoListOutput, "reader", "Filter by Project, assignee or status group.", api_read),
-    Verb("jo", "find", "Find Job Orders by Telegram Key", (), JoFindInput, JoListOutput, "reader", "Return all matching orders.", api_read),
+    Verb('approval', 'request', 'Request an Approval', tuple('approval request-' + gate for gate in ('vfx-committee', 'client-cut', 'grade', 'delivery-sign-off', 'drive-wipe', 'fleet-promotion', 'project-start')), ApprovalRequestInput, ApprovalOutput, 'person', 'An active Person may request an Approval.', approval_write),
+    Verb('approval', 'grant', 'Grant an Approval', tuple('approval grant-' + gate for gate in ('vfx-committee', 'client-cut', 'grade', 'delivery-sign-off', 'drive-wipe', 'fleet-promotion', 'project-start')), ApprovalGrantInput, ApprovalOutput, 'person', 'The allowed-tapper rule applies.', approval_write),
+    Verb('approval', 'deny', 'Deny an Approval', tuple('approval deny-' + gate for gate in ('vfx-committee', 'client-cut', 'grade', 'delivery-sign-off', 'drive-wipe', 'fleet-promotion', 'project-start')), ApprovalDenyInput, ApprovalOutput, 'person', 'The allowed-tapper rule and a reason are required.', approval_write),
+    Verb("studio", "notices", "Read studio notices", (), StudioNoticesInput, StudioNoticesOutput, "reader", "Read Project source notices.", api_read, read_only=True),
+    Verb("external-link", "find", "Find an External Link", (), ExternalLinkFindInput, ExternalLinkFindOutput, "reader", "Resolve an external reference.", api_read, read_only=True),
+    Verb("project", "get", "Get a Project", (), ProjectGetInput, ProjectGetOutput, "reader", "Read a Project.", api_read, read_only=True),
+    Verb("project", "notes", "Read dated PM Notes", (), ProjectNotesInput, ProjectNotesOutput, "reader", "Read dated PM Notes lines.", api_read, read_only=True),
+    Verb("project", "flags", "Read Project flags", (), ProjectFlagsInput, ProjectFlagsOutput, "reader", "Recompute data gaps and date warnings.", api_read, read_only=True),
+    Verb("person", "list", "List Contacts", (), PersonListInput, PersonListOutput, "reader", "Read Contacts.", api_read, read_only=True),
+    Verb("standing-cc", "", "Get standing cc", (), StandingCcInput, StandingCcOutput, "reader", "Read configured standing cc.", None, read_only=True),
+    Verb("jo", "list", "List Job Orders", (), JoListInput, JoListOutput, "reader", "Filter by Project, assignee or status group.", api_read, read_only=True),
+    Verb("jo", "find", "Find Job Orders by Telegram Key", (), JoFindInput, JoListOutput, "reader", "Return all matching orders.", api_read, read_only=True),
     Verb("deliverable", "milestone record", "Record a Deliverable milestone", (), MilestoneRecordInput, MilestoneRecordOutput, "coordinator", "Milestones are append-only.", milestone_record),
     Verb("deliverable", "miss", "Record a missed Deliverable", (), DeliverableMissInput, DeliverableScheduleOutput, "coordinator", "A delivered Deliverable cannot be missed.", deliverable_schedule),
     Verb("deliverable", "delay", "Move a Deliverable date", (), DeliverableDelayInput, DeliverableScheduleOutput, "coordinator", "Date moves require a reason.", deliverable_schedule),
     Verb("deliverable", "deliver", "Deliver to the client", (), DeliverableDeliverInput, DeliverableDeliverOutput, "coordinator", "Blocking checklist items must be checked.", deliverable_deliver),
     Verb("deliverable", "define", "Define a Deliverable", (), DeliverableDefineInput, DeliverableDefineOutput, "operator", "Preview and confirm a Deliverable.", deliverable_define),
     Verb("deliverable", "rebind", "Bind a replacement Deliverables page", (), DeliverableRebindInput, DeliverableDefineOutput, "operator", "Retain the old page as a legacy binding.", deliverable_rebind),
-    Verb("deliverable", "get", "Get a Deliverable", (), DeliverableGetInput, DeliverableGetOutput, "reader", "Read from t6.", api_read),
-    Verb("deliverable", "list", "List Project Deliverables", (), DeliverableListInput, DeliverableListOutput, "reader", "Read from t6.", api_read),
-    Verb("meeting-notes", "list", "List Project Meeting Notes", (), MeetingNotesListInput, MeetingNotesListOutput, "reader", "Read from Notion.", api_read),
-    Verb("project", "list", "List Projects", (), ProjectListInput, ProjectListOutput, "reader", "Read Projects.", api_read),
+    Verb("deliverable", "get", "Get a Deliverable", (), DeliverableGetInput, DeliverableGetOutput, "reader", "Read from t6.", api_read, read_only=True),
+    Verb("deliverable", "list", "List Project Deliverables", (), DeliverableListInput, DeliverableListOutput, "reader", "Read from t6.", api_read, read_only=True),
+    Verb("deliverable", "bangko", "List Deliverables ready ahead of air", (), FloorReadInput, FloorReadOutput, "reader", "Ready (kasado or delivered) at least the configured days before air; optional project.", floor_bangko, read_only=True),
+    Verb("deliverable", "hand-to-mouth", "List Deliverables ready at the last moment", (), FloorReadInput, FloorReadOutput, "reader", "Ready within the configured days of air; optional project.", floor_hand_to_mouth, read_only=True),
+    Verb("deliverable", "sabit", "List missed Deliverables", (), FloorReadInput, FloorReadOutput, "reader", "A recorded miss, not a delay; optional project.", floor_sabit, read_only=True),
+    Verb("meeting-notes", "list", "List Project Meeting Notes", (), MeetingNotesListInput, MeetingNotesListOutput, "reader", "Read from Notion.", api_read, read_only=True),
+    Verb("project", "list", "List Projects", (), ProjectListInput, ProjectListOutput, "reader", "Read Projects.", api_read, read_only=True),
     Verb("llm", "run", "Run an LLM task on the API", (), LLMRunInput, LLMRunOutput, "llm", "Server policy and masking apply.", llm_api_only),
     Verb("person", "add", "Register a Person", (), PersonAddInput, PersonWriteOutput, "operator", "A page belongs to one Person.", person_write),
     Verb("person", "create", "Create a Contact and register the Person", (), PersonCreateInput, PersonCreateOutput, "operator", "For someone with no Contacts page yet; an active Person uniquely holds a Telegram ID.", api_write),
@@ -1382,34 +1913,35 @@ VERBS = (
     Verb("person", "revoke", "Revoke a permission", (), PersonPermissionInput, PersonWriteOutput, "operator", "Only an operator or admin may revoke permissions.", person_write),
     Verb("person", "assign", "Assign a Project role", (), PersonProjectRoleInput, PersonWriteOutput, "coordinator", "Assign a Person to a Project role.", person_assign),
     Verb("person", "unassign", "Remove a Project role", (), PersonProjectRoleInput, PersonWriteOutput, "coordinator", "Remove a Person from a Project role.", person_unassign),
-    Verb("person", "get", "Get a Person", (), PersonGetInput, PersonGetOutput, "reader", "Read a Person.", person_get),
+    Verb("person", "get", "Get a Person", (), PersonGetInput, PersonGetOutput, "reader", "Read a Person.", person_get, read_only=True),
     Verb("project", "link-chat", "Link a Telegram chat to a Project", (), ProjectChatInput, ProjectChatOutput, "coordinator", "Approval is required.", project_link_chat),
     Verb("project", "unlink-chat", "Unlink a Telegram chat from a Project", (), ProjectChatInput, ProjectChatOutput, "coordinator", "Approval is required.", project_unlink_chat),
+    Verb("project", "start", "Start a Project: a previewed plan, then its t6 steps", (), ProjectStartInput, ProjectStartOutput, "operator", "A preview by job; confirm applies the Approval, Deliverables, Media locations and Bookings once. The manual steps are listed and recorded.", project_start),
     Verb("project", "archive", "Archive a Project", (), ProjectResumeInput, ProjectWriteOutput, "coordinator", "An archived Project cannot accept new work.", project_archive),
     Verb("project", "hold", "Hold a Project", (), ProjectHoldInput, ProjectWriteOutput,
          "operator", "A held Project cannot be held again.", project_hold),
     Verb("project", "resume", "Resume a held Project", (), ProjectResumeInput, ProjectWriteOutput,
          "operator", "Only a held Project can be resumed.", project_resume),
     Verb("project", "activity", "Show Project activity, newest first", (),
-         ActivityInput, ActivityOutput, "reader", "Activity is append-only.", project_activity),
-    Verb('package', 'list', 'List open Packages', (), PackageListInput, PackageListOutput, 'reader', 'Filter to Packages with missing items.', package_list),
-    Verb('package', 'get', 'Get a Package', (), PackageGetInput, PackageGetOutput, 'reader', 'Read a Package and its checklist.', package_get),
+         ActivityInput, ActivityOutput, "reader", "Activity is append-only.", project_activity, read_only=True),
+    Verb('package', 'list', 'List open Packages', (), PackageListInput, PackageListOutput, 'reader', 'Filter to Packages with missing items.', package_list, read_only=True),
+    Verb('package', 'get', 'Get a Package', (), PackageGetInput, PackageGetOutput, 'reader', 'Read a Package and its checklist.', package_get, read_only=True),
     Verb('package', 'prepare', 'Prepare a Package', (), PackagePrepareInput, PackageOutput, 'person', 'Copy the Package Spec.', package_write),
     Verb('package', 'check', 'Check a Package item', (), PackageCheckInput, PackageOutput, 'person', 'Record who checked the item and when.', package_write),
     Verb('package', 'handoff', 'Hand off a Package', (), PackageHandoffInput, PackageOutput, 'person', 'Blocking items must be checked.', package_write),
     Verb('package', 'accept', 'Accept a Package', (), PackageAcceptInput, PackageOutput, 'person', 'The recipient accepts.', package_write),
     Verb('package', 'reject', 'Reject a Package', (), PackageRejectInput, PackageOutput, 'person', 'The recipient gives a reason.', package_write),
-    Verb("concern", "for-message", "Find Concerns carried by a brief", (), ConcernForMessageInput, ConcernForMessageOutput, "reader", "Return Concern IDs for a brief message.", concern_for_message),
+    Verb("concern", "for-message", "Find Concerns carried by a brief", (), ConcernForMessageInput, ConcernForMessageOutput, "reader", "Return Concern IDs for a brief message.", concern_for_message, read_only=True),
     Verb("concern", "record-message", "Record a Concern carried by a brief", (), ConcernRecordMessageInput, ConcernOutput, "coordinator", "Record a brief message reference without chat text.", concern_write),
     Verb("concern", "scan", "Scan PM Notes for Concerns", (), ConcernScanInput, ConcernScanOutput, "coordinator", "Match new dated lines through llm run.", concern_scan),
-    Verb("concern", "list", "List Concerns to raise at PSR", (), ConcernListInput, ConcernListOutput, "reader", "Quiet Concerns only (no news for 2 weeks); age alone never lists one.", concern_list),
-    Verb("concern", "changes", "Read automatic Concern changes", (), ConcernChangesInput, ConcernChangesOutput, "reader", "Read receipts since a date.", concern_changes),
-    Verb("concern", "get", "Get a Concern", (), ConcernGetInput, ConcernGetOutput, "reader", "Read a Concern and its age.", concern_get),
+    Verb("concern", "list", "List Concerns to raise at PSR", (), ConcernListInput, ConcernListOutput, "reader", "Quiet Concerns only (no news for 2 weeks); age alone never lists one.", concern_list, read_only=True),
+    Verb("concern", "changes", "Read automatic Concern changes", (), ConcernChangesInput, ConcernChangesOutput, "reader", "Read receipts since a date.", concern_changes, read_only=True),
+    Verb("concern", "get", "Get a Concern", (), ConcernGetInput, ConcernGetOutput, "reader", "Read a Concern and its age.", concern_get, read_only=True),
     Verb("concern", "raise", "Raise a Concern", (), ConcernRaiseInput, ConcernOutput, "coordinator", "Record a line waiting on a party.", concern_write),
     Verb("concern", "note", "Add a Concern note", (), ConcernNoteInput, ConcernOutput, "coordinator", "Notes are append-only.", concern_write),
     Verb("concern", "resolve", "Resolve a Concern", (), ConcernResolveInput, ConcernOutput, "coordinator", "A person resolves the Concern.", concern_write),
     Verb("concern", "reopen", "Reopen a Concern", (), ConcernReopenInput, ConcernOutput, "coordinator", "Keep its original age.", concern_write),
-    Verb("jo", "get", "Get a Job Order", (), JoGetInput, JoGetOutput, "reader", "Read a Job Order.", None),
+    Verb("jo", "get", "Get a Job Order", (), JoGetInput, JoGetOutput, "reader", "Read a Job Order.", None, read_only=True),
     Verb("jo", "raise", "Raise a Job Order", (), JoRaiseInput, JoWriteOutput, "coordinator", "Create a Job Order.", jo_write),
     Verb("jo", "assign", "Assign a Job Order", (), JoAssignInput, JoWriteOutput, "coordinator", "The Person must differ from the current assignee.", jo_write),
     Verb("jo", "reassign", "Reassign a Job Order", (), JoReassignInput, JoWriteOutput, "coordinator", "A reason is required.", jo_write),
@@ -1421,18 +1953,18 @@ VERBS = (
     Verb("jo", "delay", "Delay a Job Order", (), JoDelayInput, JoWriteOutput, "coordinator", "Apply the JO transition rules.", jo_write),
     Verb("jo", "cancel", "Cancel a Job Order", (), JoCancelInput, JoWriteOutput, "coordinator", "Apply the JO transition rules.", jo_write),
     Verb("jo", "format", "Format a Job Order", (), JoFormatInput, JoFormatOutput, "reader", "Format a draft.", None),
-    Verb("person", "find", "Find a Person", (), PersonFindInput, PersonFindOutput, "reader", "Find a Contact.", None),
-    Verb("project", "resolve", "Resolve a Project", (), ProjectResolveInput, ProjectResolveOutput, "reader", "Resolve a Project.", None),
-    Verb("camera", "get", "Get Cameras", (), CameraGetInput, CameraGetOutput, "reader", "Read Cameras.", None),
+    Verb("person", "find", "Find a Person", (), PersonFindInput, PersonFindOutput, "reader", "Find a Contact.", None, read_only=True),
+    Verb("project", "resolve", "Resolve a Project", (), ProjectResolveInput, ProjectResolveOutput, "reader", "Resolve a Project.", None, read_only=True),
+    Verb("camera", "get", "Get Cameras", (), CameraGetInput, CameraGetOutput, "reader", "Read Cameras.", None, read_only=True),
     Verb("camera", "enrich", "Enrich a Camera", (), CameraEnrichInput, CameraEnrichOutput, "operator", "Update a Camera.", None),
     Verb("departments", "", "Print the studio Departments, read live, in display order, with option IDs", (),
-         DepartmentsInput, DepartmentsOutput, "reader", "Notion Department options are the truth; use studio display order.", departments),
+         DepartmentsInput, DepartmentsOutput, "reader", "Notion Department options are the truth; use studio display order.", departments, read_only=True),
 )
 
 
 def invoke(entry: Verb, inputs: BaseModel, *, actor: str, people: People,
            open_notion: Callable[..., Any],
-           legacy: Callable[[], int] | None = None) -> Outcome:
+           legacy: Callable[[], int] | None = None, frameio: Any = None) -> Outcome:
     """Authorize an authenticated Person before invoking a registered verb."""
     if isinstance(inputs, ConcernNoteInput) and inputs.from_reply is not None:
         person = people.get(actor)
@@ -1450,20 +1982,28 @@ def invoke(entry: Verb, inputs: BaseModel, *, actor: str, people: People,
         return Done(result=legacy()) if legacy is not None else Refused(rule='verb', reason='Verb has no registered handler')
     token = _actor.set(actor)
     registry_token = _registry.set(people.registry)
+    frameio_token = _frameio.set(frameio)
     try:
         return entry.handler(inputs, open_notion)
     finally:
         _actor.reset(token)
         _registry.reset(registry_token)
+        _frameio.reset(frameio_token)
 
 
 def catalogue() -> list[dict[str, Any]]:
     entries = [{"noun": v.noun, "verb": v.verb, "description": v.description, "aliases": list(v.aliases),
-                "role": v.role, "rule": v.rule, "local_only": v.local_only, "input_schema": v.input_model.model_json_schema(),
+                "role": v.role, "read_only": v.read_only, "rule": v.rule, "local_only": v.local_only, "input_schema": v.input_model.model_json_schema(),
                 "output_schema": v.output_model.model_json_schema()} for v in VERBS]
     entries.append({'noun': 'admin deliverable', 'verb': 'migrate', 'description': 'Migrate Notion Deliverables',
-                    'aliases': [], 'role': 'admin', 'rule': 'Preview before applying.', 'local_only': True,
+                    'aliases': [], 'role': 'admin', 'read_only': False, 'rule': 'Preview before applying.', 'local_only': True,
                     'input_schema': DeliverableMigrateInput.model_json_schema(), 'output_schema': DeliverableMigrateOutput.model_json_schema()})
+    entries.append({'noun': 'admin bay', 'verb': 'migrate', 'description': 'Migrate Notion Bays',
+                    'aliases': [], 'role': 'admin', 'read_only': False, 'rule': 'Preview before applying.', 'local_only': True,
+                    'input_schema': DeliverableMigrateInput.model_json_schema(), 'output_schema': DeliverableMigrateOutput.model_json_schema()})
+    entries.append({'noun': 'admin media', 'verb': 'migrate', 'description': 'Migrate Notion External Links',
+                    'aliases': [], 'role': 'admin', 'read_only': False, 'rule': 'Preview before applying.', 'local_only': False,
+                    'input_schema': MediaMigrateInput.model_json_schema(), 'output_schema': MediaMigrateOutput.model_json_schema()})
     return entries
 
 
@@ -1519,6 +2059,26 @@ def add_parsers(commands: Any) -> None:
                 parser = commands.add_parser(entry.noun, help=("[verb] " if not entry.verb else "") + entry.description)
                 nouns[entry.noun] = parser.add_subparsers(dest=f"{entry.noun}_verb", required=True) if entry.verb else parser
         parser = nouns[entry.noun]
+        if entry.noun == 'transcript':
+            parser = parser.add_parser(entry.verb, help=entry.description)
+            if entry.verb == 'create':
+                parser.add_argument('media')
+                for name in ('deliverable', 'manifest', 'language', 'start-timecode', 'confirm'):
+                    parser.add_argument('--' + name, default='fil' if name == 'language' else None)
+                parser.add_argument('--formats', nargs='+', default=['srt', 'docx'])
+                parser.add_argument('--no-diarize', action='store_true')
+                parser.add_argument('--max-hours', type=float)
+            else:
+                parser.add_argument('transcript')
+                if entry.verb == 'speakers':
+                    parser.add_argument('csv')
+                if entry.verb in ('speakers', 'translate'):
+                    parser.add_argument('--confirm')
+            if entry.verb != 'get':
+                parser.add_argument('--idempotency-key')
+            parser.add_argument('--json', action='store_true')
+            parser.set_defaults(registered_verb=entry)
+            continue
         if entry.handler is approval_write and entry.verb == 'request':
             for alias in entry.aliases:
                 name = alias.split(' ', 1)[1]
@@ -1530,12 +2090,122 @@ def add_parsers(commands: Any) -> None:
                 alias_parser.add_argument('--idempotency-key')
                 alias_parser.add_argument('--confirm')
                 alias_parser.set_defaults(registered_verb=entry, gate=gate)
+        if entry.handler is drive_write:
+            parser = parser.add_parser(entry.verb, help=entry.description)
+            if entry.verb == 'release':
+                parser.add_argument('drives', nargs='+')
+                parser.add_argument('--project', required=True)
+                parser.add_argument('--party', required=True)
+                parser.add_argument('--party-kind', choices=('contact', 'studio'), required=True)
+                parser.add_argument('--delivery')
+            else:
+                parser.add_argument('drive')
+                parser.add_argument('project')
+            if entry.verb in ('receive', 'return'):
+                parser.add_argument('--party')
+                parser.add_argument('--party-kind', choices=('contact', 'studio'))
+            if entry.verb == 'retire':
+                parser.add_argument('--reason', required=True)
+            if entry.verb == 'assign':
+                parser.add_argument('--label', required=True)
+                parser.add_argument('--role', required=True, choices=DRIVE_ROLES)
+                parser.add_argument('--start')
+            if entry.verb == 'unassign':
+                parser.add_argument('--label')
+                parser.add_argument('--role', choices=DRIVE_ROLES)
+                parser.add_argument('--assignment', type=int)
+            if entry.verb in ('assign', 'unassign'):
+                parser.add_argument('--end')
+            else:
+                parser.add_argument('--on')
+            parser.add_argument('--idempotency-key')
+            parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.handler in (swing_write, swing_overdue):
+            parser = parser.add_parser(entry.verb, help=entry.description)
+            if entry.verb == 'assign':
+                parser.add_argument('drive')
+                parser.add_argument('target')
+                parser.add_argument('--project')
+                parser.add_argument('--label')
+                parser.add_argument('--start')
+                parser.add_argument('--return-date')
+            elif entry.handler is swing_write:
+                parser.add_argument('drive')
+                parser.add_argument('--project')
+                parser.add_argument('--person')
+                parser.add_argument('--assignment', type=int)
+                parser.add_argument('--end')
+            if entry.handler is swing_write:
+                parser.add_argument('--idempotency-key')
+                parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.handler in (frameio_project_link, frameio_project_unlink):
+            if 'frameio project' not in nouns:
+                nouns['frameio project'] = parser.add_parser('project', help='Frame.io projects').add_subparsers(dest='frameio_project_verb', required=True)
+            parser = nouns['frameio project'].add_parser(entry.verb.split(' ')[1])
+            parser.add_argument('project')
+            parser.add_argument('frameio_project')
+            parser.add_argument('--idempotency-key')
+            parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.handler in (media_write, media_list):
+            parser = parser.add_parser(entry.verb, help=entry.description)
+            if entry.verb == 'link':
+                for name in ('owner', 'kind', 'ref'):
+                    parser.add_argument(name)
+                parser.add_argument('--role', required=True)
+            elif entry.verb == 'unlink':
+                parser.add_argument('media')
+            else:
+                parser.add_argument('owner')
+            if entry.handler is media_write:
+                parser.add_argument('--idempotency-key')
+                parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.handler in (timeline_write, timeline_list):
+            parser = parser.add_parser(entry.verb, help=entry.description)
+            parser.add_argument('project')
+            if entry.handler is timeline_write:
+                parser.add_argument('timeline')
+                parser.add_argument('--stamp')
+                parser.add_argument('--idempotency-key')
+                parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.handler in (booking_write, booking_read):
+            parser = parser.add_parser(entry.verb, help=entry.description)
+            if entry.verb == 'book':
+                for name in ('bay', 'person', 'project'):
+                    parser.add_argument(name)
+                parser.add_argument('--start', required=True)
+                parser.add_argument('--end')
+                parser.add_argument('--shift', choices=('day', 'night'))
+            elif entry.verb != 'list':
+                parser.add_argument('booking')
+                if entry.verb == 'move':
+                    parser.add_argument('--bay')
+                    parser.add_argument('--start', required=True)
+                if entry.verb in ('move', 'extend'):
+                    parser.add_argument('--end', required=True)
+            if entry.verb in ('book', 'move', 'extend'):
+                parser.add_argument('--force', action='store_true')
+            if entry.handler is booking_write:
+                parser.add_argument('--idempotency-key')
+                parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
         if entry.handler is version_write:
             parser = parser.add_parser(entry.verb, help=entry.description)
             if entry.verb == 'add':
                 parser.add_argument('deliverable')
                 parser.add_argument('--frameio-file', required=True)
                 parser.add_argument('--note')
+                parser.add_argument('--timeline')
             else:
                 parser.add_argument('version')
             parser.add_argument('--idempotency-key')
@@ -1666,6 +2336,16 @@ def add_parsers(commands: Any) -> None:
             parser.add_argument('--confirm')
             parser.set_defaults(registered_verb=entry)
             continue
+        if entry.handler is project_start:
+            parser.add_argument('project')
+            for name, label in (('deliverables', 'deliverable'), ('media', 'media'), ('bookings', 'booking')):
+                parser.add_argument('--' + label, dest=name, action='append', type=json.loads, default=[], metavar='JSON',
+                                    help=f'One {label} as a JSON object; repeat for more')
+            parser.add_argument('--job', type=int, help='Read the Preview a plan job produced')
+            parser.add_argument('--idempotency-key')
+            parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
         if entry.handler in (project_hold, project_resume, project_archive):
             parser.add_argument("project")
             if entry.handler is project_hold:
@@ -1726,6 +2406,9 @@ def add_parsers(commands: Any) -> None:
 
 def run(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
     entry: Verb = args.registered_verb
+    if entry.noun == 'transcript' and entry.verb == 'speakers':
+        from pathlib import Path
+        args.csv = Path(args.csv).read_text(encoding='utf-8-sig')
     inputs = (LegacyPersonGetInput(person_id=args.person_id, data_sources=args.data_sources) if entry.handler is person_get and args.data_sources else
               LegacyDepartmentsInput(data_sources=args.data_sources) if entry.handler is departments and args.data_sources else
               entry.input_model.model_validate({name: getattr(args, name) for name in entry.input_model.model_fields}))

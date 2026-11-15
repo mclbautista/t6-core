@@ -21,15 +21,24 @@ Modelled in `t6.drives`.
   Assignments, custody history, shipment membership and derived status.
 - **Needs review** and a general **review note** represent other doubts; they
   impose no additional workflow restrictions. There is no automatic merge.
-- A Drive is not a Notion entity; it has no Notion row. Its owner is T6 or a
-  Studio (a Notion page ID).
+- A Drive is not a Notion entity; it has no Notion row. Its owner is T6, a
+  Studio (a Notion page ID) or unknown. Unknown is not T6; the workbook
+  importers record it because a sheet row gives no evidence of ownership.
 - "Drive" never means Google Drive. Always write **Google Drive** in full for
   the cloud storage service.
 - The **OCF Drive Planner** keeps its name. It plans storage for original
   camera files and is not about Drive records.
-- **DriveStore**: the interface where Drive records live. The custodian's web
-  app (spec: mclbautista/t6-drives#1) implements it; `t6.drives.testing.InMemoryDriveStore` is the fake for
-  tests.
+- **DriveStore**: the interface where Drive records live. The t6 database
+  implements it as `t6.drives.sqlite.SqliteDriveStore`; the custodian's web
+  app (spec: mclbautista/t6-drives#1) is a consumer, and
+  `t6.drives.testing.InMemoryDriveStore` is the fake for tests. Both pass the
+  same contract tests.
+- **Source row**: the workbook, sheet and row an imported Drive came from. The
+  store keeps it for traceability, and a repeated import of a row changes
+  nothing.
+- **Exception queue**: the durable, private store of workbook rows the importer
+  found unsafe, unreadable or unattached, each with its source row and reason.
+  Nothing in it is guessed or merged. Its evidence stays out of the repository.
 - **Custody event**: one entry in a Drive's append-only custody log: received,
   released, returned or retired, with date, the Contact or Studio involved, the
   Project and who logged it. The date and the party are blank when they were
@@ -43,11 +52,222 @@ Modelled in `t6.drives`.
 - **Status**: where a Drive stands (in custody, released or retired), always
   derived from the last custody event and never stored. No events, no status.
 - **Assignment**: one stretch of a Drive's life on one Project: label, Project
-  (a Notion page ID, or text when unresolved), role (master, backup, offline,
-  swing, archive), start, end and remarks. Role and start are blank when they
-  were never recorded. No end means open, and "which drives
+  (a registered T6 Project ID, or text when unresolved), role (master, backup,
+  offline, swing, archive), start, end and remarks. The label, role and start
+  are blank when they were never recorded. No end means open, and "which drives
   are out for show X" is a query over open Assignments. A reused Drive gets a new
   Assignment; old ones stay as its history.
+- **Assignment number**: the place of an Assignment in its Drive's list, counted
+  from 1 in the order they were added. It never changes, because an Assignment is
+  never removed. `drive unassign` picks the Assignment to end by it when several are open.
+- **Swing drive**: a Drive with a `swing` Assignment, lent to a Project, to a
+  Person (the holder), or to both. A swing held by a Person alone has no Project:
+  an Assignment with no Project must name a holder, and a Drive cannot have two
+  open swings for the same holder. The Assignment may have a **return date**, the
+  day it is due back. `swing return` ends the swing and clears the date;
+  `swing unassign` ends it and keeps the date in history. A swing is **overdue**
+  when it is still open and its return date is before today (Manila time). The
+  Notion Swing Drives database is imported once and then retired. One Notion row
+  is one Drive, keyed by its page ID only: it gets a provisional ID, no serial,
+  unknown ownership and its label from Name, and is never matched by label to
+  another Drive. A row in use with one Collaborator that is a registered Person
+  (a Contacts page bound to a Person) gets an open swing held by that Person, with
+  no Project. Any other holder question goes to the exception queue with the
+  page ID.
+
+## Bays and Bookings
+
+A **Bay** (`t6b_`) is a bookable place, today a row of the Notion Bays
+database. t6 owns its identity only: the Notion Bays row, bound by page ID, keeps the typed fields.
+Migration registers a Bay per unbound row, never matches by name, and is safe to
+run twice.
+A Machine's record is the same kind of row (see Fleet).
+
+A **Booking** (`t6g_`) is one Person in one Bay on one Project from a start to
+an end, both with a time zone, kept in Manila time. `--shift day|night` takes
+the times from the Person's shift pattern. Booking verbs (`bay book`,
+`booking move`, `booking extend`, `booking cancel`) preview, then confirm.
+- **Overlap**: a Booking that overlaps an active Booking in the same Bay is
+  refused unless forced. A forced Booking is recorded as **forced**.
+- **Cancelled**: a cancelled Booking stays on record and no longer counts for
+  overlap.
+- **Booking calendar sync**: every Booking change queues one `booking.calendar_sync`
+  internal job that writes the Booking's event to its Bay's Google Calendar (one
+  event per Booking, its ID derived from the Booking ID). The title is the
+  Project's name; the description names the Person and the Booking ID. With no
+  calendar configured the job finishes and says so.
+- **Inbound calendar edit**: a change to a Booking event in Google Calendar. The
+  `google.calendar_changed` job (queued by the edge from a Google notification,
+  which names no event) lists the changed events and runs `booking move`, `booking extend` or
+  `booking cancel`. Google names no editor, so with the real adapter the edit is accepted as made by
+  a `bookings` holder: the actor is the internal service actor `google-calendar` (not a Person, not
+  usable through the API) and the Activity says the change was made in Google Calendar and that
+  Google does not name the editor. When an editor is known, a Person with `bookings` (found by the
+  email on their Notion Contact) is the actor and anyone else is reverted. A clash is **reverted**:
+  the event is written back from the Booking with a note, and the Booking does not change. An event
+  that already equals its Booking is our own write coming back and is ignored. **Calendar sharing is
+  the permission check for inbound edits**, and the daily reconcile job keeps it true.
+- **Notification channel**: the Google channel that sends changes of one Bay
+  calendar to the edge. The daily `google.renew_channels` job replaces it before it expires, and it is also the **daily catch-up**: it lists every Bay calendar from its sync token and applies what it finds, so a lost notification is caught within a day. A changed channel token queues a run at the next worker start.
+- **Calendar sharing**: who can edit a Bay calendar follows the `bookings` permission.
+  `person grant` or `person revoke` of `bookings` queues a `booking.calendar_sharing` job in the
+  same transaction; it gives the Person (found by the email on their Notion Contact) edit
+  (`writer`) or view (`reader`) on every Bay calendar. Every other active staff Person has view.
+  The daily `google.reconcile_sharing` job compares each calendar's ACL with t6 and fixes
+  drift (t6 wins), logging each fix by a short hash. A writer whose email is no Person's (added by hand), and any group, domain or public writer entry, is lowered to view. The reconcile reads emails only for active staff, and one failed email lookup is counted and skipped. `person classify` and `person rebind` queue the sharing job too. Manager entries (the calendar owner and the
+  service account) are never changed. Revoke sets view; it does not
+  delete the entry.
+
+## Timelines
+
+A **Timeline** (`t6t_`) is a DaVinci Resolve sequence timeline known by its
+**stamp**: the `t6t_` ID a person writes by hand into the custom data of a
+marker at the timeline's first frame. The stamp is the identity; the Resolve
+name is only a label, so editors may rename and back up freely. Writing the
+stamp is a Resolve write and stays manual. Nothing in T6 writes to Resolve.
+`timeline link` without `--stamp` creates the stamp: the preview shows the new
+`t6t_` ID (the same one for the same key), the confirm records exactly it, and
+the person then writes it into the marker by hand. A Timeline that already
+carries a stamp is not given a new one (pass `--stamp`), except that at confirm a timeline
+carrying exactly the stamp the preview showed is accepted (the person has written it
+by hand); a retried confirm with the same key returns the first result. `timeline list` refuses a
+Project that is not registered.
+
+- A Timeline records its `t6t_` ID (the stamp), its Resolve project (the
+  Project's active resolve-project Media location, on the project server) and
+  the label. The copy on the project server is the **canonical copy**; copies
+  in other Resolve projects are not recorded.
+- **One Timeline per stamp.** Linking a stamp already linked to another Project
+  or Resolve project is refused, and so is a stamp found on two timelines of the
+  Resolve project (a duplicate keeps the same stamp). The fix, re-stamping the
+  copy, is manual. Linking the same stamp again for the same Resolve project
+  records nothing new, whatever the name now is.
+- A Resolve unique id is not the key: it changes on duplicate and import.
+- A **Version** may name its source Timeline (`version add --timeline`); the
+  Timeline must belong to the Deliverable's Project.
+
+## Media locations
+
+A **Media location** (`t6m_`) is a typed link from a Project or Deliverable (its
+**owner**) to where material lives. It replaces the Notion External Links
+database; its migration maps rows by page ID only and sends rows it cannot
+classify to a review list.
+
+- **Kind**: what the `ref` points to: drive (a `t6d_` Drive ID), timeline (a
+  `t6t_` Timeline ID), nas-path, frameio-project, frameio-folder,
+  resolve-project or instagantt-project (the `ref` is the Instagantt project ID
+  as an Instagantt export gives it, free text, role working). An Instagantt
+  project is not a Timeline: a Timeline is a Resolve timeline with a stamp.
+- **Role**: what the location is for: master, backup, review, working or
+  frameio-project. These are not Drive Assignment roles.
+- A Frame.io project, and an Instagantt project, belongs to one Project at a
+  time. A frameio-folder belongs
+  to a Deliverable with role review.
+- A file that lands in a Deliverable's frameio-folder records a Version (`t6r_`) from the
+  `file.versioned` or upload event, run by the main worker, once per event. A file in
+  no T6 folder is ignored.
+- **Unlink** makes a Media location inactive; it is never deleted. Linking the
+  same owner, kind, ref and role again reactivates it. Its history is
+  append-only: link and unlink, with actor and time.
+
+## Project Start
+
+**Project Start** is one verb, `project start`, with a previewed plan. It is a
+preview by job: the verb returns a job id, the main worker builds the plan, and
+the job's result is the Preview with its signed single-use token (read with
+`project start --job <id>`). Confirm (`--confirm <token>`, same inputs and key)
+applies the **t6 steps**; a changed input is refused. Role: operator, and the
+`bookings` permission when the Start asks for Bookings.
+
+- **t6 steps**, each created once under a key derived from the Start's key: the
+  Approval (gate `project start`, state requested, a card goes out like any
+  Approval), the Deliverables with the milestone template of the Project Type
+  (the Type is read once; a Type without a template refuses the plan), the
+  Media locations of the Project, and the initial Bookings. Each step goes
+  through the store that owns it, so its rules (overlap, one Frame.io project
+  per Project) apply. A retry after a failed step resumes without repeating
+  the steps already done.
+- **Manual steps** the plan lists and does not do: creating the NAS folders, the
+  Resolve project, the Resolve timelines with their stamps (manual stamping).
+  Confirm records each in Activity (`project_start_manual`) with `project_start`.
+- **Frame.io step**: confirm asks the Frame.io worker (the only token holder)
+  through the `frameio` queue for one Frame.io project and one folder per
+  Deliverable, and records them as Media locations: the project as the
+  Project's frameio-project (the `frameio project link` rules, role
+  frameio-project), and one frameio-folder with role review per Deliverable.
+  The Frame.io project is named by the Project's name (read from Notion by the
+  plan) and each folder by its Deliverable code, in the configured T6 Frame.io
+  account. Confirm asks first: a Frame.io failure refuses the confirm and leaves
+  t6 unchanged. The step is safe to repeat. The Frame.io worker uses the
+  Frame.io project the Project already holds, else the one in the account with
+  exactly that name that no other Project holds, else makes one; it never
+  guesses between two. A folder is found by exact name or made. So a repeated
+  confirm, or a retry after a crash between the Frame.io call and the t6
+  record, creates nothing new. No share is made (a share always needs a
+  person's yes), nothing is uploaded (the editor uploads), and version stacks
+  form as cuts arrive.
+- **Plan order**: approval, NAS folders, Frame.io project and per-Deliverable
+  folder, Resolve project, Resolve timelines, Media locations, milestone
+  template, Bookings.
+- A Deliverable code the Project already has is refused (rule `deliverable_code`)
+  at preview and at confirm, so a Start never gives one Frame.io folder two
+  owners; the Deliverables a Start's own key made do not count. The Deliverable
+  store itself does not forbid a repeated code.
+- A Project is started once: a second Start, or a Start of an archived Project,
+  is refused. Frame.io Media locations are refused in the `media` input of a
+  Start: they come from the Frame.io step only.
+
+## Floor reads
+
+Three derived reads over Deliverables, Milestones, Packages and dates, per Project
+or studio-wide. Nothing is stored; dates are Asia/Manila days. A Deliverable is
+ready on the earlier of its `delivered` Milestone date and the day its delivery
+Package (Package kind `delivery`) became kasado. Other Package kinds are
+handoffs between people and never make a Deliverable ready for air.
+
+**Kasado** (ready) is one rule, used by `package get` and by these reads (#178):
+every blocking item of the Package's checklist is ticked. Every spec starts with
+zero blocking items, so a Package with none is kasado from the day it was
+prepared; with blocking items it became kasado on the day the last one was
+ticked (Asia/Manila). A rejected Package is never kasado.
+
+- **Bangko**: a Deliverable ready at least the configured margin (default 3 days)
+  before its air date.
+- **Hand-to-mouth**: a Deliverable ready within the configured margin (default 1
+  day) before its air date, with no buffer.
+- **Sabit**: a Deliverable that missed its date (a recorded miss). A date moved
+  with a reason is delayed, not sabit. A Deliverable missed twice is listed once,
+  with its latest miss.
+
+## Transcripts
+
+A **Transcript** (`t6x_`) is the record of transcribing the audio in one active
+nas-path Media location, with at most one Deliverable of the same Project. It
+holds settings, a state (running, done or failed), progress and the last run
+summary (clips done, failed and skipped, audio hours, estimated cost). It
+keeps no audio and no transcript text. Running again on the same Media location
+reuses the Transcript.
+
+- **NAS share**: a mounted network volume (`/Volumes/<name>`) that the transcribe
+  worker may read, named in that worker's own configuration. A folder outside
+  every NAS share is refused (`outside_shares`) before anything is read.
+- **Transcript history**: the append-only entries of a Transcript: created,
+  re-run, failed, translated and speakers changed, each with actor and time. A
+  speakers entry keeps the speaker map as given. Each entry shows in Activity
+  for the Project.
+
+## Delivery links and the staff role
+
+A **Delivery link** is how a Delivery reaches the client: its carrier, one of a
+Drive, a Frame.io share or a transfer link, kept with its reference. When the
+carrier is a Frame.io share, a client's view of it is recorded in the Project's
+Activity.
+
+The **staff role** is the role table's lowest write role: an active Person whose
+kind is staff. Clients, vendors, inactive Persons, services and internal actors
+do not have it. Verbs that need no named permission use it (`transcript create`,
+`transcript speakers`, `transcript translate`, `frameio project link`); the
+`reader` role is for reads only, never for a write.
 
 ## Contact matching
 
@@ -207,7 +427,7 @@ fields, read from Notion) and `t6.registry` (identity).
 - **Classify**: to decide an unclassified Project is in or out of rotation.
   Only a person decides; Status never does.
 - **Legacy reference**: a page ID that still names a Project in a Job Order,
-  Deliverable, External Link, Drive Assignment or event. It resolves to the
+  Deliverable, Drive Assignment or event. It resolves to the
   Project through its binding, including a replaced page's binding.
 - **Projection**: the registry-owned values a Notion page displays: T6 ID,
   Project Code and Rotation. Notion shows them; it does not own them. An edit
@@ -227,12 +447,29 @@ fields, read from Notion) and `t6.registry` (identity).
   serves the `frameio` queue. Nothing else in T6 has Frame.io credentials.
 - **Request** (Frame.io): one typed question or step for the Frame.io worker,
   sent as a job on the `frameio` queue. Its **result** is `Ok` or `Failed`.
-  A **Frame.io project** is Frame.io's own object, never a T6 Project.
+  A **Frame.io project** is Frame.io's own object, never a T6 **Project**: this file
+  writes "Frame.io project" for Frame.io's and "Project" for T6's, and a Project holds at most one
+  Frame.io project through its frameio-project Media location.
 - **Caller**: any part of T6 that asks the Frame.io worker and waits for the
-  result: the main worker, t6-notion-reports.
+  result: the main worker, the API (Project Start confirm), t6-notion-reports.
+  Almost every request is a read; `CreateProjectFolders` is the one **write**
+  request (a Frame.io project and its folders, never a share).
 - **Review message**: the one Telegram message to the review chat that says a
   person has finished commenting on a Frame.io file. A **review timer** is
   kept per (file, commenting person) and restarts on each of their comments.
+- **Unlinked Frame.io activity**: review activity on a Frame.io project that
+  no Project holds (no active frameio-project Media location). The main worker
+  **holds** it in the t6 database (the Frame.io worker never opens it) and posts one
+  operator card per Frame.io project, a picker of Projects that a coordinator
+  (`permission:coordinator`) answers. Tapping a Project runs `frameio project link`; the
+  held activity is then **released**, each event once, whatever linked the project
+  (the card, the verb, or anything else). It is never dropped and no comment text is
+  stored with it. Skipping the card leaves it held and the next event posts a new card.
+- **Link Frame.io project**: a button on the `/project` card, for any active staff
+  Person (a staff Person who is not an operator gets the card with only this
+  button). It lists the Frame.io projects of the configured T6 Frame.io account that
+  no Project holds, most recently updated first, five to a page, with a typed search.
+  A second Project choosing a Frame.io project another Project holds is refused, naming the holder.
 - **Sign-in**: a person signing in to Adobe so the Frame.io worker has a
   token again. The **sign-in alert** is the Telegram message with the link.
 

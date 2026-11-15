@@ -204,6 +204,56 @@ def _migrate_job_orders(args: argparse.Namespace, open_notion: Callable[..., Any
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
 
+def _migrate_media(args: argparse.Namespace) -> int:
+    from t6.client import APIError, Client, Unavailable
+    from t6.verbs import MediaMigrateInput, Refused, outcome_json
+    try:
+        result = Client().admin_media_migrate(MediaMigrateInput(idempotency_key=args.idempotency_key, confirm=args.confirm))
+    except APIError as error:
+        result = Refused(rule='api', reason=str(error))
+    if isinstance(result, Unavailable):
+        print(json.dumps({'outcome': 'unavailable', 'reason': result.reason, 'idempotency_key': result.idempotency_key}))
+        return 1
+    code, payload = outcome_json(result)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return code
+
+
+def _migrate_bays(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
+    import pwd
+    from t6.bay import BayStore
+    from t6.notion import NotionError
+    from t6.notion.generated import BaysRow
+    from t6.notion.reads import is_live
+    from t6.registry import SqliteProjectRegistry
+    token = os.environ.get(TOKEN_VARIABLE)
+    if not token:
+        return _fail(f"set {TOKEN_VARIABLE} to a Notion integration token")
+    if args.apply and not args.preview:
+        return _fail("--apply needs --preview FILE")
+    try:
+        with open_notion(token) as client:
+            rows = [BaysRow.from_page(page) for page in client.query_data_source(_read_data_sources(args.data_sources)['bays']) if is_live(page)]
+        digest = json.loads(args.preview.read_text(encoding='utf-8'))['digest'] if args.apply else None
+        report = BayStore(SqliteProjectRegistry(args.registry_db)).migrate(rows, actor=pwd.getpwuid(os.getuid()).pw_name, apply=args.apply, digest=digest)
+    except (OSError, ValueError, KeyError, NotionError) as error:
+        return _fail(str(error))
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _calendar_resync(args: argparse.Namespace) -> int:
+    from t6.bay import BookingStore
+    from t6.preview import PreviewTokens
+    from t6.registry import SqliteProjectRegistry
+    try:
+        queued = BookingStore(SqliteProjectRegistry(args.registry_db), PreviewTokens("calendar-resync")).resync_calendar()
+    except (OSError, ValueError) as error:
+        return _fail(str(error))
+    print(json.dumps({"queued": queued}, indent=2))
+    return 0
+
+
 def _migrate_deliverables(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
     import pwd
     from t6.deliverable import DeliverableStore
@@ -303,12 +353,16 @@ def _drives_import_dry_run(args: argparse.Namespace) -> int:
     from t6.domain import Project
     from t6.drives import Ref
     from t6.drives.testing import InMemoryDriveStore
+    from t6.ids import EntityKind, T6Id
     from t6.lookup import Index, Lookup
 
     try:
         listed: Any = json.loads(args.projects.read_text(encoding="utf-8")) if args.projects else []
         projects = tuple(Project(page_id=p["page_id"], name=p["name"]) for p in listed)
-        store, lookup, logged_by = InMemoryDriveStore(), Lookup(Index(projects=projects)), Ref(text="dry run")
+        # A dry run has no registry: a Project the list names counts as resolved, with a throwaway T6 ID.
+        bindings = {p.page_id: str(T6Id.mint(EntityKind.PROJECT)) for p in projects}
+        store = InMemoryDriveStore(project_bindings=bindings)
+        lookup, logged_by = Lookup(Index(projects=projects)), Ref(text="dry run")
         results = [import_per_project_workbook(args.workbook, store, lookup=lookup, logged_by=logged_by)]
         if args.log_sheet:
             results.append(import_log_sheet_workbook(args.log_sheet, store, lookup=lookup, logged_by=logged_by))
@@ -318,6 +372,33 @@ def _drives_import_dry_run(args: argparse.Namespace) -> int:
         "imported": sum(result.imported for result in results),
         "review": [asdict(item) for result in results for item in result.review],
     }
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _import_swing(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
+    from t6.drives.sqlite import SqliteDriveStore
+    from t6.notion import NotionError
+    from t6.notion.swing_drives import read_swing_drives
+    from t6.registry import SqliteProjectRegistry
+    from t6.swing_import import import_swing_drives
+    token = os.environ.get(TOKEN_VARIABLE)
+    if not token:
+        return _fail(f"set {TOKEN_VARIABLE} to a Notion integration token")
+    if args.apply and not args.preview:
+        return _fail("--apply needs --preview FILE")
+    if not args.data_sources:
+        return _fail("--swing needs --data-sources FILE")
+    try:
+        data_source = _read_data_sources(args.data_sources).get("swing_drives")
+        if not data_source:
+            return _fail("--data-sources has no 'swing_drives' entry")
+        with open_notion(token) as client:
+            rows = read_swing_drives(client, data_source)
+        digest = json.loads(args.preview.read_text(encoding="utf-8"))["digest"] if args.apply else None
+        report = import_swing_drives(rows, SqliteDriveStore(SqliteProjectRegistry(args.registry_db)), apply=args.apply, digest=digest)
+    except (OSError, ValueError, KeyError, NotionError) as error:
+        return _fail(str(error))
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
 
@@ -511,11 +592,20 @@ def main(
     dry_run = commands.add_parser(
         "drives-import-dry-run",
         help="Import the legacy drive workbooks into memory and print the review report",
-        description="Nothing is written anywhere: the import runs into an in-memory store that is thrown away.",
+        description="With a workbook, nothing is written anywhere: the import runs into an in-memory store that is thrown away. "
+        "With --swing it reads the Notion Swing Drives database: it prints a preview and writes nothing; "
+        "--swing --apply writes into the t6 database the Drives (one per Notion row), the open swing Assignments of the rows "
+        "that name one registered Person as holder, and the exceptions (the rows that need a person's answer), "
+        "and only the ones the preview named. Always preview first.",
     )
-    dry_run.add_argument("workbook", type=Path, help="the per-project drive workbook (.xlsx)")
+    dry_run.add_argument("workbook", type=Path, nargs="?", help="the per-project drive workbook (.xlsx); not used with --swing")
     dry_run.add_argument("--log-sheet", type=Path, metavar="FILE", help="also import the drive log sheet workbook (.xlsx) into the same store")
     dry_run.add_argument("--projects", type=Path, metavar="FILE", help="JSON list of {\"page_id\", \"name\"} to resolve Project names against; without it every Project is unresolved")
+    dry_run.add_argument("--swing", action="store_true", help="read the Notion Swing Drives database: print a preview, and write nothing unless --apply")
+    dry_run.add_argument("--data-sources", type=Path, metavar="FILE", help="with --swing: JSON of database key to data source ID, with a swing_drives entry")
+    dry_run.add_argument("--registry-db", type=Path, default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)), help="with --swing: the t6 database")
+    dry_run.add_argument("--apply", action="store_true", help="with --swing: write the previewed Drives, swing Assignments and exceptions into the t6 database; needs --preview FILE")
+    dry_run.add_argument("--preview", type=Path, metavar="FILE", help="with --swing --apply: the JSON a preview printed")
     consumer = commands.add_parser(
         "check-consumer",
         help="Check app imports, credentials and direct calls against ADR 0002",
@@ -549,6 +639,18 @@ def main(
     jo_migrate.add_argument("--registry-db", type=Path, default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)))
     jo_migrate.add_argument("--apply", action="store_true")
     jo_migrate.add_argument("--preview", type=Path)
+    media_admin = admin_commands.add_parser("media", help="Media administration")
+    media_commands = media_admin.add_subparsers(dest="media_admin_command", required=True)
+    media_migrate = media_commands.add_parser("migrate", help="Preview or apply External Links migration")
+    media_migrate.add_argument("--idempotency-key")
+    media_migrate.add_argument("--confirm")
+    bay_admin = admin_commands.add_parser("bay", help="Bay administration")
+    bay_commands = bay_admin.add_subparsers(dest="bay_admin_command", required=True)
+    bay_migrate = bay_commands.add_parser("migrate", help="Preview or apply Bays migration")
+    bay_migrate.add_argument("--data-sources", type=Path, required=True)
+    bay_migrate.add_argument("--registry-db", type=Path, default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)))
+    bay_migrate.add_argument("--apply", action="store_true")
+    bay_migrate.add_argument("--preview", type=Path)
     deliverable_admin = admin_commands.add_parser("deliverable", help="Deliverable administration")
     deliverable_commands = deliverable_admin.add_subparsers(dest="deliverable_admin_command", required=True)
     deliverable_migrate = deliverable_commands.add_parser("migrate", help="Preview or apply Deliverable migration")
@@ -556,6 +658,13 @@ def main(
     deliverable_migrate.add_argument("--registry-db", type=Path, default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)))
     deliverable_migrate.add_argument("--apply", action="store_true")
     deliverable_migrate.add_argument("--preview", type=Path)
+    calendar_admin = admin_commands.add_parser("calendar", help="Calendar administration")
+    calendar_commands = calendar_admin.add_subparsers(dest="calendar_admin_command", required=True)
+    calendar_resync = calendar_commands.add_parser(
+        "resync", help="Queue a calendar sync for every Booking that is not cancelled and has not ended",
+        description="Run on the database host. Queues one booking.calendar_sync job per Booking and prints how many. "
+        "Safe to run twice: a Booking whose sync is still queued is not queued again.")
+    calendar_resync.add_argument("--registry-db", type=Path, default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)), metavar="FILE", help="the t6 database")
     drive = admin_commands.add_parser("drive", help="Drive administration")
     drive_commands = drive.add_subparsers(dest="drive_command", required=True)
 
@@ -596,6 +705,12 @@ def main(
                             {"snapshot": "schema-snapshot", "consumer-check": "check-consumer"}.get(args.admin_command, args.admin_command))
     if getattr(args, "admin_command", None) == "person":
         return _migrate_people(args, open_notion)
+    if getattr(args, "admin_command", None) == "media":
+        return _migrate_media(args)
+    if getattr(args, "admin_command", None) == "calendar":
+        return _calendar_resync(args)
+    if getattr(args, "admin_command", None) == "bay":
+        return _migrate_bays(args, open_notion)
     if getattr(args, "admin_command", None) == "deliverable":
         return _migrate_deliverables(args, open_notion)
     if getattr(args, "admin_command", None) == "jo":
@@ -667,6 +782,10 @@ def main(
     if args.command == "check-consumer":
         return _check_consumer(args)
     if args.command == "drives-import-dry-run":
+        if args.swing:
+            return _import_swing(args, open_notion)
+        if args.workbook is None:
+            return _fail("give the per-project drive workbook, or --swing")
         return _drives_import_dry_run(args)
     if args.command in {"health", "backup", "restore"}:
         return _ops(args)

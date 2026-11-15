@@ -68,7 +68,7 @@ SHEETS: dict[str, list[list[Any]]] = {
         ["MASTER BACK UP", "ACME", "QQ300CC1", "4TB", None, None, None, None],
     ],
 }
-PAPER_MOON = Ref(page_id="project-paper-moon")
+PAPER_MOON = Ref(page_id="t6p_aaaaaaaaaaaaaaaaaaaaaaaa")
 LOGGED_BY = Ref(text="workbook import")
 
 
@@ -135,7 +135,7 @@ class PerProjectImportTests(unittest.TestCase):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.path = write_workbook(folder.name)
-        self.store = InMemoryDriveStore()
+        self.store = InMemoryDriveStore(project_bindings={"project-paper-moon": "t6p_aaaaaaaaaaaaaaaaaaaaaaaa"})
         self.result = self.run_import()
 
     def run_import(self) -> Any:
@@ -156,7 +156,7 @@ class PerProjectImportTests(unittest.TestCase):
                 HEADER,
                 ["Second drive", None, "SN-0002"],
             ]})
-            store = InMemoryDriveStore()
+            store = InMemoryDriveStore(project_bindings={"project-paper-moon": "t6p_aaaaaaaaaaaaaaaaaaaaaaaa"})
             result = import_per_project_workbook(path, store, lookup=make_lookup(), logged_by=LOGGED_BY)
 
             self.assertEqual(result.imported, 2)
@@ -244,6 +244,7 @@ class PerProjectImportTests(unittest.TestCase):
     def test_a_project_name_is_resolved_with_lookup_or_kept_as_text(self) -> None:
         (unresolved,) = self.store.assignment_history(drive_id(self.store, "QQ200BB1"))
         self.assertEqual(unresolved.project, Ref(text="GLASS HARBOUR (WORKING TITLE)"))
+        assert unresolved.project is not None
         self.assertTrue(unresolved.project.unresolved)
         (untitled,) = self.store.assignment_history(drive_id(self.store, "QQ300CC1"))
         self.assertEqual(untitled.project, Ref(text="UNTITLED TAB"))
@@ -340,7 +341,7 @@ class LogSheetImportTests(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         self.per_project = write_workbook(folder.name)
         self.path = write_workbook(folder.name, LOG_SHEETS, "log-sheet.xlsx")
-        self.store = InMemoryDriveStore()
+        self.store = InMemoryDriveStore(project_bindings={"project-paper-moon": "t6p_aaaaaaaaaaaaaaaaaaaaaaaa"})
         import_per_project_workbook(
             self.per_project, self.store, lookup=make_lookup(), logged_by=LOGGED_BY
         )

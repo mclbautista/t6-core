@@ -8,7 +8,8 @@ the real client and reads with no network:
     fake.add_share("fp1", "s1", "Cut 1", last_viewed_at="2026-11-02T10:00:00Z")
     reads = FrameioReads(FrameioApi(StaticTokens(), fake.fetch))
 
-`requests` records every path asked for. `refuse_next` answers the next
+`requests` records every path read; `posts` records each (path, body) written, and a POST to any route
+but a new project or a new folder is answered 404. `refuse_posts` fails the next writes. `requests` records every path asked for. `refuse_next` answers the next
 requests with a status (401, 429, 500). Use made-up names only.
 """
 
@@ -40,6 +41,11 @@ class StaticTokens:
 class FakeFrameio:
     def __init__(self, page_size: int = 2) -> None:
         self.accounts: list[JSON] = [{"id": ACCOUNT, "display_name": "Example Post"}]
+        self.workspaces: list[JSON] = [{"id": "ws-1", "name": "Example Workspace"}]
+        self.folders: dict[str, list[JSON]] = {}
+        self.posts: list[tuple[str, JSON]] = []
+        self.shares_created = 0
+        self._post_refusals: list[tuple[int, int]] = []  # (status, writes still allowed before it applies)
         self.projects: dict[str, JSON] = {}
         self.shares: dict[str, list[JSON]] = {}
         self.share_assets: dict[str, list[str]] = {}
@@ -47,6 +53,7 @@ class FakeFrameio:
         self.files: dict[str, JSON] = {}
         self.comments: dict[str, list[JSON]] = {}
         self.stacks: dict[str, list[str]] = {}
+        self.stack_parents: dict[str, str] = {}
         self.metadata: dict[str, list[JSON]] = {}
         self.requests: list[str] = []
         self.tokens_seen: list[str] = []
@@ -65,6 +72,13 @@ class FakeFrameio:
             "updated_at": "2026-11-01T00:00:00Z",
         }
         self.shares.setdefault(project_id, [])
+
+    def add_folder(self, parent_id: str, folder_id: str, name: str) -> None:
+        self.folders.setdefault(parent_id, []).append({"id": folder_id, "type": "folder", "name": name, "parent_id": parent_id})
+
+    def refuse_posts(self, status: int, *, after: int = 0) -> None:
+        """Answer the next write with `status`, once `after` writes have gone through."""
+        self._post_refusals.append((status, after))
 
     def add_share(
         self,
@@ -105,9 +119,10 @@ class FakeFrameio:
             "created_at": "2026-11-01T00:00:00Z",
         }
 
-    def add_version_stack(self, stack_id: str, file_ids: list[str]) -> None:
-        """Put files that exist into one version stack, oldest first."""
+    def add_version_stack(self, stack_id: str, file_ids: list[str], parent_id: str = "folder-1") -> None:
+        """Put files that exist into one version stack, oldest first. The stack sits in the folder `parent_id`."""
         self.stacks[stack_id] = list(file_ids)
+        self.stack_parents[stack_id] = parent_id
         for file_id in file_ids:
             self.files[file_id]["parent_id"] = stack_id
 
@@ -178,6 +193,8 @@ class FakeFrameio:
         rest = parts.path[len(prefix) :]
         for pattern, answer in (
             (r"/projects", lambda: list(self.projects.values())),
+            (r"/workspaces", lambda: self.workspaces),
+            (r"/folders/([^/]+)/children", lambda key: self.folders.get(key, []) if self._is_folder(key) else None),
             (r"/projects/([^/]+)/shares", lambda key: self.shares.get(key)),
             (r"/shares/([^/]+)/activities", lambda key: self.activities.get(key)),
             (r"/shares/([^/]+)/assets", self._assets_of_share),
@@ -191,6 +208,15 @@ class FakeFrameio:
             if match:
                 rows = answer(*match.groups())
                 return (404, {}, {}) if rows is None else self._page(parts.path, query, rows)
+        match = re.fullmatch(r"/version_stacks/([^/]+)", rest)
+        if match:
+            stack_id = match.group(1)
+            if stack_id not in self.stacks:
+                return 404, {}, {}
+            return 200, {}, {"data": {"id": stack_id, "type": "version_stack", "name": stack_id, "parent_id": self.stack_parents[stack_id]}}
+        match = re.fullmatch(r"/projects/([^/]+)", rest)
+        if match:
+            return (200, {}, {"data": self.projects[match.group(1)]}) if match.group(1) in self.projects else (404, {}, {})
         match = re.fullmatch(r"/comments/([^/]+)", rest)
         if match:
             found = [c for rows in self.comments.values() for c in rows if c["id"] == match.group(1)]
@@ -202,6 +228,45 @@ class FakeFrameio:
                 return 200, {}, {"data": {"file_id": file_id, "metadata": self.metadata.get(file_id, [])}}
             return 200, {}, {"data": self.files[file_id]}
         return 404, {}, {}
+
+    def send(self, url: str, headers: Mapping[str, str], body: JSON) -> tuple[int, Mapping[str, str], JSON]:
+        """POST: create a project in a workspace (`/workspaces/{id}/projects`) or a folder in a folder (`/folders/{id}/folders`)."""
+        parts = urllib.parse.urlsplit(url)
+        self.tokens_seen.append(headers.get("Authorization", ""))
+        if (parts.scheme, parts.netloc) != ("https", "api.frame.io"):
+            return 404, {}, {}
+        for index, (status, after) in enumerate(self._post_refusals):
+            if after <= 0:
+                self._post_refusals.pop(index)
+                return status, {}, {"errors": [{"detail": "refused"}]}
+            self._post_refusals[index] = (status, after - 1)
+        prefix = f"/v4/accounts/{ACCOUNT}"
+        given = body.get("data")
+        name = given.get("name") if isinstance(given, dict) else None
+        if not parts.path.startswith(prefix + "/") or not isinstance(name, str) or not name:
+            return 404, {}, {}
+        rest = parts.path[len(prefix) :]
+        match = re.fullmatch(r"/workspaces/([^/]+)/projects", rest)
+        if match and any(w["id"] == match.group(1) for w in self.workspaces):
+            self.posts.append((parts.path, body))
+            project_id = f"fp-new-{len(self.projects) + 1}"
+            self.add_project(project_id, name)
+            self.projects[project_id]["workspace_id"] = match.group(1)
+            return 201, {}, {"data": self.projects[project_id]}
+        match = re.fullmatch(r"/folders/([^/]+)/folders", rest)
+        if match and self._is_folder(match.group(1)):
+            self.posts.append((parts.path, body))
+            folder_id = f"folder-new-{sum(len(rows) for rows in self.folders.values()) + 1}"
+            self.add_folder(match.group(1), folder_id, name)
+            return 201, {}, {"data": self.folders[match.group(1)][-1]}
+        if "/shares" in parts.path:  # never reached by the T6 worker; counted so a test can prove it
+            self.shares_created += 1
+        return 404, {}, {}
+
+    def _is_folder(self, folder_id: str) -> bool:
+        return folder_id in self.folders or any(p["root_folder_id"] == folder_id for p in self.projects.values()) or any(
+            f["id"] == folder_id for rows in self.folders.values() for f in rows
+        )
 
     def _assets_of_share(self, share_id: str) -> list[JSON] | None:
         """What a share holds, in Frame.io's shape: `type` is file, folder or version_stack; a stack has a `head_version`."""

@@ -14,6 +14,7 @@ from t6.drives import (
     Drive,
     DriveStatus,
     DriveStore,
+    DuplicateAssignment,
     DuplicateSerial,
     FormFactor,
     ManifestLine,
@@ -187,8 +188,8 @@ class DuplicateTests(unittest.TestCase):
         self.assertTrue(issubclass(DuplicateSerial, ValueError))
 
 
-SHOW_A = Ref(page_id="project-page-a")
-SHOW_B = Ref(page_id="project-page-b")
+SHOW_A = Ref(page_id="t6p_aaaaaaaaaaaaaaaaaaaaaaaa")
+SHOW_B = Ref(page_id="t6p_bbbbbbbbbbbbbbbbbbbbbbbb")
 
 
 def assign(
@@ -218,7 +219,8 @@ class AssignmentFactsTests(unittest.TestCase):
             remarks="  first copy ",
         )
         self.assertEqual(assignment.label, "M01")
-        self.assertEqual(assignment.project.page_id, "project-page-a")
+        assert assignment.project is not None
+        self.assertEqual(assignment.project.page_id, "t6p_aaaaaaaaaaaaaaaaaaaaaaaa")
         self.assertIs(assignment.role, Role.MASTER)
         self.assertEqual(assignment.start, date(2024, 5, 1))
         self.assertIsNone(assignment.end)
@@ -669,3 +671,81 @@ class NotRecordedTests(unittest.TestCase):
         (line,) = shipment_manifest(store, "batch-9")
         self.assertEqual(line.label, "M01")
         self.assertIsNone(line.on)
+
+
+class VerbSupportTests(unittest.TestCase):
+    """What the Drive verbs need from the store: one contract for every store."""
+
+    def test_a_saved_preview_is_read_back_by_its_nonce(self) -> None:
+        store = make_store()
+        self.assertIsNone(store.preview("nonce-1"))
+        store.save_preview("nonce-1", '{"plan": 1}')
+        store.save_preview("nonce-2", '{"plan": 2}')
+        self.assertEqual(store.preview("nonce-1"), '{"plan": 1}')
+        self.assertEqual(store.preview("nonce-2"), '{"plan": 2}')
+
+    def test_a_second_open_assignment_for_the_same_drive_project_and_role_is_refused(self) -> None:
+        store = store_with_drives("D1")
+        assign(store, "D1", "M01", SHOW_A, date(2026, 1, 1))
+        with self.assertRaises(DuplicateAssignment):
+            assign(store, "D1", "M02", SHOW_A, date(2026, 1, 2))
+        assign(store, "D1", "M02", SHOW_A, date(2026, 1, 2), role=Role.BACKUP)
+        assign(store, "D1", "M03", SHOW_B, date(2026, 1, 2))
+        self.assertEqual(len(store.list_assignments(drive_id(store, "D1"))), 3)
+
+    def test_an_ended_assignment_does_not_block_a_new_one(self) -> None:
+        store = store_with_drives("D1")
+        assign(store, "D1", "M01", SHOW_A, date(2026, 1, 1), end=date(2026, 1, 5))
+        assign(store, "D1", "M02", SHOW_A, date(2026, 1, 6))
+
+    def test_assignments_are_listed_in_entry_order_and_one_can_be_ended_by_number(self) -> None:
+        store = store_with_drives("D1")
+        assign(store, "D1", "LATE", SHOW_A, date(2026, 3, 1))
+        assign(store, "D1", "EARLY", SHOW_B, date(2026, 1, 1))
+        key = drive_id(store, "D1")
+        self.assertEqual([a.label for a in store.list_assignments(key)], ["LATE", "EARLY"])
+        ended = store.end_assignment(key, 2, date(2026, 2, 1))
+        self.assertEqual((ended.label, ended.end), ("EARLY", date(2026, 2, 1)))
+        self.assertEqual([a.end for a in store.list_assignments(key)], [None, date(2026, 2, 1)])
+        self.assertEqual(store.open_assignments(SHOW_B), [])
+
+    def test_ending_an_assignment_refuses_what_is_not_open_or_not_there(self) -> None:
+        store = store_with_drives("D1")
+        assign(store, "D1", "M01", SHOW_A, date(2026, 1, 10), end=date(2026, 1, 20))
+        assign(store, "D1", "M02", SHOW_B, date(2026, 1, 10))
+        key = drive_id(store, "D1")
+        for number in (1, 3, 0):
+            with self.assertRaises(ValueError):
+                store.end_assignment(key, number, date(2026, 2, 1))
+        with self.assertRaises(ValueError):
+            store.end_assignment(key, 2, date(2026, 1, 1))
+        self.assertIsNone(store.list_assignments(key)[1].end)
+        with self.assertRaises(UnknownDrive):
+            store.end_assignment("t6d_" + "0" * 32, 1, date(2026, 2, 1))
+        with self.assertRaises(UnknownDrive):
+            store.list_assignments("t6d_" + "0" * 32)
+
+    def test_a_shipment_can_be_given_its_own_id_so_a_retry_gives_the_same_one(self) -> None:
+        store = store_with_drives("D1", "D2")
+        keys = [drive_id(store, "D1"), drive_id(store, "D2")]
+        shipment = store.release_shipment(keys, on=date(2026, 5, 10), party=CLIENT, project=SHOW_A, logged_by=CUSTODIAN, shipment_id="shipment-fixed")
+        self.assertEqual(shipment, "shipment-fixed")
+        self.assertEqual([d.id for d, _ in store.shipment_events("shipment-fixed")], keys)
+
+    def test_check_project_refuses_an_id_that_is_not_a_project_id(self) -> None:
+        store = make_store()
+        store.check_project(Ref(text="Unresolved show"))
+        store.check_project(SHOW_A)
+        with self.assertRaises(ValueError):
+            store.check_project(Ref(page_id="not-a-project"))
+
+    def test_a_delivery_links_drives_once_and_reads_them_back(self) -> None:
+        store = store_with_drives("D1", "D2")
+        keys = sorted([drive_id(store, "D1"), drive_id(store, "D2")])
+        self.assertEqual(store.delivery_drives("t6g_1"), ())
+        store.link_delivery("t6g_1", keys[1:])
+        store.link_delivery("t6g_1", keys)
+        self.assertEqual(store.delivery_drives("t6g_1"), tuple(keys))
+        with self.assertRaises(UnknownDrive):
+            store.link_delivery("t6g_1", ["t6d_" + "0" * 32])
+        self.assertIsNone(store.delivery_carrier("t6g_unknown"))

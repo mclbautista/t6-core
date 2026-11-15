@@ -8,10 +8,13 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 import sqlite3
 import tempfile
 from pathlib import Path
 from typing import Any
+
+from t6.resolve.timelines import ResolveTimeline
 
 
 class SqliteDatabase:
@@ -51,3 +54,21 @@ class ServerFixture:
 
     def close(self) -> None:
         self._dir.cleanup()
+
+
+class FakeTimelineReader:
+    """A `TimelineReader` for tests: timelines held in memory per Resolve project, renamable like Resolve."""
+
+    def __init__(self, projects: dict[str, list[ResolveTimeline]] | None = None) -> None:
+        self._projects = {ref: list(timelines) for ref, timelines in (projects or {}).items()}
+
+    def add(self, resolve_project: str, timeline: ResolveTimeline) -> None:
+        self._projects.setdefault(resolve_project, []).append(timeline)
+
+    def rename(self, resolve_project: str, uuid: str, name: str) -> None:
+        timelines = self._projects[resolve_project]
+        timelines[:] = [replace(t, name=name) if t.uuid == uuid else t for t in timelines]
+
+    def timelines(self, resolve_project: str) -> tuple[ResolveTimeline, ...] | None:
+        found = self._projects.get(resolve_project)
+        return None if found is None else tuple(found)

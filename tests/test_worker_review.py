@@ -304,10 +304,13 @@ class ReviewMessageTests(ServerTestCase):
         config = ServerConfig(grants=(Grant(WORKER_SECRET, registry_read=True),))
         app = WebhookApp(self.queue, config, self.clock, registry=registry)
         registry_client = RegistryClient(InProcess(app), WORKER_SECRET)
-        class Links:
-            def find(self, ref: Any) -> Any:
-                return SimpleNamespace(project_ids=("page-1",)) if ref.external_id == "fp1" else None
-        target = ReviewTarget(Links(), registry_client)
+        from t6.media import MediaStore
+        from t6.preview import PreviewTokens
+        store = MediaStore(registry, PreviewTokens("secret"))
+        values = {"owner": project.id, "kind": "frameio-project", "ref": "fp1", "role": "frameio-project"}
+        preview = store.write("link", values, actor="person", idempotency_key="link-fp1")
+        store.write("link", values, actor="person", idempotency_key="link-fp1", confirm=preview.token)  # type: ignore[union-attr]
+        target = ReviewTarget(registry_client, registry_client)
         self.review = ReviewMessage(GatewayClient(self.gateway, "secret"), CHAT, None, self.ask, target=target)
         self.worker = Worker(self.queue_client, "main", self.review.handlers())
         with registry._transaction() as db:
@@ -334,6 +337,85 @@ class ReviewMessageTests(ServerTestCase):
         self.run_worker()
         self.assertEqual([(m["to"], m.get("topic")) for m in self.gateway.sent.values()][-1], (CHAT, None))
         self.assertIsNone(target("unknown"))
+
+    def test_media_locations_route_serves_a_reader_with_registry_read_and_nobody_else(self) -> None:
+        registry = SqliteProjectRegistry(Path(self.directory.name) / "registry.sqlite3")
+        registered = registry.register(actor="test", idempotency_key="register", notion_page_id="page-1", code="SHOW")
+        assert isinstance(registered, Registered)
+        from t6.media import MediaStore
+        from t6.preview import PreviewTokens
+        store = MediaStore(registry, PreviewTokens("secret"))
+        for kind, ref, role in (("frameio-project", "fp1", "frameio-project"), ("resolve-project", "db/show", "working")):
+            values = {"owner": registered.project.id, "kind": kind, "ref": ref, "role": role}
+            preview = store.write("link", values, actor="person", idempotency_key="link-" + kind)
+            store.write("link", values, actor="person", idempotency_key="link-" + kind, confirm=preview.token)  # type: ignore[union-attr]
+        config = ServerConfig(grants=(Grant(WORKER_SECRET, registry_read=True), Grant("other-secret")))
+        app = WebhookApp(self.queue, config, self.clock, registry=registry)
+        links = RegistryClient(InProcess(app), WORKER_SECRET).media_links("frameio-project")
+        self.assertEqual([(l.ref, l.role, l.project_id, l.pages) for l in links],
+                         [("fp1", "frameio-project", registered.project.id, ("page-1",))])
+        self.assertEqual(RegistryClient(InProcess(app), WORKER_SECRET).media_links("resolve-project", "backup"), ())
+        with self.assertRaises(Exception):
+            RegistryClient(InProcess(app), "other-secret").media_links("frameio-project")
+
+    def test_the_full_mode_app_serves_media_locations_to_the_registry_read_secret_and_edge_mode_does_not(self) -> None:
+        registry = SqliteProjectRegistry(Path(self.directory.name) / "registry.sqlite3")
+        registered = registry.register(actor="test", idempotency_key="register", notion_page_id="page-1", code="SHOW")
+        assert isinstance(registered, Registered)
+        from t6.media import MediaStore
+        from t6.preview import PreviewTokens
+        store = MediaStore(registry, PreviewTokens("secret"))
+        values = {"owner": registered.project.id, "kind": "frameio-project", "ref": "fp1", "role": "frameio-project"}
+        preview = store.write("link", values, actor="person", idempotency_key="link-fp1")
+        store.write("link", values, actor="person", idempotency_key="link-fp1", confirm=preview.token)  # type: ignore[union-attr]
+        config = ServerConfig.from_env({"T6_WORKER_SECRET": WORKER_SECRET, "T6_FRAMEIO_WORKER_SECRET": FRAMEIO_WORKER_SECRET,
+                                        "T6_REGISTRY_READ_SECRET": "registry-read-secret"})
+        self.assertEqual([g.actor for g in config.grants if g.secret == "registry-read-secret"], ["registry-reader"])
+        full = WebhookApp(self.queue, config, self.clock, registry=registry)
+        links = RegistryClient(InProcess(full), "registry-read-secret").media_links("frameio-project")
+        self.assertEqual([(l.ref, l.project_id, l.pages) for l in links], [("fp1", registered.project.id, ("page-1",))])
+        with self.assertRaises(Exception):  # the Frame.io worker's own secret has no registry read
+            RegistryClient(InProcess(full), FRAMEIO_WORKER_SECRET).media_links("frameio-project")
+        edge = WebhookApp(self.queue, config, self.clock)
+        self.assertEqual(InProcess(edge).send("GET", "/registry/media-links/frameio-project",
+                                              {"Authorization": "Bearer registry-read-secret"}, b"")[0], 503)
+
+    def test_a_404_from_the_media_locations_route_is_an_error_not_no_links(self) -> None:
+        from t6.worker.registry import RegistryRejected
+        config = ServerConfig(edge_routes=(), grants=(Grant(WORKER_SECRET, registry_read=True),))
+        edge = WebhookApp(self.queue, config, self.clock)
+        self.assertEqual(InProcess(edge).send("GET", "/registry/media-links/frameio-project",
+                                              {"Authorization": f"Bearer {WORKER_SECRET}"}, b"")[0], 404)
+        with self.assertRaises(RegistryRejected) as caught:
+            RegistryClient(InProcess(edge), WORKER_SECRET).media_links("frameio-project")
+        self.assertEqual(caught.exception.status, 404)
+        with self.assertRaises(RegistryRejected):
+            RegistryClient(InProcess(edge), WORKER_SECRET).media_links("frameio-project", "review")
+
+    def test_the_main_worker_reads_media_locations_from_its_database_not_over_http(self) -> None:
+        from t6.media import MediaStore
+        from t6.preview import PreviewTokens
+        from t6.worker.__main__ import review_media_links
+        registry = SqliteProjectRegistry(Path(self.directory.name) / "registry.sqlite3")
+        registered = registry.register(actor="test", idempotency_key="register", notion_page_id="page-1", code="SHOW")
+        assert isinstance(registered, Registered)
+        store = MediaStore(registry, PreviewTokens("secret"))
+        values = {"owner": registered.project.id, "kind": "frameio-project", "ref": "fp1", "role": "frameio-project"}
+        preview = store.write("link", values, actor="person", idempotency_key="link-fp1")
+        store.write("link", values, actor="person", idempotency_key="link-fp1", confirm=preview.token)  # type: ignore[union-attr]
+        # The queue server it polls is an edge server: no registry, so the HTTP route cannot answer.
+        edge_client = RegistryClient(InProcess(WebhookApp(self.queue, ServerConfig(grants=(Grant(WORKER_SECRET, registry_read=True),)), self.clock)), WORKER_SECRET)
+        with self.assertRaises(Exception):
+            edge_client.media_links("frameio-project")
+
+        class Chats:
+            def review_chat_links(self, page_id: str) -> list[dict[str, Any]]:
+                return [{"chat": -200, "topic": 9}] if page_id == "page-1" else []
+
+        links = review_media_links({"T6_DATABASE": str(Path(self.directory.name) / "registry.sqlite3")}, edge_client)
+        self.assertEqual(ReviewTarget(links, Chats())("fp1"), (-200, 9))
+        self.assertIsNone(ReviewTarget(links, Chats())("unknown"))
+        self.assertIs(review_media_links({}, edge_client), edge_client)
 
     def test_names_are_escaped_for_telegram_html(self) -> None:
         self.comment("c1", "<b>Tom & Jerry", "u-a", "2026-11-12T10:00:00Z")

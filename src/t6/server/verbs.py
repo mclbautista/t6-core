@@ -14,8 +14,9 @@ from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
+from t6.frameio.project_folders import LocalFrameioQueue, QueueFrameioWriter
 from t6.person import AUTO_ACTOR, PERMISSIONS, SERVICES, People
-from t6.privacy import Registry as PrivacyRegistry, Session
+from t6.privacy import Registry as PrivacyRegistry, Session, mask_reply
 from t6.server.app import Request, Response, WebhookApp
 from t6.registry.sqlite import _audit
 from t6.verbs import VERBS, Done, Preview, Refused, catalogue, invoke
@@ -25,7 +26,12 @@ class VerbAPI:
     def __init__(self, people: People, queue: Any, secrets: Mapping[str, str],
                  open_notion: Callable[..., Any], tap_app: WebhookApp | None = None,
                  *, llm_service: Any = None, data_sources: Mapping[str, str] | None = None,
-                 privacy_registry: PrivacyRegistry | None = None) -> None:
+                 privacy_registry: PrivacyRegistry | None = None, transcribe_rate: float = 0.4,
+                 translate_enabled: bool = False, frameio_timeout: float = 60.0,
+                 frameio_queue: Any = None) -> None:
+        import math
+        if not math.isfinite(transcribe_rate) or transcribe_rate < 0:
+            raise ValueError('Transcription rate must be finite and non-negative')
         if any(not secret or not (identity.startswith('t6n_') or identity in SERVICES)
                for secret, identity in secrets.items()):
             raise ValueError('Each API secret must bind to a Person or named service')
@@ -34,6 +40,9 @@ class VerbAPI:
         self.llm_service = llm_service
         self.data_sources = dict(data_sources or {})
         self.privacy_registry = privacy_registry
+        self.transcribe_rate = transcribe_rate
+        self.translate_enabled = translate_enabled
+        self.frameio = QueueFrameioWriter(frameio_queue or LocalFrameioQueue(queue), timeout=frameio_timeout)  # asks the Frame.io worker; holds no token
         self.routes = {f'/v1/{v.noun}' + ('/' + v.verb.replace(' ', '/') if v.verb else ''): v for v in VERBS}
         for verb in VERBS:
             if verb.noun == 'approval':
@@ -56,6 +65,8 @@ class VerbAPI:
                       if supplied and hmac.compare_digest(secret, supplied)), None)
         if actor is None:
             return Response(401, {'error': 'unauthorized'})
+        if path.startswith('/v1/transcribe/'):
+            return self._transcribe_route(path, request, actor)
         if path == '/tap':
             return self._tap(request, actor)
         behalf = request.header('x-telegram-user-id')
@@ -73,6 +84,40 @@ class VerbAPI:
             actor = row[0]
         if path == '/v1/commands':
             return Response(200, cast(Mapping[str, JsonValue], catalogue())) if request.method == 'GET' else Response(405)
+        if path == '/v1/admin/media/migrate':
+            if request.method != 'POST':
+                return Response(405)
+            refusal = self.people.authorize(actor, 'admin')
+            person = self.people.get(actor)
+            if not person or not person['active']:
+                return self.refused('person', 'An active Person is required')
+            if refusal:
+                return Response(200, refusal.model_dump(mode='json'))
+            from t6.verbs import MediaMigrateInput
+            from t6.media import MediaStore
+            from t6.notion import NotionError
+            from t6.media_migration import read_external_links_once_for_migration
+            try:
+                data = json.loads(request.body)
+                if not isinstance(data, dict) or set(data) - {'idempotency_key', 'confirm'}:
+                    raise ValueError('Invalid inputs')
+                inputs = MediaMigrateInput.model_validate(data)
+                key = request.header('idempotency-key')
+                if key and inputs.idempotency_key not in (None, key):
+                    return self.refused('idempotency_key', 'Conflicting idempotency keys')
+                token = os.environ.get('T6_NOTION_TOKEN')
+                signing = os.environ.get('T6_PREVIEW_SIGNING_KEY')
+                if not token or not signing or not self.data_sources.get('external_links'):
+                    return self.refused('config', 'Notion and preview configuration are required')
+                with self.open_notion(token) as client:
+                    rows = read_external_links_once_for_migration(client, self.data_sources['external_links'])
+                result = MediaStore(self.people.registry, self.people.tokens).migrate_write(
+                    rows, actor=actor, idempotency_key=key or inputs.idempotency_key, confirm=inputs.confirm)
+                if self.tap_app:  # the route is outside the verb registry; what follows a verb follows it too
+                    self.tap_app.after_verb('admin media', 'migrate', result)
+                return Response(200, result.model_dump(mode='json'))
+            except (ValueError, KeyError, OSError, NotionError, ValidationError) as error:
+                return self.refused('input', str(error))
         entry = self.routes.get(path)
         if entry is None:
             return Response(404)
@@ -112,18 +157,52 @@ class VerbAPI:
                 data[name] = str(uploaded)
             if entry.input_model.model_config.get('extra') != 'forbid':
                 data.pop('registry_db', None)
-            return self._dispatch(entry, data, actor)
+            response = self._dispatch(entry, data, actor)
+            if entry.read_only and self._masked_for(actor, request.header('x-t6-mcp') == '1'):
+                return self._mask_mcp(response)
+            return response
+
+    def _masked_for(self, actor: str, mcp_header: bool) -> bool:
+        """Mask unless the secret is bound to an operator Person; the `mcp` service is always masked."""
+        if actor in SERVICES:
+            return actor == 'mcp' or mcp_header
+        return mcp_header and self.people.authorize(actor, 'operator') is not None
+
+    def _mask_mcp(self, response: Response) -> Response:
+        if self.privacy_registry is None:
+            return self.refused('masking', 'Read privacy registry is not configured')
+        session = Session(self.privacy_registry)
+        try:
+            return Response(response.status, mask_reply(session, response.body))
+        except ValueError:
+            return self.refused('masking', 'A client name occurs in an identifier')
 
     def _dispatch(self, entry: Any, data: dict[str, Any], actor: str) -> Response:
         if actor == AUTO_ACTOR:
             refusal = People.auto_refusal(entry.noun)
             if refusal:
                 return self.refused(refusal.rule, refusal.reason)
+        outcome: Any
         try:
             inputs = entry.input_model.model_validate(data)
         except ValidationError as error:
             return Response(422, {'errors': cast(JsonValue, error.errors(include_url=False, include_context=False, include_input=False))})
-        if (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'notes'), ('project', 'flags'), ('project', 'resolve'), ('concern', 'list'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find'), ('version', 'get')}:
+        if (entry.noun, entry.verb) == ('transcript', 'get') and inputs.transcript.isdecimal():
+            person = self.people.get(actor)
+            if not person or not person['active']:
+                return self.refused('person', 'An active Person is required')
+            from t6.transcript import Forbidden, NotFound
+            try:
+                value = self._transcripts().result(int(inputs.transcript), actor)
+            except (NotFound, Forbidden, KeyError, TypeError):
+                return self.refused('job', 'Job not found')
+            if value is None:
+                return Response(200, Done(result={'job_id': int(inputs.transcript), 'state': 'pending'}).model_dump(mode='json'))
+            return Response(200, cast(Mapping[str, JsonValue], value))
+        if (entry.noun, entry.verb) in {('transcript', 'create'), ('transcript', 'speakers'), ('transcript', 'translate')}:
+            refusal = self.people.authorize(actor, entry.role)
+            outcome = refusal or self._transcripts().request(entry.verb, inputs, actor, translate_enabled=self.translate_enabled)
+        elif (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'notes'), ('project', 'flags'), ('project', 'resolve'), ('concern', 'list'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find'), ('version', 'get')}:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._typed_read(entry.noun, entry.verb, inputs)
             if isinstance(outcome, Done) and entry.noun in {'project', 'concern', 'jo', 'person', 'camera', 'deliverable', 'meeting-notes', 'external-link', 'studio'} and self.people.authorize(actor, 'operator'):
@@ -131,20 +210,8 @@ class VerbAPI:
                     outcome = Refused(rule='masking', reason='Read privacy registry is not configured')
                 else:
                     session = Session(self.privacy_registry)
-                    def mask(value: Any, key: str = '') -> Any:
-                        if key == 'id' or key.endswith(('_id', '_ids')) or key == 'telegram_key':
-                            if session.leaks(value):
-                                raise ValueError('Client name occurs in an identifier')
-                            return value
-                        if isinstance(value, str):
-                            return session.mask(value).text
-                        if isinstance(value, list):
-                            return [mask(item) for item in value]
-                        if isinstance(value, dict):
-                            return {name: mask(item, name) for name, item in value.items()}
-                        return value
                     try:
-                        outcome = Done(result=mask(outcome.model_dump(mode='json')['result']))
+                        outcome = Done(result=mask_reply(session, outcome.model_dump(mode='json')['result']))
                     except ValueError:
                         outcome = Refused(rule='masking', reason='A client name occurs in an identifier')
         elif entry.noun == 'approval':
@@ -220,7 +287,7 @@ class VerbAPI:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._legacy_read(entry.noun, entry.verb, inputs)
         else:
-            outcome = invoke(entry, inputs, actor=actor, people=self.people, open_notion=self.open_notion)
+            outcome = invoke(entry, inputs, actor=actor, people=self.people, open_notion=self.open_notion, frameio=self.frameio)
         if entry.noun == 'project' and entry.verb in ('link-chat', 'unlink-chat') and isinstance(outcome, Preview):
             if self.tap_app and self.tap_app._operator and outcome.plan.get('approval_id'):
                 from t6.approval import Approvals
@@ -228,7 +295,61 @@ class VerbAPI:
                 if approval:
                     action, _ = self.tap_app._operator.offer_approval(approval)
                     self.tap_app._deliver(action.token, action.version)
+        if self.tap_app:
+            self.tap_app.after_verb(entry.noun, entry.verb, outcome)
         return Response(200, outcome.model_dump(mode='json'))
+
+    def _transcripts(self) -> Any:
+        from t6.transcript import TranscriptStore
+        return TranscriptStore(self.people.registry, self.people.tokens, rate=self.transcribe_rate)
+
+    def _transcribe_route(self, path: str, request: Request, actor: str) -> Response:
+        from t6.transcript import ClaimLost, Forbidden, Invalid, NotFound
+        if request.method != 'POST':
+            return Response(405)
+        transcripts = self._transcripts()
+        try:
+            body = json.loads(request.body)
+            if not isinstance(body, dict):
+                raise ValueError('Expected an object')
+            action = path.removeprefix('/v1/transcribe/')
+            if action == 'claim':
+                if actor != 'transcribe':
+                    return Response(403)
+                claim = transcripts.claim()
+                job = None if claim is None else {'job_id': claim.job_id, 'kind': claim.kind, 'payload': dict(claim.payload), 'dedupe_key': claim.dedupe_key, 'token': claim.token, 'attempt': claim.attempt}
+                return Response(200, {'job': cast(JsonValue, job)})
+            if action == 'llm':
+                if actor != 'transcribe' or not self.translate_enabled or not self.llm_service:
+                    return Response(403)
+                if not transcripts.holds_translate_lease(body.get('job_id'), body.get('token')) or not isinstance(body.get('text'), str):
+                    return Response(403)
+                from t6.transcribe.translate import task_input
+                outcome = self.llm_service.run(task_input(body['text']), actor=actor, registry=self.people.registry)
+                return Response(200, outcome.model_dump(mode='json'))
+            job_id = body.get('job_id')
+            if not isinstance(job_id, int):
+                return Response(400, {'error': 'job_id required'})
+            try:
+                if action == 'result':
+                    return Response(200, {'result': cast(JsonValue, transcripts.result(job_id, actor))})
+                if action == 'extend':
+                    transcripts.extend(job_id, body.get('token'), actor)
+                elif action == 'fail':
+                    transcripts.fail_job(job_id, body.get('token'), actor)
+                else:
+                    transcripts.report(job_id, body.get('token'), body.get('kind') if action == 'report' else None, body.get('data'), actor)
+                return Response(200, {'accepted': True})
+            except NotFound:
+                return Response(404)
+            except Forbidden:
+                return Response(403)
+            except ClaimLost:
+                return Response(409, {'error': 'claim lost'})
+            except Invalid as error:
+                return Response(400, {'error': error.error}) if error.error else Response(400)
+        except (ValueError, KeyError, TypeError):
+            return Response(400, {'error': 'invalid request'})
 
     def _person_create(self, inputs: Any, actor: str) -> Any:
         """Create a Contacts page and register the Person bound to it.
@@ -450,6 +571,9 @@ class VerbAPI:
                 record = store.get(inputs.ref)
                 return Done(result={'deliverable': record}) if record else Refused(rule='deliverable', reason='Deliverable not found')
             return Done(result={'deliverables': store.list(inputs.project)})
+        if noun == 'external-link':
+            from t6.media import external_link_result
+            return Done(result={'link': external_link_result(self.people.registry, inputs.system, inputs.kind, inputs.external_id)})
         token = os.environ.get(TOKEN_VARIABLE)
         if not token:
             return Refused(rule='config', reason='Notion token is not configured')
@@ -506,15 +630,6 @@ class VerbAPI:
                     if person:
                         item.update({key: person[key] for key in ('kind', 'departments', 'roles', 'project_roles', 'shift', 'permissions', 'master_brief', 'active')})
                     return Done(result={'person': item})
-                if noun == 'external-link':
-                    from t6.domain import ExternalRef
-                    from t6.notion.external_links import ExternalLinks
-                    link = ExternalLinks(client, self.data_sources['external_links']).find(
-                        ExternalRef(system=inputs.system, kind=inputs.kind, external_id=inputs.external_id))
-                    link_item = asdict(link) if link else None
-                    if link_item is not None:
-                        link_item['project_ids'] = [refs.identity(page) or page for page in link_item['project_ids']]
-                    return Done(result={'link': link_item})
                 if noun == 'studio':
                     source = client.retrieve_data_source(self.data_sources['projects'])
                     description = ''.join(part.get('plain_text', (part.get('text') or {}).get('content', ''))

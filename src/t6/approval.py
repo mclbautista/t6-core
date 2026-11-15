@@ -13,7 +13,7 @@ from t6.registry.sqlite import SqliteProjectRegistry
 from t6.registry.core import normalize_page_id
 from t6.verbs import Done, Outcome, Refused
 
-GATES = ('vfx committee', 'client cut', 'grade', 'delivery sign-off', 'drive wipe', 'fleet promotion')
+GATES = ('vfx committee', 'client cut', 'grade', 'delivery sign-off', 'drive wipe', 'fleet promotion', 'project start')
 
 
 class Approvals:
@@ -26,6 +26,23 @@ class Approvals:
         if row is None:
             return None
         return dict(zip(('id', 'gate', 'target', 'requester', 'tapper_rule', 'state', 'decided_by', 'decided_at', 'reason'), (*row[:4], json.loads(row[4]), *row[5:])))
+
+    def requested_under(self, key: str, gate: str, target: str) -> bool:
+        """Whether the Approval with this gate for this target was requested under this idempotency key.
+
+        The key's own record names the Approval it made (its stored plan carries the Approval ID), so a key that only
+        looks alike, or was used for another gate or target, does not count.
+        """
+        with self.registry._transaction() as db:
+            row = db.execute('SELECT json_extract(r.result, \'$.approval_id\') FROM verb_requests r WHERE r.idempotency_key = ?', (key,)).fetchone()
+            if row is None or row[0] is None:
+                return False
+            return db.execute('SELECT 1 FROM approvals WHERE id = ? AND gate = ? AND target = ?', (row[0], gate, target)).fetchone() is not None
+
+    def made_for(self, gate: str, target: str) -> bool:
+        """Whether any Approval with this gate exists for this target."""
+        with self.registry._transaction() as db:
+            return db.execute('SELECT 1 FROM approvals WHERE gate = ? AND target = ?', (gate, target)).fetchone() is not None
 
     def write(self, verb: str, values: dict[str, Any], *, actor: str, idempotency_key: str | None = None, confirm: str | None = None) -> Outcome:
         if verb not in ('request', 'grant', 'deny'):

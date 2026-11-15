@@ -102,7 +102,8 @@ class Abang:
                 db.execute('INSERT INTO abang_requests (id, person_id, source_chat, source_topic, destination_chat, destination_topic, note, actor, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', (request_id, values['person'], chats[0][0], chats[0][1], dest, topic, values.get('note'), actor, 'requested'))
                 plan.update(request_id=request_id, state='requested')
                 now = self.registry._clock()
-                db.execute("INSERT INTO internal_jobs (queue, kind, dedupe_key, payload, run_at, state, created_at) VALUES ('main', 'abang_nudge', ?, ?, ?, 'queued', ?)", (request_id, json.dumps({'request': request_id}), now + 3 * 86400, now))
+                from t6.worker.internal_queue import InternalJobQueue
+                InternalJobQueue(self.registry, clock=lambda: now).submit('main', 'abang_nudge', request_id, {'request': request_id}, run_at=now + 3 * 86400, db=db)
             elif verb == 'accept':
                 request_id = row[0]
                 decision = values['decision']

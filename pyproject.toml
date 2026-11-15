@@ -27,12 +27,14 @@ drives = ["openpyxl>=3.1,<4"]
 server = ["PyYAML>=6,<7", "jsonschema>=4.23,<5", "referencing>=0.35,<1"]
 worker = []
 transcribe = ["elevenlabs>=2.78.0,<3", "httpx>=0.27,<1"]
+google = ["cryptography>=43,<48"]
 
 [project.scripts]
 t6 = "t6.cli:main"
 
 [dependency-groups]
 dev = [
+    "cryptography>=43,<48",
     "deptry>=0.20,<1",
     "jsonschema>=4.23,<5",
     "elevenlabs>=2.78.0,<3",

@@ -64,20 +64,44 @@ def main() -> int:
         config = replace(config, edge_routes=routes)
     queue = JobQueue(environ.get("T6_QUEUE_DB", "t6-queue.sqlite"))
     registry = None if mode == "edge" else SqliteProjectRegistry(environ.get("T6_REGISTRY_DB", "t6-registry.sqlite"))
+    inside = None
+    if registry is not None:
+        # ADR 0006: work that starts inside T6 uses the job table in the t6 database, which the main worker polls.
+        from t6.server.handover import hand_over_inside_jobs
+        from t6.worker.internal_queue import InternalJobQueue
+
+        inside = InternalJobQueue(registry)
+        hand_over_inside_jobs(queue, inside, lambda line: print(line, file=sys.stderr, flush=True))
     signing_key = environ.get("T6_PREVIEW_SIGNING_KEY") or secrets.token_urlsafe(32)
     operator = None
     if registry is not None and config.operator_ids:
         store = ActionStore(environ.get("T6_OPERATOR_DB", "t6-operator.sqlite"))
-        operator = OperatorService(registry, store, config.operator_ids, people=People(registry, PreviewTokens(signing_key)), ttl=config.operator_ttl_seconds)
+        frameio = None
+        read_url, read_secret = (environ.get("T6_FRAMEIO_READ_URL") or "").strip(), environ.get("T6_FRAMEIO_READ_SECRET") or ""
+        if read_url and read_secret:  # the Link Frame.io project button reads the T6 account's projects through the Frame.io worker
+            from t6.frameio.client import FrameioReader
+            from t6.worker.client import HttpTransport
+
+            frameio = FrameioReader(HttpTransport(read_url, timeout=30), read_secret)
+        operator = OperatorService(registry, store, config.operator_ids, people=People(registry, PreviewTokens(signing_key)), frameio=frameio, ttl=config.operator_ttl_seconds)
     app = WebhookApp(queue, config, on_notion_verification=lambda token: print(
         f"Notion verification token: {token}", file=sys.stderr, flush=True
-    ), registry=registry, operator=operator)
+    ), registry=registry, operator=operator, inside=inside)
     if registry is not None:
         sources, privacy_registry = read_config_from_env(environ)
+        frameio_queue = None
+        queue_url, queue_secret = (environ.get('T6_FRAMEIO_QUEUE_URL') or '').strip(), environ.get('T6_FRAMEIO_QUEUE_SECRET') or ''
+        if queue_url and queue_secret:  # Project Start asks the Frame.io worker through the queue server the worker polls
+            from t6.worker.client import HttpTransport, QueueClient
+
+            frameio_queue = QueueClient(HttpTransport(queue_url, timeout=30), queue_secret)
         api = VerbAPI(People(registry, PreviewTokens(signing_key),
                              service_permissions_from_env(environ)),
                       queue, secrets_from_env(environ), _open_notion, app,
-                      llm_service=service_from_env(environ), data_sources=sources, privacy_registry=privacy_registry)
+                      llm_service=service_from_env(environ), data_sources=sources, privacy_registry=privacy_registry,
+                      transcribe_rate=float(environ.get('T6_TRANSCRIBE_RATE', '0.4')),
+                      frameio_timeout=float(environ.get('T6_FRAMEIO_WRITE_TIMEOUT_SECONDS', '60')), frameio_queue=frameio_queue,
+                      translate_enabled=environ.get('T6_TRANSCRIPT_TRANSLATE', '').lower() == 'true')
         interval = concern_autoscan_seconds(environ)
         if interval is not None and api.llm_service is not None:
             threading.Thread(target=_autoscan, args=(api, interval), daemon=True).start()

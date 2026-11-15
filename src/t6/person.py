@@ -8,6 +8,7 @@ import re
 from datetime import time
 from typing import Any, Iterable, Mapping
 
+from t6.google.sharing import PERMISSION as BOOKINGS, enqueue as enqueue_sharing
 from t6.ids import EntityKind, T6Id
 from t6.preview import PreviewTokens
 from t6.registry.core import normalize_page_id
@@ -18,9 +19,17 @@ from t6.verbs import Done, Outcome, Refused
 AUTO_ACTOR = 'Sixto (auto)'
 """The named service behind automatic Concern changes. It may run Concern verbs and nothing else."""
 
-SERVICES = frozenset({'gateway', 'worker', 'reports', 'watchdog', 'munki', 'hermes', AUTO_ACTOR})
+SERVICES = frozenset({'gateway', 'worker', 'reports', 'watchdog', 'munki', 'hermes', 'mcp', 'transcribe', AUTO_ACTOR})
+
+# Internal actors: named, not a Person, used only inside the worker by one handler. They are not in SERVICES, so no API secret
+# can name them and `T6_API_SERVICE_PERMISSIONS` cannot grant them anything; their grants are fixed here.
+CALENDAR_ACTOR = 'google-calendar'  # inbound Google Calendar edits (#270): Google names no editor, calendar sharing is the check
+FRAMEIO_ACTOR = 'frameio'  # Frame.io events (#275): a file landing in a Deliverable's folder, a client viewing a share. It writes its own rows and runs no verb
+INTERNAL_ACTORS: Mapping[str, frozenset[str]] = {CALENDAR_ACTOR: frozenset({'bookings'}), FRAMEIO_ACTOR: frozenset()}
 
 PERMISSIONS = frozenset({"operator", "coordinator", "bookings", "drives", "admin", "llm"})
+STAFF_RULE = "role:staff"
+"""An allowed-tapper rule: any active staff Person (a kind, not a permission, so it is not in `PERMISSIONS`)."""
 
 
 class People:
@@ -53,6 +62,11 @@ class People:
             return self._authorize(db, actor, role)
 
     def _authorize(self, db: Any, actor: str, role: str) -> Refused | None:
+        if role == 'staff':
+            person = None if actor in SERVICES or actor in INTERNAL_ACTORS else db.execute("SELECT kind, active FROM persons WHERE id = ?", (actor,)).fetchone()
+            return None if person and person[1] and person[0] == 'staff' else Refused(rule='permission', reason='needs active staff Person')
+        if actor in INTERNAL_ACTORS:
+            return None if role in INTERNAL_ACTORS[actor] else Refused(rule='permission', reason=f'needs {role}')
         if actor == AUTO_ACTOR:
             # Fixed, never read from configuration: reads and the coordinator verbs, narrowed to Concern verbs by `auto_refusal`.
             return None if role in ('reader', 'coordinator') else Refused(rule='permission', reason=f'needs {role}')
@@ -85,6 +99,8 @@ class People:
                 return bool(person_id == candidate[7:])
             if candidate.startswith('permission:'):
                 return self._authorize(db, person_id, candidate[11:]) is None
+            if candidate == STAFF_RULE:
+                return self._authorize(db, person_id, 'staff') is None
         if isinstance(candidate, dict) and isinstance(candidate.get('any_of'), list):
             return any(self._allows(db, person_id, child) for child in candidate['any_of'])
         return False
@@ -277,6 +293,7 @@ class People:
                 before = {'page_id': current[0] if current else None}
                 db.execute("UPDATE bindings SET active = 0 WHERE system = 'notion' AND project_id = ?", (person_id,))
                 db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, ?, 1) ON CONFLICT(system, page_id) DO UPDATE SET active = 1", (page, person_id, now))
+                enqueue_sharing(self.registry, db, str(person_id), verb, key, now)  # the Person's Google email comes from the bound page
             elif verb == 'shift':
                 current = db.execute('SELECT pattern, start, end FROM person_shifts WHERE person_id = ?', (person_id,)).fetchone()
                 before = dict(zip(('pattern', 'start', 'end'), current)) if current else None
@@ -284,6 +301,7 @@ class People:
             elif verb == 'classify':
                 before = {'kind': db.execute('SELECT kind FROM persons WHERE id = ?', (person_id,)).fetchone()[0]}
                 db.execute('UPDATE persons SET kind = ? WHERE id = ?', (values['kind'], person_id))
+                enqueue_sharing(self.registry, db, str(person_id), verb, key, now)  # only active staff may hold calendar edit
             elif verb in ('grant', 'revoke'):
                 permission = values['permission']
                 held = db.execute('SELECT 1 FROM person_permissions WHERE person_id = ? AND permission = ?', (person_id, permission)).fetchone() is not None
@@ -292,6 +310,8 @@ class People:
                     db.execute('INSERT OR IGNORE INTO person_permissions VALUES (?, ?)', (person_id, permission))
                 else:
                     db.execute('DELETE FROM person_permissions WHERE person_id = ? AND permission = ?', (person_id, permission))
+                if permission == BOOKINGS:
+                    enqueue_sharing(self.registry, db, str(person_id), verb, key, now)
             else:
                 before = {'telegram_id': db.execute('SELECT telegram_id FROM persons WHERE id = ?', (person_id,)).fetchone()[0]}
                 db.execute('UPDATE persons SET telegram_id = ? WHERE id = ?', (telegram, person_id))

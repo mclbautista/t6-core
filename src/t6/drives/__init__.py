@@ -3,8 +3,8 @@
 A Drive is a physical external drive (portable or powered desktop), owned by
 T6, owned by a Studio, or of unknown ownership. It is never Google Drive. Identity is a permanent opaque ID;
 accepted and suspected serials are correctable facts. It is not a
-Notion entity: it has no Notion row. Relations, such as the owning Studio, are
-Notion page IDs.
+Notion entity: it has no Notion row. Relations, such as the owning Studio, may use Notion page IDs. Assignments in
+the t6 database use registered T6 Project IDs.
 
 Records live in a store that implements `DriveStore`. `t6.drives.testing`
 provides an in-memory fake for tests.
@@ -17,7 +17,12 @@ import re
 from uuid import uuid4
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Iterable, Protocol, Sequence
+from typing import TYPE_CHECKING, Iterable, Protocol, Sequence
+
+from t6.vocabulary import DRIVE_ROLES
+
+if TYPE_CHECKING:
+    from t6.drives.importer import ReviewItem
 
 __all__ = [
     "Assignment",
@@ -26,6 +31,7 @@ __all__ = [
     "Drive",
     "DriveStatus",
     "DriveStore",
+    "DuplicateAssignment",
     "DuplicateSerial",
     "Ownership",
     "FormFactor",
@@ -34,9 +40,11 @@ __all__ = [
     "PartyKind",
     "Ref",
     "Role",
+    "SourceRow",
     "UnknownDrive",
     "derive_status",
     "normalize_serial",
+    "open_duplicate",
     "parse_capacity_tb",
     "shipment_manifest",
 ]
@@ -281,28 +289,45 @@ class Role(enum.Enum):
     ARCHIVE = "archive"
 
 
+assert tuple(role.value for role in Role) == DRIVE_ROLES, "Drive roles are listed once, in t6.vocabulary"
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Assignment:
     """One stretch of a Drive's life on one Project, under one label.
 
-    `project` is a `Ref`: a Notion page ID, or the Project's name as text when
-    it could not be resolved. An Assignment with no `end` is open: the Drive is
+    `project` is a `Ref`: a T6 Project ID in the t6 database, or the Project's
+    name as text when it could not be resolved. It is None only for a Drive held
+    by a Person alone (a `holder` and no Project, as in a swing lent to a
+    person). An Assignment with no `end` is open: the Drive is
     still out for that Project. The same label may be on different Drives in
     different Projects. `role` and `start` are None when they were never
     recorded, as in rows imported from the old workbooks.
+
+    A swing lent out has a `return_date`, the day it is due back; it is cleared
+    when the swing is returned. `holder` is the T6 Person ID of the Person who
+    has the Drive, when a Person (and not only the Project) holds it.
     """
 
     label: str | None
-    project: Ref
+    project: Ref | None
     role: Role | None
     start: date | None
     end: date | None = None
     remarks: str | None = None
+    return_date: date | None = None
+    holder: str | None = None
 
     def __post_init__(self) -> None:
         label = _blank_to_none(self.label)
         if self.end is not None and self.start is not None and self.end < self.start:
             raise ValueError(f"an Assignment cannot end ({self.end}) before it starts ({self.start})")
+        if self.return_date is not None and self.start is not None and self.return_date < self.start:
+            raise ValueError(f"an Assignment cannot be due back ({self.return_date}) before it starts ({self.start})")
+        holder = _blank_to_none(self.holder)
+        if self.project is None and holder is None:
+            raise ValueError("an Assignment with no Project needs a holder, the Person who has the Drive")
+        object.__setattr__(self, "holder", holder)
         object.__setattr__(self, "label", label)
         object.__setattr__(self, "remarks", _blank_to_none(self.remarks))
 
@@ -311,12 +336,49 @@ class Assignment:
         return self.end is None
 
 
+@dataclass(frozen=True, slots=True)
+class SourceRow:
+    """Private workbook location of an imported row."""
+    workbook: str
+    sheet: str
+    row: int
+
+
 class UnknownDrive(LookupError):
     """No Drive with this permanent ID is recorded."""
 
     def __init__(self, drive_id: str) -> None:
         super().__init__(f"no Drive with ID {drive_id!r} is recorded")
         self.drive_id = drive_id
+
+
+class DuplicateAssignment(ValueError):
+    """The Drive already has an open Assignment for this Project and role."""
+
+    def __init__(self, label: str | None) -> None:
+        super().__init__(f"the Drive already has an open Assignment ({label!r}) for this Project and role")
+        self.label = label
+
+
+def open_duplicate(held: Iterable[Assignment], new: Assignment) -> Assignment | None:
+    """The open Assignment that makes `new` a second one for its Project and role, if any.
+
+    Only an open `new` with a role can clash; old rows with no role never do.
+    Two Assignments with a Project clash on the same Project. A holder also
+    clashes with itself: when either Assignment has no Project, the same
+    holder and role is a second open one.
+    """
+    if not new.is_open or new.role is None:
+        return None
+
+    def clashes(a: Assignment) -> bool:
+        if not a.is_open or a.role is not new.role:
+            return False
+        if new.project is not None and a.project == new.project:
+            return True
+        return new.holder is not None and a.holder == new.holder and (new.project is None or a.project is None)
+
+    return next((a for a in held if clashes(a)), None)
 
 
 class DuplicateSerial(ValueError):
@@ -371,6 +433,14 @@ class DriveStore(Protocol):
         """Set general review state without changing serials or workflow rights."""
         ...
 
+    def save_preview(self, nonce: str, snapshot: str) -> None:
+        """Keep what a Drive verb planned under its preview nonce, so the confirm can check nothing changed."""
+        ...
+
+    def preview(self, nonce: str) -> str | None:
+        """What `save_preview` kept for the nonce, or None."""
+        ...
+
     def imported_drive(self, row_key: str) -> str | None:
         """Importer receipt: ID previously associated with an opaque row key.
 
@@ -380,16 +450,34 @@ class DriveStore(Protocol):
         ...
 
     def import_row(
-        self, row_key: str, drive: Drive, assignment: Assignment, events: Sequence[CustodyEvent]
+        self, row_key: str, drive: Drive, assignment: Assignment | None, events: Sequence[CustodyEvent],
+        *, source: SourceRow | None = None
     ) -> None:
         """Atomically import a row and its receipt, or do nothing if already recorded.
 
         Match only an accepted serial, otherwise add the new permanent ID.
         Preserve existing physical facts, combine review notes, add an Assignment
-        unless equal to one already held, and append every supplied event in order.
+        unless equal to one already held (None adds none), and append every supplied
+        event in order.
         Distinct row keys preserve repeated events, even with identical facts.
         Persist all changes and the receipt in one transaction; failure writes nothing.
         """
+        ...
+
+    def resolve_project(self, project: Ref, fallback: str) -> Ref:
+        """Resolve a source Project reference or preserve the original text."""
+        ...
+
+    def record_exceptions(self, items: Sequence[ReviewItem]) -> None:
+        """Preserve traceable import review evidence without duplicating a rerun."""
+        ...
+
+    def exceptions(self) -> tuple[ReviewItem, ...]:
+        """Return private import review evidence."""
+        ...
+
+    def sources(self, drive_id: str) -> tuple[SourceRow, ...]:
+        """Return source rows that produced this Drive."""
         ...
 
     def append_event(self, drive_id: str, event: CustodyEvent) -> None:
@@ -417,9 +505,13 @@ class DriveStore(Protocol):
         ...
 
     def release_shipment(
-        self, drive_ids: Iterable[str], *, on: date, party: Party, project: Ref, logged_by: Ref
+        self, drive_ids: Iterable[str], *, on: date, party: Party, project: Ref, logged_by: Ref,
+        shipment_id: str | None = None
     ) -> str:
         """Release several Drives in one handover and return the new shipment ID.
+
+        A caller that must give the same shipment on a retry passes its own
+        `shipment_id`; otherwise the store makes a new one.
 
         Appends one released event per Drive, all with the same new shipment ID.
         An ID given twice is released once. Raises ValueError if no ID is
@@ -439,10 +531,83 @@ class DriveStore(Protocol):
     def add_assignment(self, drive_id: str, assignment: Assignment) -> None:
         """Assign a recorded Drive. Raises UnknownDrive if the ID is not recorded.
 
+        An open Assignment with a role is refused (DuplicateAssignment) while the
+        Drive holds another open one for the same Project and role, or for the
+        same holder and role when either has no Project.
+
         Earlier Assignments are kept: relabelling a reused Drive adds a new
         Assignment and never edits or removes an old one. Nothing is closed
         automatically.
         """
+        ...
+
+    def list_assignments(self, drive_id: str) -> tuple[Assignment, ...]:
+        """A Drive's Assignments in the order they were added.
+
+        The place in this list, counted from 1, is the Assignment number: it
+        never changes, because an Assignment is never removed. Raises
+        UnknownDrive if the ID is not recorded.
+        """
+        ...
+
+    def end_assignment(self, drive_id: str, number: int, end: date) -> Assignment:
+        """End the open Assignment with this number and return it as ended.
+
+        Raises ValueError if there is no such Assignment, it is already ended,
+        or `end` is before its start; UnknownDrive if the ID is not recorded.
+        Nothing else changes.
+        """
+        ...
+
+    def check_project(self, project: Ref) -> None:
+        """Raise ValueError unless `project` can be used on an Assignment or event.
+
+        Unresolved text is always accepted. An ID must be a T6 Project ID, and
+        a store on the t6 database also needs the Project to be registered.
+        """
+        ...
+
+    def drop_return_date(self, drive_id: str, number: int) -> Assignment:
+        """Clear the return date of the Assignment with this number and return it.
+
+        Raises ValueError if there is no such Assignment; UnknownDrive if the ID
+        is not recorded. Clearing an Assignment with no return date changes nothing.
+        """
+        ...
+
+    def overdue_returns(self, today: date) -> list[tuple[Drive, Assignment]]:
+        """The Drives still out whose open Assignment was due back before `today`.
+
+        Ordered by return date, then label, then Drive ID. An ended Assignment,
+        or one with no return date, is never overdue.
+        """
+        ...
+
+    def resolve_person(self, contact_page_id: str) -> str | None:
+        """The T6 Person ID bound to a Contacts page ID, or None if no Person is bound to it."""
+        ...
+
+    def check_person(self, person_id: str) -> None:
+        """Raise ValueError unless `person_id` can be the holder of an Assignment.
+
+        An ID must be a T6 Person ID, and a store on the t6 database also needs
+        the Person to be registered.
+        """
+        ...
+
+    def link_delivery(self, delivery_id: str, drive_ids: Iterable[str]) -> None:
+        """Link Drives to a Delivery. Linking again changes nothing.
+
+        Raises UnknownDrive if any ID is not recorded; then nothing is linked.
+        """
+        ...
+
+    def delivery_drives(self, delivery_id: str) -> tuple[str, ...]:
+        """The IDs of the Drives linked to a Delivery, sorted. Empty if none."""
+        ...
+
+    def delivery_carrier(self, delivery_id: str) -> tuple[str, str] | None:
+        """The carrier kind and Project ID of a Delivery, or None if it is not recorded."""
         ...
 
     def open_assignments(self, project: Ref) -> list[tuple[Drive, Assignment]]:

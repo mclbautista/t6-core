@@ -6,8 +6,8 @@ import sqlite3
 import unittest
 
 from t6.domain import ExternalRef
-from t6.notion.external_links import ExternalLinks
-from t6.notion.testing import FakeNotion, external_link_properties
+from t6.media_links import MediaLink
+from t6.testing import StaticMediaLinks
 from t6.resolve import (
     SCHEMAS,
     ProjectServer,
@@ -19,7 +19,6 @@ from t6.resolve import (
 from t6.resolve.testing import ServerFixture
 
 FIXTURES = Path(__file__).parent / "fixtures" / "resolve"
-LINKS = "ds-links"
 
 
 def load(version: str) -> ServerFixture:
@@ -116,42 +115,33 @@ class InventoryTests(unittest.TestCase):
 
 
 class MappingTests(unittest.TestCase):
-    def test_projects_map_through_external_links_and_unmapped_are_reported(self) -> None:
+    def test_projects_map_through_media_locations_and_unmapped_are_reported(self) -> None:
         server = load("19")
         self.addCleanup(server.close)
         db = server.readonly()
         self.addCleanup(db.close)
         projects = ProjectServer(db, "db1", schema_for("19"), allow_unverified_schema=True).projects()
 
-        fake = FakeNotion()
-        fake.add_data_source(LINKS)
-        for external_id, internal_id, notion_projects in (
-            ("db1/Series A/Season 1/Ep101 Grade", "p-1", ["proj-a"]),
-            ("db1/Series A/Season 1/Ep102 Grade", "p-2", []),  # row, but no Notion Project
-            ("db1/Gone/Old Show", "p-9", ["proj-z"]),  # not on the server any more
-        ):
-            fake.add_page(
-                LINKS,
-                external_link_properties(
-                    system="resolve",
-                    kind="project",
-                    external_id=external_id,
-                    internal_id=internal_id,
-                    projects=notion_projects,
-                ),
-            )
-        fake.add_page(  # another system's row must not be mistaken for a Resolve one
-            LINKS,
-            external_link_properties(
-                system="frameio", kind="project", external_id="db1/Sizzle", projects=["proj-f"]
-            ),
-        )
-        with fake.client() as client:
-            report = map_projects(projects, ExternalLinks(client, LINKS))
+        links = StaticMediaLinks()
+        for number, (ref, pages) in enumerate((
+            ("db1/Series A/Season 1/Ep101 Grade", ("proj-a",)),
+            ("db1/Gone/Old Show", ("proj-z",)),  # not on the server any more
+        )):
+            links.add(MediaLink(id=f"t6m_{number}", owner=f"t6p_{number}", project_id=f"t6p_{number}",
+                                kind="resolve-project", ref=ref, role="working", pages=pages))
+        # Ep102 has no Media location at all, so it is unmapped.
+        links.add(MediaLink(  # another kind must not be mistaken for a Resolve project
+            id="t6m_f", owner="t6p_f", project_id="t6p_f", kind="frameio-project",
+            ref="db1/Sizzle", role="frameio-project", pages=("proj-f",)))
+        links.add(MediaLink(  # a Resolve project kept as a master copy is not the working link
+            id="t6m_m", owner="t6p_m", project_id="t6p_m", kind="resolve-project",
+            ref="db1/Series A/Season 1/Ep102 Grade", role="master", pages=("proj-m",)))
+        report = map_projects(projects, links)
 
-        self.assertEqual([(p.internal_id, l.project_ids) for p, l in report.mapped], [("p-1", ("proj-a",))])
+        self.assertEqual([(p.internal_id, l.project_id, l.pages) for p, l in report.mapped], [("p-1", "t6p_0", ("proj-a",))])
         self.assertEqual(sorted(p.internal_id for p in report.unmapped), ["p-2", "p-3", "p-4"])
-        self.assertEqual([l.ref.external_id for l in report.orphan_links], ["db1/Gone/Old Show"])
+        self.assertEqual([l.ref for l in report.orphan_links], ["db1/Gone/Old Show"])
+        self.assertEqual(links.calls, [("resolve-project", "working")])
 
 
 if __name__ == "__main__":

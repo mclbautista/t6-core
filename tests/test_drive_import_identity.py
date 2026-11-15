@@ -20,7 +20,7 @@ class ImportIdentityTests(unittest.TestCase):
                     ["HARD DRIVE LABEL", "SERIAL NUMBER"],
                     [None, "SYNTH-SOLE-IMPORTED"], [None, "(unknown)"],
                 ]})
-                store = InMemoryDriveStore()
+                store = InMemoryDriveStore(project_bindings={"project-paper-moon": "t6p_aaaaaaaaaaaaaaaaaaaaaaaa"})
                 result = importer(path, store, lookup=make_lookup(), logged_by=LOGGED_BY)
                 self.assertEqual(result.imported, 1)
                 held = store.find_by_serial("SYNTH-SOLE-IMPORTED")
@@ -39,7 +39,7 @@ class ImportIdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = write_workbook(folder, {"Movements": [
                 ["HARD DRIVE LABEL", "IN/OUT", "REMARKS"], [None, "IN", "S/N: SYNTH-SOLE-MOVEMENT"]]})
-            store = InMemoryDriveStore()
+            store = InMemoryDriveStore(project_bindings={"project-paper-moon": "t6p_aaaaaaaaaaaaaaaaaaaaaaaa"})
             import_log_sheet_workbook(path, store, lookup=make_lookup(), logged_by=LOGGED_BY)
             held = store.find_by_serial("SYNTH-SOLE-MOVEMENT")
             assert held is not None
@@ -49,7 +49,7 @@ class ImportIdentityTests(unittest.TestCase):
     def test_suspected_serials_from_other_imports_and_unreadable_inventory_block_movements(self) -> None:
         for existing_accepted in (False, True):
             with self.subTest(existing_accepted=existing_accepted), tempfile.TemporaryDirectory() as folder:
-                store = InMemoryDriveStore()
+                store = InMemoryDriveStore(project_bindings={"project-paper-moon": "t6p_aaaaaaaaaaaaaaaaaaaaaaaa"})
                 candidate = store.add_drive(Drive(suspected_serial="synth-guard", label="invented candidate"))
                 accepted = store.add_drive(Drive(serial="SYNTH-GUARD")) if existing_accepted else None
                 path = write_workbook(folder, {"Movements": [
@@ -69,7 +69,7 @@ class ImportIdentityTests(unittest.TestCase):
                 "Movements": [["HARD DRIVE LABEL", "IN/OUT", "REMARKS"],
                               ["invented one", "IN", "S/N: SYNTH-BAD"]],
             })
-            store = InMemoryDriveStore()
+            store = InMemoryDriveStore(project_bindings={"project-paper-moon": "t6p_aaaaaaaaaaaaaaaaaaaaaaaa"})
             result = import_log_sheet_workbook(path, store, lookup=make_lookup(), logged_by=LOGGED_BY)
             self.assertEqual(result.imported, 2)  # the two inventory rows, never the movement
             self.assertIsNone(store.find_by_serial("SYNTH-BAD"))
@@ -85,7 +85,7 @@ class ImportIdentityTests(unittest.TestCase):
                         ["HARD DRIVE LABEL", "SERIAL NUMBER", "SPACE"],
                         ["invented candidate", " ab   123 [check sticker] ", capacity],
                     ]})
-                    store = InMemoryDriveStore()
+                    store = InMemoryDriveStore(project_bindings={"project-paper-moon": "t6p_aaaaaaaaaaaaaaaaaaaaaaaa"})
                     result = importer(path, store, lookup=make_lookup(), logged_by=LOGGED_BY)
                     if capacity == "2TB":
                         held, = [d for d, _ in store.open_assignments(PAPER_MOON)]
@@ -116,7 +116,7 @@ class ImportIdentityTests(unittest.TestCase):
                         ["HARD DRIVE LABEL", "SERIAL NUMBER", "HD DESCRIPTION", "REMARKS", bad_column],
                         ["invented label", "SYNTH-UNREADABLE", "striped case", "keep every fact", bad_value],
                     ]})
-                    result = importer(path, InMemoryDriveStore(), lookup=make_lookup(), logged_by=LOGGED_BY)
+                    result = importer(path, InMemoryDriveStore(project_bindings={"project-paper-moon": "t6p_aaaaaaaaaaaaaaaaaaaaaaaa"}), lookup=make_lookup(), logged_by=LOGGED_BY)
                     item, = [i for i in result.review if i.reason == "unreadable"]
                     self.assertEqual((item.workbook, item.sheet, item.row), (str(path.resolve()), "PAPER MOON", 2))
                     for fact in ("invented label", "SYNTH-UNREADABLE", "striped case", "keep every fact", bad_value):
@@ -127,7 +127,7 @@ class ImportIdentityTests(unittest.TestCase):
                          "HD DESCRIPTION": "striped case", "IN/OUT": "IN", "REMARKS": "keep every fact S/N: SYNTH-UNREADABLE"}
                 cells[column] = value
                 path = write_workbook(folder, {"Movements": [list(cells), list(cells.values())]})
-                result = import_log_sheet_workbook(path, InMemoryDriveStore(), lookup=make_lookup(), logged_by=LOGGED_BY)
+                result = import_log_sheet_workbook(path, InMemoryDriveStore(project_bindings={"project-paper-moon": "t6p_aaaaaaaaaaaaaaaaaaaaaaaa"}), lookup=make_lookup(), logged_by=LOGGED_BY)
                 item, = [i for i in result.review if i.reason == "unreadable"]
                 for fact in ("invented label", "SYNTH-UNREADABLE", "striped case", "keep every fact", value):
                     self.assertIn(fact, item.detail)
@@ -139,7 +139,7 @@ class ImportIdentityTests(unittest.TestCase):
                     ["DATE", "PROJECT NAME", "HARD DRIVE LABEL", "IN/OUT", "REMARKS"],
                     [None, "PAPER MOON", "invented", "IN", f"S/N: {evidence}"],
                 ]})
-                store = InMemoryDriveStore()
+                store = InMemoryDriveStore(project_bindings={"project-paper-moon": "t6p_aaaaaaaaaaaaaaaaaaaaaaaa"})
                 held = store.add_drive(Drive(serial="ABC"))
                 result = import_log_sheet_workbook(path, store, lookup=make_lookup(), logged_by=LOGGED_BY)
                 self.assertEqual(result.imported, 0)
@@ -157,7 +157,7 @@ class ImportIdentityTests(unittest.TestCase):
                 "Movements": [["DATE", "PROJECT NAME", "HARD DRIVE LABEL", "IN/OUT", "REMARKS"],
                               [None, "PAPER MOON", "invented one", "IN", "S/N: SYNTH-SHARED"]],
             })
-            store = InMemoryDriveStore()
+            store = InMemoryDriveStore(project_bindings={"project-paper-moon": "t6p_aaaaaaaaaaaaaaaaaaaaaaaa"})
             def run() -> Any:
                 return import_log_sheet_workbook(path, store, lookup=make_lookup(), logged_by=LOGGED_BY)
             result = run()
@@ -178,7 +178,7 @@ class ImportIdentityTests(unittest.TestCase):
                     ["invented accepted", "SYNTH-BEFORE", "500GB", "0.5TB"],
                     ["invented conflict", None, "2TB", "4TB"],
                 ]})
-                store = InMemoryDriveStore()
+                store = InMemoryDriveStore(project_bindings={"project-paper-moon": "t6p_aaaaaaaaaaaaaaaaaaaaaaaa"})
                 result = importer(path, store, lookup=make_lookup(), logged_by=LOGGED_BY)
                 self.assertTrue(any(i.row == 3 and "conflicting" in i.detail for i in result.review))
                 drive = store.find_by_serial("SYNTH-BEFORE")
@@ -201,7 +201,7 @@ class ImportIdentityTests(unittest.TestCase):
             second = write_workbook(folder, {"PAPER MOON": [header,
                 ["changed", "SYNTH-CROSS", "red case", "second observation"],
                 ["original", None, "blue case", "not identity evidence"]]}, "invented-second.xlsx")
-            store = InMemoryDriveStore()
+            store = InMemoryDriveStore(project_bindings={"project-paper-moon": "t6p_aaaaaaaaaaaaaaaaaaaaaaaa"})
             import_per_project_workbook(first, store, lookup=make_lookup(), logged_by=LOGGED_BY)
             held = store.find_by_serial("SYNTH-CROSS")
             assert held is not None
@@ -228,7 +228,7 @@ class ImportIdentityTests(unittest.TestCase):
                     ["bad size", None, "4TB or 8TB", "do not invent capacity"],
                     [None, None, None, None, None, None, "triangular enclosure"],
                 ]})
-                store = InMemoryDriveStore()
+                store = InMemoryDriveStore(project_bindings={"project-paper-moon": "t6p_aaaaaaaaaaaaaaaaaaaaaaaa"})
                 def run() -> Any:
                     return importer(path, store, lookup=make_lookup(), logged_by=LOGGED_BY)
                 result = run()
@@ -273,7 +273,7 @@ class ImportIdentityTests(unittest.TestCase):
                 [None, "PAPER MOON", None, "2TB", "IN", None, "S/N: SYNTH-8"],
                 [None, "PAPER MOON", "same", None, "OUT", None, "S/N: SYNTH-9 S/N: SYNTH-7"],
             ]}, "invented-log.xlsx")
-            store = InMemoryDriveStore()
+            store = InMemoryDriveStore(project_bindings={"project-paper-moon": "t6p_aaaaaaaaaaaaaaaaaaaaaaaa"})
             store.add_drive(Drive(label="same", suspected_serial="SYNTH-9"))
             def run() -> Any:
                 return import_log_sheet_workbook(path, store, lookup=make_lookup(), logged_by=LOGGED_BY)
@@ -302,7 +302,7 @@ class UnreadableFactTests(unittest.TestCase):
     def import_rows(self, importer: Any, rows: list[list[Any]], sheet: str = "PAPER MOON") -> tuple[Any, InMemoryDriveStore]:
         with tempfile.TemporaryDirectory() as folder:
             path = write_workbook(folder, {sheet: rows})
-            store = InMemoryDriveStore()
+            store = InMemoryDriveStore(project_bindings={"project-paper-moon": "t6p_aaaaaaaaaaaaaaaaaaaaaaaa"})
             result = importer(path, store, lookup=make_lookup(), logged_by=LOGGED_BY)
             again = importer(path, store, lookup=make_lookup(), logged_by=LOGGED_BY)
             self.assertEqual(again, result)

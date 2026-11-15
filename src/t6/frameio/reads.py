@@ -1,12 +1,14 @@
 """Runs one typed request against Frame.io V4: the Frame.io worker's `run`.
 
 `FrameioReads(api)` answers projects, share links, comments, versions and
-approvals as JSON lists of the objects in `t6.frameio.model`. With `links`
-(the External Links rows in Notion) it also answers the briefing feed, and
-gives every live share link an External Links row.
+approvals as JSON lists of the objects in `t6.frameio.model`. The one write is
+`CreateProjectFolders` (Project Start, #275): a project and its folders, never a share. With `links`
+(the Media locations in t6, kind `frameio-project`) it also answers the briefing
+feed. Nothing is written to Notion or to t6: the link lives only in t6.
 
 The T6 account is found from the token (`GET /v4/accounts`). A token that sees
-more than one account needs `account_id`.
+more than one account needs `account_id`. A new project goes in the account's one
+workspace (`GET /v4/accounts/{id}/workspaces`); more than one needs `workspace_id`.
 """
 
 from __future__ import annotations
@@ -15,10 +17,9 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timezone
 import time
-from typing import Any, Protocol
+from typing import Any
 import urllib.parse
 
-from t6.domain import ExternalRef
 from t6.domain.events import JsonValue
 from t6.frameio.api import FrameioApi, FrameioError
 from t6.frameio.model import (
@@ -26,6 +27,7 @@ from t6.frameio.model import (
     BriefingLink,
     BriefingShow,
     Comment,
+    FileLocation,
     FrameioFile,
     FrameioProject,
     ResolvedComment,
@@ -36,11 +38,14 @@ from t6.frameio.model import (
     _time,
     clip_remaining_seconds,
 )
+from t6.media_links import MediaLinks
 from t6.frameio.requests import (
     Approvals,
     BriefingFeed,
     Comments,
+    CreateProjectFolders,
     FileInfo,
+    FileLocate,
     FrameioProjects,
     FrameioRequest,
     ResolveComment,
@@ -48,9 +53,8 @@ from t6.frameio.requests import (
     Versions,
 )
 
-SYSTEM = "frameio"
-PROJECT_KIND = "project"
-SHARE_LINK_KIND = "share_link"
+PROJECT_KIND = "frameio-project"
+"""The Media location kind that links a Frame.io project to a Project."""
 APPROVAL_FIELD = "Status"
 SHARE_CACHE_SECONDS = 3600.0
 """How long a share list or a share's asset list is kept in memory (`T6_FRAMEIO_SHARE_CACHE_SECONDS`; 0 is off)."""
@@ -62,31 +66,6 @@ DURATION_FIELD = "duration"
 FRAME_RATE_FIELD = "frame rate"
 """Frame.io's file metadata field for frames per second (compared case-folded)."""
 """The metadata field Frame.io V4 keeps a file's approval in."""
-
-
-class Link(Protocol):
-    """One External Links row (`t6.notion.external_links.ExternalLink`)."""
-
-    @property
-    def page_id(self) -> str: ...
-    @property
-    def ref(self) -> ExternalRef: ...
-    @property
-    def active(self) -> bool: ...
-    @property
-    def last_activity(self) -> datetime | None: ...
-    @property
-    def project_ids(self) -> tuple[str, ...]: ...
-
-
-class Links(Protocol):
-    """The External Links rows (`t6.notion.external_links.ExternalLinks`)."""
-
-    def links_for_system(self, system: str, kind: str) -> tuple[Any, ...]: ...
-
-    def ensure(self, ref: ExternalRef, *, project_id: str | None = None) -> Any: ...
-
-    def touch(self, page_id: str, when: datetime) -> Any: ...
 
 
 def _head_version_id(item: Any) -> str | None:
@@ -108,14 +87,16 @@ class FrameioReads:
     def __init__(
         self,
         api: FrameioApi,
-        links: Links | None = None,
+        links: MediaLinks | None = None,
         account_id: str | None = None,
         now: Callable[[], datetime] = _now,
         *,
         share_cache_seconds: float = SHARE_CACHE_SECONDS,
         share_scan_limit: int = SHARE_SCAN_LIMIT,
         clock: Callable[[], float] = time.monotonic,
+        workspace_id: str | None = None,
     ) -> None:
+        self._workspace_id = workspace_id
         self._api = api
         self._links = links
         self._account_id = account_id
@@ -134,6 +115,9 @@ class FrameioReads:
             return [comment.to_json() for comment in self.comments(request.file_id)]
         if isinstance(request, FileInfo):
             return self.file_info(request.file_id).to_json()
+        if isinstance(request, FileLocate):
+            location = self.file_location(request.file_id)
+            return {"folder_id": location.folder_id, "stack_id": location.stack_id}
         if isinstance(request, ResolveComment):
             return self.resolve_comment(request).to_json()
         if isinstance(request, Versions):
@@ -142,7 +126,9 @@ class FrameioReads:
             return [approval.to_json() for approval in self.approvals(request.file_id)]
         if isinstance(request, BriefingFeed):
             return [show.to_json() for show in self.briefing_feed(request.since)]
-        raise NotImplementedError(f"{request.kind} is not built yet (t6-core#23)")
+        if isinstance(request, CreateProjectFolders):
+            return self.create_project_folders(request)
+        raise NotImplementedError(f"{request.kind} is not built yet")
 
     def _account(self) -> str:
         if self._account_id is None:
@@ -153,6 +139,64 @@ class FrameioReads:
                 )
             self._account_id = accounts[0]
         return f"/v4/accounts/{_id(self._account_id)}"
+
+    def _workspace(self) -> str:
+        if self._workspace_id is None:
+            workspaces = [str(item["id"]) for item in self._api.pages(f"{self._account()}/workspaces")]
+            if len(workspaces) != 1:
+                raise RuntimeError(
+                    f"the Frame.io account has {len(workspaces)} workspaces; set T6_FRAMEIO_WORKSPACE_ID to the T6 workspace"
+                )
+            self._workspace_id = workspaces[0]
+        return self._workspace_id
+
+    def create_project_folders(self, request: CreateProjectFolders) -> dict[str, JsonValue]:
+        """The Frame.io project and a folder per name, made only when missing (see `CreateProjectFolders`).
+
+        Every write is preceded by a read of what exists, so a retry after a crash, a timeout or a redelivered job
+        finds the project and the folders and makes nothing. Raises ValueError when the project cannot be told
+        (two have the name) and FrameioError when Frame.io refuses a read or a write; nothing is retried here.
+        """
+        created_project = False
+        if request.known_project_id is not None:
+            found = self._api.get(f"{self._account()}/projects/{_id(request.known_project_id)}").get("data")
+            if not isinstance(found, dict):
+                raise ValueError(f"Frame.io gave no project {request.known_project_id}")
+            project = FrameioProject.from_api({"id": request.known_project_id, **found})
+        else:
+            same = [p for p in self.projects() if p.name == request.name and p.id not in request.taken]
+            if len(same) > 1:
+                raise ValueError(f"more than one Frame.io project is named {request.name!r}: {', '.join(p.id for p in same)}")
+            if same:
+                project = same[0]
+            else:
+                made = self._api.post(f"{self._account()}/workspaces/{_id(self._workspace())}/projects", {"name": request.name}).get("data")
+                if not isinstance(made, dict) or not made.get("id"):
+                    raise ValueError("Frame.io gave no project after creating one")
+                project = FrameioProject.from_api(made)
+                created_project = True
+        if project.root_folder_id is None:
+            raise ValueError(f"Frame.io project {project.id} has no root folder")
+        existing: dict[str, str] = {}
+        if not created_project:
+            for child in self._api.pages(f"{self._account()}/folders/{_id(project.root_folder_id)}/children"):
+                name, found_id = _text(child.get("name")), _text(child.get("id"))
+                if child.get("type", "folder") == "folder" and name and found_id:
+                    if name in existing and name in request.folders:
+                        raise ValueError(f"more than one folder named {name!r} in Frame.io project {project.id}")
+                    existing.setdefault(name, found_id)
+        folders: dict[str, JsonValue] = {}
+        created: list[JsonValue] = []
+        for name in request.folders:
+            if name in existing:
+                folders[name] = existing[name]
+                continue
+            made = self._api.post(f"{self._account()}/folders/{_id(project.root_folder_id)}/folders", {"name": name}).get("data")
+            if not isinstance(made, dict) or not made.get("id"):
+                raise ValueError(f"Frame.io gave no folder after creating {name!r}")
+            folders[name] = str(made["id"])
+            created.append(name)
+        return {"frameio_project_id": project.id, "folders": folders, "created_project": created_project, "created_folders": created}
 
     def projects(self) -> tuple[FrameioProject, ...]:
         return tuple(FrameioProject.from_api(raw) for raw in self._api.pages(f"{self._account()}/projects"))
@@ -229,6 +273,26 @@ class FrameioReads:
             raise ValueError(f"Frame.io gave no file {file_id}")
         return FrameioFile.from_api({"id": file_id, **data})
 
+    def file_location(self, file_id: str) -> FileLocation:
+        """The folder the file is in and its version stack. A stacked file's folder is its stack's own parent.
+
+        Raises FrameioError (status 404) when Frame.io does not know the file.
+        """
+        data = self._api.get(f"{self._account()}/files/{_id(file_id)}").get("data")
+        parent = _text(data.get("parent_id")) if isinstance(data, dict) else None
+        if parent is None:
+            raise ValueError(f"Frame.io gave no folder for file {file_id}")
+        try:
+            stack = self._api.get(f"{self._account()}/version_stacks/{_id(parent)}").get("data")
+        except FrameioError as error:
+            if error.status != 404:  # 404: the parent is a folder, not a version stack
+                raise
+            return FileLocation(folder_id=parent)
+        folder = _text(stack.get("parent_id")) if isinstance(stack, dict) else None
+        if folder is None:
+            raise ValueError(f"Frame.io gave no folder for version stack {parent}")
+        return FileLocation(folder_id=folder, stack_id=parent)
+
     def resolve_comment(self, request: ResolveComment) -> ResolvedComment:
         """One comment by ID, in the account the webhook named."""
         path = f"/v4/accounts/{_id(request.account_id)}/comments/{_id(request.comment_id)}"
@@ -291,37 +355,32 @@ class FrameioReads:
     def briefing_feed(self, since: datetime) -> tuple[BriefingShow, ...]:
         """Per Frame.io project, the live share links with activity after `since`.
 
-        Every live share link gets an External Links row if it has none
-        (related to the show when the Frame.io project has a row of its own).
-        A row's Last Activity is moved forward to the link's latest activity.
-        Active is never written.
+        A Frame.io project is tied to its Project by a Media location of kind
+        `frameio-project`; `project_page_ids` are that Project's Notion pages
+        (empty when the project is unlinked). Nothing is written: share links
+        have no row and no Last Activity stamp, because the activity is read
+        from Frame.io each time. A live share is reported `active`.
         """
         if self._links is None:
             raise RuntimeError(
-                "the briefing feed needs T6_NOTION_TOKEN and T6_NOTION_EXTERNAL_LINKS_DATA_SOURCE on the Frame.io worker"
+                "the briefing feed needs T6_API_URL and T6_REGISTRY_READ_SECRET on the Frame.io worker"
             )
         now = self._now()
-        project_rows = {row.ref.external_id: row for row in self._links.links_for_system(SYSTEM, PROJECT_KIND)}
-        share_rows = {row.ref.external_id: row for row in self._links.links_for_system(SYSTEM, SHARE_LINK_KIND)}
+        pages_by_project: dict[str, tuple[str, ...]] = {}
+        for link in self._links.media_links(PROJECT_KIND):
+            pages_by_project.setdefault(link.ref, link.pages)
         shows = []
         for project in self.projects():
-            project_row = project_rows.get(project.id)
-            pages: tuple[str, ...] = project_row.project_ids if project_row is not None else ()
+            pages = pages_by_project.get(project.id, ())
             found = []
             for share in self.share_links(project.id, with_files=False):
                 if not share.live(now):
                     continue
-                row: Link | None = share_rows.get(share.id)
-                if row is None:
-                    ref = ExternalRef(system=SYSTEM, kind=SHARE_LINK_KIND, external_id=share.id, url=share.url)
-                    row = self._links.ensure(ref, project_id=pages[0] if pages else None)
                 latest = self._last_activity(share)
                 if latest is None or latest <= since:
                     continue
-                if row.last_activity is None or row.last_activity < latest:
-                    self._links.touch(row.page_id, latest)
                 found.append(
-                    BriefingLink(share_id=share.id, name=share.name, url=share.url, last_activity=latest, active=row.active)
+                    BriefingLink(share_id=share.id, name=share.name, url=share.url, last_activity=latest, active=True)
                 )
             if found:
                 shows.append(

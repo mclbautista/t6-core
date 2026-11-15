@@ -30,8 +30,9 @@ from datetime import datetime, timezone
 import hashlib
 import hmac
 import json
+import logging
 import time
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import parse_qs, urlsplit
 
 from t6.domain.events import (
@@ -42,6 +43,7 @@ from t6.domain.events import (
     JsonValue,
 )
 from t6.domain.studio_people import operator_ids
+from t6.frameio_hold import HeldActivity
 from t6.operator import PREFIX as OPERATOR_PREFIX
 from t6.operator import Card, OperatorService, TapResult
 from t6.registry import (
@@ -62,9 +64,13 @@ from t6.registry import (
     Rotation,
     Shown,
 )
+from t6.registry.sqlite import SqliteProjectRegistry
 from t6.server.routes import Route
-from t6.server.queue import DIAGNOSTIC_QUEUE, FRAMEIO_QUEUE, MAIN_QUEUE, JobQueue
+from t6.server.queue import DIAGNOSTIC_QUEUE, FRAMEIO_QUEUE, MAIN_QUEUE, JobQueue, Submitted
 from t6.server.signatures import WebhookRejected, verify_frameio, verify_notion
+from t6.verbs import VERBS, Done, Outcome, Refused
+
+LOG = logging.getLogger(__name__)
 
 REVIEW_QUIET_SECONDS = 15 * 60.0
 REVIEW_LOOP_ALLOWANCE_SECONDS = 8 * 60.0
@@ -77,6 +83,11 @@ NOTION_PAGE_EVENTS = frozenset({"page.properties_updated", "page.created", "page
 page changed; the worker reads the page's current state."""
 
 __all__ = ["Grant", "Request", "Response", "ServerConfig", "WebhookApp"]
+
+
+def _is_read_verb(noun: str, verb: str) -> bool:
+    """Whether the catalogue marks this verb read only; a name it does not list (an admin route) is not."""
+    return any(entry.read_only for entry in VERBS if (entry.noun, entry.verb) == (noun, verb))
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +217,14 @@ def _bearer(request: Request) -> str:
     return value[7:] if value.lower().startswith("bearer ") else ""
 
 
+class Submitter(Protocol):
+    """Where a job goes: the queue file, or the internal job table in the t6 database."""
+
+    def submit(
+        self, queue: str, kind: str, dedupe_key: str, payload: Mapping[str, JsonValue] | None = None, run_at: float | None = None
+    ) -> Submitted: ...
+
+
 class WebhookApp:
     def __init__(
         self,
@@ -215,15 +234,24 @@ class WebhookApp:
         on_notion_verification: Callable[[str], None] = lambda token: None,
         registry: ProjectRegistry | None = None,
         operator: OperatorService | None = None,
+        inside: Submitter | None = None,
     ) -> None:
+        """`inside` takes the `main` jobs this server starts itself (the four sync kinds, card delivery, taps and reconcile).
+
+        The full-mode server passes the internal job table in the t6 database (ADR 0006), which the main
+        worker polls. Without it those jobs go to `queue`, as in a one-server setup that has no t6 database.
+        Outside events (webhooks) and the Frame.io jobs always go to `queue`.
+        """
         self._registry = registry
         self._operator = operator
         self._queue = queue
+        self._inside: Submitter = inside if inside is not None else queue
         self._config = config
         self._clock = clock
         self._on_notion_verification = on_notion_verification
         self._dispatch_sync()  # jobs for changes accepted before a restart
         self._redeliver_cards()
+        self.release_held_activity()  # Frame.io activity whose project was linked before a restart
 
     # -- public listener --------------------------------------------------------
 
@@ -453,7 +481,7 @@ class WebhookApp:
         try:
             intents = self._registry.undispatched_sync()
             for intent in intents:
-                self._queue.submit(
+                self._inside.submit(
                     MAIN_QUEUE,
                     JobKind.REGISTRY_SYNC.value,
                     f"registry.sync:{intent.id}",
@@ -461,16 +489,51 @@ class WebhookApp:
                 )
             deliverable_intents = self._registry.undispatched_deliverable_sync()
             for intent in deliverable_intents:
-                self._queue.submit(MAIN_QUEUE, 'deliverable.sync', f'deliverable.sync:{intent.id}', {'intent_id': intent.id})
+                self._inside.submit(MAIN_QUEUE, 'deliverable.sync', f'deliverable.sync:{intent.id}', {'intent_id': intent.id})
             jo_intents = self._registry.undispatched_jo_sync()
             for intent in jo_intents:
-                self._queue.submit(MAIN_QUEUE, JobKind.JO_SYNC.value, f"jo.sync:{intent.id}", {"intent_id": intent.id})
+                self._inside.submit(MAIN_QUEUE, JobKind.JO_SYNC.value, f"jo.sync:{intent.id}", {"intent_id": intent.id})
             status_intents = self._registry.undispatched_status_sync()
             for intent in status_intents:
-                self._queue.submit(MAIN_QUEUE, 'project.status_sync', f'project.status_sync:{intent.id}', {'intent_id': intent.id})
+                self._inside.submit(MAIN_QUEUE, 'project.status_sync', f'project.status_sync:{intent.id}', {'intent_id': intent.id})
             self._registry.mark_dispatched(intent.id for intent in (*intents, *jo_intents, *status_intents, *deliverable_intents))
         except RegistryUnavailable:
             return
+
+    def release_held_activity(self) -> int:
+        """Send the Frame.io review activity that waited for a link, now that its project is linked (#272).
+
+        Safe to run any time and as often as wanted: each held row goes out once, whatever linked the project.
+        """
+        if not isinstance(self._registry, SqliteProjectRegistry):
+            return 0
+        try:
+            return HeldActivity(self._registry).release_linked(self._inside.submit)
+        except RegistryUnavailable:
+            return 0
+
+    def after_verb(self, noun: str, verb: str, outcome: Outcome) -> None:
+        """The effects a verb has outside the t6 database, once it has committed: they follow the verb, not the API that ran it.
+
+        A read verb and a refusal changed nothing, so nothing follows them. An error here is logged and swallowed: the verb
+        has committed, and its answer must not turn into a failure the caller would retry.
+
+        Review activity that waited for a Frame.io link is released after any verb that is `Done` (#272): the link data decides,
+        not the verb's name, so `frameio project link`, `media link` and `project start` are covered, and so is any later way to
+        link. It is one cheap query when nothing waits. Sync intents a verb committed are queued here (queueing twice is
+        harmless), so no restart or other call is needed (#358). A confirmed Project Start gives the Approval it created its card (#267).
+        """
+        if isinstance(outcome, Refused) or _is_read_verb(noun, verb):
+            return
+        try:
+            self._dispatch_sync()  # a write through a verb queues its sync job before the request answers
+            if not isinstance(outcome, Done):
+                return
+            self.release_held_activity()
+            if (noun, verb) == ("project", "start") and outcome.result.get("approval_id"):
+                self._redeliver_cards()
+        except Exception:
+            LOG.exception("after_verb failed for %s %s; the verb had already committed", noun, verb)
 
     def _redeliver_cards(self) -> None:
         """Queue delivery again for cards Telegram never confirmed (a restore may have lost the job)."""
@@ -513,7 +576,7 @@ class WebhookApp:
                 "project_id": self._project_of_tap(data),
             },
         )
-        made = self._queue.submit(MAIN_QUEUE, job.kind.value, job.dedupe_key, job.payload)
+        made = self._inside.submit(MAIN_QUEUE, job.kind.value, job.dedupe_key, job.payload)
         return Response(200, {"job_id": made.job_id, "created": made.created})
 
     def _project_of_tap(self, data: str) -> str | None:
@@ -566,10 +629,11 @@ class WebhookApp:
         if result.changed and result.action is not None:
             self._deliver(result.action.token, result.action.version)
         self._dispatch_sync()
+        self.release_held_activity()
         return Response(200, {"outcome": result.outcome})
 
     def _deliver(self, token: str, version: int) -> None:
-        self._queue.submit(
+        self._inside.submit(
             MAIN_QUEUE,
             JobKind.OPERATOR_DELIVER.value,
             f"operator.deliver:{token}:{version}",
@@ -615,8 +679,13 @@ class WebhookApp:
             if maybe is None:
                 return Response(200, {"offered": False})
             offered = maybe
+        elif body.get("kind") == "frameio_link" and isinstance(body.get("frameio_project_id"), str) and body["frameio_project_id"].strip():
+            try:
+                offered = operator.offer_frameio_link(body["frameio_project_id"].strip())
+            except ValueError as error:
+                return Response(503, {"error": str(error)})
         else:
-            return Response(400, {"error": "kind is unbound_page (page_id) or classify (project_id)"})
+            return Response(400, {"error": "kind is unbound_page (page_id), classify (project_id) or frameio_link (frameio_project_id)"})
         action, created = offered
         self._deliver(action.token, action.version)
         return Response(200, {"offered": True, "created": created, "token": action.token})
@@ -660,7 +729,10 @@ class WebhookApp:
                 return Response(403, {"error": "queue not allowed"})
             if queue != DIAGNOSTIC_QUEUE:
                 self._dispatch_sync()
-            claim = self._queue.claim(queue, lease)
+            kinds = body.get("kinds")
+            if kinds is not None and not (isinstance(kinds, list) and all(isinstance(kind, str) for kind in kinds)):
+                return Response(400, {"error": "kinds must be a list of names"})
+            claim = self._queue.claim(queue, lease, kinds)
             if claim is None:
                 return Response(200, {"job": None})
             return Response(
@@ -729,6 +801,18 @@ class WebhookApp:
             if row is None:
                 return Response(404)
             return Response(200, {"version": {"id": row[0], "deliverable": row[1], "note": row[2], "locked": bool(row[3])}})
+        if len(steps) in (2, 3) and steps[0] == "media-links":
+            if request.method != "GET":
+                return Response(405)
+            if not any(g.registry_read for g in grants):
+                return Response(403, {"error": "registry read not allowed"})
+            from t6.media import active_links
+            from t6.registry.sqlite import SqliteProjectRegistry
+            if not isinstance(registry, SqliteProjectRegistry):
+                return Response(503, {"error": "media locations unavailable"})
+            return Response(200, {"links": [
+                {"id": l.id, "owner": l.owner, "project": l.project_id, "kind": l.kind, "ref": l.ref, "role": l.role, "pages": list(l.pages)}
+                for l in active_links(registry, steps[1], steps[2] if len(steps) == 3 else None)]})
         if len(steps) == 2 and steps[0] == "review-chat":
             if request.method != "GET":
                 return Response(405)
@@ -978,7 +1062,7 @@ class WebhookApp:
             key = request.header("idempotency-key")
             if not key.strip():
                 return Response(400, {"error": "idempotency key is required"})
-            made = self._queue.submit(
+            made = self._inside.submit(
                 MAIN_QUEUE,
                 JobKind.NOTION_PAGE_CHANGED.value,
                 f"registry.reconcile:{key}",

@@ -1,6 +1,6 @@
 """Frame.io V4 over HTTPS, for the Frame.io worker only. Standard library only.
 
-`FrameioApi.get` and `.pages` send the worker's access token. A 401 gets one
+`FrameioApi.get`, `.pages` and `.post` send the worker's access token. A 401 gets one
 token refresh and one more try; a second 401 is `SignInRequired`. A 429 waits
 and tries again (Frame.io allows 100 calls a minute on most routes).
 """
@@ -29,6 +29,10 @@ SECRET_LIKE = re.compile(r"(?i)\b(bearer|basic)\s+\S+|\beyJ[\w-]+\.[\w-]+(\.[\w-
 
 Fetch = Callable[[str, Mapping[str, str]], tuple[int, Mapping[str, str], dict[str, Any]]]
 """GETs a URL with headers. Returns the status, the response headers and the JSON object answered."""
+
+
+Send = Callable[[str, Mapping[str, str], dict[str, Any]], tuple[int, Mapping[str, str], dict[str, Any]]]
+"""POSTs a JSON object to a URL with headers. Returns the status, the response headers and the JSON object answered."""
 
 
 class AccessTokens(Protocol):
@@ -81,13 +85,34 @@ def http_fetch(url: str, headers: Mapping[str, str]) -> tuple[int, Mapping[str, 
     return status, answered, body if isinstance(body, dict) else {}
 
 
+def http_send(url: str, headers: Mapping[str, str], body: dict[str, Any]) -> tuple[int, Mapping[str, str], dict[str, Any]]:
+    request = urllib.request.Request(
+        url, data=json.dumps(body).encode(), headers={"User-Agent": USER_AGENT, "Content-Type": "application/json", **headers}, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30.0) as response:
+            status, answered, raw = response.status, dict(response.headers), response.read()
+    except urllib.error.HTTPError as error:
+        status, answered, raw = error.code, dict(error.headers), error.read()
+    try:
+        parsed = json.loads(raw or b"{}")
+    except ValueError:
+        parsed = {}
+    return status, answered, parsed if isinstance(parsed, dict) else {}
+
+
 class FrameioApi:
     def __init__(
-        self, tokens: AccessTokens, fetch: Fetch | None = None, sleep: Callable[[float], None] = time.sleep
+        self,
+        tokens: AccessTokens,
+        fetch: Fetch | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        send: Send | None = None,
     ) -> None:
         self._tokens = tokens
         self._fetch = fetch or http_fetch
         self._sleep = sleep
+        self._send = send or http_send
 
     def get(self, path: str, params: Mapping[str, str | int] | None = None) -> dict[str, Any]:
         """The JSON object at `path` (a path that starts with `/v4/`, with or without its own query)."""
@@ -111,6 +136,30 @@ class FrameioApi:
                 self._sleep(_retry_after(answered))
             else:
                 raise FrameioError(status, shown, error_summary(answered, body))
+
+    def post(self, path: str, data: Mapping[str, Any]) -> dict[str, Any]:
+        """Create something: POST `{"data": data}` to `path` and return the JSON object answered (a 200 or 201).
+
+        The same 401 and 429 rules as `get`. A POST that failed in any other way is raised and never sent again
+        here: whoever asks again must look first (see `CreateProjectFolders`).
+        """
+        refreshed = False
+        waits = 0
+        while True:
+            headers = {"Authorization": f"Bearer {self._tokens.access_token()}", "Accept": "application/json"}
+            status, answered, body = self._send(BASE_URL + path, headers, {"data": dict(data)})
+            if status in (200, 201):
+                return body
+            if status == 401:
+                if refreshed:
+                    raise SignInRequired("Frame.io refused a fresh token")
+                self._tokens.refresh()
+                refreshed = True
+            elif status == 429 and waits < RATE_LIMIT_TRIES:
+                waits += 1
+                self._sleep(_retry_after(answered))
+            else:
+                raise FrameioError(status, path, error_summary(answered, body))
 
     def pages(self, path: str, params: Mapping[str, str | int] | None = None) -> Iterator[dict[str, Any]]:
         """Every item of a paged list, following `links.next` to the end."""

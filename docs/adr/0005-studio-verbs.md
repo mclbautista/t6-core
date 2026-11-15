@@ -19,7 +19,9 @@ Ambiguous**. Every write is previewed before confirmation. Preview returns a
 signed, single-use token; confirm sends that token back. When a preview needs
 work only a worker can do, the call returns a job ID and the job result is the
 Preview with its token. Tokens expire and refuse changed input. Every write is
-idempotent by key, so callers can retry safely.
+idempotent by key, so callers can retry safely. (2026-11-15: the resume of a begun
+`project start`, one whose Approval was made under its key, skips only the token
+expiry, so a begun Start may be finished after its token expired.)
 
 The actor is the authenticated Person or named service, never a flag supplied
 by the caller. Each API secret is bound to one Person or named service; only

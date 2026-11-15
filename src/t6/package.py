@@ -7,10 +7,42 @@ import secrets
 from typing import Any
 
 from t6.deliverable import write_milestone
+from t6.drives.sqlite import SqliteDriveStore
 from t6.ids import EntityKind, T6Id
 from t6.preview import PreviewTokens
 from t6.registry.sqlite import SqliteProjectRegistry
 from t6.verbs import Ambiguous, Done, Outcome, Refused
+
+
+def blocking_cleared(checklist: list[dict[str, Any]]) -> bool:
+    """Every blocking item is ticked. A checklist with no blocking item (every spec starts with none) is cleared
+    from the start; a fully ticked checklist always is."""
+    return all(item['checked_at'] is not None for item in checklist if item['blocking'])
+
+
+def is_kasado(state: str, checklist: list[dict[str, Any]]) -> bool:
+    """The one definition of kasado (#178): the blocking items are cleared and the Package was not rejected."""
+    return state != 'rejected' and blocking_cleared(checklist)
+
+
+def kasado_since(state: str, checklist: list[dict[str, Any]], prepared_at: float | None) -> float | None:
+    """When the Package became kasado: the last blocking tick, or when it was prepared if it has no blocking item.
+    None when it is not kasado, or when the preparation time is unknown."""
+    if not is_kasado(state, checklist):
+        return None
+    ticks = [item['checked_at'] for item in checklist if item['blocking']]
+    return max(ticks) if ticks else prepared_at
+
+
+def delivery_kasado_since(db: Any, deliverable_id: str) -> float | None:
+    """The earliest time one delivery Package of the Deliverable became kasado, or None when none is. The floor reads call this."""
+    since: list[float] = []
+    for package, state, checklist in db.execute("SELECT id, state, checklist FROM packages WHERE deliverable_id = ? AND kind = 'delivery'", (deliverable_id,)).fetchall():
+        prepared = db.execute("SELECT MIN(at) FROM audit WHERE project_id = ? AND action = 'package_prepare'", (package,)).fetchone()[0]
+        found = kasado_since(state, json.loads(checklist), prepared)
+        if found is not None:
+            since.append(found)
+    return min(since) if since else None
 
 
 class PackageStore:
@@ -23,7 +55,7 @@ class PackageStore:
         record['spec'] = json.loads(record['spec'])
         record['checklist'] = json.loads(record['checklist'])
         record['missing'] = [item['text'] for item in record['checklist'] if item['checked_at'] is None]
-        record['kasado'] = all(item['checked_at'] is not None for item in record['checklist'] if item['blocking'])
+        record['kasado'] = is_kasado(record['state'], record['checklist'])
         return record
 
     def get(self, package: str) -> dict[str, Any] | None:
@@ -35,7 +67,8 @@ class PackageStore:
             carrier = db.execute('SELECT kind, ref FROM delivery_carriers WHERE package_id=?', (package,)).fetchone()
             if carrier:
                 record['carrier'], record['ref'] = carrier
-            return record
+        record['drives'] = list(SqliteDriveStore(self.registry).delivery_drives(package))
+        return record
 
     def list(self, missing: bool = False) -> list[dict[str, Any]]:
         with self.registry._transaction() as db:

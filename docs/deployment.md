@@ -12,7 +12,8 @@ as you go.
 | --- | --- | --- | --- |
 | `python -m t6.server` | VPS | public `T6_PUBLIC_BIND` (`/webhook*` and `/frameio/callback` only), tailnet `T6_TAILNET_BIND` (`/tap`, `/queue/*`, `/registry/*`, `/operator/*`) | the only registry, queue and operator databases, on persistent storage (`/data`) |
 | `python -m t6.worker` (queue `main`) | supervised separately, same image | nothing | the Notion token and the gateway secret; reaches the server over the tailnet |
-| `python -m t6.worker` (queue `frameio`) | Mac mini, same image, its own container and volume | nothing | the Adobe credential and the Frame.io token file (`T6_FRAMEIO_TOKEN_FILE`); nothing else mounts that volume. Variables: README, [Frame.io](../README.md#frameio) |
+| `python -m t6.worker` (queue `frameio`) | Mac mini, same image, its own container and volume | nothing | the Adobe credential and the Frame.io token file (`T6_FRAMEIO_TOKEN_FILE`); nothing else mounts that volume. For the briefing feed it also needs `T6_API_URL`, the t6 API on Sixto (where the Media locations are), and `T6_REGISTRY_READ_SECRET`, that API's read-only registry grant; both or neither, and not the VPS edge, which has no registry. `T6_SERVER_URL` and `T6_WORKER_SECRET` stay the VPS queue server and the `frameio` grant, with no registry read. Variables: README, [Frame.io](../README.md#frameio) |
+| `python -m t6.worker` (queue `transcribe`) | Mac mini or a host that mounts the NAS shares, same image | nothing | `ELEVENLABS_API_KEY` (no other process holds it) and `T6_TRANSCRIBE_SHARES`, the path of a JSON file mapping each NAS share name to its mount point on that host. It exits 2 when that file is unset, unreadable, not an object of strings, or empty, and refuses (`outside_shares`) any folder outside the mapped mount points. It reaches the server through the API only and never opens the database. `T6_TRANSCRIBE_RATE` (USD per audio hour, default `0.4`) is read by `python -m t6.server`, not by the worker. Variables: README, [Transcription](../README.md#transcription) |
 
 One server owns the files; there is no second writer. The public listener answers
 404 to everything but `/webhook` paths and `/frameio/callback`, so the registry, queue and operator routes
@@ -25,7 +26,7 @@ Server: `T6_FRAMEIO_WEBHOOK_SECRET`, `T6_NOTION_WEBHOOK_TOKEN`, `T6_TAP_SECRET`
 (the gateway's `T6CORE_SECRET`), one secret per grant (`T6_WORKER_SECRET`,
 `T6_REGISTRY_SECRET`, `T6_REGISTRY_READ_SECRET`), `T6_OPERATOR_IDS` (Telegram user
 IDs; the first receives cards), the `*_DB` paths and the two binds. Worker:
-`T6_SERVER_URL` (the tailnet address), `T6_WORKER_SECRET`, `T6_WORKER_QUEUE=main`,
+`T6_SERVER_URL` (the tailnet address, for queue calls only), `T6_API_URL` (the t6 API, for every registry and operator call; required when `T6_DATABASE` is set), `T6_WORKER_SECRET`, `T6_WORKER_QUEUE=main`,
 `T6_NOTION_TOKEN`, `T6_NOTION_PROJECTS_DATA_SOURCE`, `T6_NOTION_JOB_ORDERS_DATA_SOURCE`, `T6_GATEWAY_URL`,
 `T6_GATEWAY_SECRET`. Keep secrets in the host's secret store or a root-only env
 file, never in the image or this repository. Prefer separate secrets per grant so
@@ -73,6 +74,12 @@ one leak is one capability. An unset secret turns its route off (503).
   and trigger `POST /registry/pages/{id}/reconcile`.
 - `failed_jobs`: queue jobs that failed after their attempts; read their `result`.
 - `pending_actions`: operator cards waiting for a tap.
+- `waiting_jobs`: jobs that are due and that nothing has taken for more than 15 minutes
+  (`WAITING_LIMIT_SECONDS` in `src/t6/ops.py`), by kind with the count and the oldest age in
+  seconds, for the queue file (`queue`) and for the internal job table (`internal`). Typical
+  cause: no running worker handles that kind. A job whose time is still in the future, or that a
+  worker holds under a live lease, is not waiting. This is a problem now, not history:
+  `--ignore-history` does not hide it.
 
 Failed jobs and syncs are also listed under `history`. Two flags narrow the check for
 deploy tools and monitors:
@@ -144,6 +151,38 @@ authenticated `/queue/*` routes. Configure the existing worker secrets for the
 queues workers need to claim. The callback still requires a Frame.io worker
 claim grant. Edge mode does not open the registry or operator databases.
 
+The Frame.io file route (`job_kind: frameio.file_versioned`) must use `queue: main`, not `frameio`: the
+job opens the t6 database, which only the API and the main worker do, and the Frame.io worker never does.
+Subscribe it to `file.versioned` and `file.upload.completed`; the job carries the raw webhook body. The main
+worker with `T6_DATABASE` set records one Version for a file in a Deliverable's `frameio-folder` Media location
+(role review), once per job dedupe key. A file inside a subfolder of that folder is not matched. The main worker
+finds the file's folder (and version stack) through the Frame.io worker's read API, route
+`GET /frameio/files/<id>/location` (same bearer secret as the other read routes; it answers `folder_id` and
+`stack_id`, the folder being the version stack's own parent; 404 for a file Frame.io does not know). Set both
+variables in the main worker's environment:
+
+- `T6_FRAMEIO_READ_URL`: the Frame.io worker's read API URL (the Frame.io worker serves it with
+  `T6_FRAMEIO_READ_BIND` and `T6_FRAMEIO_READ_SECRET`).
+- `T6_FRAMEIO_READ_SECRET`: its bearer secret.
+
+Review activity on a Frame.io project that no show holds (#272) waits instead of going to the default review chat.
+The main worker with `T6_DATABASE` set keeps each `frameio.review_done` job in the `frameio_held_activity` table
+(migration 41; the Frame.io worker never opens the t6 database) and asks the API (`POST /operator/offers`, kind
+`frameio_link`) for one card per Frame.io project. The card goes to the first operator's chat like the other operator
+offers; a person with `permission:coordinator` (an operator has it) picks the show, which runs `frameio project link`
+as that Person (an active staff Person). The API releases each waiting row once, as a new `frameio.review_done` job
+in the internal job table under the key `held:<row>`, when its project is linked by the card, by the verb, or by any
+other way: it also checks at start. Without `T6_DATABASE` the main worker holds nothing and keeps the old behaviour.
+The `/project` card's Link Frame.io project button needs the API to read the Frame.io worker's `GET /frameio/projects`:
+set `T6_FRAMEIO_READ_URL` and `T6_FRAMEIO_READ_SECRET` in the API's environment too. The list is of the T6 account only,
+the one the Frame.io worker is configured for (`T6_FRAMEIO_ACCOUNT_ID`; with a sign-in that sees more than one account
+and no `T6_FRAMEIO_ACCOUNT_ID` the read fails and the card says Frame.io did not answer). Without the two variables the
+button is not offered and only operators use `/project`.
+
+With either variable unset, the main worker does not register `frameio.file_versioned`, so it claims no such
+job, and its start-up log says once that Versions from Frame.io events are off and names both variables. A 404
+for the file ends the job as ignored; any other read failure fails the job and it is retried.
+
 Frame.io and Notion jobs contain the verified JSON object. Google jobs contain
 `headers` with the `x-goog-*` notification headers except the channel token.
 Jobs are deduplicated by route and provider event ID (or body hash when absent);
@@ -152,5 +191,59 @@ handshake is acknowledged without queuing, as in full mode. The server prints th
 token to standard error for the operator to store. For initial edge setup, set
 `T6_NOTION_BOOTSTRAP=1` to allow an unset Notion route secret. That route serves only the unsigned Notion verification handshake and logs its bootstrap status at startup; ordinary events are rejected. All other unset route secrets still prevent startup. Store the token, unset bootstrap, and restart.
 Unsigned events remain rejected. Full mode remains the default.
+
+### The main worker with the API on Sixto (full mode API, edge VPS)
+
+The VPS server runs in edge mode: it serves `/health` and `/queue/*` and answers 404 to the rest, so it has no registry. The registry is in the t6 database behind the t6 API on Sixto. The main worker therefore has two addresses. `T6_SERVER_URL` is the VPS queue server and carries queue calls only (claim, extend, ack, fail, and the `frameio` queue asks). `T6_API_URL` is the t6 API (on Sixto the API and the main worker share a network namespace, so this is the API on loopback) and carries every `/registry/*` and `/operator/*` call: the Project, Job Order and Deliverable projections, the review Version and review chat links, and operator cards. With `T6_DATABASE` set and no `T6_API_URL`, the main worker refuses to start with a `ConfigError` that names `T6_API_URL`; a registry call never falls back to the queue server. Without `T6_DATABASE` (one server that is both queue and API) it keeps using `T6_SERVER_URL` for registry calls, but it polls only that server's queue file. A full-mode server puts the jobs it starts itself (the four sync kinds, operator cards and taps, `project start` plans, calendar and sharing jobs) in the internal job table in the t6 database, so those jobs wait until a worker that reads the job table (`T6_DATABASE` set) runs; a worker without `T6_DATABASE` never claims them. A worker also claims only the job kinds it has a handler for: a job it cannot run, such as `frameio.file_versioned` without `T6_FRAMEIO_READ_URL` and `T6_FRAMEIO_READ_SECRET`, stays queued with no try used until a worker that can run it starts.
+
+The `main` jobs the API starts itself go to the internal job table in the t6 database (ADR 0006), not to `T6_QUEUE_DB`: `registry.sync`, `deliverable.sync`, `jo.sync`, `project.status_sync`, `operator.deliver`, the `/tap` job and the reconcile `notion.page_changed`. Outside events (Notion and Frame.io webhooks) keep using the VPS queue. When the API starts it moves the waiting `main` jobs of the four sync kinds from its queue file into the internal job table (same kind, same dedupe key; running it twice moves nothing twice) and logs, by kind, the other waiting jobs it leaves in the queue file (`t6.server: waiting jobs left in the queue file: ...`). Read that count before deciding what to do with them.
+
+### Project Start plans (main worker and API only)
+
+`project start` queues a `project_start.preview` internal job on the `main` queue. The main worker with `T6_DATABASE` set builds the plan and answers with the Preview and its token; the caller reads it with `t6 project start <project> --job <id>`. The worker needs `T6_PREVIEW_SIGNING_KEY` (the same key the API signs with, so the API accepts the token at confirm) and `T6_NOTION_TOKEN` (it reads the Project Type to choose the milestone template). Without the signing key the plan jobs stay queued and the worker's start-up log says `project start` plans are off. The plan lists the steps a person does by hand (NAS folders, the Resolve project, the Resolve timelines with their stamps); no worker writes to the NAS or to Resolve. The plan also reads the Project's name from Notion (`ProjectsRow.name`) for the Frame.io project.
+
+#### Project Start and Frame.io (netops note; no live setting is changed by the code)
+
+At confirm the API (not the main worker) asks the Frame.io worker for the Frame.io project and one folder per Deliverable (request `frameio.create_project_folders`, a write). The API holds no Frame.io token and the Frame.io worker still never opens the t6 database: the API records the answer as Media locations. Set these on the API (`t6.server`):
+
+- `T6_FRAMEIO_QUEUE_URL` and `T6_FRAMEIO_QUEUE_SECRET`: the queue server the Frame.io worker polls (the VPS) and a queue grant whose `submit` includes `frameio`. Without them the API uses its own queue file, which only works when the Frame.io worker polls that same queue. Without a reachable Frame.io worker the confirm is refused (rule `frameio`) after `T6_FRAMEIO_WRITE_TIMEOUT_SECONDS` (default 60) and t6 is unchanged; a retry is safe.
+
+Set these on the Frame.io worker:
+
+- `T6_FRAMEIO_ACCOUNT_ID`: the T6 account (as for reads). A sign-in that sees more than one account needs it.
+- `T6_FRAMEIO_WORKSPACE_ID`: the workspace a new project goes in. Needed only when the account has more than one workspace; with one, the worker uses it.
+
+The Frame.io sign-in (Adobe OAuth Web App credential) needs write scopes. Today it reads only. Creating projects and folders needs the Frame.io V4 project and asset write scopes (create projects, create folders), in addition to the read scopes of the share, comment, file and account reads. Check the scope names against the Adobe Developer Console and Frame.io V4 reference when you change the credential; the routes below are a reconstruction of the V4 API and were not called live. No scope for creating shares is needed, and none is used. After a scope change the Frame.io worker must sign in again (the old token keeps the old scopes).
+
+The routes used (reconstructed, no live call): `GET /v4/accounts/{account}/workspaces`, `POST /v4/accounts/{account}/workspaces/{workspace}/projects` (body `{"data": {"name": ...}}`), `GET /v4/accounts/{account}/projects/{project}`, `GET /v4/accounts/{account}/folders/{folder}/children`, `POST /v4/accounts/{account}/folders/{folder}/folders`.
+
+### Booking calendars (main worker and API only)
+
+Every Booking change queues a `booking.calendar_sync` internal job. The main worker with `T6_DATABASE` set handles it (ADR 0003: only the API and the main worker read the Google settings; apps and the gateway never do).
+
+- `T6_GOOGLE_BAY_CALENDARS`: a JSON object of Bay ID (`t6b_...`) to Google calendar ID, for example `{"t6b_example": "example@group.calendar.google.com"}`. A Bay missing from it fails its jobs with "Bay has no calendar".
+- `GOOGLE_APPLICATION_CREDENTIALS`: the path of the Google service account key file (JSON, mode 600, in the root-only env directory on Sixto, never in the image or the repository). One service account; each Bay calendar stays owned by the personal Gmail account and is shared to the service account's email with "Make changes and manage sharing" (issue #186). Fallback if Google refuses that: an OAuth user credential.
+- Install the `google` extra (`pip install 't6[google]'`), which adds `cryptography` to sign the service account sign-in. Nothing else is added: HTTP is the standard library.
+- Event content: the title is the Project's name, the description is `Person: <name>` and `Booking ID: <t6g_ id>`, nothing else. The names come from Notion, so `T6_NOTION_TOKEN` is required with the calendars; the worker refuses to start without it (`ConfigError`).
+- With either variable unset, the job finishes with the result `no calendar configured` (it does not fail, retry or die). The Booking is kept; Bookings changed while no calendar was set up are not written later. To give the Bookings that already exist their events when the calendar goes live, run `t6 admin calendar resync` on the database host (`--registry-db FILE`, default `T6_REGISTRY_DB`). It queues one `booking.calendar_sync` job for every Booking that is not cancelled and has not ended, through the same function a Booking change uses, and prints `{"queued": N}`. A Booking that already has a sync queued or claimed is skipped, so a second run does not double it. It is an admin command, not a verb.
+- A job that failed five times is dead. `t6 health` lists dead internal jobs by kind (`dead_internal_jobs`) and counts them as a problem; `--ignore-history` reports them without failing.
+- A calendar write is safe to repeat: the event ID is derived from the Booking ID, Google's 409 (event exists) turns into an update, and a 404 or 410 on delete counts as already gone.
+
+#### Edits made in Google Calendar (inbound, main worker)
+
+A person who changes a Booking event in Google Calendar changes the Booking, through the same rules as the verbs.
+
+- Edge: add the `/events/google/calendar` route from [edge-routes.example.yaml](edge-routes.example.yaml) (verifier `google_channel`, job kind `google.calendar_changed`, queue `main`). The edge checks `X-Goog-Channel-Token` on every call and queues the `x-goog-*` headers without the token; the body is not used.
+- Main worker (with the calendar settings above): `T6_GOOGLE_NOTIFY_URL` is the public HTTPS address of that route (Google needs a valid certificate), and `T6_GOOGLE_CHANNEL_TOKEN` is the shared channel token (at most 256 characters; use the same variable name and value in the edge environment, which the route's `secret_env` names; never print it). With either unset, both jobs finish with `no inbound calendar edits configured`.
+- A daily internal job `google.renew_channels` keeps one notification channel per Bay calendar. It asks Google for a 7-day channel and replaces it when less than 3 days remain, or when the token changed; the old channel is stopped. The worker queues the first run at start-up, and each run queues the next, so a worker restart restores the chain after a dead run. The run's key is the day and a fingerprint of the token, so a worker that starts with a changed `T6_GOOGLE_CHANNEL_TOKEN` queues a run at once (the new channels carry the new token); a restart with the same token queues nothing more that day. The table `calendar_channels` holds channel ID, resource ID, expiry and a SHA-256 fingerprint of the token (not the token). The same run is the daily catch-up: it also lists every Bay calendar from its stored sync token and applies what it finds, as a notification would, so a lost notification is caught within a day (fact check #186, section 3; a calendar that cannot be read fails the run after the others were caught up, and the job retries). Check `t6 health` for dead `google.renew_channels` jobs.
+- Sharing follows the `bookings` permission (#271). `person grant` or `person revoke` of `bookings` queues a `booking.calendar_sharing` internal job in the same transaction. The main worker (needs `T6_NOTION_TOKEN`, as the Person's Google email is on their Notion Contact) sets `writer` for holders and `reader` for other active staff on every Bay calendar, without notification email. Revoke sets `reader`; it never deletes an entry. A Person with no email on the Contact is skipped and counted (`no_email` in the job result). `person classify` and `person rebind` also queue this job (the kind decides who may edit; the bound Notion page holds the email). No person verb deactivates a Person yet; a Person who is inactive loses edit at the next daily run.
+- A daily internal job `google.reconcile_sharing` (queued at worker start; each run queues the next, like `google.renew_channels`) compares each Bay calendar's ACL with t6 and corrects drift (t6 wins). It reads emails only for active staff, and one failed lookup is counted (`lookup_failed`) and skipped, not fatal; in a run with a failed lookup no unknown writer is lowered, because it may be the Person that could not be read. It owns entries whose email is a Person's email, and it lowers to `reader` any `writer` whose email is no Person's (for example someone added by hand in Google) and any `writer` entry that is a group, a domain or the public (`default`) rule, because calendar sharing is the permission check for inbound edits. It never changes an entry with role `owner` (the calendar owner and the service account are both managers) or the service account's email in any role; other entries whose email is no Person's are left and counted as `unmanaged`. Each fix is logged as `calendar sharing fix: calendar=<hash> identity=<hash> role <from>-><to>` (logger `t6.google.sharing`; short SHA-256 hashes, no emails) and listed in the job result. Check `t6 health` for dead `booking.calendar_sharing` and `google.reconcile_sharing` jobs. With no calendar configured both jobs finish `skipped`.
+- On a notification the worker lists the calendar's changes since the stored sync token (`calendar_sync_tokens`; a first list sets the baseline, a 410 falls back to a full list) and matches each event to its Booking by the event ID. An event t6 did not write is left alone.
+- Calendar sharing is the permission check for inbound edits: only a `writer` can edit a Bay calendar in Google, and the reconcile job of #271 (`google.reconcile_sharing`) is what keeps `writer` equal to the `bookings` holders (it also lowers a hand-added writer who is no Person). If that job is dead or the calendar is shared by hand, the check is not true; watch `t6 health`.
+- Google names no editor (Events resource, `docs/research/google-calendar-fact-check.md` section 4), so with the real adapter every edit has no known editor. It is accepted as made by a `bookings` holder: the actor is the internal service actor `google-calendar` (not a Person; no API secret can use it; it may run only `booking move`, `booking extend` and `booking cancel`), and the Activity entry says the change was made in Google Calendar and that Google does not name the editor. No Person is guessed. `booking move`, `booking extend` or `booking cancel` runs through the same rules as the verbs (event deleted: cancel; start or Bay changed or end earlier: move; later end: extend).
+- When an editor is known (the fake, or a future source), the stricter rule holds: the editor must be a Person with the `bookings` permission whose Notion Contact email equals the editor's email (case-insensitive), and that Person is the actor; anyone else is undone with a note. The job needs `T6_NOTION_TOKEN` to read the emails.
+- A clash (overlap), a named editor without the permission, or an event without a timed range is undone: the Booking stays as it was and the event is written back with `Note: change reverted: <reason>.` added to its description. A Booking change in progress (its `booking.calendar_sync` job is queued) makes the notification stale; it is skipped.
+- No loop: an event whose start, end and Bay already equal the Booking is our own write coming back, and nothing runs. Each event version (etag, else updated time) is handled once (`calendar_event_versions`).
+- Known limit: the Google Events resource names no last editor, so the audit trail says "Google Calendar", not who. Open owner question: accept this, or make the calendars view-only and revert every edit made in Google Calendar.
 
 Workers can also poll internal jobs by setting `T6_DATABASE` to the local t6 SQLite database path. The worker polls that job table and its configured VPS queue in turn; the database must be shared with internal job submitters. Back up the database before upgrading. The main worker also requires `T6_GATEWAY_URL` and `T6_GATEWAY_SECRET` for linked-chat subscriptions and pulls; the secret must authenticate the `t6core` module. It reconciles subscriptions on startup and each worker poll, and retries gateway failures on a later poll. It stores message IDs and flags, and member IDs and presence, but no message content. The main worker with `T6_DATABASE` also handles `frameio.share_viewed`: route the Frame.io `share.viewed` webhook (`/webhook/frameio/shares`) to the `main` queue. The job carries the webhook body; a view of a share recorded on a Delivery writes one Activity entry per event, and any other share is dropped. The Frame.io worker never opens the t6 database.

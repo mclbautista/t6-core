@@ -65,6 +65,20 @@ class FolderPreview:
         return self.pending_hours * self.rate
 
 
+class UnreadableClips(ValueError):
+    """Some clips have no readable length; `clips` names them, relative to the audio folder."""
+    def __init__(self, clips: list[str]) -> None:
+        super().__init__('Unreadable durations: ' + ', '.join(clips))
+        self.clips = clips
+
+
+class OverHoursCap(ValueError):
+    """The pending audio is longer than the cap the person set."""
+    def __init__(self, hours: float, cost: float, cap: float) -> None:
+        super().__init__(f'Pending hours {hours:.3f} exceeds limit {cap:.3f}')
+        self.hours, self.cost, self.cap = hours, cost, cap
+
+
 def _inside(path: Path, root: Path) -> Path:
     resolved = path.resolve()
     if not resolved.is_relative_to(root):
@@ -207,10 +221,10 @@ def preview_folder(
         marker = _output(output, relative, '.transcribing')
         clips.append(Clip(relative, seconds, not marker.exists() and all(_valid_output(p, '.' + f) for p, f in zip(outputs, suffixes))))
     if unreadable:
-        raise ValueError('Unreadable durations: ' + ', '.join(unreadable))
+        raise UnreadableClips(unreadable)
     plan = FolderPreview(root, output, suffixes, tuple(clips), rate)
     if max_hours is not None and plan.pending_hours > max_hours:
-        raise ValueError(f'Pending hours {plan.pending_hours:.3f} exceeds limit {max_hours:.3f}')
+        raise OverHoursCap(plan.pending_hours, plan.estimated_cost, max_hours)
     return plan
 
 
@@ -234,6 +248,7 @@ def run_folder(
     docx_renderer: Callable[[dict[str, Any]], bytes] | None = None,
     progress: Callable[[dict[str, Any]], None] | None = None,
     speaker_map: SpeakerMap | None = None,
+    offset: float | str = 0,
 ) -> None:
     """Run a previously previewed plan; report each completed or failed clip.
 
@@ -263,10 +278,10 @@ def run_folder(
                 'json': json.dumps(transcript, ensure_ascii=False, indent=2).encode('utf-8')
             }
             if 'srt' in paths:
-                data['srt'] = render_srt(transcript, speaker_map=speaker_map, source=str(clip.source)).encode('utf-8')
+                data['srt'] = render_srt(transcript, speaker_map=speaker_map, source=str(clip.source), offset=offset).encode('utf-8')
             if 'docx' in paths:
                 data['docx'] = (docx_renderer(transcript) if docx_renderer is not None else
-                                render_docx(transcript, speaker_map=speaker_map, source=str(clip.source)))
+                                render_docx(transcript, speaker_map=speaker_map, source=str(clip.source), offset=offset))
             # Validate the entire set before replacing any existing output.
             with tempfile.TemporaryDirectory() as directory:
                 for fmt, content in data.items():

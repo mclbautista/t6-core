@@ -72,6 +72,138 @@ class VerbAPITests(unittest.TestCase):
         self.assertEqual(self.request('/v1/commands', secret='gateway-secret', headers={'X-Telegram-User-Id': '42'})[1], catalogue())
         self.assertIn('schema_version', self.request('/health', secret=None)[1])
 
+    def test_media_migration_api_uses_authenticated_actor_and_fake_notion(self) -> None:
+        from t6.notion.testing import FakeNotion, external_link_properties
+        fake = FakeNotion()
+        fake.add_data_source('links')
+        project = self.registry.register(actor='setup', idempotency_key='media-migration-project', notion_page_id='project-page')
+        assert isinstance(project, Registered)
+        fake.add_page('links', external_link_properties(system='resolve', kind='project', external_id='db/show', projects=['project-page'], active=True))
+        fake.add_page('links', external_link_properties(system='frameio', kind='project', external_id='f', projects=['project-page']))
+        fake.add_page('links', external_link_properties(system='telegram', kind='chat', external_id='c', projects=['project-page']))
+        self.api.open_notion = lambda _: fake.client()
+        self.api.data_sources['external_links'] = 'links'
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO person_permissions VALUES (?, 'admin')", (self.actor,))
+        with patch.dict(os.environ, {'T6_NOTION_TOKEN': 'fake'}):
+            self.assertEqual(self.request('/v1/admin/media/migrate', {}, secret='staff-secret')[1]['outcome'], 'refused')
+            preview = self.request('/v1/admin/media/migrate', {'idempotency_key': 'migrate'})[1]
+            self.assertEqual(preview['outcome'], 'preview')
+            self.assertEqual(len(preview['plan']['review']), 2)
+            result = self.request('/v1/admin/media/migrate', {'idempotency_key': 'migrate', 'confirm': preview['token']})[1]
+            self.assertEqual(result['outcome'], 'done')
+            replay = self.request('/v1/admin/media/migrate', {'idempotency_key': 'migrate'})[1]
+            self.assertEqual(self.request('/v1/admin/media/migrate', {'idempotency_key': 'migrate', 'confirm': replay['token']})[1], result)
+        self.assertEqual(self.registry.activity(project.project.id)[0].actor, self.actor)
+        import io
+        from contextlib import redirect_stdout
+        from t6.cli import main
+        env = {'T6_API_URL': 'http://127.0.0.1:%s' % self.server.server_port, 'T6_API_SECRET': 'operator-secret', 'T6_NOTION_TOKEN': 'fake'}
+        with patch.dict(os.environ, env), redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(main(['admin', 'media', 'migrate', '--idempotency-key', 'cli-migrate']), 0)
+        self.assertEqual(json.loads(out.getvalue())['outcome'], 'preview')
+
+    def test_media_cli_api_and_catalogue(self) -> None:
+        from t6.client import Client
+        from t6.verbs import MediaLinkInput, MediaListInput, MediaUnlinkInput, Done, Preview
+        project = self.registry.register(actor='setup', idempotency_key='media-project')
+        assert isinstance(project, Registered)
+        client = Client('http://127.0.0.1:%s' % self.server.server_port, 'operator-secret')
+        values = MediaLinkInput(owner=project.project.id, kind='nas-path', ref='/media', role='master', idempotency_key='media-link')
+        self.assertEqual(self.request('/v1/media/link', values.model_dump(), secret='worker-secret')[1]['rule'], 'person')
+        preview = client.media_link(values)
+        assert isinstance(preview, Preview)
+        values.confirm = preview.token
+        done = client.media_link(values)
+        assert isinstance(done, Done)
+        listed = client.media_list(MediaListInput(owner=project.project.id))
+        assert isinstance(listed, Done)
+        self.assertEqual(listed.result['locations'][0]['id'], done.result['media_id'])
+        unlink = MediaUnlinkInput(media=done.result['media_id'], idempotency_key='media-unlink')
+        preview = client.media_unlink(unlink)
+        assert isinstance(preview, Preview)
+        unlink.confirm = preview.token
+        self.assertIsInstance(client.media_unlink(unlink), Done)
+        self.assertEqual({v['verb'] for v in catalogue() if v['noun'] == 'media'}, {'link', 'unlink', 'list'})
+        self.assertTrue(any(v['noun'] == 'admin media' and v['verb'] == 'migrate' for v in catalogue()))
+        self.assertEqual(self.registry.activity(project.project.id)[0].actor, self.actor)
+        import io
+        from contextlib import redirect_stdout
+        from t6.cli import main
+        env = {'T6_API_URL': 'http://127.0.0.1:%s' % self.server.server_port, 'T6_API_SECRET': 'operator-secret'}
+        with patch.dict(os.environ, env), redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(main(['media', 'link', project.project.id, 'nas-path', '/other', '--role', 'backup']), 0)
+        self.assertEqual(json.loads(out.getvalue())['outcome'], 'preview')
+
+    def test_timeline_list_refuses_an_unknown_project_over_the_api(self) -> None:
+        from t6.client import Client
+        from t6.verbs import Refused, TimelineListInput
+        client = Client('http://127.0.0.1:%s' % self.server.server_port, 'operator-secret')
+        refused = client.timeline_list(TimelineListInput(project='t6p_' + 'e' * 24))
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'project')
+
+    def test_timeline_verbs_over_the_api_and_cli(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+        from t6.cli import main
+        from t6.client import Client
+        from t6.verbs import Done, MediaLinkInput, Preview, TimelineLinkInput, TimelineListInput
+        project = self.registry.register(actor='setup', idempotency_key='timeline-project')
+        assert isinstance(project, Registered)
+        client = Client('http://127.0.0.1:%s' % self.server.server_port, 'operator-secret')
+        resolve = MediaLinkInput(owner=project.project.id, kind='resolve-project', ref='db/show', role='working', idempotency_key='timeline-resolve')
+        preview = client.media_link(resolve)
+        assert isinstance(preview, Preview)
+        resolve.confirm = preview.token
+        self.assertIsInstance(client.media_link(resolve), Done)
+        stamp = 't6t_' + 'c' * 32
+        values = TimelineLinkInput(project=project.project.id, timeline='Ep1', stamp=stamp, idempotency_key='timeline-link')
+        self.assertEqual(self.request('/v1/timeline/link', values.model_dump(), secret='worker-secret')[1]['rule'], 'permission')
+        preview = client.timeline_link(values)
+        assert isinstance(preview, Preview)
+        values.confirm = preview.token
+        done = client.timeline_link(values)
+        assert isinstance(done, Done)
+        self.assertEqual(done.result['timeline_id'], stamp)
+        listed = client.timeline_list(TimelineListInput(project=project.project.id))
+        assert isinstance(listed, Done)
+        self.assertEqual(listed.result['timelines'][0]['canonical']['resolve_project'], 'db/show')
+        env = {'T6_API_URL': 'http://127.0.0.1:%s' % self.server.server_port, 'T6_API_SECRET': 'operator-secret'}
+        with patch.dict(os.environ, env), redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(main(['timeline', 'link', project.project.id, 'Ep2', '--stamp', 't6t_' + 'd' * 32]), 0)
+        self.assertEqual(json.loads(out.getvalue())['outcome'], 'preview')
+        with patch.dict(os.environ, env), redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(main(['timeline', 'list', project.project.id]), 0)
+        self.assertEqual(json.loads(out.getvalue())['result']['timelines'][0]['id'], stamp)
+
+    def test_drive_verbs_over_the_api_need_the_drives_permission(self) -> None:
+        from t6.client import Client
+        from t6.drives import Drive, DriveStatus
+        from t6.drives.sqlite import SqliteDriveStore
+        from t6.verbs import DriveReceiveInput, DriveRetireInput, Done, Preview, Refused
+        project = self.registry.register(actor='setup', idempotency_key='drive-project')
+        assert isinstance(project, Registered)
+        drive = SqliteDriveStore(self.registry).add_drive(Drive(serial='SYNTH-API')).id
+        client = Client('http://127.0.0.1:%s' % self.server.server_port, 'operator-secret')
+        values = DriveReceiveInput(drive=drive, project=project.project.id, idempotency_key='drive-receive')
+        refused = client.drive_receive(values)
+        assert isinstance(refused, Refused)
+        self.assertIn('drives', refused.reason)
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO person_permissions VALUES (?, 'drives')", (self.actor,))
+        preview = client.drive_receive(values)
+        assert isinstance(preview, Preview)
+        values.confirm = preview.token
+        self.assertIsInstance(client.drive_receive(values), Done)
+        retire = DriveRetireInput(drive=drive, project=project.project.id, reason='dead', idempotency_key='drive-retire')
+        preview = client.drive_retire(retire)
+        assert isinstance(preview, Preview)
+        retire.confirm = preview.token
+        self.assertIsInstance(client.drive_retire(retire), Done)
+        self.assertIs(SqliteDriveStore(self.registry).status(drive), DriveStatus.RETIRED)
+        self.assertEqual(self.registry.activity(project.project.id)[0].actor, self.actor)
+
     def test_delivery_api_uses_configured_spec_and_authenticated_actor(self) -> None:
         from t6.notion.testing import FakeNotion, package_spec_properties
         fake = FakeNotion()
@@ -346,3 +478,33 @@ class ClientTests(VerbAPITests):
         with patch.dict(os.environ, env), redirect_stdout(io.StringIO()) as out:
             main(['health'])
         self.assertIsInstance(json.loads(out.getvalue())['api']['schema_version'], int)
+
+    def test_frameio_project_verbs_are_staff_write_verbs_and_refuse_clients_and_vendors(self) -> None:
+        from t6.client import Client
+        from t6.verbs import Done, FrameioProjectInput, Preview, Refused
+        entries = {v['verb']: v for v in catalogue() if v['noun'] == 'frameio'}
+        self.assertEqual(set(entries), {'project link', 'project unlink'})
+        for entry in entries.values():
+            self.assertEqual((entry['role'], entry['read_only']), ('staff', False))
+        client_person, vendor = 't6n_' + '3' * 32, 't6n_' + '4' * 32
+        with self.registry._transaction() as db:
+            for person, kind, telegram in ((client_person, 'client', 44), (vendor, 'vendor', 45)):
+                db.execute("INSERT INTO persons VALUES (?, ?, '[]', '[]', ?, 0, 1)", (person, kind, telegram))
+        self.api.secrets.update({'client-secret': client_person, 'vendor-secret': vendor})
+        project = self.registry.register(actor='setup', idempotency_key='fio-project')
+        assert isinstance(project, Registered)
+        body = {'project': project.project.id, 'frameio_project': 'fp1', 'idempotency_key': 'fio-link'}
+        self.assertEqual(self.request('/v1/frameio/project/link', body, secret='worker-secret')[1]['rule'], 'permission')
+        for secret in ('client-secret', 'vendor-secret'):
+            self.assertEqual(self.request('/v1/frameio/project/link', body, secret=secret)[1]['outcome'], 'refused')
+        staff = Client('http://127.0.0.1:%s' % self.server.server_port, 'staff-secret')
+        inputs = FrameioProjectInput(project=project.project.id, frameio_project='fp1', idempotency_key='fio-link')
+        preview = staff.frameio_project_link(inputs)
+        assert isinstance(preview, Preview)
+        inputs.confirm = preview.token
+        self.assertIsInstance(staff.frameio_project_link(inputs), Done)
+        other = FrameioProjectInput(project=project.project.id, frameio_project='fp1', idempotency_key='fio-unlink')
+        preview = staff.frameio_project_unlink(other)
+        assert isinstance(preview, Preview)
+        other.confirm = preview.token
+        self.assertIsInstance(staff.frameio_project_unlink(other), Done)

@@ -73,3 +73,14 @@ class RenameTests(unittest.TestCase):
             main(["admin", "--help"])
         for command in ("registry", "schema-check", "snapshot", "backup", "restore", "consumer-check", "drive"):
             self.assertIn(command, out.getvalue())
+
+
+class DriveImportHelpTests(unittest.TestCase):
+    def test_the_help_says_what_swing_apply_writes_and_that_a_preview_comes_first(self) -> None:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            main(["admin", "drive", "import", "--help"])
+        text = " ".join(out.getvalue().split())
+        for word in ("Drives", "Assignments", "exceptions", "preview"):
+            self.assertIn(word, text)
+        self.assertRegex(text, r"--swing --apply.*writes|writes.*--swing --apply")

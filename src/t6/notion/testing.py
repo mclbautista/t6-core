@@ -40,7 +40,7 @@ import httpx
 
 from t6.notion.client import NOTION_VERSION, AsyncNotionClient, RetryPolicy
 from t6.notion import named
-from t6.notion.external_links import ExternalLinksProperties as xl
+from t6.notion.models import ExternalLinksProperties as xl
 from t6.notion.models import ProjectsProperties as p
 from t6.notion.schema import load_snapshot
 from t6.notion.sync import NotionClient
@@ -521,6 +521,10 @@ def rich_text(text: str | None) -> JSON:
 
 def select(name: str | None) -> JSON:
     return {"type": "select", "select": {"name": name} if name else None}
+
+
+def multi_select(*names: str) -> JSON:
+    return {"type": "multi_select", "multi_select": [{"name": name} for name in names]}
 
 
 def number(value: float | int | None) -> JSON:

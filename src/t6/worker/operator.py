@@ -46,6 +46,11 @@ class OperatorClient:
         self._call("POST", "/operator/offers", {"kind": "unbound_page", "page_id": page_id, "label": label})
 
 
+    def offer_frameio_link(self, frameio_project_id: str) -> None:
+        """Offer one show-picker card for a Frame.io project that no show owns (#272). Offering again adds no card."""
+        self._call("POST", "/operator/offers", {"kind": "frameio_link", "frameio_project_id": frameio_project_id})
+
+
 class CardDelivery:
     """`operator.deliver`: put the card's current text and buttons in Telegram.
 
