@@ -15,7 +15,7 @@ from t6.registry.sqlite import SqliteProjectRegistry, _audit
 from t6.verbs import Done, Outcome, Refused
 
 
-SERVICES = frozenset({'gateway', 'worker', 'reports', 'watchdog', 'munki', 'hermes'})
+SERVICES = frozenset({'gateway', 'worker', 'reports', 'watchdog', 'munki', 'hermes', 'mcp'})
 
 PERMISSIONS = frozenset({"operator", "coordinator", "bookings", "drives", "admin", "llm"})
 

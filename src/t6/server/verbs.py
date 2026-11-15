@@ -144,7 +144,31 @@ class VerbAPI:
                 data[name] = str(uploaded)
             if entry.input_model.model_config.get('extra') != 'forbid':
                 data.pop('registry_db', None)
-            return self._dispatch(entry, data, actor)
+            response = self._dispatch(entry, data, actor)
+            if request.header('x-t6-mcp') == '1' and entry.role == 'reader' and self.people.authorize(actor, 'operator'):
+                return self._mask_mcp(response)
+            return response
+
+    def _mask_mcp(self, response: Response) -> Response:
+        if self.privacy_registry is None:
+            return self.refused('masking', 'Read privacy registry is not configured')
+        session = Session(self.privacy_registry)
+        def mask(value: Any, key: str = '') -> Any:
+            if key == 'id' or key.endswith(('_id', '_ids')) or key == 'telegram_key':
+                if session.leaks(value):
+                    raise ValueError('Client name occurs in an identifier')
+                return value
+            if isinstance(value, str):
+                return session.mask(value).text
+            if isinstance(value, list):
+                return [mask(item) for item in value]
+            if isinstance(value, dict):
+                return {name: mask(item, name) for name, item in value.items()}
+            return value
+        try:
+            return Response(response.status, mask(response.body))
+        except ValueError:
+            return self.refused('masking', 'A client name occurs in an identifier')
 
     def _dispatch(self, entry: Any, data: dict[str, Any], actor: str) -> Response:
         try:

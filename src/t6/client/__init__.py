@@ -45,11 +45,12 @@ _outcome: TypeAdapter[Outcome] = TypeAdapter(Outcome)
 
 class Client:
     def __init__(self, base_url: str | None = None, secret: str | None = None, *, timeout: float = 10,
-                 telegram_user_id: int | None = None) -> None:
+                 telegram_user_id: int | None = None, mcp: bool = False) -> None:
         self.base_url = (base_url or os.environ.get('T6_API_URL', '')).rstrip('/')
         self.secret = secret if secret is not None else os.environ.get('T6_API_SECRET', '')
         self.timeout = timeout
         self.telegram_user_id = telegram_user_id
+        self.mcp = mcp
 
     def _request(self, path: str, inputs: BaseModel | dict[str, Any] | None = None,
                  *, idempotency_key: str | None = None) -> Any:
@@ -57,6 +58,8 @@ class Client:
             return Unavailable('Set T6_API_URL and T6_API_SECRET to use the t6 API',
                                idempotency_key or (inputs.get('idempotency_key') if isinstance(inputs, dict) else getattr(inputs, 'idempotency_key', None)))
         headers = {'Authorization': 'Bearer ' + self.secret}
+        if self.mcp:
+            headers['X-T6-MCP'] = '1'
         if self.telegram_user_id is not None:
             headers['X-Telegram-User-Id'] = str(self.telegram_user_id)
         data = None
