@@ -113,6 +113,8 @@ class VerbAPI:
                     rows = read_external_links_once_for_migration(client, self.data_sources['external_links'])
                 result = MediaStore(self.people.registry, self.people.tokens).migrate_write(
                     rows, actor=actor, idempotency_key=key or inputs.idempotency_key, confirm=inputs.confirm)
+                if self.tap_app:  # the route is outside the verb registry; what follows a verb follows it too
+                    self.tap_app.after_verb('admin media', 'migrate', result)
                 return Response(200, result.model_dump(mode='json'))
             except (ValueError, KeyError, OSError, NotionError, ValidationError) as error:
                 return self.refused('input', str(error))

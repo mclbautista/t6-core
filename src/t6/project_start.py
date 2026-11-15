@@ -141,9 +141,8 @@ class ProjectStartStore:
             found = db.execute('SELECT 1 FROM projects WHERE id=?', (project,)).fetchone()
             archived = db.execute('SELECT 1 FROM project_archives WHERE project_id=?', (project,)).fetchone()
             started = db.execute("SELECT 1 FROM activity WHERE project_id=? AND action='project_start'", (project,)).fetchone()
-            begun_by_other = db.execute(
-                'SELECT 1 FROM approvals WHERE gate=? AND target=? AND NOT EXISTS (SELECT 1 FROM verb_requests WHERE idempotency_key=?)',
-                (GATE, project, f'{key}:approval')).fetchone()
+        approvals = Approvals(self.registry, self.tokens)
+        begun_by_other = approvals.made_for(GATE, project) and not approvals.requested_under(f'{key}:approval', GATE, project)
         if not found:
             return Refused(rule='project', reason='Project not found')
         if archived:
@@ -222,11 +221,15 @@ class ProjectStartStore:
         fingerprint = _fingerprint(actor, inputs)
         with self.registry._transaction() as db:
             previous = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key=?', (key,)).fetchone()
-            begun = db.execute('SELECT 1 FROM verb_requests WHERE idempotency_key=?', (f'{key}:approval',)).fetchone() is not None
+            archived = db.execute('SELECT 1 FROM project_archives WHERE project_id=?', (values['project'],)).fetchone() is not None
+        # Begun: the Approval of this Project's Start was made under this Start's key (the Approval store's own record of it).
+        begun = Approvals(self.registry, self.tokens).requested_under(f'{key}:approval', GATE, values['project'])
         if previous and previous[0] != fingerprint:
             return Refused(rule='idempotency_key', reason='Idempotency key was used for a different request')
         if previous:  # a retried confirm gets the first result, even after its token expired: never a second Start (ADR 0005)
             return Done(result=json.loads(previous[1]))
+        if begun and archived:  # a resumed Start skips the token expiry only: it still refuses an archived Project
+            return Refused(rule='project_archived', reason='Project is archived')
         # A Start of this key that stopped halfway (its Approval exists) is finished with the same signed token even past its expiry.
         nonce = self.tokens.verify(token, VERB, actor, inputs, allow_expired=begun)
         if isinstance(nonce, Refused):

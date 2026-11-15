@@ -63,6 +63,19 @@ class InternalJobsTests(unittest.TestCase):
         with closing(sqlite3.connect(self.path)) as db, db:
             self.assertEqual(db.execute('SELECT state FROM internal_jobs').fetchone()[0], 'dead')
 
+    def test_a_job_ended_with_finish_reads_back_through_result_like_an_acked_one(self) -> None:
+        acked = self.queue.submit('main', 'x', 'acked')
+        claim = self.queue.claim('main', 10)
+        assert claim is not None
+        self.assertTrue(self.queue.ack(claim.job_id, claim.token, {'outcome': 'preview'}))
+        finished = self.queue.submit('main', 'x', 'finished')
+        self.queue.finish(finished.job_id, {'outcome': 'preview'})
+        broke = self.queue.submit('main', 'x', 'broke')
+        self.queue.finish(broke.job_id, {'outcome': 'refused'}, state='failed')
+        read = [self.queue.result(job, 'main') for job in (acked.job_id, finished.job_id, broke.job_id)]
+        self.assertEqual([(r.status, r.value) if r else None for r in read],
+                         [('ok', {'outcome': 'preview'}), ('ok', {'outcome': 'preview'}), ('failed', {'outcome': 'refused'})])
+
     def test_expired_final_lease_goes_dead(self) -> None:
         job = self.queue.submit('main', 'x', 'k')
         for _ in range(2):
@@ -127,12 +140,14 @@ class JobLookupTests(unittest.TestCase):
         self.assertEqual([j.job_id for j in self.queue.find('a.kind', after=first)], [second])
         self.assertEqual(self.queue.find('a.kind', states=['dead']), [])
 
-    def test_finish_stores_the_result_as_given_and_settle_is_once_only_for_a_dead_job(self) -> None:
+    def test_finish_stores_the_outcome_as_an_ok_result_and_settle_is_once_only_for_a_dead_job(self) -> None:
         job = self.queue.submit('q', 'a.kind', 'k1').job_id
         self.queue.finish(job, {'outcome': 'done'})
         record = self.queue.get(job)
         assert record is not None
-        self.assertEqual((record.state, record.result), ('done', {'outcome': 'done'}))
+        read = self.queue.result(job, 'q')
+        assert read is not None
+        self.assertEqual((record.state, read.status, read.value), ('done', 'ok', {'outcome': 'done'}))
         self.assertFalse(self.queue.settle(job))  # not dead
         dead = self.queue.submit('q', 'a.kind', 'k2').job_id
         self.queue.claim('q', 10)  # the finished job is not claimable, so this takes `dead`

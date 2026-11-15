@@ -179,6 +179,27 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual(replay, done)
         self.assertEqual(len(self.store.list(self.project)), 1)
 
+    def test_the_timeline_stamped_by_hand_with_the_previewed_stamp_is_accepted_at_confirm_and_a_retry_returns_the_first_result(self) -> None:
+        self.resolve.add(RESOLVE_REF, ResolveTimeline(uuid='u2', name='Unstamped', stamp=None))
+        values = {'project': self.project, 'timeline': 'Unstamped'}
+        preview = self.store.write(values, actor='alice', idempotency_key='hand')
+        assert isinstance(preview, Preview), preview
+        stamp = preview.plan['stamp']
+        self.store.reader = FakeTimelineReader({RESOLVE_REF: [ResolveTimeline(uuid='u2', name='Unstamped', stamp=stamp)]})  # the person wrote the stamp by hand
+        again = self.store.write(values, actor='alice', idempotency_key='hand')
+        assert isinstance(again, Preview), again  # asking again with the stamp in place is the same preview
+        done = self.store.write(values, actor='alice', idempotency_key='hand', confirm=preview.token)
+        assert isinstance(done, Done), done
+        self.assertEqual((done.result['timeline_id'], done.result['verified']), (stamp, True))
+        self.assertEqual(self.store.write(values, actor='alice', idempotency_key='hand', confirm=preview.token), done)
+        self.assertEqual(len(self.store.list(self.project)), 1)
+
+    def test_a_generated_stamp_is_still_refused_when_the_timeline_carries_another_stamp(self) -> None:
+        values = {'project': self.project, 'timeline': 'Ep1 v1'}
+        preview = self.store.write(values, actor='alice', idempotency_key='other')
+        assert isinstance(preview, Refused)
+        self.assertEqual(preview.rule, 'stamp')
+
     def test_a_timeline_that_already_has_a_stamp_is_not_given_a_new_one(self) -> None:
         refused = self.store.write({'project': self.project, 'timeline': 'Ep1 v1'}, actor='alice', idempotency_key='has')
         assert isinstance(refused, Refused)

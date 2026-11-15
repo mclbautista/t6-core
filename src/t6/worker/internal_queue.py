@@ -32,6 +32,11 @@ class JobRecord:
     result: JsonValue
 
 
+def _stored(status: str, value: JsonValue) -> str:
+    """The result as the table keeps it, the one shape `result` reads back: written by `ack`, `fail`, `bury` and `finish` alike."""
+    return json.dumps({'status': status, 'value': value})
+
+
 _COLUMNS = "id, queue, kind, dedupe_key, payload, state, attempts, lease_token, lease_until, result"
 
 
@@ -82,12 +87,12 @@ class InternalJobQueue:
         return [_record(row) for row in rows]
 
     def finish(self, job_id: int, outcome: JsonValue, *, state: str = 'done', db: sqlite3.Connection | None = None) -> None:
-        """End a job with a result the caller stores as it is: `done` or `failed`; the lease is dropped."""
+        """End a job with the outcome the caller reads back through `result`: `done` is status ok, `failed` is status failed; the lease is dropped."""
         if state not in ('done', 'failed'):
             raise ValueError('state must be done or failed')
         with self._within(db) as conn:
             conn.execute("UPDATE internal_jobs SET state = ?, result = ?, lease_token = NULL, lease_until = NULL WHERE id = ?",
-                         (state, json.dumps(outcome), job_id))
+                         (state, _stored('ok' if state == 'done' else 'failed', outcome), job_id))
 
     def settle(self, job_id: int, *, db: sqlite3.Connection | None = None) -> bool:
         """Mark a dead job as dealt with; true only the first time, so a follow-up is written once however often it is looked for."""
@@ -119,7 +124,7 @@ class InternalJobQueue:
         with self._within(db) as conn:
             return conn.execute("UPDATE internal_jobs SET state = 'dead', lease_token = NULL, lease_until = NULL, result = ? "
                                 "WHERE (? IS NULL OR queue = ?) AND state = 'claimed' AND lease_until <= ? AND attempts >= ?",
-                                (json.dumps({'status': 'failed', 'value': 'lease expired too many times'}), queue, queue,
+                                (_stored('failed', 'lease expired too many times'), queue, queue,
                                  self._clock(), self._max_attempts)).rowcount
 
     def claim(self, queue: str, lease_seconds: float = 60.0, kinds: Collection[str] | None = None) -> Claim | None:
@@ -155,7 +160,7 @@ class InternalJobQueue:
         with self._db._transaction() as db:
             return db.execute("UPDATE internal_jobs SET state = 'done', lease_token = NULL, lease_until = NULL, result = ? "
                               "WHERE id = ? AND state = 'claimed' AND lease_token = ? AND lease_until > ?",
-                              (json.dumps({'status': 'ok', 'value': value}), job_id, token, self._clock())).rowcount == 1
+                              (_stored('ok', value), job_id, token, self._clock())).rowcount == 1
 
     def fail(self, job_id: int, token: str, reason: str, retry_in: float | None = None) -> bool:
         with self._db._transaction() as db:
@@ -164,7 +169,7 @@ class InternalJobQueue:
                 return False
             state = 'failed' if retry_in is None else ('dead' if row[0] >= self._max_attempts else 'queued')
             db.execute("UPDATE internal_jobs SET state = ?, lease_token = NULL, lease_until = NULL, run_at = ?, result = ? WHERE id = ?",
-                       (state, self._clock() + (max(retry_in, 30.0 * 2 ** (row[0] - 1)) if retry_in is not None else 0), json.dumps({'status': 'failed', 'value': reason}), job_id))
+                       (state, self._clock() + (max(retry_in, 30.0 * 2 ** (row[0] - 1)) if retry_in is not None else 0), _stored('failed', reason), job_id))
             return True
 
     def result(self, job_id: int, queue: str) -> JobResult | None:

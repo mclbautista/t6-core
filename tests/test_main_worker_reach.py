@@ -288,6 +288,48 @@ class InsideJobsTests(Reach, SyncTestCase):
         # no restart and no other call: the job is in the table when the request has answered
         self.assertIn("project.status_sync", [kind for kind, _ in self.waiting()])
 
+    def verb_api(self) -> Any:
+        """The /v1 API on this registry and app, for an operator and coordinator Person; the server is never restarted."""
+        from t6.person import People
+        from t6.server.verbs import VerbAPI
+        person = "t6n_" + "a" * 32
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', 1, 0, 1)", (person,))
+            for permission in ("operator", "coordinator"):
+                db.execute("INSERT INTO person_permissions VALUES (?, ?)", (person, permission))
+        return VerbAPI(People(self.registry, PreviewTokens("test")), self.queue, {"person": person}, lambda _: None, self.app)
+
+    def confirmed(self, api: Any, path: str, values: dict[str, Any]) -> Any:
+        headers = {"Authorization": "Bearer person"}
+        with patch.dict("os.environ", {"T6_PREVIEW_SIGNING_KEY": "test"}):
+            preview = api(Request("POST", path, headers, json.dumps(values).encode()))
+            self.assertEqual(preview.body["outcome"], "preview", preview.body)
+            done = api(Request("POST", path, headers, json.dumps({**values, "confirm": preview.body["token"]}).encode()))
+        self.assertEqual(done.body["outcome"], "done", done.body)
+        return done.body
+
+    def test_a_deliverable_define_through_a_verb_queues_its_sync_job_before_the_request_answers(self) -> None:
+        project = self.new("SHOW", page=self.page())
+        self.drain_main()
+        values = {"template": "film", "project": project["id"], "code": "Ep01", "due": "2026-12-01", "idempotency_key": "define"}
+        self.confirmed(self.verb_api(), "/v1/deliverable/define", values)
+        self.assertIn("deliverable.sync", [kind for kind, _ in self.waiting()])  # no restart and no other call
+
+    def test_a_job_order_write_through_a_verb_queues_its_sync_job_before_the_request_answers(self) -> None:
+        page = self.page()
+        self.new("SHOW", page=page)
+        self.drain_main()
+        store = JobOrderStore(self.registry, PreviewTokens("secret"))
+        values = {"fields": {"project_id": page, "name": "JO"}}
+        preview = store.write("raise", values, actor="alice", idempotency_key="raise")
+        assert isinstance(preview, Preview)
+        raised = store.write("raise", values, actor="alice", idempotency_key="raise", confirm=preview.token)
+        assert isinstance(raised, Done)
+        self.start()  # the raise is queued by the restart; what follows must not need one
+        before = [kind for kind, _ in self.waiting()].count("jo.sync")
+        self.confirmed(self.verb_api(), "/v1/jo/note", {"jo": raised.result["jo_id"], "text": "a note", "idempotency_key": "note"})
+        self.assertEqual([kind for kind, _ in self.waiting()].count("jo.sync"), before + 1)
+
     def test_a_reconcile_request_becomes_an_internal_job(self) -> None:
         self.new("ABC", page=self.page())
         self.drain_main()

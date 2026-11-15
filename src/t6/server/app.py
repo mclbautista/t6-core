@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 import hashlib
 import hmac
 import json
+import logging
 import time
 from typing import Any, Protocol
 from urllib.parse import parse_qs, urlsplit
@@ -67,7 +68,9 @@ from t6.registry.sqlite import SqliteProjectRegistry
 from t6.server.routes import Route
 from t6.server.queue import DIAGNOSTIC_QUEUE, FRAMEIO_QUEUE, MAIN_QUEUE, JobQueue, Submitted
 from t6.server.signatures import WebhookRejected, verify_frameio, verify_notion
-from t6.verbs import Done, Outcome
+from t6.verbs import VERBS, Done, Outcome, Refused
+
+LOG = logging.getLogger(__name__)
 
 REVIEW_QUIET_SECONDS = 15 * 60.0
 REVIEW_LOOP_ALLOWANCE_SECONDS = 8 * 60.0
@@ -80,6 +83,11 @@ NOTION_PAGE_EVENTS = frozenset({"page.properties_updated", "page.created", "page
 page changed; the worker reads the page's current state."""
 
 __all__ = ["Grant", "Request", "Response", "ServerConfig", "WebhookApp"]
+
+
+def _is_read_verb(noun: str, verb: str) -> bool:
+    """Whether the catalogue marks this verb read only; a name it does not list (an admin route) is not."""
+    return any(entry.read_only for entry in VERBS if (entry.noun, entry.verb) == (noun, verb))
 
 
 @dataclass(frozen=True, slots=True)
@@ -505,19 +513,27 @@ class WebhookApp:
             return 0
 
     def after_verb(self, noun: str, verb: str, outcome: Outcome) -> None:
-        """The effects a verb has outside the t6 database, once it is `Done`: they follow the verb, not the API that ran it.
+        """The effects a verb has outside the t6 database, once it has committed: they follow the verb, not the API that ran it.
+
+        A read verb and a refusal changed nothing, so nothing follows them. An error here is logged and swallowed: the verb
+        has committed, and its answer must not turn into a failure the caller would retry.
 
         Review activity that waited for a Frame.io link is released after any verb that is `Done` (#272): the link data decides,
         not the verb's name, so `frameio project link`, `media link` and `project start` are covered, and so is any later way to
-        link. It is one cheap query when nothing waits. Sync intents a verb committed are queued here, whatever the outcome (queueing
-        twice is harmless), so no restart or other call is needed (#358). A confirmed Project Start gives the Approval it created its card (#267).
+        link. It is one cheap query when nothing waits. Sync intents a verb committed are queued here (queueing twice is
+        harmless), so no restart or other call is needed (#358). A confirmed Project Start gives the Approval it created its card (#267).
         """
-        self._dispatch_sync()  # a write through a verb queues its sync job before the request answers
-        if not isinstance(outcome, Done):
+        if isinstance(outcome, Refused) or _is_read_verb(noun, verb):
             return
-        self.release_held_activity()
-        if (noun, verb) == ("project", "start") and outcome.result.get("approval_id"):
-            self._redeliver_cards()
+        try:
+            self._dispatch_sync()  # a write through a verb queues its sync job before the request answers
+            if not isinstance(outcome, Done):
+                return
+            self.release_held_activity()
+            if (noun, verb) == ("project", "start") and outcome.result.get("approval_id"):
+                self._redeliver_cards()
+        except Exception:
+            LOG.exception("after_verb failed for %s %s; the verb had already committed", noun, verb)
 
     def _redeliver_cards(self) -> None:
         """Queue delivery again for cards Telegram never confirmed (a restore may have lost the job)."""

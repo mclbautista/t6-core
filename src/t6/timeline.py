@@ -58,16 +58,16 @@ class TimelineStore:
         if isinstance(nonce, Refused):
             return nonce
         with self.registry._transaction() as db:
-            if nonce and db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce=?', (nonce,)).fetchone():
-                return Refused(rule='token_used', reason='Preview token has already been used')
             previous = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key=?', (key,)).fetchone()
             if previous and previous[0] != fingerprint:
                 return Refused(rule='idempotency_key', reason='Idempotency key was used for a different request')
-            if previous:
+            if previous:  # a retried confirm gets the first result, its token spent or not
                 if nonce:
-                    db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
+                    db.execute('INSERT OR IGNORE INTO used_preview_tokens VALUES (?)', (nonce,))
                     return Done(result=json.loads(previous[1]))
                 return self.tokens.create(verb, actor, inputs, json.loads(previous[1]))
+            if nonce and db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce=?', (nonce,)).fetchone():
+                return Refused(rule='token_used', reason='Preview token has already been used')
             if not db.execute('SELECT 1 FROM projects WHERE id=?', (project,)).fetchone():
                 return Refused(rule='project', reason='Project not found')
             media = db.execute("SELECT id, ref FROM media_locations WHERE owner_id=? AND kind='resolve-project' AND active=1 ORDER BY id", (project,)).fetchall()
@@ -133,7 +133,7 @@ class TimelineStore:
                 return Ambiguous(candidates=[{'uuid': t.uuid, 'name': t.name, 'stamp': t.stamp} for t in matches])
             chosen = matches[0]
             if generated:
-                if chosen.stamp is not None:
+                if chosen.stamp not in (None, stamp):  # the stamp the preview showed, written by hand since, is the one expected
                     return Refused(rule='stamp', reason='The timeline already carries a stamp; pass it with --stamp')
             elif chosen.stamp != stamp:
                 return Refused(rule='stamp', reason='The timeline has no first-frame marker with this stamp; write it by hand first' if chosen.stamp is None else 'The timeline carries a different stamp')

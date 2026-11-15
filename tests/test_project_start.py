@@ -264,6 +264,34 @@ class ProjectStartTests(unittest.TestCase):
         self.assertEqual(self.call(confirm), done)
         self.assertEqual(self.totals(), (1, 2))
 
+    def test_a_start_counts_as_begun_only_by_its_own_project_start_approval_made_under_its_key(self) -> None:
+        from t6.approval import Approvals
+        confirm = {**self.values, 'idempotency_key': 'start', 'confirm': self.preview().token}
+        other = Approvals(self.registry, self.people.tokens)  # an Approval for another gate, made under a key that merely looks like the Start's
+        preview = other.write('request', {'gate': 'grade', 'target': self.project}, actor='starter', idempotency_key='start:approval')
+        assert isinstance(preview, Preview)
+        self.assertIsInstance(other.write('request', {'gate': 'grade', 'target': self.project}, actor='starter',
+                                          idempotency_key='start:approval', confirm=preview.token), Done)
+        self.later(16 * 60)
+        refused = self.call(confirm)
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'token_expired')
+
+    def test_a_start_that_stopped_halfway_is_not_resumed_on_an_archived_project(self) -> None:
+        from t6.project_writes import ProjectWrites
+        confirm = {**self.values, 'idempotency_key': 'start', 'confirm': self.preview().token}
+        with self.crash_at_folders(), self.assertRaises(RuntimeError):
+            self.call(confirm)
+        writes = ProjectWrites(self.registry, self.people.tokens)
+        archive = writes.run('archive', self.project, None, actor='lead', idempotency_key='archive')
+        assert isinstance(archive, Preview)
+        self.assertIsInstance(writes.run('archive', self.project, None, actor='lead', idempotency_key='archive', confirm=archive.token), Done)
+        self.later(16 * 60)
+        refused = self.call(confirm)
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'project_archived')
+        self.assertEqual(self.totals(), (1, 2))
+
     def test_a_different_key_for_a_project_whose_start_has_begun_is_refused_at_preview_and_at_confirm(self) -> None:
         first = {**self.values, 'idempotency_key': 'start', 'confirm': self.preview().token}
         second = {**self.values, 'idempotency_key': 'other', 'confirm': self.preview(key='other').token}  # both planned before either ran

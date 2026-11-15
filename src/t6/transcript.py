@@ -152,7 +152,7 @@ class TranscriptStore:
         entry is written once.
         """
         with (self.registry._transaction() if _db is None else nullcontext(_db)) as db:
-            self.queue.bury(db=db)  # a job whose lease ran out for the last time is dead now, whether or not a worker has polled since
+            self.queue.bury(QUEUE, db=db)  # a job of this queue whose lease ran out for the last time is dead now, whether or not a worker has polled since
             for job in self.queue.find('transcript.run', states=['dead'], db=db):
                 payload: Any = job.payload
                 if self.queue.find('transcript.run', after=job.job_id, payload={'transcript_id': payload['transcript_id']}, db=db):
@@ -359,7 +359,8 @@ class TranscriptStore:
             raise NotFound(job_id)
         if actor != job.payload['actor']:
             raise Forbidden(actor)
-        return job.result
+        found = self.queue.result(job_id, QUEUE)
+        return None if found is None else found.value
 
     def _worker_job(self, db: sqlite3.Connection | None, job_id: int, token: object, actor: str) -> JobRecord:
         job = self.queue.get(job_id, queue=QUEUE, db=db)

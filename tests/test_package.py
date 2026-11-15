@@ -101,3 +101,12 @@ class PackageTests(unittest.TestCase):
         self.write('reject', {'package': package, 'reason': 'Incorrect'}, 'reject', actor='recipient')
         self.assertEqual(self._get(package)['reason'], 'Incorrect')
         self.assertTrue({'prepare', 'check', 'handoff', 'accept', 'reject', 'list'} <= {v['verb'] for v in catalogue() if v['noun'] == 'package'})
+
+    def test_a_rejected_package_is_never_kasado(self) -> None:
+        values = {'deliverable': 'delivery', 'kind': 'Color', 'to': 'Color', 'recipient': 'recipient'}
+        package = self.write('prepare', values, 'prepare')['package_id']
+        self.write('check', {'package': package, 'item': 'EDL'}, 'check')
+        self.write('handoff', {'package': package}, 'handoff')
+        self.assertTrue(self._get(package)['kasado'])
+        self.write('reject', {'package': package, 'reason': 'Incorrect'}, 'reject', actor='recipient')
+        self.assertFalse(self._get(package)['kasado'])

@@ -1,19 +1,18 @@
 """Floor reads derived from Deliverables, Milestones, Packages and dates: bangko, hand-to-mouth, sabit.
 
 Nothing is stored. Dates are Asia/Manila days. A Deliverable is ready on the earliest of its
-`delivered` Milestone date and the day its delivery Package became kasado (t6.package.kasado_since:
+`delivered` Milestone date and the day its delivery Package became kasado (t6.package.delivery_kasado_since, which applies the one rule t6.package.is_kasado:
 the last blocking checklist item ticked, or the day it was prepared when it has none; Package not rejected). Margins come from config (environment), never from code paths.
 """
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
 from t6.domain.studio_time import MANILA
-from t6.package import kasado_since
+from t6.package import delivery_kasado_since
 from t6.registry.sqlite import SqliteProjectRegistry
 
 BANGKO_VARIABLE = 'T6_BANGKO_DAYS'
@@ -68,11 +67,9 @@ class FloorReads:
             delivered = db.execute("SELECT MIN(occurred_on) FROM milestones WHERE deliverable_id = ? AND milestone = 'delivered'", (identifier,)).fetchone()[0]
             if delivered:
                 signals.append((delivered[:10], 'delivered'))
-            for package, checklist in db.execute("SELECT id, checklist FROM packages WHERE deliverable_id = ? AND kind = 'delivery' AND state IN ('prepared', 'handed_off', 'accepted')", (identifier,)).fetchall():
-                prepared = db.execute("SELECT MIN(at) FROM audit WHERE project_id = ? AND action = 'package_prepare'", (package,)).fetchone()[0]
-                since = kasado_since(json.loads(checklist), prepared)
-                if since is not None:
-                    signals.append((datetime.fromtimestamp(since, MANILA).date().isoformat(), 'kasado'))
+            since = delivery_kasado_since(db, identifier)
+            if since is not None:
+                signals.append((datetime.fromtimestamp(since, MANILA).date().isoformat(), 'kasado'))
             if not signals:
                 continue
             on, via = min(signals)

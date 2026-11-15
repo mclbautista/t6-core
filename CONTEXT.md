@@ -128,7 +128,9 @@ stamp is a Resolve write and stays manual. Nothing in T6 writes to Resolve.
 `timeline link` without `--stamp` creates the stamp: the preview shows the new
 `t6t_` ID (the same one for the same key), the confirm records exactly it, and
 the person then writes it into the marker by hand. A Timeline that already
-carries a stamp is not given a new one (pass `--stamp`). `timeline list` refuses a
+carries a stamp is not given a new one (pass `--stamp`), except that at confirm a timeline
+carrying exactly the stamp the preview showed is accepted (the person has written it
+by hand); a retried confirm with the same key returns the first result. `timeline list` refuses a
 Project that is not registered.
 
 - A Timeline records its `t6t_` ID (the stamp), its Resolve project (the

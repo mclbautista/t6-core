@@ -1,6 +1,10 @@
 import sqlite3
 import unittest
 
+from t6.server.testing import FakeClock
+from t6.server.queue import DEFAULT_MAX_ATTEMPTS
+from t6.worker.internal_queue import InternalJobQueue
+
 from t6.ids import EntityKind, T6Id
 from t6.registry import Registered
 from test_person import MemoryRegistry
@@ -29,3 +33,16 @@ class TranscriptStoreTests(unittest.TestCase):
         self.assertEqual([e.action for e in registry.activity(project.project.id)][:3], ['transcript_failed', 'transcript_re-run', 'transcript_created'])
         with self.assertRaises(sqlite3.IntegrityError), registry._transaction() as db:
             db.execute('DELETE FROM transcript_history')
+
+    def test_the_dead_job_sweep_buries_jobs_of_the_transcribe_queue_only(self) -> None:
+        from t6.transcript import TranscriptStore
+        registry = MemoryRegistry()
+        self.addCleanup(registry.db.close)
+        clock = FakeClock()
+        other = InternalJobQueue(registry, clock)  # another owner's queue in the same table: its jobs are not the Transcript store's to bury
+        job = other.submit('main', 'x', 'stuck')
+        for _ in range(DEFAULT_MAX_ATTEMPTS):
+            self.assertIsNotNone(other.claim('main', 10))
+            clock.advance(10)
+        TranscriptStore(registry).is_running(media='t6m_none')  # looks for dead runs
+        self.assertIsNone(other.result(job.job_id, 'main'))  # still its owner's to bury when its own worker claims

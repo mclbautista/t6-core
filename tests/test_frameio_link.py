@@ -495,6 +495,57 @@ class UnlinkedActivityTests(MainWorkerCase):
         self.drain()
         self.assertEqual((len(self.reviews()), self.waiting_rows('fp-1')), (1, []))
 
+    def test_after_verb_does_nothing_after_a_read_verb_or_a_refusal(self) -> None:
+        from t6.project_writes import ProjectWrites
+        from t6.verbs import Refused
+        self.event('fp-1', 'evt-1')
+        self.drain()
+        self.link(self.show_a, 'fp-1')  # the activity waits for something to release it
+        writes = ProjectWrites(self.registry, self.people.tokens)
+        archive = writes.run('archive', self.show_b, None, actor=self.operator_person, idempotency_key='archive')
+        assert isinstance(archive, Preview)
+        writes.run('archive', self.show_b, None, actor=self.operator_person, idempotency_key='archive', confirm=archive.token)
+        self.assertEqual(len(self.registry.undispatched_status_sync()), 1)  # committed, not queued yet
+        self.app.after_verb('project', 'list', Done(result={}))
+        self.app.after_verb('project', 'archive', Refused(rule='x', reason='y'))
+        self.assertEqual((len(self.waiting_rows('fp-1')), len(self.registry.undispatched_status_sync())), (1, 1))
+        self.app.after_verb('project', 'archive', Done(result={}))
+        self.assertEqual((len(self.waiting_rows('fp-1')), len(self.registry.undispatched_status_sync())), (0, 0))
+
+    def test_an_error_in_after_verb_is_logged_and_the_committed_verb_still_answers_done(self) -> None:
+        def failing() -> int:
+            raise RuntimeError('the hook broke')
+
+        with patch.object(self.app, 'release_held_activity', failing), self.assertLogs('t6.server.app', 'ERROR') as logged:
+            done = self.verb('/v1/media/link', {'owner': self.show_a, 'kind': 'frameio-project', 'ref': 'fp-1', 'role': 'frameio-project',
+                                                'idempotency_key': 'media-link'})
+        self.assertEqual(done['outcome'], 'done')
+        self.assertIn('the hook broke', '\n'.join(logged.output))
+        self.assertEqual(len(active_links(self.registry, 'frameio-project')), 1)
+
+    def test_the_admin_media_migration_route_releases_the_held_activity_like_the_other_link_routes(self) -> None:
+        """The route sits outside the verb registry; a link made by any other way is released when the migration is confirmed."""
+        from t6.notion.testing import FakeNotion, external_link_properties
+        self.event('fp-1', 'evt-1')
+        self.drain()
+        self.link(self.show_a, 'fp-1')  # the link is there, the activity is still held: nothing has released it yet
+        self.assertEqual(len(self.waiting_rows('fp-1')), 1)
+        fake = FakeNotion()
+        fake.add_data_source('links')
+        fake.add_page('links', external_link_properties(system='resolve', kind='project', external_id='db/show', projects=['project-page'], active=True))
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO person_permissions VALUES (?, 'admin')", (self.operator_person,))
+        api = VerbAPI(self.people, self.queue, {'person': self.operator_person}, lambda _: fake.client(), self.app)
+        api.data_sources['external_links'] = 'links'
+        headers = {'Authorization': 'Bearer person'}
+        with patch.dict('os.environ', {'T6_PREVIEW_SIGNING_KEY': 'test', 'T6_NOTION_TOKEN': 'fake'}):
+            preview = api(Request('POST', '/v1/admin/media/migrate', headers, json.dumps({'idempotency_key': 'migrate'}).encode()))
+            self.assertEqual(preview.body['outcome'], 'preview', preview.body)
+            done = api(Request('POST', '/v1/admin/media/migrate', headers, json.dumps({'idempotency_key': 'migrate', 'confirm': preview.body['token']}).encode()))
+        self.assertEqual(done.body['outcome'], 'done', done.body)
+        self.drain()
+        self.assertEqual((len(self.reviews()), self.waiting_rows('fp-1')), (1, []))
+
     def test_project_start_through_the_api_releases_the_held_activity(self) -> None:
         """A real /v1/project/start preview, job and confirm: the Frame.io step links the project, and the held review is sent once."""
         from t6.frameio.project_folders import ProjectFolders
