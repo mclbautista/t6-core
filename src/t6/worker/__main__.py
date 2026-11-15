@@ -345,6 +345,19 @@ def main(
                 raise ValueError("Invalid Concern timer payload")
             return concerns.silence(concern, evidence, target)
         queue_handlers = {**queue_handlers, "concern_silence": concern_silence}
+    if settings.queue == "main" and environ.get("T6_DATABASE") and environ.get("T6_GATEWAY_URL") and environ.get("T6_GATEWAY_SECRET"):
+        from t6.registry.sqlite import SqliteProjectRegistry
+        from t6.worker.linked_chats import LinkedChats
+        from t6.worker.gateway import GatewayRejected
+        from urllib.error import URLError
+
+        linked = LinkedChats(SqliteProjectRegistry(environ["T6_DATABASE"]), GatewayClient(HttpTransport(environ["T6_GATEWAY_URL"]), environ["T6_GATEWAY_SECRET"]))
+        def linked_tick() -> None:
+            try:
+                linked.tick()
+            except (OSError, URLError, GatewayRejected):
+                pass  # Retry on the next worker poll.
+        tick = linked_tick
     if read_api is not None:
         threading.Thread(target=read_api.serve_forever, daemon=True).start()
     try:

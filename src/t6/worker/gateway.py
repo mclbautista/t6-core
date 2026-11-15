@@ -57,3 +57,12 @@ class GatewayClient:
         answer = self._call("GET", f"/notify/{message_ref}")
         mid = answer.get("telegram_message_id")
         return str(answer["state"]), mid if isinstance(mid, int) else None
+
+    def replace_subscriptions(self, subscriptions: list[dict[str, int | None]]) -> None:
+        status, answer = self._transport.send("PUT", "/subscriptions", self._headers, json.dumps(subscriptions).encode())
+        if status != 200:
+            raise GatewayRejected(status, str(answer))
+
+    def updates(self, after: int) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = self._call("GET", f"/updates?after={after}")["items"]
+        return items
