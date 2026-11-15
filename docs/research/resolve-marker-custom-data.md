@@ -133,10 +133,53 @@ timeline name as a hint only. That is a proposal, not a finding.
 **Cyril's view (2026-11-15):** the T6-owned table keyed by the timeline's Resolve
 UUID "sounds like a good idea". Nothing is decided or built from this note.
 
-**Open before that design can be chosen (not tested):** whether the timeline's
-Resolve UUID (the scripting API's `Timeline.GetUniqueId()`) stays the same, or
-changes, after a duplicate, a `.drt` export and import, a `.drp` project export
-and import, and a restore. If an import or a restore gives the timeline a NEW
-UUID, a table keyed by UUID loses the link, and T6 would need the marker stamp
-(or another hint such as the name) to re-link it. A test with a throwaway
-project, like the one above, would answer this.
+## Does the timeline's Resolve UUID stay the same? (tested 2026-11-15)
+
+Same safety rules as the first test: the 202 Mac Pro, Resolve Studio 21.1.0.14,
+only the local disk database `T6-TEST-185` (empty, abort otherwise), a new project
+`T6-TEST-185-20261115`, no preference changed, project server not touched.
+The call is `Timeline.GetUniqueId()` ("a unique ID for the timeline"). IDs are
+compared as equal or different.
+
+| Case | UUID compared with the original timeline |
+| --- | --- |
+| The same timeline, asked twice | **Same** |
+| The same timeline after closing and reloading the project | **Same** |
+| `DuplicateTimeline` | **Different** (a new UUID) |
+| `.drt` export, then `ImportTimelineFromFile` | **Different** (a new UUID) |
+| `.drp` project export, then `ImportProject` as a new project | **Different** (every timeline in the imported project has a new UUID, including the original timeline) |
+
+The marker stamp was not re-read in this run. The first test (same Resolve
+version) already showed the stamp present after a duplicate, a `.drt` import and
+a `.drp` import.
+
+So the UUID is stable only for one timeline inside one project database. It
+changes on every copy, import and project import, which are the normal ways
+timelines move between bays and the project server. Not tested: a restore (the
+scripted restore returns `False`), and a project copied to the project server.
+Cleanup: 2 test projects and 2 exported files deleted; the test database ended
+with 0 projects.
+
+## Recommended design
+
+**The marker stamp is the identity. A T6 table may remember the Resolve UUID as
+a hint, never as the key.**
+
+1. **Stamp = identity (source of truth).** The `t6t_` ID in the first-frame
+   marker's custom data survives `.drt` and `.drp` export and import, so it is
+   the only identifier that follows a timeline between databases. T6 reads it
+   with `GetMarkerByCustomData` while Resolve runs, or through the bay scanner.
+2. **UUID table = a hint, optional.** A table of (Resolve project, Resolve UUID)
+   to `t6t_` ID lets T6 find a timeline it already knows without scanning
+   markers. A lookup that finds no UUID, or a stamp that disagrees with the table,
+   falls back to the stamp. The table can always be rebuilt by reading the stamps.
+3. **A table keyed by UUID alone is not enough.** After any copy or import the
+   UUID is new, so the link would be lost; only the stamp (or the name, which
+   editors change) could re-link it.
+4. **Conflicts:** two timelines with the same `t6t_` ID in one project (a duplicate)
+   are a conflict. The copy keeps the stamp and gets a new UUID, so T6 sees
+   "same stamp, different UUID" and re-stamps the copy.
+
+This is a recommendation from the tests above, not a decision. Cyril's view
+(2026-11-15) was that a T6 table keyed by the Resolve UUID "sounds like a good
+idea"; the test shows it works only as the hint in point 2.
