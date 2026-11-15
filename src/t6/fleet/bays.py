@@ -21,7 +21,7 @@ Rules:
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime
 from typing import Any, Literal
 
@@ -30,11 +30,18 @@ from t6.fleet.rules import RINGS, is_stale, match_key
 from t6.notion import named
 from t6.notion.errors import NotionError
 from t6.notion.generated import BaysRow
-from t6.notion.schema import load_snapshot
+from t6.notion.model import ID_KEY, NAME_KEY, TYPE_KEY
+from t6.notion.schema import diff_properties, load_snapshot
 from t6.notion.sync import NotionClient
 from t6.notion.writes import Ambiguous, Rejected, update_row
+from t6.registry import normalize_page_id
 
 JSON = dict[str, Any]
+
+
+class FleetSafetyError(ValueError):
+    """Fleet operation refused because the Bays data is unsafe to use."""
+
 
 DATABASE = "bays"
 FACTS: tuple[str, ...] = (
@@ -119,15 +126,34 @@ class Fleet:
         self._snapshot = snapshot or load_snapshot()
 
     def machines(self) -> tuple[Machine, ...]:
-        """Every Bays row as a Machine."""
-        return tuple(self._machine(page) for page in self._client.query_data_source(self._source))
+        """Every Bays row as a Machine; raise FleetSafetyError for a foreign page."""
+        return tuple(self._machine(page) for page in self._pages())
+
+    def _pages(self) -> list[JSON]:
+        pages = self._client.query_data_source(self._source)
+        for page in pages:
+            parent = page.get("parent") or {}
+            if parent.get("type") != "data_source_id" or normalize_page_id(
+                str(parent.get("data_source_id", ""))
+            ) != normalize_page_id(self._source):
+                raise FleetSafetyError(f"page {page.get('id')} is not in data source {self._source}")
+        return pages
 
     def sync(
         self, facts: Sequence[MachineFacts], *, apply: bool = False, now: datetime | None = None
     ) -> tuple[SyncResult, ...]:
-        """Plan the fleet facts for each machine and, with `apply`, write them. Dry run by default."""
+        """Plan facts and optionally write them; raise FleetSafetyError for unsafe schema or pages."""
+        expected = [
+            {"name": f.metadata[NAME_KEY], "type": f.metadata[TYPE_KEY], "id": f.metadata.get(ID_KEY)}
+            for f in fields(BaysRow)
+            if f.name in FACTS
+        ]
+        live = self._client.retrieve_data_source(self._source).get("properties") or {}
+        drift = diff_properties(expected, live)
+        if drift["removed"] or drift["changed"]:
+            raise FleetSafetyError(f"unsafe Bays schema: missing {drift['removed']}, changed {drift['changed']}")
         now = now or datetime.now().astimezone()
-        pages = self._client.query_data_source(self._source)
+        pages = self._pages()
         rows = [(page, BaysRow.from_page(page)) for page in pages]
         matches = [self._rows_for(machine, rows) for machine in facts]
         claims: dict[str, int] = {}

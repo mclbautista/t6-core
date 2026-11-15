@@ -8,7 +8,7 @@
 munki-repo keeps catalogs and manifests and will call this through a thin `t6` CLI.
 """
 
-from t6.fleet.bays import FactChange, Fleet, MachineFacts, SyncResult
+from t6.fleet.bays import FactChange, Fleet, FleetSafetyError, MachineFacts, SyncResult
 from t6.fleet.rules import (
     MAX_OBSERVATION_AGE,
     RINGS,
@@ -29,6 +29,7 @@ __all__ = [
     "SITE_MANIFESTS",
     "FactChange",
     "Fleet",
+    "FleetSafetyError",
     "MachineFacts",
     "ManifestChainError",
     "SyncResult",
