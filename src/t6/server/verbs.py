@@ -340,6 +340,28 @@ class VerbAPI:
         except (ValueError, KeyError, OSError, NotionError) as error:
             return Refused(rule='input', reason=str(error))
 
+    def _vendor_person(self, mention: str) -> str | None:
+        """The Person an `/abang` mention names: a t6 ID, or an @handle or name found in Contacts."""
+        if mention.startswith('t6n_'):
+            return mention
+        from t6.cli import TOKEN_VARIABLE
+        from t6.lookup import Index, Lookup
+        from t6.notion import NotionError
+        from t6.notion.reads import ContactReader
+        from t6.registry.core import normalize_page_id
+        token, source = os.environ.get(TOKEN_VARIABLE), self.data_sources.get('contacts')
+        if not token or not source:
+            return None
+        try:
+            with self.open_notion(token) as client:
+                found = Lookup(Index(contacts=ContactReader(client, source).list())).contact(mention)
+        except (NotionError, OSError, ValueError, KeyError):
+            return None
+        if found.entity is None or found.needs_review:
+            return None
+        person = self.people.registry.bound_entity('notion', normalize_page_id(found.entity.page_id))
+        return person if isinstance(person, str) else None
+
     def _typed_read(self, noun: str, verb: str, inputs: Any) -> Any:
         from datetime import date, datetime
         from dataclasses import asdict, replace
@@ -626,18 +648,17 @@ class VerbAPI:
                        {'reason': 'no_person'})
             return Response(200, {'outcome': 'rejected'})
         if body.get('kind') == 'command' and body.get('command') == 'abang':
+            # Typed in the source chat, where the freelancer is. The coordinator then taps a destination.
             args, chat, topic = body.get('args'), body.get('chat'), body.get('topic')
             key = request.header('idempotency-key') or body.get('idempotency_key')
-            if not isinstance(args, str) or not args.strip() or type(chat) is not int or (topic is not None and type(topic) is not int) or not isinstance(key, str) or not key:
+            if not isinstance(args, str) or not args.strip() or type(chat) is not int or (topic is not None and type(topic) is not int) or not isinstance(key, str) or not key or self.people.authorize(person[0], 'coordinator'):
                 return Response(200, {'outcome': 'rejected'})
-            parts = args.strip().split(maxsplit=1)
-            data: dict[str, JsonValue] = {'person': parts[0], 'destination': str(chat) + (f'/{topic}' if topic is not None else ''), 'note': parts[1] if len(parts) > 1 else None, 'idempotency_key': key}
-            entry = self.routes['/v1/abang/request']
-            response = self._dispatch(entry, data, person[0])
-            if response.body.get('outcome') == 'preview':
-                data['confirm'] = response.body['token']
-                response = self._dispatch(entry, data, person[0])
-            return Response(200, {'outcome': 'accepted' if response.body.get('outcome') == 'done' else 'rejected'})
+            mention, _, note = args.strip().partition(' ')
+            vendor = self._vendor_person(mention)
+            if vendor is None:
+                return Response(200, {'outcome': 'rejected'})
+            from t6.abang import start_draft
+            return Response(200, {'outcome': 'accepted' if isinstance(start_draft(self.people.registry, person[0], vendor, chat, topic, note.strip() or None, key), Done) else 'rejected'})
         if body.get('kind') == 'command' and body.get('command') in ('link', 'unlink'):
             if self.people.authorize(person[0], 'coordinator'):
                 return Response(200, {'outcome': 'rejected'})
@@ -657,6 +678,51 @@ class VerbAPI:
             response = self._dispatch(entry, {'project': args.strip(), 'chat': chat, 'topic': topic, 'idempotency_key': key}, person[0])
             return Response(200, {'outcome': 'accepted' if response.body.get('outcome') in ('preview', 'done') else 'rejected'})
         data = body.get('data')
+        if isinstance(data, str) and data.startswith('abang-dest:'):
+            parts = data.split(':')
+            key = request.header('idempotency-key') or body.get('idempotency_key')
+            with self.people.registry._transaction() as db:
+                draft = db.execute("SELECT d.id, d.actor, d.person_id, d.source_chat, d.source_topic, d.note, o.chat, o.topic FROM abang_drafts d JOIN abang_draft_options o ON o.draft_id = d.id WHERE d.id = ? AND o.n = ? AND d.state = 'open'", (parts[1], parts[2] if len(parts) == 3 and parts[2].isdigit() else -1)).fetchone() if len(parts) == 3 else None
+                if draft is None or draft[1] != person[0] or not isinstance(key, str) or not key:
+                    _audit(db, person[0], 'tap_rejected', person[0], self.people.registry._clock(), None, {'reason': 'not_allowed', 'data': data})
+                    return Response(200, {'outcome': 'rejected'})
+            values: dict[str, JsonValue] = {'person': draft[2], 'source': str(draft[3]) + (f'/{draft[4]}' if draft[4] is not None else ''), 'destination': str(draft[6]) + (f'/{draft[7]}' if draft[7] is not None else ''), 'note': draft[5], 'idempotency_key': key}
+            entry = self.routes['/v1/abang/request']
+            response = self._dispatch(entry, values, person[0])
+            if response.body.get('outcome') == 'preview':
+                values['confirm'] = response.body['token']
+                response = self._dispatch(entry, values, person[0])
+            done = response.body.get('outcome') == 'done'
+            if done:
+                with self.people.registry._transaction() as db:
+                    db.execute("UPDATE abang_drafts SET state = 'used' WHERE id = ?", (draft[0],))
+                    _audit(db, person[0], 'tap_accepted', person[0], self.people.registry._clock(), None, {'key': key, 'data': data, 'outcome': 'accepted'})
+            return Response(200, {'outcome': 'accepted' if done else 'rejected'})
+        if isinstance(data, str) and data.startswith('abang:'):
+            parts = data.split(':')
+            candidate = parts[1] if len(parts) == 3 else ''
+            decision = parts[2] if len(parts) == 3 else ''
+            with self.people.registry._transaction() as db:
+                row = db.execute("SELECT r.person_id FROM abang_candidates c JOIN abang_requests r ON r.id = c.request_id WHERE c.id = ?", (candidate,)).fetchone()
+                allowed = bool(row and self.people._allows(db, person[0], 'person:' + row[0]))
+                if not allowed:
+                    _audit(db, person[0], 'tap_rejected', person[0], self.people.registry._clock(), None, {'reason': 'not_allowed', 'data': data})
+            if not allowed:
+                return Response(200, {'outcome': 'rejected'})
+            key = request.header('idempotency-key') or body.get('idempotency_key')
+            if not isinstance(key, str) or not key or decision not in ('yes', 'no'):
+                return Response(200, {'outcome': 'rejected'})
+            values = {'candidate': candidate, 'decision': decision, 'idempotency_key': key}
+            entry = self.routes['/v1/abang/accept']
+            response = self._dispatch(entry, values, person[0])
+            if response.body.get('outcome') == 'preview':
+                values['confirm'] = response.body['token']
+                response = self._dispatch(entry, values, person[0])
+            decided = 'accepted' if response.body.get('outcome') == 'done' else 'rejected'
+            if decided == 'accepted':
+                with self.people.registry._transaction() as db:
+                    _audit(db, person[0], 'tap_accepted', person[0], self.people.registry._clock(), None, {'key': key, 'data': data, 'outcome': decided})
+            return Response(200, {'outcome': decided})
         if body.get('kind') != 'command' and (not isinstance(data, str) or not data.startswith('op:')):
             action, separator, target = data.partition(':') if isinstance(data, str) else ('', '', '')
             if action not in {'approve', 'retry'} or not separator or not target or not self.people.allows_telegram(telegram_id, 'permission:operator'):

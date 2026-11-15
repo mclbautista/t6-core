@@ -304,6 +304,23 @@ _MIGRATIONS = (
     );
     CREATE TABLE abang_history (id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL, state TEXT NOT NULL, actor TEXT NOT NULL, at REAL NOT NULL);
     CREATE TABLE abang_previews (nonce TEXT PRIMARY KEY, plan TEXT NOT NULL)"""),
+    (30, False, """CREATE TABLE abang_candidates (
+        id TEXT PRIMARY KEY, request_id TEXT NOT NULL REFERENCES abang_requests(id),
+        message_id INTEGER NOT NULL, state TEXT NOT NULL, notify_ref INTEGER,
+        UNIQUE(request_id, message_id)
+    );
+    CREATE TABLE abang_drafts (
+        id TEXT PRIMARY KEY, actor TEXT NOT NULL, person_id TEXT NOT NULL, source_chat INTEGER NOT NULL,
+        source_topic INTEGER, note TEXT, state TEXT NOT NULL, notify_ref INTEGER
+    );
+    CREATE TABLE abang_draft_options (
+        draft_id TEXT NOT NULL REFERENCES abang_drafts(id), n INTEGER NOT NULL, chat INTEGER NOT NULL,
+        topic INTEGER, label TEXT NOT NULL, PRIMARY KEY (draft_id, n)
+    );
+    INSERT INTO internal_jobs (queue, kind, dedupe_key, payload, run_at, state, created_at)
+        SELECT 'main', 'abang_nudge', r.id, json_object('request', r.id), h.at + 259200, 'queued', h.at
+        FROM abang_requests r JOIN abang_history h ON h.request_id = r.id AND h.state = 'requested'
+        WHERE r.state = 'requested'"""),
 )
 
 
