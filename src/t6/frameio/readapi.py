@@ -11,6 +11,7 @@ token, and only GET is accepted.
 | `GET /frameio/projects/<id>/share-links` | the project's share links |
 | `GET /frameio/files/<id>/comments` | the file's comments |
 | `GET /frameio/files/<id>/approvals` | the file's approvals |
+| `GET /frameio/files/<id>/location` | `{"folder_id", "stack_id"}`: the file's folder (a stacked file's stack's folder) and its version stack, or null; 404 for a file Frame.io does not know |
 | `GET /frameio/briefing?since=<ISO 8601 time with zone>` | the briefing feed |
 
 Answers are `{"value": ...}`, the same JSON as `t6.frameio.ask`, or
@@ -26,7 +27,8 @@ import hmac
 import urllib.parse
 
 from t6.domain.events import JsonValue
-from t6.frameio.requests import Approvals, BriefingFeed, Comments, FrameioProjects, FrameioRequest, ShareLinks, Versions
+from t6.frameio.api import FrameioError
+from t6.frameio.requests import Approvals, BriefingFeed, Comments, FileLocate, FrameioProjects, FrameioRequest, ShareLinks, Versions
 from t6.frameio.worker import FrameioWorker, SignInRequired
 from t6.server.app import Request, Response
 
@@ -70,6 +72,8 @@ class ReadApi:
             return Comments(file_id=route[1])
         if len(route) == 3 and route[0] == "files" and route[2] == "approvals":
             return Approvals(file_id=route[1])
+        if len(route) == 3 and route[0] == "files" and route[2] == "location":
+            return FileLocate(file_id=route[1])
         if len(route) == 3 and route[0] == "files" and route[2] == "versions":
             return Versions(file_id=route[1])
         if route == ["briefing"]:
@@ -85,6 +89,10 @@ class ReadApi:
             value: JsonValue = self._worker.read(query)
         except SignInRequired:
             return Response(503, {"error": SIGN_IN_REQUIRED})
+        except FrameioError as error:
+            if error.status == 404 and isinstance(query, FileLocate):
+                return Response(404, {"error": "file not found"})
+            return Response(502, {"error": f"{type(error).__name__}: {error}"})
         except Exception as error:  # noqa: BLE001 - the caller gets a failure, never a traceback
             return Response(502, {"error": f"{type(error).__name__}: {error}"})
         return Response(200, {"value": value})

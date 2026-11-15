@@ -25,6 +25,7 @@ from t6.frameio.model import (
     BriefingLink,
     BriefingShow,
     Comment,
+    FileLocation,
     FrameioFile,
     FrameioProject,
     ResolvedComment,
@@ -41,6 +42,7 @@ from t6.frameio.requests import (
     BriefingFeed,
     Comments,
     FileInfo,
+    FileLocate,
     FrameioProjects,
     FrameioRequest,
     ResolveComment,
@@ -108,6 +110,9 @@ class FrameioReads:
             return [comment.to_json() for comment in self.comments(request.file_id)]
         if isinstance(request, FileInfo):
             return self.file_info(request.file_id).to_json()
+        if isinstance(request, FileLocate):
+            location = self.file_location(request.file_id)
+            return {"folder_id": location.folder_id, "stack_id": location.stack_id}
         if isinstance(request, ResolveComment):
             return self.resolve_comment(request).to_json()
         if isinstance(request, Versions):
@@ -202,6 +207,26 @@ class FrameioReads:
         if not isinstance(data, dict):
             raise ValueError(f"Frame.io gave no file {file_id}")
         return FrameioFile.from_api({"id": file_id, **data})
+
+    def file_location(self, file_id: str) -> FileLocation:
+        """The folder the file is in and its version stack. A stacked file's folder is its stack's own parent.
+
+        Raises FrameioError (status 404) when Frame.io does not know the file.
+        """
+        data = self._api.get(f"{self._account()}/files/{_id(file_id)}").get("data")
+        parent = _text(data.get("parent_id")) if isinstance(data, dict) else None
+        if parent is None:
+            raise ValueError(f"Frame.io gave no folder for file {file_id}")
+        try:
+            stack = self._api.get(f"{self._account()}/version_stacks/{_id(parent)}").get("data")
+        except FrameioError as error:
+            if error.status != 404:  # 404: the parent is a folder, not a version stack
+                raise
+            return FileLocation(folder_id=parent)
+        folder = _text(stack.get("parent_id")) if isinstance(stack, dict) else None
+        if folder is None:
+            raise ValueError(f"Frame.io gave no folder for version stack {parent}")
+        return FileLocation(folder_id=folder, stack_id=parent)
 
     def resolve_comment(self, request: ResolveComment) -> ResolvedComment:
         """One comment by ID, in the account the webhook named."""

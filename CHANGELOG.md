@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- Frame.io read API route `GET /frameio/files/<id>/location` and `FrameioReader.file_location`: the main worker records Versions from Frame.io `file.versioned` and `file.upload.completed` events live (#360). It needs `T6_FRAMEIO_READ_URL` and `T6_FRAMEIO_READ_SECRET`; without them that handler is off and the start-up log says so. `UnwiredReader` is gone.
+
 ### Changed
 
 - Frame.io reads, Resolve `map_projects`, Instagantt linking and the review message read Media locations (by kind and role) instead of the Notion External Links database (#261). The briefing feed writes nothing to Notion: no share-link rows, no Last Activity stamps; a live share is `active`.

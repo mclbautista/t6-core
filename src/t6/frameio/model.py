@@ -189,6 +189,14 @@ class FrameioFile(_Json):
         return cls(**raw)
 
 
+@dataclass(frozen=True, slots=True)
+class FileLocation:
+    """Where a Frame.io file is: the folder it sits in (a stacked file's stack's folder), and its version stack."""
+
+    folder_id: str | None
+    stack_id: str | None = None
+
+
 GUEST_ID = "guest"
 """The author id of a comment that has no owner. Frame.io user ids are UUIDs, so it never matches a person."""
 GUEST_NAME = "A guest"

@@ -47,6 +47,7 @@ class FakeFrameio:
         self.files: dict[str, JSON] = {}
         self.comments: dict[str, list[JSON]] = {}
         self.stacks: dict[str, list[str]] = {}
+        self.stack_parents: dict[str, str] = {}
         self.metadata: dict[str, list[JSON]] = {}
         self.requests: list[str] = []
         self.tokens_seen: list[str] = []
@@ -105,9 +106,10 @@ class FakeFrameio:
             "created_at": "2026-11-01T00:00:00Z",
         }
 
-    def add_version_stack(self, stack_id: str, file_ids: list[str]) -> None:
-        """Put files that exist into one version stack, oldest first."""
+    def add_version_stack(self, stack_id: str, file_ids: list[str], parent_id: str = "folder-1") -> None:
+        """Put files that exist into one version stack, oldest first. The stack sits in the folder `parent_id`."""
         self.stacks[stack_id] = list(file_ids)
+        self.stack_parents[stack_id] = parent_id
         for file_id in file_ids:
             self.files[file_id]["parent_id"] = stack_id
 
@@ -191,6 +193,12 @@ class FakeFrameio:
             if match:
                 rows = answer(*match.groups())
                 return (404, {}, {}) if rows is None else self._page(parts.path, query, rows)
+        match = re.fullmatch(r"/version_stacks/([^/]+)", rest)
+        if match:
+            stack_id = match.group(1)
+            if stack_id not in self.stacks:
+                return 404, {}, {}
+            return 200, {}, {"data": {"id": stack_id, "type": "version_stack", "name": stack_id, "parent_id": self.stack_parents[stack_id]}}
         match = re.fullmatch(r"/comments/([^/]+)", rest)
         if match:
             found = [c for rows in self.comments.values() for c in rows if c["id"] == match.group(1)]

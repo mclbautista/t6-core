@@ -1,4 +1,8 @@
 """A Frame.io file event for a Deliverable's T6 folder records a Version (#265). Fake reader, in-memory t6 database."""
+from collections.abc import Mapping
+import contextlib
+import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,12 +10,18 @@ from typing import Any
 
 from t6.deliverable import DeliverableStore
 from t6.frameio.file_versions import FileLocation, FrameioFileVersions
-from t6.frameio.requests import Failed
+from t6.frameio.api import FrameioApi
+from t6.frameio.client import FrameioReader
+from t6.frameio.readapi import ReadApi
+from t6.frameio.reads import FrameioReads
+from t6.frameio.requests import Failed, FileNotFound
+from t6.frameio.testing import FakeFrameio, StaticTokens
 from t6.frameio.worker import FrameioWorker
 from t6.ids import EntityKind, T6Id
 from t6.media import MediaStore
 from t6.preview import PreviewTokens
 from t6.registry import Registered
+from t6.server.app import Request
 from t6.version import VersionStore
 from t6.verbs import Done, Preview
 from t6.worker.__main__ import WorkerSettings, configured_handlers
@@ -41,7 +51,9 @@ def job(key: str, body: dict[str, Any]) -> WorkerJob:
     return WorkerJob(1, 'main', KIND, key, body, 'token', 1)
 
 
-class FileVersionTests(unittest.TestCase):
+class Deliverables(unittest.TestCase):
+    """An in-memory t6 database with a Deliverable whose Frame.io folder is `folder-1`."""
+
     def setUp(self) -> None:
         self.registry = MemoryRegistry()
         self.addCleanup(self.registry.db.close)
@@ -56,9 +68,6 @@ class FileVersionTests(unittest.TestCase):
         self.deliverable, self.other = entries[0]['t6_id'], entries[1]['t6_id']
         self.media = MediaStore(self.registry, PreviewTokens('secret'))
         self.link(self.deliverable, 'frameio-folder', 'folder-1', 'review')
-        self.reader = FakeReader()
-        self.reader.locations['file-1'] = FileLocation(folder_id='folder-1')
-        self.handler = FrameioFileVersions(self.registry, self.reader).handle
         self.versions = VersionStore(self.registry, PreviewTokens('secret'))
 
     def link(self, owner: str, kind: str, ref: str, role: str) -> None:
@@ -74,6 +83,14 @@ class FileVersionTests(unittest.TestCase):
 
     def entries(self) -> list[Any]:
         return [e for e in self.registry.activity(self.project) if e.action == 'version_add']
+
+
+class FileVersionTests(Deliverables):
+    def setUp(self) -> None:
+        super().setUp()
+        self.reader = FakeReader()
+        self.reader.locations['file-1'] = FileLocation(folder_id='folder-1')
+        self.handler = FrameioFileVersions(self.registry, self.reader).handle
 
     def test_a_file_in_the_deliverables_folder_records_one_version(self) -> None:
         self.handler(job('edge:/frameio:evt-1', event('file-1')))
@@ -144,6 +161,58 @@ class FileVersionTests(unittest.TestCase):
         self.assertEqual(self.count(), 1)
 
 
+    def test_a_file_frameio_does_not_know_ends_the_job_as_ignored(self) -> None:
+        self.reader.locations['file-1'] = FileNotFound('Frame.io read API answered 404: not found')
+        self.assertEqual(
+            self.handler(job('edge:/frameio:evt-1', event('file-1'))), {'outcome': 'ignored', 'reason': 'the file is gone from Frame.io'}
+        )
+        self.assertEqual(self.count(), 0)
+
+
+class LiveReadTests(Deliverables):
+    """The handler with the real reader and read API, a fake Frame.io behind them (#360)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.frameio = FakeFrameio()
+        self.frameio.add_file('file-1', 'Cut 1.mov', parent_id='folder-1')
+        self.frameio.add_file('file-2', 'Cut 2.mov', parent_id='folder-1')
+        self.frameio.add_version_stack('stack-1', ['file-2'], parent_id='folder-1')
+        reads = FrameioReads(FrameioApi(StaticTokens(), self.frameio.fetch, lambda _: None))
+        worker = FrameioWorker(object(), reads, lambda text, key: None)  # type: ignore[arg-type]
+        api = ReadApi(worker, 'read-secret')
+
+        class Direct:
+            def send(self, method: str, path: str, headers: Mapping[str, str], body: bytes) -> tuple[int, dict[str, Any]]:
+                answer = api.handle(Request(method, path, dict(headers), body))
+                return answer.status, json.loads(json.dumps(dict(answer.body)))
+
+        self.handler = FrameioFileVersions(self.registry, FrameioReader(Direct(), 'read-secret')).handle
+
+    def test_a_file_in_the_deliverables_folder_records_one_version_and_the_same_job_again_none(self) -> None:
+        self.handler(job('edge:/frameio:evt-1', event('file-1')))
+        self.assertEqual((self.count(), len(self.entries())), (1, 1))
+        asked = len(self.frameio.requests)
+        self.handler(job('edge:/frameio:evt-1', event('file-1')))
+        self.assertEqual((self.count(), len(self.entries()), len(self.frameio.requests)), (1, 1, asked))
+
+    def test_a_stacked_file_records_its_stack(self) -> None:
+        self.handler(job('edge:/frameio:evt-2', event('file-2')))
+        version = self.versions.for_file('file-2')
+        assert version is not None
+        self.assertEqual((version['deliverable_id'], version['frameio_stack_id']), (self.deliverable, 'stack-1'))
+
+    def test_a_file_frameio_answers_404_for_is_ignored(self) -> None:
+        self.assertEqual(self.handler(job('edge:/frameio:evt-3', event('gone'))), {'outcome': 'ignored', 'reason': 'the file is gone from Frame.io'})
+        self.assertEqual(self.count(), 0)
+
+    def test_a_frameio_failure_is_retried(self) -> None:
+        self.frameio.refuse_next(500)
+        with self.assertRaises(RuntimeError):
+            self.handler(job('edge:/frameio:evt-4', event('file-1')))
+        self.assertEqual(self.count(), 0)
+
+
 class WiringTests(unittest.TestCase):
     ENVIRON = {'T6_SERVER_URL': 'http://edge', 'T6_WORKER_SECRET': 's', 'T6_WORKER_QUEUE': 'main', 'T6_API_URL': 'http://api'}
 
@@ -151,9 +220,30 @@ class WiringTests(unittest.TestCase):
         environ = {**self.ENVIRON, **extra}
         return configured_handlers(environ, WorkerSettings.from_env(environ), object()).get('main', {})  # type: ignore[arg-type]
 
-    def test_the_main_worker_with_the_database_handles_the_event(self) -> None:
+    READ = {'T6_FRAMEIO_READ_URL': 'http://frameio-worker:8082', 'T6_FRAMEIO_READ_SECRET': 'read-secret'}
+
+    def started(self, **extra: str) -> tuple[dict[str, Any], str]:
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            return self.handlers(**extra), errors.getvalue()
+
+    def test_the_main_worker_with_the_database_and_the_read_handles_the_event(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            self.assertIn(KIND, self.handlers(T6_DATABASE=str(Path(directory) / 't6.sqlite3')))
+            handlers, log = self.started(T6_DATABASE=str(Path(directory) / 't6.sqlite3'), **self.READ)
+        self.assertIn(KIND, handlers)
+        self.assertNotIn('T6_FRAMEIO_READ_URL', log)
+
+    def test_without_the_read_the_event_is_not_handled_and_the_log_says_so_once(self) -> None:
+        for extra in ({}, {'T6_FRAMEIO_READ_URL': 'http://frameio-worker:8082'}, {'T6_FRAMEIO_READ_SECRET': 'read-secret'}):
+            with self.subTest(extra=sorted(extra)), tempfile.TemporaryDirectory() as directory:
+                handlers, log = self.started(T6_DATABASE=str(Path(directory) / 't6.sqlite3'), **extra)
+                self.assertNotIn(KIND, handlers)
+                self.assertEqual(log.count('Versions from Frame.io events are off'), 1)
+                self.assertIn('T6_FRAMEIO_READ_URL', log)
+                self.assertIn('T6_FRAMEIO_READ_SECRET', log)
+
+    def test_a_worker_without_the_database_does_not_log_it(self) -> None:
+        self.assertEqual(self.started()[1], '')
 
     def test_a_worker_without_the_database_does_not(self) -> None:
         self.assertNotIn(KIND, self.handlers())

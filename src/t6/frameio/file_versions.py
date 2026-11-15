@@ -8,38 +8,25 @@ the only Frame.io token. The webhook names the file but not its folder, so a `Fi
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
 from typing import Protocol
 
 from t6.domain.events import JsonValue
-from t6.frameio.requests import Failed
+from t6.frameio.model import FileLocation
+from t6.frameio.requests import Failed, FileNotFound
 from t6.preview import PreviewTokens
 from t6.registry.sqlite import SqliteProjectRegistry
 from t6.version import VersionStore
 from t6.worker.client import WorkerJob
 
+__all__ = ['EVENT_TYPES', 'FileLocation', 'FileNotFound', 'FileReader', 'FrameioFileVersions']
+
 EVENT_TYPES = frozenset({'file.versioned', 'file.upload.completed'})
-
-
-@dataclass(frozen=True, slots=True)
-class FileLocation:
-    """Where a Frame.io file is: the folder it sits in (a stacked file's stack's folder), and its version stack."""
-
-    folder_id: str | None
-    stack_id: str | None = None
 
 
 class FileReader(Protocol):
     def file_location(self, file_id: str) -> FileLocation | Failed:
-        """Where the file is. A `Failed` is worth a retry."""
+        """Where the file is. `FileNotFound`: Frame.io does not know it (the job ends). Any other `Failed` is worth a retry."""
         ...
-
-
-class UnwiredReader:
-    """Stands in until the Frame.io worker's read API answers file locations."""
-
-    def file_location(self, file_id: str) -> FileLocation | Failed:
-        return Failed('the Frame.io read API has no file location read yet')
 
 
 def _text(body: Mapping[str, JsonValue], *path: str) -> str | None:
@@ -63,6 +50,8 @@ class FrameioFileVersions:
         if self._versions.event_seen(key):
             return {'outcome': 'known'}
         found = self._reader.file_location(file_id)
+        if isinstance(found, FileNotFound):
+            return {'outcome': 'ignored', 'reason': 'the file is gone from Frame.io'}
         if isinstance(found, Failed):
             raise RuntimeError(found.reason)
         if found.folder_id is None:

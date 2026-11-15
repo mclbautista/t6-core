@@ -149,9 +149,19 @@ The Frame.io file route (`job_kind: frameio.file_versioned`) must use `queue: ma
 job opens the t6 database, which only the API and the main worker do, and the Frame.io worker never does.
 Subscribe it to `file.versioned` and `file.upload.completed`; the job carries the raw webhook body. The main
 worker with `T6_DATABASE` set records one Version for a file in a Deliverable's `frameio-folder` Media location
-(role review), once per job dedupe key. It finds the file's folder through the Frame.io read API
-(`T6_FRAMEIO_READ_URL`, `T6_FRAMEIO_READ_SECRET`); until that API answers file locations the job fails with
-that reason and is retried.
+(role review), once per job dedupe key. A file inside a subfolder of that folder is not matched. The main worker
+finds the file's folder (and version stack) through the Frame.io worker's read API, route
+`GET /frameio/files/<id>/location` (same bearer secret as the other read routes; it answers `folder_id` and
+`stack_id`, the folder being the version stack's own parent; 404 for a file Frame.io does not know). Set both
+variables in the main worker's environment:
+
+- `T6_FRAMEIO_READ_URL`: the Frame.io worker's read API URL (the Frame.io worker serves it with
+  `T6_FRAMEIO_READ_BIND` and `T6_FRAMEIO_READ_SECRET`).
+- `T6_FRAMEIO_READ_SECRET`: its bearer secret.
+
+With either variable unset, the main worker does not register `frameio.file_versioned`, so it claims no such
+job, and its start-up log says once that Versions from Frame.io events are off and names both variables. A 404
+for the file ends the job as ignored; any other read failure fails the job and it is retried.
 
 Frame.io and Notion jobs contain the verified JSON object. Google jobs contain
 `headers` with the `x-goog-*` notification headers except the channel token.

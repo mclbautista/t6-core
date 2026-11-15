@@ -74,6 +74,14 @@ class FileInfo(_Request):
 
 
 @dataclass(frozen=True, slots=True)
+class FileLocate(_Request):
+    """Where one Frame.io file is: its folder, and its version stack when it is in one."""
+
+    kind: ClassVar[str] = "frameio.file_location"
+    file_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class ResolveComment(_Request):
     """Read one comment that a webhook named, to learn its file and its author.
 
@@ -131,6 +139,7 @@ FrameioRequest: TypeAlias = (
     | ShareLinks
     | Comments
     | FileInfo
+    | FileLocate
     | ResolveComment
     | Versions
     | Approvals
@@ -145,6 +154,7 @@ _BY_KIND: dict[str, type[FrameioRequest]] = {
         ShareLinks,
         Comments,
         FileInfo,
+        FileLocate,
         ResolveComment,
         Versions,
         Approvals,
@@ -193,6 +203,11 @@ class Failed:
     """The request was not run, or failed. `reason` says why."""
 
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class FileNotFound(Failed):
+    """Frame.io does not know the file (it was deleted, or the ID is wrong). Asking again will not help."""
 
 
 FrameioResult: TypeAlias = Ok | Failed

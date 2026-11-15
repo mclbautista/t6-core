@@ -20,11 +20,12 @@ from typing import Any, cast
 import urllib.parse
 
 from t6.domain.events import JsonValue
-from t6.frameio.model import Approval, BriefingShow, Comment, FrameioProject, ShareLink, Version, decode
-from t6.frameio.requests import Approvals, BriefingFeed, Comments, Failed, FrameioProjects, ShareLinks, Versions
+from t6.frameio.model import Approval, BriefingShow, Comment, FileLocation, FrameioProject, ShareLink, Version, decode
+from t6.frameio.requests import Approvals, BriefingFeed, Comments, Failed, FileNotFound, FrameioProjects, ShareLinks, Versions
 from t6.worker.client import Transport
 
 SIGN_IN_REQUIRED = "sign_in_required"
+FILE_NOT_FOUND = "file not found"
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +63,18 @@ class FrameioReader:
     def versions(self, file_id: str) -> tuple[Version, ...] | Failed:
         return cast("tuple[Version, ...] | Failed", self._decoded(Versions, self._get(f"/frameio/files/{_id(file_id)}/versions")))
 
+    def file_location(self, file_id: str) -> FileLocation | Failed:
+        """The folder and version stack of a file. `FileNotFound` when Frame.io does not know the file."""
+        path = f"/frameio/files/{_id(file_id)}/location"
+        value = self._get(path)
+        if isinstance(value, Failed):
+            return value
+        folder = value.get("folder_id") if isinstance(value, dict) else None
+        stack = value.get("stack_id") if isinstance(value, dict) else None
+        if not isinstance(value, dict) or not isinstance(folder, (str, type(None))) or not isinstance(stack, (str, type(None))):
+            return Failed("malformed file location answer")
+        return FileLocation(folder_id=folder, stack_id=stack)
+
     def approvals(self, file_id: str) -> tuple[Approval, ...] | Failed:
         return cast('tuple[Approval, ...] | Failed', self._decoded(Approvals, self._get(f"/frameio/files/{_id(file_id)}/approvals")))
 
@@ -88,6 +101,8 @@ class FrameioReader:
             value: JsonValue = answer["value"]
             return value
         detail = str(answer.get("error", answer))
+        if status == 404 and detail == FILE_NOT_FOUND:
+            return FileNotFound(f"Frame.io read API answered 404: {detail}")
         if status == 503 and detail == SIGN_IN_REQUIRED:
             return SignInNeeded()
         return Failed(f"Frame.io read API answered {status}: {detail}")

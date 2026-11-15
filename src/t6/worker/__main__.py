@@ -213,7 +213,16 @@ def configured_handlers(
         handlers.update(review.handlers())
     if environ.get("T6_DATABASE"):
         handlers["booking.calendar_sync"] = booking_calendar_handler(environ)
-        handlers[JobKind.FRAMEIO_FILE_VERSIONED.value] = file_versions_handler(environ)
+        read_url, read_secret = (environ.get("T6_FRAMEIO_READ_URL") or "").strip(), environ.get("T6_FRAMEIO_READ_SECRET") or ""
+        if read_url and read_secret:
+            handlers[JobKind.FRAMEIO_FILE_VERSIONED.value] = file_versions_handler(environ)
+        else:
+            print(
+                "t6.worker: Versions from Frame.io events are off: set T6_FRAMEIO_READ_URL and T6_FRAMEIO_READ_SECRET "
+                "(the Frame.io worker's read API) to turn them on",
+                file=sys.stderr,
+                flush=True,
+            )
     return {"main": handlers} if handlers else {}
 
 
@@ -221,13 +230,16 @@ def file_versions_handler(environ: Mapping[str, str]) -> Handler:
     """`frameio.file_versioned`: records a Version for a file landing in a Deliverable's T6 Frame.io folder (#265).
 
     It opens the t6 database, so it is the main worker's. The folder of the file comes from the Frame.io worker's
-    read API; until that API answers file locations the job fails with a clear reason and is retried.
+    read API (`T6_FRAMEIO_READ_URL`, `T6_FRAMEIO_READ_SECRET`); the caller registers it only when both are set.
     """
-    from t6.frameio.file_versions import FrameioFileVersions, UnwiredReader
+    from t6.frameio.client import FrameioReader
+    from t6.frameio.file_versions import FrameioFileVersions
     from t6.registry.sqlite import SqliteProjectRegistry
 
+    reader = FrameioReader(HttpTransport(environ["T6_FRAMEIO_READ_URL"].strip(), timeout=60), environ["T6_FRAMEIO_READ_SECRET"])
+
     def handle(job: WorkerJob) -> JsonValue:
-        return FrameioFileVersions(SqliteProjectRegistry(environ["T6_DATABASE"]), UnwiredReader()).handle(job)
+        return FrameioFileVersions(SqliteProjectRegistry(environ["T6_DATABASE"]), reader).handle(job)
 
     return handle
 
