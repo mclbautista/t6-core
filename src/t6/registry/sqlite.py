@@ -318,6 +318,9 @@ _MIGRATIONS = (
     CREATE TABLE delivery_drives (package_id TEXT NOT NULL REFERENCES packages(id), drive_id TEXT NOT NULL REFERENCES drives(id), PRIMARY KEY (package_id, drive_id))"""),
     (35, False, """CREATE TABLE timelines (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), resolve_media_id TEXT NOT NULL REFERENCES media_locations(id), label TEXT NOT NULL);
     CREATE TABLE timeline_previews (nonce TEXT PRIMARY KEY, snapshot TEXT NOT NULL)"""),
+    (36, False, """CREATE TABLE calendar_channels (channel_id TEXT PRIMARY KEY, calendar TEXT NOT NULL, resource_id TEXT NOT NULL, expires_at REAL NOT NULL, token_hash TEXT NOT NULL, active INTEGER NOT NULL);
+    CREATE TABLE calendar_sync_tokens (calendar TEXT PRIMARY KEY, sync_token TEXT NOT NULL);
+    CREATE TABLE calendar_event_versions (calendar TEXT NOT NULL, event TEXT NOT NULL, version TEXT NOT NULL, outcome TEXT NOT NULL, PRIMARY KEY (calendar, event, version))"""),
 )
 
 

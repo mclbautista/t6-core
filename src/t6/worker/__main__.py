@@ -213,6 +213,7 @@ def configured_handlers(
         handlers.update(review.handlers())
     if environ.get("T6_DATABASE"):
         handlers["booking.calendar_sync"] = booking_calendar_handler(environ)
+        handlers.update(inbound_calendar_handlers(environ))
         if environ.get("T6_PREVIEW_SIGNING_KEY"):
             handlers["project_start.preview"] = project_start_handler(environ)
         else:
@@ -299,6 +300,30 @@ def booking_calendar_handler(environ: Mapping[str, str]) -> Handler:
 
     try:
         return calendar_handler(environ, lambda: SqliteProjectRegistry(environ["T6_DATABASE"]), names)
+    except ValueError as error:
+        raise ConfigError(str(error)) from error
+
+
+def inbound_calendar_handlers(environ: Mapping[str, str]) -> dict[str, Handler]:
+    """`google.calendar_changed` (the edge's notification job) and `google.renew_channels` (an internal daily job).
+
+    Both finish with a result that says so when the Bay calendars, the credential, `T6_GOOGLE_NOTIFY_URL` or
+    `T6_GOOGLE_CHANNEL_TOKEN` is missing. The names and emails come from Notion, so `T6_NOTION_TOKEN` is required with them.
+    """
+    from t6.google.inbound import inbound_handlers
+    from t6.registry.sqlite import SqliteProjectRegistry
+
+    def names(registry: SqliteProjectRegistry) -> object:
+        token = environ.get("T6_NOTION_TOKEN")
+        if not token:
+            raise ValueError("missing environment variable: T6_NOTION_TOKEN (inbound calendar edits map the editor's email to a Person)")
+        from t6.google.names import NotionNames
+        from t6.notion import NotionClient
+
+        return NotionNames(registry, NotionClient(token))
+
+    try:
+        return inbound_handlers(environ, lambda: SqliteProjectRegistry(environ["T6_DATABASE"]), names)
     except ValueError as error:
         raise ConfigError(str(error)) from error
 

@@ -22,3 +22,20 @@ def bay_calendars(environ: Mapping[str, str]) -> dict[str, str]:
 def credential_path(environ: Mapping[str, str]) -> str | None:
     """The service account key file named by the credential variable, if set."""
     return (environ.get(CREDENTIAL_VARIABLE) or '').strip() or None
+
+NOTIFY_URL_VARIABLE = 'T6_GOOGLE_NOTIFY_URL'
+CHANNEL_TOKEN_VARIABLE = 'T6_GOOGLE_CHANNEL_TOKEN'
+CHANNEL_TOKEN_MAX = 256  # Google's limit for a channel token
+
+
+def notify_url(environ: Mapping[str, str]) -> str | None:
+    """The public HTTPS address of the edge route Google sends notifications to."""
+    return (environ.get(NOTIFY_URL_VARIABLE) or '').strip() or None
+
+
+def channel_token(environ: Mapping[str, str]) -> str | None:
+    """The shared channel token. The edge checks it on every notification (the route's `secret_env` names the same value). Never print it."""
+    token = (environ.get(CHANNEL_TOKEN_VARIABLE) or '').strip()
+    if len(token) > CHANNEL_TOKEN_MAX:
+        raise ValueError(f'{CHANNEL_TOKEN_VARIABLE} must be at most {CHANNEL_TOKEN_MAX} characters')
+    return token or None

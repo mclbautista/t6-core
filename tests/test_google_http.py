@@ -158,6 +158,62 @@ class AclTests(AdapterCase):
         self.assertEqual(json.loads(call.body), {'role': 'reader', 'scope': {'type': 'user', 'value': 'a@example.invalid'}})
 
 
+class ReadAndWatchTests(AdapterCase):
+    def test_get_event_reads_one_event_in_the_flat_shape(self) -> None:
+        self.http.answer('GET', f'{BASE}/events/e1', 200, {'id': 'e1', 'status': 'confirmed', 'summary': 'Show', 'description': 'd', 'etag': '"3"', 'updated': '2026-11-20T01:00:00.000Z',
+                                                            'start': {'dateTime': '2026-11-20T10:00:00+08:00', 'timeZone': 'Asia/Manila'}, 'end': {'dateTime': '2026-11-20T12:00:00+08:00'}})
+        event = self.calendar.get_event(CALENDAR, 'e1')
+        assert event is not None
+        self.assertEqual((event['id'], event['status'], event['start'], event['end'], event['etag'], event['updated']), ('e1', 'confirmed', '2026-11-20T10:00:00+08:00', '2026-11-20T12:00:00+08:00', '"3"', '2026-11-20T01:00:00.000Z'))
+        self.assertIsNone(event['editor'])  # the Events resource names no last editor
+        self.http.answer('GET', f'{BASE}/events/gone', 404, {'error': {'code': 404}})
+        self.assertIsNone(self.calendar.get_event(CALENDAR, 'gone'))
+        self.http.answer('GET', f'{BASE}/events/cancelled', 200, {'id': 'cancelled', 'status': 'cancelled'})
+        cancelled = self.calendar.get_event(CALENDAR, 'cancelled')
+        assert cancelled is not None
+        self.assertEqual(cancelled['status'], 'cancelled')
+
+    def test_list_changes_uses_the_sync_token_and_shows_deleted_events(self) -> None:
+        self.http.answer('GET', f'{BASE}/events', 200, {'items': [{'id': 'e1', 'status': 'confirmed', 'etag': '"1"', 'updated': 'u', 'start': {'date': '2026-11-20'}, 'end': {'date': '2026-11-21'}}, {'id': 'e2', 'status': 'cancelled'}], 'nextSyncToken': 'next-1'})
+        changes = self.calendar.list_changes(CALENDAR, 'token-0')
+        self.assertEqual(changes.next_token, 'next-1')
+        self.assertEqual([(e['id'], e['status']) for e in changes.events], [('e1', 'confirmed'), ('e2', 'cancelled')])
+        self.assertEqual(changes.events[0]['start'], '2026-11-20')
+        query = parse_qs(self.api_calls()[-1].url.split('?', 1)[1])
+        self.assertEqual((query['syncToken'], query['showDeleted']), (['token-0'], ['true']))
+
+    def test_a_full_list_sends_no_sync_token(self) -> None:
+        self.http.answer('GET', f'{BASE}/events', 200, {'items': [], 'nextSyncToken': 'first'})
+        self.assertEqual(self.calendar.list_changes(CALENDAR, None).next_token, 'first')
+        self.assertNotIn('syncToken', parse_qs(self.api_calls()[-1].url.split('?', 1)[1]))
+
+    def test_an_invalid_sync_token_is_its_own_error(self) -> None:
+        from t6.google.calendar import SyncTokenExpired
+        self.http.answer('GET', f'{BASE}/events', 410, {'error': {'code': 410}})
+        with self.assertRaises(SyncTokenExpired):
+            self.calendar.list_changes(CALENDAR, 'old')
+        self.http.answer('GET', f'{BASE}/events', 500, None)
+        with self.assertRaises(CalendarError):
+            self.calendar.list_changes(CALENDAR, 'old')
+
+    def test_watch_sends_the_channel_the_address_the_token_and_the_ttl(self) -> None:
+        self.http.answer('POST', f'{BASE}/events/watch', 200, {'kind': 'api#channel', 'id': 'chan-1', 'resourceId': 'res-1', 'expiration': '1000604800000'})
+        channel = self.calendar.watch_events(CALENDAR, 'chan-1', 'https://edge.example.invalid/events/google/calendar', 'the-token', 604800)
+        self.assertEqual((channel.resource_id, channel.expires_at), ('res-1', 1_000_604_800.0))
+        self.assertEqual(json.loads(self.api_calls()[-1].body), {'id': 'chan-1', 'type': 'web_hook', 'address': 'https://edge.example.invalid/events/google/calendar', 'token': 'the-token', 'params': {'ttl': '604800'}})
+        self.http.answer('POST', f'{BASE}/events/watch', 403, {'error': {'code': 403}})
+        with self.assertRaises(CalendarError) as caught:
+            self.calendar.watch_events(CALENDAR, 'chan-2', 'https://edge.example.invalid/x', 'the-token', 604800)
+        self.assertNotIn('the-token', str(caught.exception))
+
+    def test_stop_channel_posts_the_id_and_the_resource(self) -> None:
+        self.http.answer('POST', 'https://www.googleapis.com/calendar/v3/channels/stop', 204, None)
+        self.calendar.stop_channel('chan-1', 'res-1')
+        self.assertEqual(json.loads(self.api_calls()[-1].body), {'id': 'chan-1', 'resourceId': 'res-1'})
+        self.http.answer('POST', 'https://www.googleapis.com/calendar/v3/channels/stop', 404, None)
+        self.calendar.stop_channel('chan-1', 'res-1')  # already stopped or expired
+
+
 class TransportTests(unittest.TestCase):
     def test_the_real_transport_exists_and_is_not_called_by_any_test(self) -> None:
         self.assertTrue(callable(UrllibHttp().send))

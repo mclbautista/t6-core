@@ -79,6 +79,16 @@ the times from the Person's shift pattern. Booking verbs (`bay book`,
   event per Booking, its ID derived from the Booking ID). The title is the
   Project's name; the description names the Person and the Booking ID. With no
   calendar configured the job finishes and says so.
+- **Inbound calendar edit**: a change to a Booking event in Google Calendar. The
+  `google.calendar_changed` job (queued by the edge from a Google notification,
+  which names no event) lists the changed events, and an edit by a Person with the
+  `bookings` permission (found by the email on their Notion Contact) runs
+  `booking move`, `booking extend` or `booking cancel` as that Person. A clash, or an
+  editor without the permission, is **reverted**: the event is written back from the
+  Booking with a note, and the Booking does not change. An event that already equals
+  its Booking is our own write coming back and is ignored.
+- **Notification channel**: the Google channel that sends changes of one Bay
+  calendar to the edge. The daily `google.renew_channels` job replaces it before it expires.
 
 ## Timelines
 

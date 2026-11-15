@@ -38,3 +38,10 @@ class NotionNames:
             return self._people.get(self._page(person)).name
         except (NotionError, OSError) as error:
             raise CalendarError('Person name lookup failed') from error
+
+    def email(self, person: str) -> str | None:
+        """The Person's email from the Notion Contact page (Notion owns typed fields), for mapping a Google editor to a Person."""
+        try:
+            return self._people.get(self._page(person)).email
+        except (NotionError, OSError) as error:
+            raise CalendarError('Person email lookup failed') from error

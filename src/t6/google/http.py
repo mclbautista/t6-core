@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.parse import quote, urlencode
 
-from t6.google.calendar import CalendarError, EventExists, EventNotFound
+from t6.google.calendar import CalendarError, Changes, Channel, EventExists, EventNotFound, SyncTokenExpired
 
 SCOPE = 'https://www.googleapis.com/auth/calendar'
 API = 'https://www.googleapis.com/calendar/v3'
@@ -159,6 +159,65 @@ class GoogleCalendar:
             raise EventNotFound(event)
         if status not in (200, 204):
             raise self._fail(status, 'delete')
+
+    @staticmethod
+    def _flat(item: Mapping[str, Any]) -> dict[str, Any]:
+        """One Google event as the flat dict of `Changes`. Google's Events resource names no last editor, so `editor` is None."""
+        flat: dict[str, Any] = {'id': str(item.get('id', '')), 'status': str(item.get('status', 'confirmed')), 'editor': None}
+        if flat['status'] == 'cancelled':
+            return flat
+        for field in ('summary', 'description', 'etag', 'updated'):
+            flat[field] = item.get(field)
+        for field in ('start', 'end'):
+            moment = item.get(field)
+            flat[field] = (moment.get('dateTime') or moment.get('date')) if isinstance(moment, dict) else None
+        return flat
+
+    def get_event(self, calendar: str, event: str) -> dict[str, Any] | None:
+        status, answer = self._call('GET', self._event_path(calendar, event))
+        if status in (404, 410):
+            return None
+        if status != 200 or not isinstance(answer, dict):
+            raise self._fail(status, 'read')
+        return self._flat(answer)
+
+    def list_changes(self, calendar: str, sync_token: str | None) -> Changes:
+        """Events changed since `sync_token`, deleted ones included; all events for no token. Follows pages to the next sync token."""
+        events: list[dict[str, Any]] = []
+        page = ''
+        while True:
+            parameters = {'showDeleted': 'true', 'maxResults': '250'}
+            if sync_token:
+                parameters['syncToken'] = sync_token
+            if page:
+                parameters['pageToken'] = page
+            status, answer = self._call('GET', self._event_path(calendar), query='?' + urlencode(parameters))
+            if status == 410 and sync_token:
+                raise SyncTokenExpired('Google sync token expired')
+            if status != 200 or not isinstance(answer, dict):
+                raise self._fail(status, 'list')
+            events.extend(self._flat(item) for item in answer.get('items', []) if isinstance(item, dict))
+            page = str(answer.get('nextPageToken') or '')
+            if not page:
+                token = answer.get('nextSyncToken')
+                if not isinstance(token, str) or not token:
+                    raise CalendarError('Google calendar list gave no sync token')
+                return Changes(events, token)
+
+    def watch_events(self, calendar: str, channel: str, address: str, token: str, ttl_seconds: int) -> Channel:
+        body = {'id': channel, 'type': 'web_hook', 'address': address, 'token': token, 'params': {'ttl': str(ttl_seconds)}}
+        status, answer = self._call('POST', f'{self._event_path(calendar)}/watch', body)
+        if status != 200 or not isinstance(answer, dict):
+            raise self._fail(status, 'watch')
+        try:
+            return Channel(str(answer['resourceId']), int(answer['expiration']) / 1000)
+        except (KeyError, ValueError, TypeError) as error:
+            raise CalendarError('Google calendar watch answer is incomplete') from error
+
+    def stop_channel(self, channel: str, resource_id: str) -> None:
+        status, _ = self._call('POST', '/channels/stop', {'id': channel, 'resourceId': resource_id})
+        if status not in (200, 204, 404):
+            raise self._fail(status, 'stop channel')
 
     def list_acl(self, calendar: str) -> list[dict[str, str]]:
         status, answer = self._call('GET', f'/calendars/{quote(calendar, safe="")}/acl')
