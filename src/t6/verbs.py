@@ -257,6 +257,16 @@ class PersonAddInput(BaseModel):
     confirm: str | None = None
 
 
+class PersonCreateInput(BaseModel):
+    name: str
+    kind: str
+    telegram_handle: str | None = None
+    telegram_id: int | None = None
+    note: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
 class PersonTelegramInput(BaseModel):
     person_id: str
     telegram_id: int
@@ -458,6 +468,10 @@ class FormatFinding(BaseModel):
 class JoFormatOutput(BaseModel):
     text: str
     findings: list[FormatFinding]
+
+
+class PersonCreateOutput(BaseModel):
+    person: dict[str, Any]
 
 
 class CameraEnrichOutput(BaseModel):
@@ -1229,6 +1243,10 @@ def api_read(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
     return Refused(rule="api", reason="Reads run on the t6 API")
 
 
+def api_write(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    return Refused(rule="api", reason="This write runs on the t6 API")
+
+
 VERBS = (
     Verb("version", "get", "Get a Version", (), VersionGetInput, VersionFindOutput, "reader", "Read a Version and its Approvals.", api_read),
     Verb("version", "find", "Find a Version by Frame.io file", (), VersionFindInput, VersionFindOutput, "reader", "Resolve a review file to its Version.", api_read),
@@ -1257,6 +1275,7 @@ VERBS = (
     Verb("project", "list", "List Projects", (), ProjectListInput, ProjectListOutput, "reader", "Read Projects.", api_read),
     Verb("llm", "run", "Run an LLM task on the API", (), LLMRunInput, LLMRunOutput, "llm", "Server policy and masking apply.", llm_api_only),
     Verb("person", "add", "Register a Person", (), PersonAddInput, PersonWriteOutput, "operator", "A page belongs to one Person.", person_write),
+    Verb("person", "create", "Create a Contact and register the Person", (), PersonCreateInput, PersonCreateOutput, "operator", "For someone with no Contacts page yet; an active Person uniquely holds a Telegram ID.", api_write),
     Verb("person", "rebind", "Bind a replacement Contacts page", (), PersonRebindInput, PersonWriteOutput, "operator", "A page belongs to one Person.", person_write),
     Verb("person", "set-telegram", "Set a Person Telegram ID", (), PersonTelegramInput, PersonWriteOutput, "operator", "An active Person uniquely holds a Telegram ID.", person_write),
     Verb("person", "shift", "Set a Person shift", (), PersonShiftInput, PersonWriteOutput, "operator", "Set a day or night shift.", person_write),

@@ -20,7 +20,7 @@ from t6.verbs import (
     JoListInput, JoFindInput, DeliverableListInput, DeliverableGetInput, DeliverableDefineInput, DeliverableRebindInput, DeliverableMissInput, DeliverableDelayInput, MilestoneRecordInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, ProjectFlagsInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
     JoSubmitInput, JoCloseInput, JoBlockInput, JoUnblockInput, JoDelayInput, JoCancelInput,
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
-    LLMRunInput, PersonAddInput, PersonFindInput,
+    LLMRunInput, PersonAddInput, PersonCreateInput, PersonFindInput,
     PersonGetInput, PersonProjectRoleInput, PersonPermissionInput, PersonRebindInput, PersonShiftInput, PersonClassifyInput,
     PersonTelegramInput, ProjectChatInput, ProjectHoldInput, ProjectResolveInput, ProjectResumeInput,
 )
@@ -108,6 +108,9 @@ class Client:
 
     def person_add(self, inputs: PersonAddInput) -> Result:
         return self.call('person', 'add', inputs)
+
+    def person_create(self, inputs: PersonCreateInput) -> Result:
+        return self.call('person', 'create', inputs)
 
     def person_rebind(self, inputs: PersonRebindInput) -> Result:
         return self.call('person', 'rebind', inputs)

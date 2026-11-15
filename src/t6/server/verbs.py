@@ -188,6 +188,9 @@ class VerbAPI:
         elif (entry.noun, entry.verb) == ('camera', 'enrich'):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._camera_enrich(inputs, actor)
+        elif (entry.noun, entry.verb) == ('person', 'create'):
+            refusal = self.people.authorize(actor, entry.role)
+            outcome = refusal or self._person_create(inputs, actor)
         elif entry.handler is None:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._legacy_read(entry.noun, entry.verb, inputs)
@@ -201,6 +204,92 @@ class VerbAPI:
                     action, _ = self.tap_app._operator.offer_approval(approval)
                     self.tap_app._deliver(action.token, action.version)
         return Response(200, outcome.model_dump(mode='json'))
+
+    def _person_create(self, inputs: Any, actor: str) -> Any:
+        """Create a Contacts page and register the Person bound to it.
+
+        The page is made once per idempotency key. The key is marked pending
+        before Notion is called, so a retry after an unclear failure is
+        `Ambiguous` and never a second page.
+        """
+        import secrets
+        from dataclasses import asdict
+        from t6.ids import EntityKind, T6Id
+        from t6.notion import NotionError
+        from t6.notion.contacts import Contacts
+        from t6.notion.writes import Rejected, Ambiguous as WriteAmbiguous
+        from t6.registry.core import normalize_page_id
+        from t6.verbs import Ambiguous
+        key = inputs.idempotency_key or secrets.token_hex(16)
+        if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+            return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+        if inputs.confirm and not inputs.idempotency_key:
+            return Refused(rule='idempotency_key', reason='Supply the key from the preview')
+        name, handle, note = inputs.name.strip(), (inputs.telegram_handle or '').strip().lstrip('@'), (inputs.note or '').strip()
+        if not name or inputs.kind not in ('staff', 'client', 'vendor'):
+            return Refused(rule='input', reason='A name and valid kind are required')
+        values = {'name': name, 'kind': inputs.kind, 'telegram_handle': handle or None, 'telegram_id': inputs.telegram_id, 'note': note or None, 'idempotency_key': key}
+        fingerprint = json.dumps({'verb': 'person create', 'actor': actor, **values}, sort_keys=True, separators=(',', ':'))
+        nonce = self.people.tokens.verify(inputs.confirm, 'person create', actor, values) if inputs.confirm else None
+        if isinstance(nonce, Refused):
+            return nonce
+        registry = self.people.registry
+
+        def held(db: Any) -> Refused | None:
+            holder = db.execute('SELECT id FROM persons WHERE active = 1 AND telegram_id = ?', (inputs.telegram_id,)).fetchone() if inputs.telegram_id is not None else None
+            return Refused(rule='telegram_id', reason=f'Telegram ID is held by {holder[0]}') if holder else None
+
+        try:
+            source = self.data_sources['contacts']
+            token = os.environ['T6_NOTION_TOKEN']
+            with registry._transaction() as db:
+                previous = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key=?', (key,)).fetchone()
+                if previous and previous[0] != fingerprint:
+                    return Refused(rule='idempotency_key', reason='Idempotency key was used for a different request')
+                if nonce and db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce=?', (nonce,)).fetchone():
+                    return Refused(rule='token_used', reason='Preview token has already been used')
+                if previous and nonce:
+                    db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
+                    result = json.loads(previous[1])
+                    return Ambiguous(candidates=[result]) if result.get('pending') else Done(result=result)
+                if not previous:
+                    refusal = held(db)
+                    if refusal:
+                        return refusal
+                if nonce is None:
+                    return self.people.tokens.create('person create', actor, values, {'action': 'create', **values})
+                db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
+                db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps({'pending': True, 'reason': 'The Contacts page may have been created'})))
+            with self.open_notion(token) as client:
+                saved = Contacts(client, source).create(name, telegram_user_id=inputs.telegram_id, telegram_handle=handle, note=note)
+            if isinstance(saved, Rejected):
+                # Notion made no page, so the key is free for another try.
+                with registry._transaction() as db:
+                    db.execute('DELETE FROM verb_requests WHERE idempotency_key=?', (key,))
+                return Refused(rule='notion', reason=str(saved))
+            if isinstance(saved, WriteAmbiguous):
+                pending = {'pending': True, 'reason': str(saved), 'page_id': saved.page_id}
+                with registry._transaction() as db:
+                    db.execute('UPDATE verb_requests SET result=? WHERE idempotency_key=?', (json.dumps(pending), key))
+                return Ambiguous(candidates=[pending])
+            with registry._transaction() as db:
+                if held(db):
+                    pending = {'pending': True, 'reason': 'The Contacts page was created but the Telegram ID was taken meanwhile; register it with person add', 'page_id': saved.page_id}
+                    db.execute('UPDATE verb_requests SET result=? WHERE idempotency_key=?', (json.dumps(pending), key))
+                    return Ambiguous(candidates=[pending])
+                person_id, now = str(T6Id.mint(EntityKind.PERSON)), registry._clock()
+                db.execute('INSERT INTO persons VALUES (?, ?, ?, ?, ?, ?, ?)', (person_id, inputs.kind, '[]', '[]', inputs.telegram_id, 0, 1))
+                db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, ?, 1)", (normalize_page_id(saved.page_id), person_id, now))
+                _audit(db, person_id, 'person_create', actor, now, None, {'page_id': saved.page_id, 'kind': inputs.kind, 'telegram_id': inputs.telegram_id})
+            person = self.people.get(person_id)
+            assert person is not None
+            item = {**asdict(saved), 't6_id': person_id, **{field: person[field] for field in ('kind', 'departments', 'roles', 'project_roles', 'shift', 'permissions', 'master_brief', 'active')}}
+            result = {'person': json.loads(json.dumps(item, default=str))}
+            with registry._transaction() as db:
+                db.execute('UPDATE verb_requests SET result=? WHERE idempotency_key=?', (json.dumps(result), key))
+            return Done(result=result)
+        except (ValueError, KeyError, OSError, NotionError) as error:
+            return Refused(rule='input', reason=str(error))
 
     def _camera_enrich(self, inputs: Any, actor: str) -> Any:
         import secrets
@@ -474,7 +563,7 @@ class VerbAPI:
 
     def _legacy_read(self, noun: str, verb: str, inputs: Any) -> Any:
         # The legacy write commands do not have signed previews yet.
-        if (noun, verb) == ('camera', 'enrich'):
+        if (noun, verb) in (('camera', 'enrich'), ('person', 'create')):
             return Refused(rule='verb', reason='This legacy write does not support preview and confirm')
         try:
             from t6.cli import TOKEN_VARIABLE, _read_data_sources

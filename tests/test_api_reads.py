@@ -14,7 +14,7 @@ from t6.registry.sqlite import SqliteProjectRegistry
 from t6.server.http import make_server
 from t6.server.queue import JobQueue
 from t6.server.verbs import VerbAPI
-from t6.verbs import Done
+from t6.verbs import Done, Preview, Refused
 from t6.privacy import Person, Registry
 
 
@@ -101,6 +101,79 @@ class ReadTests(unittest.TestCase):
             result = operator.camera_enrich(inputs)
         self.assertIsInstance(result, Done)
         self.assertEqual(self.notion.page(self.camera['id'])['properties']['Name']['title'][0]['plain_text'], 'Updated')
+
+    def person_create(self, **fields: object) -> tuple[Client, object]:
+        from t6.verbs import PersonCreateInput
+        operator = Client(self.client.base_url, 'operator')
+        inputs = PersonCreateInput.model_validate({'name': 'Placeholder Person', 'kind': 'client', **fields})
+        preview = operator.person_create(inputs)
+        if not isinstance(preview, Preview):
+            return operator, preview
+        inputs.confirm, inputs.idempotency_key = preview.token, preview.plan['idempotency_key']
+        return operator, operator.person_create(inputs)
+
+    def contact_pages(self) -> int:
+        with self.notion.client() as client:
+            return len(client.query_data_source('contacts'))
+
+    def test_person_create_makes_one_page_and_one_person(self) -> None:
+        from t6.verbs import PersonCreateInput
+        before = self.contact_pages()
+        with patch.dict(os.environ, {'T6_PREVIEW_SIGNING_KEY': 'key'}):
+            operator = Client(self.client.base_url, 'operator')
+            inputs = PersonCreateInput(name='Placeholder Person', kind='client', telegram_handle='@placeholder', telegram_id=77, note='Added from onboarding.', idempotency_key='create-1')
+            preview = operator.person_create(inputs)
+            assert isinstance(preview, Preview)
+            self.assertEqual(self.contact_pages(), before)
+            inputs.confirm = preview.token
+            created = operator.person_create(inputs)
+            assert isinstance(created, Done)
+            person = created.result['person']
+            self.assertEqual((person['name'], person['telegram_user_id'], person['telegram_handle'], person['kind']), ('Placeholder Person', 77, 'placeholder', 'client'))
+            self.assertEqual(self.registry.bound_entity('notion', person['page_id']), person['t6_id'])
+            again = operator.person_create(PersonCreateInput(name='Placeholder Person', kind='client', telegram_handle='@placeholder', telegram_id=77, note='Added from onboarding.', idempotency_key='create-1'))
+            assert isinstance(again, Preview)
+            inputs.confirm = again.token
+            replay = operator.person_create(inputs)
+            assert isinstance(replay, Done)
+            self.assertEqual(replay.result, created.result)
+            self.assertEqual(self.contact_pages(), before + 1)
+            with self.registry._transaction() as db:
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM persons WHERE telegram_id = 77').fetchone()[0], 1)
+            _, taken = self.person_create(name='Another Placeholder', telegram_id=77)
+            assert isinstance(taken, Refused)
+            self.assertEqual(taken.rule, 'telegram_id')
+            _, reader = Client(self.client.base_url, 'secret'), Client(self.client.base_url, 'secret').person_create(PersonCreateInput(name='Placeholder', kind='client'))
+            self.assertIsInstance(reader, Refused)
+
+    def test_person_create_after_an_unclear_notion_failure_is_ambiguous_and_makes_no_second_page(self) -> None:
+        from t6.verbs import Ambiguous, PersonCreateInput
+        before = self.contact_pages()
+        with patch.dict(os.environ, {'T6_PREVIEW_SIGNING_KEY': 'key'}):
+            operator = Client(self.client.base_url, 'operator')
+            inputs = PersonCreateInput(name='Placeholder Person', kind='client', note='Added from onboarding.', idempotency_key='create-2')
+            preview = operator.person_create(inputs)
+            assert isinstance(preview, Preview)
+            inputs.confirm = preview.token
+            self.notion.fail_next(500, code='internal_server_error', after=2)
+            self.assertIsInstance(operator.person_create(inputs), Ambiguous)
+            self.assertEqual(self.contact_pages(), before + 1)
+            again = operator.person_create(PersonCreateInput(name='Placeholder Person', kind='client', note='Added from onboarding.', idempotency_key='create-2'))
+            assert isinstance(again, Preview)
+            inputs.confirm = again.token
+            self.assertIsInstance(operator.person_create(inputs), Ambiguous)
+            self.assertEqual(self.contact_pages(), before + 1)
+
+    def test_person_create_refused_by_notion_frees_the_key(self) -> None:
+        with patch.dict(os.environ, {'T6_PREVIEW_SIGNING_KEY': 'key'}):
+            before = self.contact_pages()
+            self.notion.fail_next(400, code='validation_error')
+            _, refused = self.person_create(idempotency_key='create-3')
+            assert isinstance(refused, Refused)
+            self.assertEqual(refused.rule, 'notion')
+            _, created = self.person_create(idempotency_key='create-3')
+            self.assertIsInstance(created, Done)
+            self.assertEqual(self.contact_pages(), before + 1)
 
     def test_project_related_reads_and_telegram_key(self) -> None:
         from t6.verbs import DeliverableListInput, JoFindInput, JoListInput, MeetingNotesListInput
