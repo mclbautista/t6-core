@@ -292,7 +292,8 @@ _MIGRATIONS = (
     CREATE TABLE concern_dates (
         concern_id TEXT PRIMARY KEY REFERENCES concerns(id), project_id TEXT NOT NULL REFERENCES projects(id), field TEXT NOT NULL
     )"""),
-    (26, True, """CREATE TABLE deliverable_templates (deliverable_id TEXT PRIMARY KEY REFERENCES deliverables(id), template TEXT NOT NULL)"""),
+    (26, False, """CREATE TABLE delivery_share_views (event_id TEXT PRIMARY KEY)"""),
+    (27, True, """CREATE TABLE deliverable_templates (deliverable_id TEXT PRIMARY KEY REFERENCES deliverables(id), template TEXT NOT NULL)"""),
 )
 
 
