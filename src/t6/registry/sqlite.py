@@ -282,6 +282,9 @@ _MIGRATIONS = (
     )"""),
     (24, False, """CREATE TABLE versions (id TEXT PRIMARY KEY, deliverable_id TEXT NOT NULL REFERENCES deliverables(id), frameio_file_id TEXT NOT NULL UNIQUE, frameio_stack_id TEXT, source_timeline_id TEXT, note TEXT);
         CREATE TABLE version_locks (deliverable_id TEXT PRIMARY KEY REFERENCES deliverables(id), version_id TEXT NOT NULL REFERENCES versions(id))"""),
+    (25, False, """CREATE TABLE linked_chat_topics (chat_id INTEGER NOT NULL, topic_id INTEGER NOT NULL, name TEXT NOT NULL, PRIMARY KEY (chat_id, topic_id));
+    CREATE TABLE linked_chat_notices (key TEXT PRIMARY KEY, text TEXT NOT NULL);
+    CREATE TABLE linked_chat_sends (ref INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL, topic_id INTEGER NOT NULL, links TEXT NOT NULL)"""),
 )
 
 

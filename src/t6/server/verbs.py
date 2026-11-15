@@ -530,6 +530,13 @@ class VerbAPI:
             args = body.get('args')
             chat, topic = body.get('chat'), body.get('topic')
             key = request.header('idempotency-key') or body.get('idempotency_key')
+            if isinstance(args, str) and not args.strip() and body['command'] == 'link' and type(chat) is int and type(topic) is int:
+                import re
+                with self.people.registry._transaction() as db:
+                    row = db.execute('SELECT name FROM linked_chat_topics WHERE chat_id = ? AND topic_id = ?', (chat, topic)).fetchone()
+                match = re.match(r'^\s*([A-Za-z0-9]+)\s+-\s+', row[0]) if row else None
+                if match:
+                    args = match.group(1)
             if not isinstance(args, str) or len(args.split()) != 1 or type(chat) is not int or (topic is not None and type(topic) is not int) or not isinstance(key, str) or not key:
                 return Response(200, {'outcome': 'rejected'})
             entry = self.routes['/v1/project/' + ('link-chat' if body['command'] == 'link' else 'unlink-chat')]
