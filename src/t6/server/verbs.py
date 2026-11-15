@@ -73,6 +73,38 @@ class VerbAPI:
             actor = row[0]
         if path == '/v1/commands':
             return Response(200, cast(Mapping[str, JsonValue], catalogue())) if request.method == 'GET' else Response(405)
+        if path == '/v1/admin/media/migrate':
+            if request.method != 'POST':
+                return Response(405)
+            refusal = self.people.authorize(actor, 'admin')
+            person = self.people.get(actor)
+            if not person or not person['active']:
+                return self.refused('person', 'An active Person is required')
+            if refusal:
+                return Response(200, refusal.model_dump(mode='json'))
+            from t6.verbs import MediaMigrateInput
+            from t6.media import MediaStore
+            from t6.notion import NotionError
+            from t6.notion.external_links import read_media_migration_rows
+            try:
+                data = json.loads(request.body)
+                if not isinstance(data, dict) or set(data) - {'idempotency_key', 'confirm'}:
+                    raise ValueError('Invalid inputs')
+                inputs = MediaMigrateInput.model_validate(data)
+                key = request.header('idempotency-key')
+                if key and inputs.idempotency_key not in (None, key):
+                    return self.refused('idempotency_key', 'Conflicting idempotency keys')
+                token = os.environ.get('T6_NOTION_TOKEN')
+                signing = os.environ.get('T6_PREVIEW_SIGNING_KEY')
+                if not token or not signing or not self.data_sources.get('external_links'):
+                    return self.refused('config', 'Notion and preview configuration are required')
+                with self.open_notion(token) as client:
+                    rows = read_media_migration_rows(client, self.data_sources['external_links'])
+                result = MediaStore(self.people.registry, self.people.tokens).migrate_write(
+                    rows, actor=actor, idempotency_key=key or inputs.idempotency_key, confirm=inputs.confirm)
+                return Response(200, result.model_dump(mode='json'))
+            except (ValueError, KeyError, OSError, NotionError, ValidationError) as error:
+                return self.refused('input', str(error))
         entry = self.routes.get(path)
         if entry is None:
             return Response(404)

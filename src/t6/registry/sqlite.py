@@ -301,6 +301,10 @@ _MIGRATIONS = (
     CREATE TABLE bay_migration_receipts (digest TEXT PRIMARY KEY, snapshot TEXT NOT NULL, entries TEXT NOT NULL);
     CREATE TABLE bookings (id TEXT PRIMARY KEY, bay_id TEXT NOT NULL REFERENCES bays(id), person_id TEXT NOT NULL REFERENCES persons(id), project_id TEXT NOT NULL REFERENCES projects(id), start TEXT NOT NULL, end TEXT NOT NULL, forced INTEGER NOT NULL, cancelled INTEGER NOT NULL);
     CREATE TABLE booking_previews (nonce TEXT PRIMARY KEY, plan TEXT NOT NULL)"""),
+    (30, False, """CREATE TABLE media_locations (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id), kind TEXT NOT NULL, ref TEXT NOT NULL, role TEXT NOT NULL, active INTEGER NOT NULL, source_page TEXT UNIQUE);
+    CREATE TABLE media_history (id INTEGER PRIMARY KEY, media_id TEXT NOT NULL REFERENCES media_locations(id), action TEXT NOT NULL, actor TEXT NOT NULL, at REAL NOT NULL);
+    CREATE TABLE media_previews (nonce TEXT PRIMARY KEY, snapshot TEXT NOT NULL);
+    CREATE TABLE media_migration_receipts (digest TEXT PRIMARY KEY, snapshot TEXT NOT NULL, entries TEXT NOT NULL)"""),
 )
 
 
@@ -320,6 +324,10 @@ def _migrate(db: sqlite3.Connection) -> None:
                     for operation in ("UPDATE", "DELETE"):
                         db.execute(f"CREATE TRIGGER {table}_no_{operation.lower()} BEFORE {operation} ON {table} "
                                    f"BEGIN SELECT RAISE(ABORT, '{table} is append-only'); END")
+            if version == 30:
+                for operation in ("UPDATE", "DELETE"):
+                    db.execute(f"CREATE TRIGGER media_history_no_{operation.lower()} BEFORE {operation} ON media_history "
+                               "BEGIN SELECT RAISE(ABORT, 'media history is append-only'); END")
             if version == 17:
                 for operation in ("UPDATE", "DELETE"):
                     db.execute(f"CREATE TRIGGER milestones_no_{operation.lower()} BEFORE {operation} ON milestones "
@@ -339,6 +347,7 @@ def _migrate(db: sqlite3.Connection) -> None:
     jo_filter += "NOT EXISTS (SELECT 1 FROM bookings WHERE bookings.id = audit.project_id) AND " if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bookings'").fetchone() else ""
     jo_filter += "NOT EXISTS (SELECT 1 FROM bays WHERE bays.id = audit.project_id) AND " if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bays'").fetchone() else ""
     jo_filter += "NOT EXISTS (SELECT 1 FROM deliverables WHERE deliverables.id = audit.project_id) AND " if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'deliverables'").fetchone() else ""
+    jo_filter += "NOT EXISTS (SELECT 1 FROM media_locations WHERE media_locations.id = audit.project_id) AND " if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'media_locations'").fetchone() else ""
     db.execute("INSERT INTO activity (project_id, at, actor, action, summary, audit_id) "
                "SELECT project_id, at, actor, action, REPLACE(action, '_', ' '), id FROM audit "
                f"WHERE {jo_filter}NOT EXISTS (SELECT 1 FROM activity WHERE activity.audit_id = audit.id)")

@@ -14,6 +14,7 @@ from pydantic import BaseModel, TypeAdapter
 from t6.verbs import (
     Ambiguous, Done, NeedsPerson, Outcome, Preview, Refused,
     VersionAddInput, VersionLockInput, VersionFindInput, VersionGetInput,
+    MediaLinkInput, MediaUnlinkInput, MediaListInput, MediaMigrateInput,
     BayBookInput, BookingMoveInput, BookingExtendInput, BookingCancelInput, BookingGetInput, BookingListInput,
     DeliverableDeliverInput, PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
@@ -103,6 +104,18 @@ class Client:
     def tap(self, payload: dict[str, Any], *, idempotency_key: str) -> dict[str, Any] | Unavailable:
         """Deliver a gateway tap with its retry key and configured Telegram identity."""
         return cast(dict[str, Any] | Unavailable, self._request('/tap', payload, idempotency_key=idempotency_key))
+
+    def admin_media_migrate(self, inputs: MediaMigrateInput) -> Result:
+        return self.call('admin/media', 'migrate', inputs)
+
+    def media_link(self, inputs: MediaLinkInput) -> Result:
+        return self.call('media', 'link', inputs)
+
+    def media_unlink(self, inputs: MediaUnlinkInput) -> Result:
+        return self.call('media', 'unlink', inputs)
+
+    def media_list(self, inputs: MediaListInput) -> Result:
+        return self.call('media', 'list', inputs)
 
     def bay_book(self, inputs: BayBookInput) -> Result:
         return self.call('bay', 'book', inputs)

@@ -72,6 +72,69 @@ class VerbAPITests(unittest.TestCase):
         self.assertEqual(self.request('/v1/commands', secret='gateway-secret', headers={'X-Telegram-User-Id': '42'})[1], catalogue())
         self.assertIn('schema_version', self.request('/health', secret=None)[1])
 
+    def test_media_migration_api_uses_authenticated_actor_and_fake_notion(self) -> None:
+        from t6.notion.testing import FakeNotion, external_link_properties
+        fake = FakeNotion()
+        fake.add_data_source('links')
+        project = self.registry.register(actor='setup', idempotency_key='media-migration-project', notion_page_id='project-page')
+        assert isinstance(project, Registered)
+        fake.add_page('links', external_link_properties(system='resolve', kind='project', external_id='db/show', projects=['project-page']))
+        fake.add_page('links', external_link_properties(system='frameio', kind='project', external_id='f', projects=['project-page']))
+        fake.add_page('links', external_link_properties(system='telegram', kind='chat', external_id='c', projects=['project-page']))
+        self.api.open_notion = lambda _: fake.client()
+        self.api.data_sources['external_links'] = 'links'
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO person_permissions VALUES (?, 'admin')", (self.actor,))
+        with patch.dict(os.environ, {'T6_NOTION_TOKEN': 'fake'}):
+            self.assertEqual(self.request('/v1/admin/media/migrate', {}, secret='staff-secret')[1]['outcome'], 'refused')
+            preview = self.request('/v1/admin/media/migrate', {'idempotency_key': 'migrate'})[1]
+            self.assertEqual(preview['outcome'], 'preview')
+            self.assertEqual(len(preview['plan']['review']), 2)
+            result = self.request('/v1/admin/media/migrate', {'idempotency_key': 'migrate', 'confirm': preview['token']})[1]
+            self.assertEqual(result['outcome'], 'done')
+            replay = self.request('/v1/admin/media/migrate', {'idempotency_key': 'migrate'})[1]
+            self.assertEqual(self.request('/v1/admin/media/migrate', {'idempotency_key': 'migrate', 'confirm': replay['token']})[1], result)
+        self.assertEqual(self.registry.activity(project.project.id)[0].actor, self.actor)
+        import io
+        from contextlib import redirect_stdout
+        from t6.cli import main
+        env = {'T6_API_URL': 'http://127.0.0.1:%s' % self.server.server_port, 'T6_API_SECRET': 'operator-secret', 'T6_NOTION_TOKEN': 'fake'}
+        with patch.dict(os.environ, env), redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(main(['admin', 'media', 'migrate', '--idempotency-key', 'cli-migrate']), 0)
+        self.assertEqual(json.loads(out.getvalue())['outcome'], 'preview')
+
+    def test_media_cli_api_and_catalogue(self) -> None:
+        from t6.client import Client
+        from t6.verbs import MediaLinkInput, MediaListInput, MediaUnlinkInput, Done, Preview
+        project = self.registry.register(actor='setup', idempotency_key='media-project')
+        assert isinstance(project, Registered)
+        client = Client('http://127.0.0.1:%s' % self.server.server_port, 'operator-secret')
+        values = MediaLinkInput(owner=project.project.id, kind='nas-path', ref='/media', role='master', idempotency_key='media-link')
+        self.assertEqual(self.request('/v1/media/link', values.model_dump(), secret='worker-secret')[1]['rule'], 'person')
+        preview = client.media_link(values)
+        assert isinstance(preview, Preview)
+        values.confirm = preview.token
+        done = client.media_link(values)
+        assert isinstance(done, Done)
+        listed = client.media_list(MediaListInput(owner=project.project.id))
+        assert isinstance(listed, Done)
+        self.assertEqual(listed.result['locations'][0]['id'], done.result['media_id'])
+        unlink = MediaUnlinkInput(media=done.result['media_id'], idempotency_key='media-unlink')
+        preview = client.media_unlink(unlink)
+        assert isinstance(preview, Preview)
+        unlink.confirm = preview.token
+        self.assertIsInstance(client.media_unlink(unlink), Done)
+        self.assertEqual({v['verb'] for v in catalogue() if v['noun'] == 'media'}, {'link', 'unlink', 'list'})
+        self.assertTrue(any(v['noun'] == 'admin media' and v['verb'] == 'migrate' for v in catalogue()))
+        self.assertEqual(self.registry.activity(project.project.id)[0].actor, self.actor)
+        import io
+        from contextlib import redirect_stdout
+        from t6.cli import main
+        env = {'T6_API_URL': 'http://127.0.0.1:%s' % self.server.server_port, 'T6_API_SECRET': 'operator-secret'}
+        with patch.dict(os.environ, env), redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(main(['media', 'link', project.project.id, 'nas-path', '/other', '--role', 'backup']), 0)
+        self.assertEqual(json.loads(out.getvalue())['outcome'], 'preview')
+
     def test_delivery_api_uses_configured_spec_and_authenticated_actor(self) -> None:
         from t6.notion.testing import FakeNotion, package_spec_properties
         fake = FakeNotion()

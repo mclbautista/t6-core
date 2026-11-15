@@ -245,3 +245,19 @@ class ExternalLinks:
 
 def _name(ref: ExternalRef) -> str:
     return f"{ref.system} / {ref.kind} / {ref.external_id}"
+
+
+def read_media_migration_rows(client: NotionClient, data_source_id: str) -> list[JSON]:
+    """Read every live External Links row, including incomplete rows for review."""
+    from t6.notion.reads import is_live
+
+    rows = []
+    for page in client.query_data_source(data_source_id):
+        if not is_live(page):
+            continue
+        props = page.get('properties') or {}
+        rows.append({'page_id': str(page['id']), 'system': codec.select(props.get(_P.SYSTEM)),
+                     'kind': codec.select(props.get(_P.KIND)), 'ref': codec.rich_text(props.get(_P.EXTERNAL_ID)),
+                     'projects': list(codec.relation(props.get(_P.PROJECTS))),
+                     'deliverables': list(codec.relation(props.get(_P.DELIVERABLES)))})
+    return rows

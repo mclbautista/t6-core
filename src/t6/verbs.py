@@ -1312,7 +1312,71 @@ def booking_read(inputs: BookingGetInput | BookingListInput, open_notion: Callab
     booking = store.get(inputs.booking)
     return Done(result={'booking': booking}) if booking else Refused(rule='booking', reason='Booking not found')
 
+
+class MediaMigrateInput(BaseModel):
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class MediaMigrateOutput(BaseModel):
+    digest: str
+    entries: list[dict[str, Any]]
+    review: list[dict[str, Any]]
+    idempotency_key: str
+
+
+class MediaLinkInput(BaseModel):
+    owner: str
+    kind: str
+    ref: str
+    role: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class MediaUnlinkInput(BaseModel):
+    media: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class MediaListInput(BaseModel):
+    owner: str
+
+
+class MediaWriteOutput(BaseModel):
+    media_id: str
+    project_id: str
+    idempotency_key: str
+
+
+class MediaListOutput(BaseModel):
+    locations: list[dict[str, Any]]
+
+
+def media_write(inputs: MediaLinkInput | MediaUnlinkInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.media import MediaStore
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    people = _people()
+    person = people.get(_actor.get())
+    if not person or not person['active']:
+        return Refused(rule='person', reason='An active Person is required')
+    return MediaStore(people.registry, people.tokens).write(
+        'link' if isinstance(inputs, MediaLinkInput) else 'unlink',
+        inputs.model_dump(exclude={'confirm', 'idempotency_key'}), actor=_actor.get(),
+        idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
+def media_list(inputs: MediaListInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.media import MediaStore
+    people = _people()
+    return Done(result={'locations': MediaStore(people.registry, people.tokens).list(inputs.owner)})
+
 VERBS = (
+    Verb('media', 'link', 'Link a Media location', (), MediaLinkInput, MediaWriteOutput, 'coordinator', 'Preview and confirm the link.', media_write),
+    Verb('media', 'unlink', 'Unlink a Media location', (), MediaUnlinkInput, MediaWriteOutput, 'coordinator', 'Preview and confirm the unlink.', media_write),
+    Verb('media', 'list', 'List Media locations', (), MediaListInput, MediaListOutput, 'reader', 'Read Media locations.', media_list),
     Verb('bay', 'book', 'Book a Bay', (), BayBookInput, BookingOutput, 'bookings', 'Overlaps require force.', booking_write),
     Verb('booking', 'move', 'Move a Booking', (), BookingMoveInput, BookingOutput, 'bookings', 'Overlaps require force.', booking_write),
     Verb('booking', 'extend', 'Extend a Booking', (), BookingExtendInput, BookingOutput, 'bookings', 'Overlaps require force.', booking_write),
@@ -1436,6 +1500,9 @@ def catalogue() -> list[dict[str, Any]]:
     entries.append({'noun': 'admin bay', 'verb': 'migrate', 'description': 'Migrate Notion Bays',
                     'aliases': [], 'role': 'admin', 'rule': 'Preview before applying.', 'local_only': True,
                     'input_schema': DeliverableMigrateInput.model_json_schema(), 'output_schema': DeliverableMigrateOutput.model_json_schema()})
+    entries.append({'noun': 'admin media', 'verb': 'migrate', 'description': 'Migrate Notion External Links',
+                    'aliases': [], 'role': 'admin', 'rule': 'Preview before applying.', 'local_only': False,
+                    'input_schema': MediaMigrateInput.model_json_schema(), 'output_schema': MediaMigrateOutput.model_json_schema()})
     return entries
 
 
@@ -1502,6 +1569,21 @@ def add_parsers(commands: Any) -> None:
                 alias_parser.add_argument('--idempotency-key')
                 alias_parser.add_argument('--confirm')
                 alias_parser.set_defaults(registered_verb=entry, gate=gate)
+        if entry.handler in (media_write, media_list):
+            parser = parser.add_parser(entry.verb, help=entry.description)
+            if entry.verb == 'link':
+                for name in ('owner', 'kind', 'ref'):
+                    parser.add_argument(name)
+                parser.add_argument('--role', required=True)
+            elif entry.verb == 'unlink':
+                parser.add_argument('media')
+            else:
+                parser.add_argument('owner')
+            if entry.handler is media_write:
+                parser.add_argument('--idempotency-key')
+                parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
         if entry.handler in (booking_write, booking_read):
             parser = parser.add_parser(entry.verb, help=entry.description)
             if entry.verb == 'book':

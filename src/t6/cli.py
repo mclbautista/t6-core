@@ -204,6 +204,21 @@ def _migrate_job_orders(args: argparse.Namespace, open_notion: Callable[..., Any
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
 
+def _migrate_media(args: argparse.Namespace) -> int:
+    from t6.client import APIError, Client, Unavailable
+    from t6.verbs import MediaMigrateInput, Refused, outcome_json
+    try:
+        result = Client().admin_media_migrate(MediaMigrateInput(idempotency_key=args.idempotency_key, confirm=args.confirm))
+    except APIError as error:
+        result = Refused(rule='api', reason=str(error))
+    if isinstance(result, Unavailable):
+        print(json.dumps({'outcome': 'unavailable', 'reason': result.reason, 'idempotency_key': result.idempotency_key}))
+        return 1
+    code, payload = outcome_json(result)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return code
+
+
 def _migrate_bays(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
     import pwd
     from t6.bay import BayStore
@@ -572,6 +587,11 @@ def main(
     jo_migrate.add_argument("--registry-db", type=Path, default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)))
     jo_migrate.add_argument("--apply", action="store_true")
     jo_migrate.add_argument("--preview", type=Path)
+    media_admin = admin_commands.add_parser("media", help="Media administration")
+    media_commands = media_admin.add_subparsers(dest="media_admin_command", required=True)
+    media_migrate = media_commands.add_parser("migrate", help="Preview or apply External Links migration")
+    media_migrate.add_argument("--idempotency-key")
+    media_migrate.add_argument("--confirm")
     bay_admin = admin_commands.add_parser("bay", help="Bay administration")
     bay_commands = bay_admin.add_subparsers(dest="bay_admin_command", required=True)
     bay_migrate = bay_commands.add_parser("migrate", help="Preview or apply Bays migration")
@@ -629,6 +649,8 @@ def main(
                             {"snapshot": "schema-snapshot", "consumer-check": "check-consumer"}.get(args.admin_command, args.admin_command))
     if getattr(args, "admin_command", None) == "person":
         return _migrate_people(args, open_notion)
+    if getattr(args, "admin_command", None) == "media":
+        return _migrate_media(args)
     if getattr(args, "admin_command", None) == "bay":
         return _migrate_bays(args, open_notion)
     if getattr(args, "admin_command", None) == "deliverable":
