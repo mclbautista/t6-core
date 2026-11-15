@@ -135,6 +135,40 @@ class VerbAPITests(unittest.TestCase):
             self.assertEqual(main(['media', 'link', project.project.id, 'nas-path', '/other', '--role', 'backup']), 0)
         self.assertEqual(json.loads(out.getvalue())['outcome'], 'preview')
 
+    def test_timeline_verbs_over_the_api_and_cli(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+        from t6.cli import main
+        from t6.client import Client
+        from t6.verbs import Done, MediaLinkInput, Preview, TimelineLinkInput, TimelineListInput
+        project = self.registry.register(actor='setup', idempotency_key='timeline-project')
+        assert isinstance(project, Registered)
+        client = Client('http://127.0.0.1:%s' % self.server.server_port, 'operator-secret')
+        resolve = MediaLinkInput(owner=project.project.id, kind='resolve-project', ref='db/show', role='working', idempotency_key='timeline-resolve')
+        preview = client.media_link(resolve)
+        assert isinstance(preview, Preview)
+        resolve.confirm = preview.token
+        self.assertIsInstance(client.media_link(resolve), Done)
+        stamp = 't6t_' + 'c' * 32
+        values = TimelineLinkInput(project=project.project.id, timeline='Ep1', stamp=stamp, idempotency_key='timeline-link')
+        self.assertEqual(self.request('/v1/timeline/link', values.model_dump(), secret='worker-secret')[1]['rule'], 'permission')
+        preview = client.timeline_link(values)
+        assert isinstance(preview, Preview)
+        values.confirm = preview.token
+        done = client.timeline_link(values)
+        assert isinstance(done, Done)
+        self.assertEqual(done.result['timeline_id'], stamp)
+        listed = client.timeline_list(TimelineListInput(project=project.project.id))
+        assert isinstance(listed, Done)
+        self.assertEqual(listed.result['timelines'][0]['canonical']['resolve_project'], 'db/show')
+        env = {'T6_API_URL': 'http://127.0.0.1:%s' % self.server.server_port, 'T6_API_SECRET': 'operator-secret'}
+        with patch.dict(os.environ, env), redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(main(['timeline', 'link', project.project.id, 'Ep2', '--stamp', 't6t_' + 'd' * 32]), 0)
+        self.assertEqual(json.loads(out.getvalue())['outcome'], 'preview')
+        with patch.dict(os.environ, env), redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(main(['timeline', 'list', project.project.id]), 0)
+        self.assertEqual(json.loads(out.getvalue())['result']['timelines'][0]['id'], stamp)
+
     def test_drive_verbs_over_the_api_need_the_drives_permission(self) -> None:
         from t6.client import Client
         from t6.drives import Drive, DriveStatus

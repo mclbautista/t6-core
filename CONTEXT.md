@@ -80,6 +80,27 @@ the times from the Person's shift pattern. Booking verbs (`bay book`,
   Project's name; the description names the Person and the Booking ID. With no
   calendar configured the job finishes and says so.
 
+## Timelines
+
+A **Timeline** (`t6t_`) is a DaVinci Resolve sequence timeline known by its
+**stamp**: the `t6t_` ID a person writes by hand into the custom data of a
+marker at the timeline's first frame. The stamp is the identity; the Resolve
+name is only a label, so editors may rename and back up freely. Writing the
+stamp is a Resolve write and stays manual. Nothing in T6 writes to Resolve.
+
+- A Timeline records its `t6t_` ID (the stamp), its Resolve project (the
+  Project's active resolve-project Media location, on the project server) and
+  the label. The copy on the project server is the **canonical copy**; copies
+  in other Resolve projects are not recorded.
+- **One Timeline per stamp.** Linking a stamp already linked to another Project
+  or Resolve project is refused, and so is a stamp found on two timelines of the
+  Resolve project (a duplicate keeps the same stamp). The fix, re-stamping the
+  copy, is manual. Linking the same stamp again for the same Resolve project
+  records nothing new, whatever the name now is.
+- A Resolve unique id is not the key: it changes on duplicate and import.
+- A **Version** may name its source Timeline (`version add --timeline`); the
+  Timeline must belong to the Deliverable's Project.
+
 ## Media locations
 
 A **Media location** (`t6m_`) is a typed link from a Project or Deliverable (its

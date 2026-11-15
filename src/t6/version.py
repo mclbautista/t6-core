@@ -93,6 +93,9 @@ class VersionStore:
                 existing = db.execute('SELECT id, deliverable_id FROM versions WHERE frameio_file_id=?', (values['frameio_file'],)).fetchone()
                 if existing and existing[1] != row[0]:
                     return Refused(rule='frameio_file', reason='File belongs to another Deliverable')
+                timeline = values.get('timeline')
+                if timeline is not None and not db.execute('SELECT 1 FROM timelines WHERE id=? AND project_id=?', (timeline, row[1])).fetchone():
+                    return Refused(rule='timeline', reason='Timeline is not linked to the Deliverable\'s Project')
                 if nonce is None:
                     if self.reader is None:
                         return Refused(rule='frameio', reason='Frame.io reader is not configured')
@@ -103,7 +106,7 @@ class VersionStore:
                     match = next((v for v in versions if v.file_id == values['frameio_file']), None)
                     if match is None:
                         return Refused(rule='frameio_file', reason='Frame.io file not found')
-                    plan = {'deliverable_id': row[0], 'project_id': row[1], 'frameio_file_id': values['frameio_file'], 'frameio_stack_id': match.stack_id, 'note': values.get('note'), 'idempotency_key': key}
+                    plan = {'deliverable_id': row[0], 'project_id': row[1], 'frameio_file_id': values['frameio_file'], 'frameio_stack_id': match.stack_id, 'note': values.get('note'), 'source_timeline_id': timeline, 'idempotency_key': key}
                 else:
                     plan = None
             else:
@@ -135,7 +138,7 @@ class VersionStore:
                     return Refused(rule='frameio_file', reason='File belongs to another Deliverable')
                 identifier = existing[0] if existing else str(T6Id.mint(EntityKind.VERSION))
                 if not existing:
-                    db.execute('INSERT INTO versions VALUES (?, ?, ?, ?, NULL, ?)', (identifier, row[0], values['frameio_file'], saved['frameio_stack_id'], values.get('note')))
+                    db.execute('INSERT INTO versions VALUES (?, ?, ?, ?, ?, ?)', (identifier, row[0], values['frameio_file'], saved['frameio_stack_id'], saved.get('source_timeline_id'), values.get('note')))
                 result = {**saved, 'version_id': identifier}
                 changed = not existing
             else:

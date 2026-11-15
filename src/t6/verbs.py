@@ -950,6 +950,7 @@ class VersionAddInput(BaseModel):
     deliverable: str
     frameio_file: str
     note: str | None = None
+    timeline: str | None = None
     idempotency_key: str | None = None
     confirm: str | None = None
 
@@ -989,7 +990,7 @@ def version_write(inputs: VersionAddInput | VersionLockInput, open_notion: Calla
     reader = FrameioReader(HttpTransport(url), secret) if url and secret else None
     return VersionStore(_people().registry, _people().tokens, reader).write(
         'add' if isinstance(inputs, VersionAddInput) else 'lock',
-        inputs.model_dump(exclude={'confirm', 'idempotency_key'}), actor=_actor.get(),
+        inputs.model_dump(exclude={'confirm', 'idempotency_key'} | ({'timeline'} if getattr(inputs, 'timeline', None) is None else set())), actor=_actor.get(),
         idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
 
 
@@ -1437,6 +1438,45 @@ def media_list(inputs: MediaListInput, open_notion: Callable[..., Any]) -> Outco
     return Done(result={'locations': MediaStore(people.registry, people.tokens).list(inputs.owner)})
 
 
+class TimelineLinkInput(BaseModel):
+    project: str
+    timeline: str
+    stamp: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class TimelineWriteOutput(BaseModel):
+    timeline_id: str
+    project_id: str
+    created: bool
+    idempotency_key: str
+
+
+class TimelineListInput(BaseModel):
+    project: str
+
+
+class TimelineListOutput(BaseModel):
+    timelines: list[dict[str, Any]]
+
+
+def timeline_write(inputs: TimelineLinkInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.timeline import TimelineStore
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    people = _people()
+    return TimelineStore(people.registry, people.tokens).write(
+        inputs.model_dump(exclude={'confirm', 'idempotency_key'}), actor=_actor.get(),
+        idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
+def timeline_list(inputs: TimelineListInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.timeline import TimelineStore
+    people = _people()
+    return Done(result={'timelines': TimelineStore(people.registry, people.tokens).list(inputs.project)})
+
+
 class DriveReceiveInput(BaseModel):
     drive: str
     project: str
@@ -1580,6 +1620,8 @@ VERBS = (
     Verb('media', 'unlink', 'Unlink a Media location', (), MediaUnlinkInput, MediaWriteOutput, 'coordinator', 'Preview and confirm the unlink.', media_write),
     Verb('frameio', 'project link', 'Link a Frame.io project to a Project', (), FrameioProjectInput, MediaWriteOutput, 'staff', 'One Frame.io project belongs to one Project. Preview and confirm.', frameio_project_link),
     Verb('frameio', 'project unlink', 'Unlink a Frame.io project from a Project', (), FrameioProjectInput, MediaWriteOutput, 'staff', 'Moving is unlink then link. Preview and confirm.', frameio_project_unlink),
+    Verb('timeline', 'link', 'Record a hand-written Timeline stamp', (), TimelineLinkInput, TimelineWriteOutput, 'staff', 'The stamp is written by hand in Resolve; one Timeline per stamp. Preview and confirm.', timeline_write),
+    Verb('timeline', 'list', 'List Timelines of a Project', (), TimelineListInput, TimelineListOutput, 'reader', 'Read Timelines with their canonical copy.', timeline_list, read_only=True),
     Verb('media', 'list', 'List Media locations', (), MediaListInput, MediaListOutput, 'reader', 'Read Media locations.', media_list, read_only=True),
     Verb('bay', 'book', 'Book a Bay', (), BayBookInput, BookingOutput, 'bookings', 'Overlaps require force.', booking_write),
     Verb('booking', 'move', 'Move a Booking', (), BookingMoveInput, BookingOutput, 'bookings', 'Overlaps require force.', booking_write),
@@ -1853,6 +1895,16 @@ def add_parsers(commands: Any) -> None:
                 parser.add_argument('--confirm')
             parser.set_defaults(registered_verb=entry)
             continue
+        if entry.handler in (timeline_write, timeline_list):
+            parser = parser.add_parser(entry.verb, help=entry.description)
+            parser.add_argument('project')
+            if entry.handler is timeline_write:
+                parser.add_argument('timeline')
+                parser.add_argument('--stamp', required=True)
+                parser.add_argument('--idempotency-key')
+                parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
         if entry.handler in (booking_write, booking_read):
             parser = parser.add_parser(entry.verb, help=entry.description)
             if entry.verb == 'book':
@@ -1881,6 +1933,7 @@ def add_parsers(commands: Any) -> None:
                 parser.add_argument('deliverable')
                 parser.add_argument('--frameio-file', required=True)
                 parser.add_argument('--note')
+                parser.add_argument('--timeline')
             else:
                 parser.add_argument('version')
             parser.add_argument('--idempotency-key')

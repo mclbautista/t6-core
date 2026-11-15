@@ -1,0 +1,210 @@
+"""Timeline link and list against the in-memory t6 database and a fake Resolve reader."""
+import unittest
+from typing import Any
+
+from t6.deliverable import DeliverableStore
+from t6.frameio.model import Version
+from t6.ids import EntityKind, T6Id
+from t6.media import MediaStore
+from t6.preview import PreviewTokens
+from t6.registry import Registered
+from t6.resolve.testing import FakeTimelineReader
+from t6.resolve.timelines import ResolveTimeline
+from t6.timeline import TimelineStore
+from t6.verbs import Ambiguous, Done, Preview, Refused, catalogue
+from t6.version import VersionStore
+from test_person import MemoryRegistry
+
+RESOLVE_REF = 'db/folder/show'
+STAMP = 't6t_' + 'a' * 32
+OTHER_STAMP = 't6t_' + 'b' * 32
+
+
+class Reader:
+    def versions(self, file_id: str) -> tuple[Version, ...]:
+        return (Version(file_id=file_id, name='cut', stack_id='stack'),)
+
+
+class TimelineTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.registry = MemoryRegistry()
+        self.addCleanup(self.registry.db.close)
+        self.registry._new_id = lambda: str(T6Id.mint(EntityKind.PROJECT))
+        self.tokens = PreviewTokens('secret')
+        self.project = self.register('p')
+        self.media = MediaStore(self.registry, self.tokens)
+        self.resolve_media = self.link_resolve(self.project, RESOLVE_REF)
+        self.resolve = FakeTimelineReader({RESOLVE_REF: [ResolveTimeline(uuid='u1', name='Ep1 v1', stamp=STAMP)]})
+        self.store = TimelineStore(self.registry, self.tokens, self.resolve)
+
+    def register(self, page: str) -> str:
+        project = self.registry.register(actor='setup', idempotency_key='setup-' + page, notion_page_id=page)
+        assert isinstance(project, Registered)
+        return project.project.id
+
+    def link_resolve(self, project: str, ref: str) -> str:
+        values = {'owner': project, 'kind': 'resolve-project', 'ref': ref, 'role': 'working'}
+        preview = self.media.write('link', values, actor='person', idempotency_key='resolve-' + project)
+        assert isinstance(preview, Preview)
+        done = self.media.write('link', values, actor='person', idempotency_key='resolve-' + project, confirm=preview.token)
+        assert isinstance(done, Done)
+        return str(done.result['media_id'])
+
+    def link(self, name: str, stamp: str, key: str, project: str | None = None, store: TimelineStore | None = None) -> Done:
+        values = {'project': project or self.project, 'timeline': name, 'stamp': stamp}
+        store = store or self.store
+        preview = store.write(values, actor='alice', idempotency_key=key)
+        assert isinstance(preview, Preview), preview
+        done = store.write(values, actor='alice', idempotency_key=key, confirm=preview.token)
+        assert isinstance(done, Done), done
+        return done
+
+    def test_link_records_a_timeline_once_and_list_shows_its_canonical_copy(self) -> None:
+        values = {'project': self.project, 'timeline': 'Ep1 v1', 'stamp': STAMP}
+        preview = self.store.write(values, actor='alice', idempotency_key='one')
+        assert isinstance(preview, Preview)
+        self.assertEqual(self.store.list(self.project), [])
+        done = self.store.write(values, actor='alice', idempotency_key='one', confirm=preview.token)
+        assert isinstance(done, Done)
+        self.assertEqual(done.result['timeline_id'], STAMP)
+        self.assertTrue(done.result['created'])
+        # Replay of the same key gives the same result; a new key for the same stamp creates nothing.
+        replay = self.store.write(values, actor='alice', idempotency_key='one')
+        assert isinstance(replay, Preview)
+        self.assertEqual(self.store.write(values, actor='alice', idempotency_key='one', confirm=replay.token), done)
+        again = self.link('Ep1 v1', STAMP, 'two')
+        self.assertFalse(again.result['created'])
+        listed = self.store.list(self.project)
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]['id'], STAMP)
+        self.assertEqual(listed[0]['stamp'], STAMP)
+        self.assertEqual(listed[0]['canonical'], {'resolve_project': RESOLVE_REF, 'resolve_project_media': self.resolve_media, 'name': 'Ep1 v1', 'active': True})
+        self.assertEqual([a.action for a in self.registry.activity(self.project)][0], 'timeline_link')
+
+    def test_renaming_the_resolve_timeline_does_not_break_the_link(self) -> None:
+        self.link('Ep1 v1', STAMP, 'one')
+        self.resolve.rename(RESOLVE_REF, 'u1', 'Ep1 locked')
+        self.assertEqual([t['id'] for t in self.store.list(self.project)], [STAMP])
+        # The stamp still finds the same Timeline under the new name; nothing new is recorded.
+        self.assertFalse(self.link('Ep1 locked', STAMP, 'two').result['created'])
+        self.assertEqual(len(self.store.list(self.project)), 1)
+        # The old name is only a label that no longer names a timeline in Resolve.
+        refused = self.store.write({'project': self.project, 'timeline': 'Ep1 v1', 'stamp': STAMP}, actor='alice', idempotency_key='three')
+        self.assertIsInstance(refused, Refused)
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'timeline')
+
+    def test_a_timeline_can_be_named_by_its_resolve_id(self) -> None:
+        self.assertEqual(self.link('u1', STAMP, 'one').result['timeline_id'], STAMP)
+
+    def test_refusals_leave_nothing_recorded(self) -> None:
+        def rule(values: dict[str, Any], store: TimelineStore | None = None) -> str:
+            outcome = (store or self.store).write(values, actor='alice', idempotency_key=None)
+            assert isinstance(outcome, Refused), outcome
+            return outcome.rule
+        base = {'project': self.project, 'timeline': 'Ep1 v1', 'stamp': STAMP}
+        self.assertEqual(rule({**base, 'stamp': 'not-a-stamp'}), 'stamp')
+        self.assertEqual(rule({**base, 'stamp': 't6m_' + 'a' * 32}), 'stamp')
+        self.assertEqual(rule({**base, 'project': 'nope'}), 'project')
+        self.assertEqual(rule({**base, 'project': 't6p_' + '0' * 24}), 'project')
+        self.assertEqual(rule({**base, 'stamp': OTHER_STAMP}), 'stamp')  # the marker in Resolve says another stamp
+        self.resolve.add(RESOLVE_REF, ResolveTimeline(uuid='u2', name='Unstamped', stamp=None))
+        self.assertEqual(rule({**base, 'timeline': 'Unstamped'}), 'stamp')  # written by hand first
+        self.assertEqual(rule({**base, 'timeline': 'Missing'}), 'timeline')
+        other = self.register('q')  # a Project with no Resolve project
+        self.assertEqual(rule({**base, 'project': other}), 'resolve_project')
+        self.assertEqual(self.store.list(self.project), [])
+
+    def test_a_duplicated_timeline_with_the_same_stamp_is_refused(self) -> None:
+        self.resolve.add(RESOLVE_REF, ResolveTimeline(uuid='u9', name='Ep1 v1 copy', stamp=STAMP))
+        refused = self.store.write({'project': self.project, 'timeline': 'Ep1 v1', 'stamp': STAMP}, actor='alice', idempotency_key='dup')
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'timeline_stamp')
+        self.assertEqual(self.store.list(self.project), [])
+
+    def test_one_timeline_per_stamp_across_projects(self) -> None:
+        self.link('Ep1 v1', STAMP, 'one')
+        other = self.register('q')
+        self.link_resolve(other, 'db/folder/other')
+        self.resolve.add('db/folder/other', ResolveTimeline(uuid='x1', name='Copy', stamp=STAMP))
+        refused = self.store.write({'project': other, 'timeline': 'Copy', 'stamp': STAMP}, actor='alice', idempotency_key='two')
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'timeline_stamp')
+        self.assertEqual(self.store.list(other), [])
+        self.assertEqual(len(self.store.list(self.project)), 1)
+
+    def test_confirming_after_another_link_records_nothing_new(self) -> None:
+        values = {'project': self.project, 'timeline': 'Ep1 v1', 'stamp': STAMP}
+        preview = self.store.write(values, actor='alice', idempotency_key='first')
+        assert isinstance(preview, Preview)
+        self.link('Ep1 v1', STAMP, 'second')
+        # Same Project and stamp: the confirm records nothing new.
+        done = self.store.write(values, actor='alice', idempotency_key='first', confirm=preview.token)
+        assert isinstance(done, Done)
+        self.assertFalse(done.result['created'])
+        self.assertEqual(len(self.store.list(self.project)), 1)
+
+    def test_an_ambiguous_name_asks_the_person(self) -> None:
+        self.resolve.add(RESOLVE_REF, ResolveTimeline(uuid='u2', name='Ep1 v1', stamp=OTHER_STAMP))
+        outcome = self.store.write({'project': self.project, 'timeline': 'Ep1 v1', 'stamp': STAMP}, actor='alice', idempotency_key='amb')
+        assert isinstance(outcome, Ambiguous)
+        self.assertEqual({c['uuid'] for c in outcome.candidates}, {'u1', 'u2'})
+
+    def test_without_a_resolve_reader_the_stamp_is_recorded_as_unchecked(self) -> None:
+        store = TimelineStore(self.registry, self.tokens)
+        preview = store.write({'project': self.project, 'timeline': 'Anything', 'stamp': STAMP}, actor='alice', idempotency_key='x')
+        assert isinstance(preview, Preview)
+        self.assertFalse(preview.plan['verified'])
+        self.link('Anything', STAMP, 'y', store=store)
+        self.assertEqual(self.store.list(self.project)[0]['canonical']['name'], 'Anything')
+
+    def test_a_version_may_name_its_source_timeline(self) -> None:
+        deliverables = DeliverableStore(self.registry, self.tokens)
+        rows = [{'page_id': 'd', 'project_page': 'p', 'code': 'FTR'}]
+        deliverable = deliverables.migrate(rows, actor='setup', apply=True, digest=deliverables.migrate(rows, actor='setup')['digest'])['entries'][0]['t6_id']
+        versions = VersionStore(self.registry, self.tokens, Reader())
+
+        def add(file: str, timeline: str | None, key: str) -> Any:
+            values: dict[str, Any] = {'deliverable': deliverable, 'frameio_file': file, 'note': None}
+            if timeline is not None:
+                values['timeline'] = timeline
+            preview = versions.write('add', values, actor='alice', idempotency_key=key)
+            if not isinstance(preview, Preview):
+                return preview
+            return versions.write('add', values, actor='alice', idempotency_key=key, confirm=preview.token)
+
+        self.assertEqual(add('plain', None, 'k0').__class__, Done)
+        plain = versions.for_file('plain')
+        assert plain is not None
+        self.assertIsNone(plain['source_timeline_id'])
+        unknown = add('f1', STAMP, 'k1')
+        assert isinstance(unknown, Refused)
+        self.assertEqual(unknown.rule, 'timeline')
+        self.link('Ep1 v1', STAMP, 'link')
+        done = add('f2', STAMP, 'k2')
+        assert isinstance(done, Done)
+        self.assertEqual(done.result['source_timeline_id'], STAMP)
+        record = versions.get(done.result['version_id'])
+        assert record is not None
+        self.assertEqual(record['source_timeline_id'], STAMP)
+        # A Timeline of another Project cannot be the source.
+        other = self.register('q')
+        self.link_resolve(other, 'db/folder/other')
+        self.resolve.add('db/folder/other', ResolveTimeline(uuid='x1', name='Other', stamp=OTHER_STAMP))
+        self.link('Other', OTHER_STAMP, 'link-other', project=other)
+        foreign = add('f3', OTHER_STAMP, 'k3')
+        assert isinstance(foreign, Refused)
+        self.assertEqual(foreign.rule, 'timeline')
+
+    def test_verbs_are_in_the_catalogue_with_staff_write_and_reader_read(self) -> None:
+        entries = {(v['noun'], v['verb']): v for v in catalogue()}
+        link, listing = entries[('timeline', 'link')], entries[('timeline', 'list')]
+        self.assertEqual(link['role'], 'staff')
+        self.assertFalse(link['read_only'])
+        self.assertEqual(set(link['input_schema']['properties']), {'project', 'timeline', 'stamp', 'idempotency_key', 'confirm'})
+        self.assertEqual((listing['role'], listing['read_only']), ('reader', True))
+        self.assertIn('timeline', entries[('version', 'add')]['input_schema']['properties'])
+
+
+if __name__ == '__main__':
+    unittest.main()

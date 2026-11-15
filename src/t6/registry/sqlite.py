@@ -316,6 +316,8 @@ _MIGRATIONS = (
     (33, False, """CREATE TABLE transcript_speaker_maps (history_id INTEGER PRIMARY KEY REFERENCES transcript_history(id), csv TEXT NOT NULL)"""),
     (34, False, """CREATE TABLE drive_previews (nonce TEXT PRIMARY KEY, snapshot TEXT NOT NULL);
     CREATE TABLE delivery_drives (package_id TEXT NOT NULL REFERENCES packages(id), drive_id TEXT NOT NULL REFERENCES drives(id), PRIMARY KEY (package_id, drive_id))"""),
+    (35, False, """CREATE TABLE timelines (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), resolve_media_id TEXT NOT NULL REFERENCES media_locations(id), label TEXT NOT NULL);
+    CREATE TABLE timeline_previews (nonce TEXT PRIMARY KEY, snapshot TEXT NOT NULL)"""),
 )
 
 
