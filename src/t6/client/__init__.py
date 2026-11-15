@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 from pydantic import BaseModel, TypeAdapter
 from t6.verbs import (
     Ambiguous, Done, NeedsPerson, Outcome, Preview, Refused,
+    ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
     JoListInput, JoFindInput, DeliverableListInput, DeliverableGetInput, DeliverableDefineInput, DeliverableRebindInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
     JoSubmitInput, JoCloseInput, JoBlockInput, JoUnblockInput, JoDelayInput, JoCancelInput,
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
@@ -107,6 +108,15 @@ class Client:
 
     def person_rebind(self, inputs: PersonRebindInput) -> Result:
         return self.call('person', 'rebind', inputs)
+
+    def approval_request(self, inputs: ApprovalRequestInput) -> Result:
+        return self.call('approval', 'request', inputs)
+
+    def approval_grant(self, inputs: ApprovalGrantInput) -> Result:
+        return self.call('approval', 'grant', inputs)
+
+    def approval_deny(self, inputs: ApprovalDenyInput) -> Result:
+        return self.call('approval', 'deny', inputs)
 
     def person_set_telegram(self, inputs: PersonTelegramInput) -> Result:
         return self.call('person', 'set-telegram', inputs)

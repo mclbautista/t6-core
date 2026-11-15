@@ -206,6 +206,10 @@ _MIGRATIONS = (
     (13, False, """CREATE TABLE deliverables (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), code TEXT NOT NULL, episode TEXT, due TEXT, air TEXT);
         CREATE TABLE deliverable_sync_intents (intent_id INTEGER PRIMARY KEY REFERENCES sync_intents(id), started INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE deliverable_migration_receipts (digest TEXT PRIMARY KEY, snapshot TEXT NOT NULL, entries TEXT NOT NULL)"""),
+    (14, False, """CREATE TABLE approvals (
+        id TEXT PRIMARY KEY, gate TEXT NOT NULL, target TEXT NOT NULL, requester TEXT NOT NULL,
+        tapper_rule TEXT NOT NULL, state TEXT NOT NULL, decided_by TEXT, decided_at REAL, reason TEXT
+    )"""),
 )
 
 
