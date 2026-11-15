@@ -41,7 +41,7 @@ class DeliverableSyncTests(SyncTestCase):
         from t6.worker.client import WorkerJob
         from t6.worker.runner import Refused
         job = WorkerJob(job_id=1, queue='main', token='token', kind='deliverable.sync', dedupe_key='test', payload={'intent_id': 1}, attempt=1)
-        with self.assertRaisesRegex(Refused, 'schema-snapshot'):
+        with self.assertRaisesRegex(Refused, 'admin snapshot'):
             DeliverableProjection(self.client, RegistryClient(InProcess(self.app), WORKER_SECRET), 'deliverables').sync(job)
 
     def test_identity_edit_is_restored_by_property_id(self) -> None:
