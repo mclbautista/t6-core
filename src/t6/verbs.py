@@ -658,6 +658,31 @@ def concern_get(inputs: ConcernGetInput, open_notion: Callable[..., Any]) -> Out
     return Done(result={'concern': record}) if record else Refused(rule='concern', reason='Concern not found')
 
 
+class DeliverableDeliverInput(BaseModel):
+    deliverable: str
+    carrier: str
+    ref: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class DeliverableDeliverOutput(BaseModel):
+    package_id: str
+    milestone_id: str
+    deliverable_id: str
+    project_id: str
+    carrier: str
+    ref: str | None = None
+    idempotency_key: str
+
+
+def deliverable_deliver(inputs: DeliverableDeliverInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.package import PackageStore
+    return PackageStore(_people().registry, _people().tokens).deliver(
+        inputs.model_dump(exclude={'idempotency_key', 'confirm'}), actor=_actor.get(),
+        idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
 class PackagePrepareInput(BaseModel):
     deliverable: str
     kind: str
@@ -1144,6 +1169,7 @@ VERBS = (
     Verb("deliverable", "milestone record", "Record a Deliverable milestone", (), MilestoneRecordInput, MilestoneRecordOutput, "coordinator", "Milestones are append-only.", milestone_record),
     Verb("deliverable", "miss", "Record a missed Deliverable", (), DeliverableMissInput, DeliverableScheduleOutput, "coordinator", "A delivered Deliverable cannot be missed.", deliverable_schedule),
     Verb("deliverable", "delay", "Move a Deliverable date", (), DeliverableDelayInput, DeliverableScheduleOutput, "coordinator", "Date moves require a reason.", deliverable_schedule),
+    Verb("deliverable", "deliver", "Deliver to the client", (), DeliverableDeliverInput, DeliverableDeliverOutput, "coordinator", "Blocking checklist items must be checked.", deliverable_deliver),
     Verb("deliverable", "define", "Define a Deliverable", (), DeliverableDefineInput, DeliverableDefineOutput, "operator", "Preview and confirm a Deliverable.", deliverable_define),
     Verb("deliverable", "rebind", "Bind a replacement Deliverables page", (), DeliverableRebindInput, DeliverableDefineOutput, "operator", "Retain the old page as a legacy binding.", deliverable_rebind),
     Verb("deliverable", "get", "Get a Deliverable", (), DeliverableGetInput, DeliverableGetOutput, "reader", "Read from t6.", api_read),
@@ -1354,6 +1380,14 @@ def add_parsers(commands: Any) -> None:
             if entry.verb == 'delay':
                 parser.add_argument('--field', choices=('due', 'air'), required=True)
                 parser.add_argument('--date', required=True)
+            parser.add_argument('--idempotency-key')
+            parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.handler is deliverable_deliver:
+            parser.add_argument('deliverable')
+            parser.add_argument('--carrier', required=True)
+            parser.add_argument('--ref')
             parser.add_argument('--idempotency-key')
             parser.add_argument('--confirm')
             parser.set_defaults(registered_verb=entry)

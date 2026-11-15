@@ -161,6 +161,27 @@ class VerbAPI:
                         if existing_action is not None and existing_action.state != 'done':
                             action = self.tap_app._operator.store.finish(existing_action.token, {'outcome': approval['state']})
                             self.tap_app._deliver(action.token, action.version)
+        elif (entry.noun, entry.verb) == ('deliverable', 'deliver'):
+            refusal = self.people.authorize(actor, entry.role)
+            if refusal:
+                outcome = refusal
+            else:
+                from t6.package import PackageStore
+                from t6.notion.package_specs import PackageSpecReader
+                from t6.notion import NotionError
+                from t6.cli import TOKEN_VARIABLE
+                store = PackageStore(self.people.registry, self.people.tokens)
+                try:
+                    token = os.environ.get(TOKEN_VARIABLE)
+                    source = self.data_sources.get('package_specs')
+                    if token and source:
+                        with self.open_notion(token) as client:
+                            store.specs = PackageSpecReader(client, source)
+                            outcome = store.deliver(inputs.model_dump(exclude={'idempotency_key', 'confirm'}), actor=actor, idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+                    else:
+                        outcome = store.deliver(inputs.model_dump(exclude={'idempotency_key', 'confirm'}), actor=actor, idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+                except (OSError, ValueError, KeyError, NotionError) as error:
+                    outcome = Refused(rule='spec', reason=str(error))
         elif (entry.noun, entry.verb) == ('llm', 'run'):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or (self.llm_service.run(inputs, actor=actor, registry=self.people.registry) if self.llm_service else Refused(rule='config', reason='LLM service is not configured'))

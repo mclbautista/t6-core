@@ -72,6 +72,29 @@ class VerbAPITests(unittest.TestCase):
         self.assertEqual(self.request('/v1/commands', secret='gateway-secret', headers={'X-Telegram-User-Id': '42'})[1], catalogue())
         self.assertIn('schema_version', self.request('/health', secret=None)[1])
 
+    def test_delivery_api_uses_configured_spec_and_authenticated_actor(self) -> None:
+        from t6.notion.testing import FakeNotion, package_spec_properties
+        fake = FakeNotion()
+        fake.add_data_source('specs')
+        fake.add_page('specs', package_spec_properties(package_kind='delivery', version='1', advisory_items=('Reference',)))
+        self.api.open_notion = lambda _: fake.client()
+        self.api.data_sources['package_specs'] = 'specs'
+        project = self.registry.register(actor='setup', idempotency_key='delivery-setup')
+        assert isinstance(project, Registered)
+        with self.registry._transaction() as db:
+            db.execute('INSERT INTO deliverables VALUES (?, ?, ?, NULL, NULL, NULL)', ('delivery', project.project.id, 'FTR'))
+        body = {'deliverable': 'delivery', 'carrier': 'frameio-share', 'ref': 'share-1', 'idempotency_key': 'deliver'}
+        with patch.dict(os.environ, {'T6_NOTION_TOKEN': 'fake'}):
+            self.assertEqual(self.request('/v1/deliverable/deliver', body, secret='staff-secret')[1]['outcome'], 'refused')
+            preview = self.request('/v1/deliverable/deliver', body)[1]
+            self.assertEqual(preview['outcome'], 'preview')
+            done = self.request('/v1/deliverable/deliver', {**body, 'confirm': preview['token']})[1]
+            self.assertEqual(done['outcome'], 'done')
+        from t6.package import PackageStore
+        package = PackageStore(self.registry, PreviewTokens('signing-key')).get(done['result']['package_id'])
+        assert package is not None
+        self.assertEqual((package['from_person'], package['recipient'], package['ref']), (self.actor, 'client', 'share-1'))
+
     def test_permission_writes_require_configured_signing_key(self) -> None:
         with patch.dict(os.environ, {'T6_PREVIEW_SIGNING_KEY': ''}):
             result = self.request('/v1/person/grant', {'person_id': self.staff, 'permission': 'admin'})[1]
