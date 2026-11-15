@@ -16,7 +16,7 @@ from t6.verbs import (
     PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
     ConcernForMessageInput, ConcernRecordMessageInput, ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
-    JoListInput, JoFindInput, DeliverableListInput, DeliverableGetInput, DeliverableDefineInput, DeliverableRebindInput, MilestoneRecordInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
+    JoListInput, JoFindInput, DeliverableListInput, DeliverableGetInput, DeliverableDefineInput, DeliverableRebindInput, DeliverableMissInput, DeliverableDelayInput, MilestoneRecordInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
     JoSubmitInput, JoCloseInput, JoBlockInput, JoUnblockInput, JoDelayInput, JoCancelInput,
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
     LLMRunInput, PersonAddInput, PersonFindInput,
@@ -167,6 +167,12 @@ class Client:
 
     def deliverable_milestone_record(self, inputs: MilestoneRecordInput) -> Result:
         return self.call('deliverable', 'milestone record', inputs)
+
+    def deliverable_miss(self, inputs: DeliverableMissInput) -> Result:
+        return self.call('deliverable', 'miss', inputs)
+
+    def deliverable_delay(self, inputs: DeliverableDelayInput) -> Result:
+        return self.call('deliverable', 'delay', inputs)
 
     def deliverable_define(self, inputs: DeliverableDefineInput) -> Result:
         return self.call('deliverable', 'define', inputs)

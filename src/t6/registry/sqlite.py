@@ -249,6 +249,14 @@ _MIGRATIONS = (
         nonce TEXT PRIMARY KEY, approval_id TEXT NOT NULL REFERENCES approvals(id),
         snapshot TEXT NOT NULL, request TEXT NOT NULL
     )"""),
+    (21, False, """CREATE TABLE deliverable_date_moves (
+        deliverable_id TEXT NOT NULL REFERENCES deliverables(id), field TEXT NOT NULL,
+        old_date TEXT NOT NULL, new_date TEXT NOT NULL, reason TEXT NOT NULL,
+        actor TEXT NOT NULL, recorded_at REAL NOT NULL
+    ); CREATE TABLE deliverable_misses (
+        deliverable_id TEXT NOT NULL REFERENCES deliverables(id), reason TEXT NOT NULL,
+        actor TEXT NOT NULL, recorded_at REAL NOT NULL
+    )"""),
 )
 
 
