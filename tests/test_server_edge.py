@@ -66,6 +66,18 @@ class EdgeTests(ServerTestCase):
         self.assertEqual((f.kind, dict(f.payload)), ("frameio.resolve_comment", {"comment_id": "c1", "account_id": "acc-1", "frameio_project_id": "fp1"}))
         self.assertEqual((n.kind, n.payload["page_id"]), ("notion.page_changed", "page-1"))
 
+    def test_dedicated_routes_reject_bad_signatures_with_401(self) -> None:
+        # The Frame.io comment and Notion page routes have their own handlers. A bad or
+        # missing signature must still answer 401, not drop the connection.
+        routes = load_routes("docs/edge-routes.example.yaml", {"FRAMEIO_WEBHOOK_SECRET": "frameio-secret", "NOTION_WEBHOOK_TOKEN": "notion-token"})
+        app = WebhookApp(self.queue, replace(self.app._config, edge_routes=routes), self.clock, self.tokens.append)
+        for path in ("/events/frameio/comments", "/events/notion/pages"):
+            for headers in ({}, {"X-Frameio-Signature": "bad", "X-Notion-Signature": "bad"}):
+                with self.subTest(path=path, headers=headers):
+                    self.assertEqual(app.public(Request("POST", path, headers, b"{}")).status, 401)
+        self.assertEqual(self.pending(), 0)
+        self.assertEqual(self.pending("frameio"), 0)
+
     def test_invalid_config_stops_startup(self) -> None:
         with self.assertRaisesRegex(ValueError, "unknown verifier"):
             self.file.write_text("- {path: /x, verifier: unknown, secret_env: FRAME, job_kind: x, queue: main}")

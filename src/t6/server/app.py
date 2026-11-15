@@ -259,11 +259,12 @@ class WebhookApp:
         if route.verifier == "notion" and not route.secret and body and isinstance(body.get("verification_token"), str) and body["verification_token"]:
             self._on_notion_verification(str(body["verification_token"]))
             return Response(200)
-        if route.verifier == "frameio_v0" and route.queue == "frameio" and route.job_kind == JobKind.FRAMEIO_RESOLVE_COMMENT.value:
-            return self._frameio(request, route.secret)
-        if route.verifier == "notion" and route.queue == "main" and route.job_kind == JobKind.NOTION_PAGE_CHANGED.value:
-            return self._notion(request, route.secret, handshake=False)
         try:
+            # These two routes have dedicated handlers that verify the signature themselves.
+            if route.verifier == "frameio_v0" and route.queue == "frameio" and route.job_kind == JobKind.FRAMEIO_RESOLVE_COMMENT.value:
+                return self._frameio(request, route.secret)
+            if route.verifier == "notion" and route.queue == "main" and route.job_kind == JobKind.NOTION_PAGE_CHANGED.value:
+                return self._notion(request, route.secret, handshake=False)
             if route.verifier == "frameio_v0":
                 verify_frameio(route.secret, headers, request.body, self._clock())
             elif route.verifier == "notion":
