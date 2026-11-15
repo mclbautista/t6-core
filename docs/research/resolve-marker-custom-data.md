@@ -3,11 +3,11 @@
 Research date: 2026-11-14. Scope: [issue #185](https://github.com/mclbautista/t6-core/issues/185),
 a fact check under [spec #178](https://github.com/mclbautista/t6-core/issues/178).
 
-**Status: partly done.** Question 3 (reading markers without Resolve open) is
-answered from the project server's database catalog. Questions 1 and 2 need
-Resolve's scripting API and a test project, and are NOT answered yet. The
-first-frame marker stamp is therefore **not** declared viable or not viable
-here. See "Still open" and "Verdict so far".
+**Status: done, with one gap.** Question 3 (reading markers without Resolve
+open) is answered from the project server's database catalog. Questions 1 and 2
+are answered by a scripted test on the 202 Mac Pro in a throwaway project. One
+part of question 2, project backup and restore through the scripting API, could
+not be tested: both calls returned `False`. See "Verdict".
 
 ## How this was checked
 
@@ -65,29 +65,67 @@ binary format from PostgreSQL. That is fragile and tied to Resolve's version.
 The expected answer in #185 stands: reading depends on Resolve running (its
 scripting API) or on the bay scanner (#18), not on plain SQL.
 
-## Still open (needs Resolve's scripting API)
+## Questions 1 and 2: the scripted test (2026-11-14)
 
-1. Can marker custom data be written and read through the scripting API
-   (`Timeline.AddMarker(frameId, color, name, note, duration, customData)`,
-   `Timeline.GetMarkerByCustomData(customData)`, `Timeline.GetMarkerCustomData(frameId)`)
-   in Resolve Studio 21.1.0?
-2. Does the custom data survive: a `.drt` export and import; a project backup
-   and restore; copying the project to the project server; duplicating the
-   timeline (and does the duplicate keep the same stamp, which would be a
-   "conflict")?
-3. (Follow-up to question 3) In a test project on a PostgreSQL database, is the
-   custom data readable inside the marker blob, so a scanner could read it
-   without Resolve?
+Where: the 202 Mac Pro, **DaVinci Resolve Studio 21.1.0.14** (`GetProductName()` =
+"DaVinci Resolve Studio"). Resolve was already running with external scripting
+already on (`System.Scripting.Mode = 2` in `config.dat`, unchanged: no
+preference was changed by the test). The script connected with
+`DaVinciResolveScript.scriptapp("Resolve")` over the local scripting interface.
 
-A test plan with a throwaway project is in the thread for Cyril's approval; it
-uses only a new project named `T6-TEST-185-<date>` and never an existing project
-or the live project server.
+Safety: the script aborted unless the current database was the local **disk**
+database `T6-TEST-185` and that database held no project. It worked only on
+projects named `T6-TEST-185*`. It never touched another database or the
+project server (`activedb.conf` was `disk*:T6-TEST-185` and the project server
+entry, unchanged). The test project was `T6-TEST-185-20261114`, with a new empty
+timeline `T6-TEST-TL`. Cleanup: 3 test projects and 3 exported files were
+deleted in total across two runs; the test database ended with 0 projects.
 
-## Verdict so far
+### Question 1: write and read marker custom data
 
-Not yet. Question 3 is answered (not plain columns). Whether the first-frame
-marker stamp is viable depends on questions 1 and 2. If the scripting API
-cannot read the stamp back after an export or a restore, the proposed
-alternative is to keep the `t6t_` ID in the timeline's name or in a Project
-database table that T6 owns, and not in Resolve's data. That is a proposal, not
-a finding, and it is not decided here.
+| Call | Result |
+| --- | --- |
+| `timeline.AddMarker(0, "Blue", "t6 stamp", "t6-test", 1, "t6t_TEST_185_0001")` | `True` |
+| `timeline.GetMarkers()` | `{0.0: {..., 'customData': 't6t_TEST_185_0001'}}`: one marker, custom data kept |
+| `timeline.GetMarkerByCustomData("t6t_TEST_185_0001")` | returns the marker info. **Its keys are `color`, `customData`, `duration`, `name`, `note`: no frame position.** To find the position, use `GetMarkers()`. |
+| `timeline.GetMarkerCustomData(offset)` | `'t6t_TEST_185_0001'` |
+| `timeline.UpdateMarkerCustomData(offset, value)` | `True` |
+
+**Yes.** Marker custom data can be written and read in Resolve Studio 21.1.0.14.
+The frame position is an offset from the timeline start (the timeline's start
+frame was 86400, which is 01:00:00:00 at 24 fps); offset 0 is the first frame.
+An empty timeline (no clips) accepts the marker.
+
+### Question 2: what survives
+
+| Action | Calls | Stamp on the result |
+| --- | --- | --- |
+| Timeline duplicate | `timeline.DuplicateTimeline("T6-TEST-TL dup")` | **Same stamp, same position.** The duplicate carries the identical custom data. This is the "conflict" case: two timelines then claim one `t6t_` ID. |
+| `.drt` export and import | `timeline.Export(path, resolve.EXPORT_DRT)` (17,802 bytes), `mediaPool.ImportTimelineFromFile(path, {"timelineName": ...})` | **Survives.** The imported timeline has the marker and the same custom data. (The imported timeline was named after the file, `tl`, not by the `timelineName` option: do not rely on the name.) |
+| Project export and import | `projectManager.ExportProject(name, path, False)` (a `.drp`, 45,299 bytes), `projectManager.ImportProject(path, newName)` then `LoadProject(newName)` | **Survives.** The imported project's `T6-TEST-TL` timeline has the marker and the same custom data. |
+| Project backup and restore, scripted | `projectManager.ArchiveProject(name, path.dra, False, False, False)` (tried with the project open and closed), `projectManager.RestoreProject(path, newName)` (tried with the `.drp` and with a `.dra`) | **Could not be tested.** `ArchiveProject` returned `False` and wrote no file, and `RestoreProject` returned `False`. Cause not found. A person can test restore in the Resolve UI (Project Manager), or we find out why the calls return `False`. The `.drp` export and import above is the closest result. |
+| Copy to the project server | not tested | Not approved and not tested. It needs a NEW empty test database on the live project server. The client (21.1.0) is newer than the server (20.0.0), which may prompt a database upgrade. |
+
+## Verdict
+
+**Is the first-frame marker stamp viable? Yes, with conditions, as long as
+Resolve is running when T6 reads it.**
+
+1. **Viable:** the `t6t_` ID can be written with `AddMarker(..., customData)` on
+   the first frame, found with `GetMarkerByCustomData`, and it survives timeline
+   export and import (`.drt`) and project export and import (`.drp`). Editors
+   can rename timelines freely, because the ID is in the marker and not the name.
+2. **Duplicate = conflict (condition):** a duplicated timeline keeps the same
+   stamp, so T6 must treat two timelines with the same `t6t_` ID in one project
+   as a conflict, and re-stamp the copy with a new ID. This is expected, not a bug.
+3. **No plain SQL reads (condition):** the custom data is not in a plain column
+   (see question 3). Reading it needs Resolve running (scripting API) or the bay
+   scanner (#18), or decoding the blob. Not tested here: whether the custom
+   data is readable inside the blob (a separate approval is needed to read a
+   test database's blob).
+4. **Gap:** scripted project backup and restore is unverified (both calls
+   returned `False`). Copy to the project server is untested.
+
+If conditions 2 or 3 are not acceptable, the proposed alternative is to keep
+the `t6t_` ID in a T6-owned table keyed by the timeline's Resolve UUID, with the
+timeline name as a hint only. That is a proposal, not a finding.
