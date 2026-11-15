@@ -14,6 +14,7 @@ from collections.abc import Callable, Collection
 from dataclasses import dataclass
 
 from t6.llm.api import LLMRunInput
+from t6.transcribe.speakers import is_unmapped_label
 
 PROMPT = ('Translate the dialogue to English. Keep post-production terms and brand names, '
           'numbers, dates, slang and profanity without softening. Preserve line breaks. '
@@ -41,18 +42,21 @@ class Cue:
     text: str
 
 
-def _label_end(lines: list[str], names: Collection[str]) -> int | None:
-    """Index of the last label line when the cue starts with a known speaker name in the exact form the renderer writes, else None."""
+def _label_end(lines: list[str], names: Collection[str] | None) -> int | None:
+    """Index of the last label line when the cue starts with a mapped name or an unmapped raw id in the exact form the renderer writes, else None."""
+    if names is None:
+        return None
     for end in range(2, len(lines) - 1):
         label = lines[2:end + 1]
-        if label[-1].endswith(':') and ' '.join(label).removesuffix(':') in names and label == textwrap.wrap(' '.join(label), width=42):
+        if label[-1].endswith(':') and ((name := ' '.join(label).removesuffix(':')) in names or is_unmapped_label(name)) and label == textwrap.wrap(' '.join(label), width=42):
             return end
     return None
 
 
-def parse_srt(value: str, names: Collection[str] = ()) -> list[Cue]:
-    """Parse cues; a speaker label is only a name in ``names`` (the Transcript's applied speaker map), written as the
-    renderer writes it: the first text lines, wrapped at 42, ending in a colon. With no names there are no labels."""
+def parse_srt(value: str, names: Collection[str] | None = None) -> list[Cue]:
+    """Parse cues; with a speaker map applied (``names`` is its names, even if empty) a speaker label is a mapped name or an unmapped raw
+    id, written as the renderer writes it: the first text lines, wrapped at 42, ending in a colon. With ``names`` None
+    (no map applied) there are no labels."""
     cues = []
     for block in re.split(r'\n\s*\n', value.strip()):
         lines = block.splitlines()

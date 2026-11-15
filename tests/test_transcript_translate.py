@@ -11,6 +11,7 @@ from t6.llm.evals import Attempt, Case, RunRecord, run_evals
 from t6.llm.testing import FakeProvider
 from t6.privacy import Person, Project, Registry
 from t6.server.llm import LLMService
+from t6.transcribe.srt import render_srt as render_transcript_srt
 from t6.transcribe.translate import TranslationError, parse_srt, render_srt, translate_cues, task_input
 from t6.transcribe.translate_evals import CASES, MUST_PASS, OFFLINE_REPLIES, grade_translation, names_for
 
@@ -31,6 +32,18 @@ class CueTests(unittest.TestCase):
         text = '1\n00:00:01,000 --> 00:00:02,000\nSabi niya:\nOo na\n\n2\n00:00:03,000 --> 00:00:04,000\nHost:\nSige\n\n'
         self.assertEqual([(c.speaker, c.text) for c in parse_srt(text)], [('', 'Sabi niya:\nOo na'), ('', 'Host:\nSige')])
         self.assertEqual([(c.speaker, c.text) for c in parse_srt(text, {'Host'})], [('', 'Sabi niya:\nOo na'), ('Host:', 'Sige')])
+
+    def test_with_a_map_applied_a_raw_speaker_id_is_a_label_and_is_not_translated(self) -> None:
+        text = '1\n00:00:01,000 --> 00:00:02,000\nspeaker_3:\nOo na\n\n2\n00:00:03,000 --> 00:00:04,000\nspeaker_3:\nSige\n\n'
+        self.assertEqual([(c.speaker, c.text) for c in parse_srt(text, {'Host'})], [('speaker_3:', 'Oo na'), ('speaker_3:', 'Sige')])
+        self.assertEqual([(c.speaker, c.text) for c in parse_srt(text, set())], [('speaker_3:', 'Oo na'), ('speaker_3:', 'Sige')])
+        self.assertEqual([c.speaker for c in parse_srt(text)], ['', ''])
+
+    def test_every_label_the_renderer_writes_for_a_mapped_transcript_is_recognised(self) -> None:
+        words = [{'type': 'word', 'text': 'Oo', 'start': 0.0, 'end': 0.5, 'speaker_id': 'speaker_0'},
+                 {'type': 'word', 'text': 'na', 'start': 1.0, 'end': 1.5, 'speaker_id': 'speaker_7'}]
+        out = render_transcript_srt({'words': words}, speaker_map={('', 'speaker_0'): 'Host'}, source='a.wav')
+        self.assertEqual([(c.speaker, c.text) for c in parse_srt(out, {'Host'})], [('Host:', 'Oo'), ('speaker_7:', 'na')])
 
     def test_unlabelled_cue_with_a_line_ending_in_a_colon_is_translated_in_full(self) -> None:
         text = '1\n00:00:01,000 --> 00:00:02,000\nSabi niya sa akin\nang sagot ay ito:\nOo na\n\n'
@@ -62,7 +75,7 @@ class EvalCaseTests(unittest.TestCase):
         self.assertEqual(
             {c.id for c in CASES},
             {'taglish-terms', 'code-switching', 'speaker-labels', 'timecodes-line-breaks', 'numbers-dates',
-             'profanity-slang', 'no-merge-no-invention', 'character-name', 'unlabelled-colon', 'unmapped-label'})
+             'profanity-slang', 'no-merge-no-invention', 'character-name', 'unlabelled-colon', 'unmapped-label', 'raw-speaker-id'})
         self.assertEqual(MUST_PASS, {c.id for c in CASES})
 
     def test_offline_harness_runs_cases_through_the_task_with_the_scripted_fake_llm(self) -> None:
@@ -238,6 +251,17 @@ class TranslateFlowTests(unittest.TestCase):
         self.assertEqual(self.history(), ['translated'])
         self.assertEqual([e.action for e in self.registry.activity(self.project)][:1], ['transcript_translated'])
         self.assertEqual(sorted(p.name for p in self.root.rglob('*') if p.is_file()), ['one.en.docx', 'one.en.srt', 'one.srt'])
+
+    def test_with_a_map_applied_a_raw_id_label_is_kept_and_only_its_dialogue_is_translated(self) -> None:
+        self.source('1\n00:00:01,000 --> 00:00:02,000\nspeaker_3:\nOo na\n\n', names=('Host',))
+        fake = self.fake('Yes')
+        plan = self.preview()
+        self.translate(confirm=plan['token'])
+        self.assertTrue(self.runner.run_once())
+        sent = '\n'.join(str(m['content']) for call in fake.calls for m in call.messages)
+        self.assertNotIn('speaker_3', sent)
+        self.assertEqual((self.root / '_transcripts/one.en.srt').read_text(encoding='utf-8'),
+                         '1\n00:00:01,000 --> 00:00:02,000\nspeaker_3:\nYes\n\n')
 
     def test_without_an_applied_speaker_map_the_first_line_is_dialogue_and_is_translated(self) -> None:
         self.source('1\n00:00:01,000 --> 00:00:02,000\nSabi niya:\nOo na\n\n', names=())

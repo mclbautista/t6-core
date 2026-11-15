@@ -2,6 +2,7 @@
 
 import csv
 import io
+import re
 
 
 SpeakerMap = dict[tuple[str, str], str]
@@ -30,7 +31,21 @@ def parse_speaker_map(content: str) -> SpeakerMap:
         raise ValueError(f"line {reader.line_num}: {error}") from error
 
 
+RAW_SPEAKER_ID = re.compile(r"speaker_\d+")
+"""The raw ids the speech-to-text service gives speakers (for example ``speaker_0``)."""
+
+
+def unmapped_label(speaker: str | None) -> str:
+    """The label a renderer writes for a speaker with no speaker map entry: the raw id."""
+    return speaker or ""
+
+
+def is_unmapped_label(name: str) -> bool:
+    """True when ``name`` is a raw id that ``unmapped_label`` can produce. Readers of rendered SRT use this."""
+    return RAW_SPEAKER_ID.fullmatch(name) is not None
+
+
 def speaker_name(speaker: str | None, source: str, speaker_map: SpeakerMap) -> str:
-    """Resolve a clip-specific name before a run-wide name."""
-    label = speaker or ""
+    """Resolve a clip-specific name before a run-wide name; with no entry, the unmapped label."""
+    label = unmapped_label(speaker)
     return speaker_map.get((source, label), speaker_map.get(("", label), label))

@@ -74,7 +74,7 @@ class TranscriptWorker:
         from t6.transcribe.speakers import parse_speaker_map
         from t6.transcribe.translate import parse_srt
         csv = job.payload.get('speaker_map')
-        names = set(parse_speaker_map(str(csv)).values()) if csv else set()
+        names = set(parse_speaker_map(str(csv)).values()) if csv else None
         root = self._root(job)
         output = root / '_transcripts'
         if output.is_symlink() or not output.resolve().is_relative_to(root):

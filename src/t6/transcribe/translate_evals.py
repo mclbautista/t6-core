@@ -56,6 +56,8 @@ _SOURCES: dict[str, tuple[list[str], str]] = {
                                    (_D, 'Guest:\nO, tapos na.'))),
     'character-name': (['A character name in dialogue passes through unchanged'],
                        _srt((_A, 'Guest:\nSabi ni Kapitan Bagwis, huwag kang aalis.'))),
+    'raw-speaker-id': (['With a speaker map applied, a speaker with no entry keeps its raw id label and only its dialogue is translated'],
+                       _srt((_A, 'Host:\nKumusta ang shoot?'), (_B, 'speaker_2:\nMaayos naman, medyo mahaba lang.'))),
     'unlabelled-colon': (['A cue with no speaker label whose text has a line ending in a colon is translated in full'],
                          _srt((_A, 'Sabi niya sa akin\nang sagot ay ito:\nOo na, sige.'))),
     'unmapped-label': (['With no speaker map there are no labels: a first line like "Sabi niya:" is dialogue and is translated'],
@@ -77,6 +79,7 @@ OFFLINE_REPLIES: dict[str, list[str]] = {
     'profanity-slang': ["Fucking hell, the audio is ugly, goddamn it.", 'That shot is stunning, solid!'],
     'no-merge-no-invention': ['Yes.', 'Yes indeed.', 'Okay.', 'Right, that is all.'],
     'character-name': ['Captain Bagwis said, do not leave.'],
+    'raw-speaker-id': ['How was the shoot?', 'It went fine, just a bit long.'],
     'unlabelled-colon': ["He told me\nthe answer is this:\nYes, okay, fine."],
     'unmapped-label': ['He said:\nYes, okay, fine.'],
 }
@@ -86,9 +89,9 @@ CASES = [_case(case_id, [*properties, 'Same cue count, timecodes, speaker labels
 MUST_PASS = frozenset(case.id for case in CASES)
 
 
-def names_for(case: Case) -> frozenset[str]:
-    """The speaker names the case's Transcript knows (its applied speaker map)."""
-    return frozenset() if case.id in NO_SPEAKER_MAP else SPEAKER_NAMES
+def names_for(case: Case) -> frozenset[str] | None:
+    """The speaker names the case's Transcript knows (its applied speaker map), None when no map is applied."""
+    return None if case.id in NO_SPEAKER_MAP else SPEAKER_NAMES
 
 
 def _terms(text: str) -> set[str]:
