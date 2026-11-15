@@ -67,7 +67,7 @@ class ProjectProjection:
             allowed = self._registry.projection(page, {'project_status': before}).get('allowed', {})
             if not allowed.get('project_status'):
                 raise ValueError('Project Status changed in Notion; reconcile before projecting')
-            status = 'Standby' if state['held'] else 'In-Progress'
+            status = 'Archived' if state['held'] == 2 else 'Standby' if state['held'] else 'In-Progress'
             self._notion.update_page(page, {'properties': {ProjectsRow.notion_id('status'): {'select': {'name': status}}}})
             self._registry.projection(page, {'project_status': status}, record=True)
         self._registry.report_status_sync(intent_id)

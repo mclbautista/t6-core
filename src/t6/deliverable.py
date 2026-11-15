@@ -73,6 +73,8 @@ class DeliverableStore:
             project_id = self._project(db, values['project'])
             if not project_id:
                 return Refused(rule='project', reason='Project not found')
+            if db.execute('SELECT 1 FROM project_archives WHERE project_id = ?', (project_id,)).fetchone():
+                return Refused(rule='project_archived', reason='Project is archived')
             plan = {'action': 'define', **values, 'project_id': project_id, 'idempotency_key': key}
             if nonce is None:
                 preview = self.tokens.create('deliverable define', actor, inputs, plan)
