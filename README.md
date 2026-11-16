@@ -2032,6 +2032,19 @@ and `output_valid` stays true. `masked_output` then holds the reply as the model
 wrote it, placeholders only. With `restore: "whole"` (the default) one such
 placeholder makes the call `output_valid: false`.
 
+POST `/v1/llm/decide` (`llm decide`, role `llm`) asks the Decisions provider about
+candidates. Send `task_name`, `state` (text values), `question` (exactly one
+`{candidate}` marker), `criteria` (`match`, `maybe` and `no`) and `candidates`.
+The server masks `state` values and candidate names with one Session, keys the
+candidates `c0`, `c1` and so on, and returns `answers` in candidate order, each
+with `index`, `choice` and the `match`, `maybe` and `no` probabilities, plus
+`model`, `provider`, `tokens` and `zdr`. A registered name in `question` or
+`criteria` is refused with rule `masking`. The caller decides what is sure
+enough. Without a top-level `decisions` key in the config file (`url`, `model`,
+`retention`, `api_key_env`) the verb is refused with rule `config`. Its retention
+floor is the `provider_min_retention` entry named `decisions`. Failures carry
+`failure` as for `llm run`; a reply off the Decisions shape is `schema_violation`.
+
 ### Calling the t6 API
 
 Install `t6[client]` and set `T6_API_URL` and `T6_API_SECRET`. The client
