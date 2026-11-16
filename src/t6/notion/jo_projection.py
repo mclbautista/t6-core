@@ -72,13 +72,15 @@ class JobOrderProjection:
             if matches:
                 page = str(matches[0]['id'])
             else:
-                if not state['project_page']:
+                if state['project_id'] and not state['project_page']:
                     raise ValueError('Project has no active Notion page')
                 if not self.registry.begin_jo_create(intent_id):
                     self.registry.report_jo_sync(intent_id, error='Create outcome unknown; inspect Notion before retrying')
                     raise Refused('Create outcome unknown; inspect Notion before retrying')
                 fields: dict[str, Any] = dict(state['fields'])
-                fields['project_id'] = state['project_page']
+                fields.pop('project_id', None)
+                if state['project_page']:
+                    fields['project_id'] = state['project_page']
                 for name in ('date', 'deadline'):
                     if isinstance(fields.get(name), str):
                         raw = fields[name]

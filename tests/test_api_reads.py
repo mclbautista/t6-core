@@ -7,7 +7,7 @@ from typing import Any
 from unittest.mock import patch
 
 from t6.client import Client
-from t6.notion.testing import FakeNotion, title, relation, rich_text, date
+from t6.notion.testing import FakeNotion, title, relation, rich_text, date, select
 from t6.notion.generated import JobOrdersRow, DeliverablesRow, MeetingNotesRow
 from t6.person import People
 from t6.preview import PreviewTokens
@@ -77,6 +77,62 @@ class ReadTests(unittest.TestCase):
         plain = next(p for p in result.result['projects'] if p['name'] == 'Example Show')
         self.assertIsNone(plain['project_health'])
 
+    def test_project_reads_return_date_ends_and_supervisors(self) -> None:
+        from t6.verbs import ProjectGetInput, ProjectListInput
+        from t6.notion.generated import ProjectsRow
+        supe = self.notion.add_page('contacts', {'Name': title('Ben Lim')})
+        bound = self.bound_person(supe)
+        unbound = self.notion.add_page('contacts', {'Name': title('Cy Tan')})
+        self.notion.add_page('projects', {
+            ProjectsRow.notion_name('name'): title('Range show'),
+            ProjectsRow.notion_name('playdate'): date('2026-11-16', '2026-11-20'),
+            ProjectsRow.notion_name('submission_deadline'): date('2026-11-10T09:00:00.000+00:00', '2026-11-10T17:30:00.000+00:00'),
+            ProjectsRow.notion_name('archival_deadline'): date('2026-12-01'),
+            ProjectsRow.notion_name('prod_coor_supe'): relation(supe['id'], unbound['id'])})
+        result = self.client.project_list(ProjectListInput())
+        assert isinstance(result, Done)
+        project = next(p for p in result.result['projects'] if p['name'] == 'Range show')
+        self.assertEqual((project['playdate'], project['playdate_end']), ('2026-11-16', '2026-11-20'))
+        self.assertEqual(project['submission_deadline_end'][:19], '2026-11-10T17:30:00')
+        self.assertEqual((project['archival_deadline'], project['archival_deadline_end']), ('2026-12-01', None))
+        self.assertEqual(project['prod_coor_supe_ids'], [bound, unbound['id']])
+        got = self.client.project_get(ProjectGetInput(project=project['page_id']))
+        assert isinstance(got, Done)
+        self.assertEqual(got.result['project']['playdate_end'], '2026-11-20')
+        self.assertEqual(got.result['project']['prod_coor_supe_ids'], [bound, unbound['id']])
+        plain = next(p for p in result.result['projects'] if p['name'] == 'Example Show')
+        self.assertEqual((plain['playdate_end'], plain['prod_coor_supe_ids']), (None, []))
+
+    def test_project_code_is_the_registrys_and_notion_project_code_is_notions(self) -> None:
+        from t6.registry import Registered, Rotation
+        from t6.verbs import ProjectGetInput, ProjectListInput
+        from t6.notion.generated import ProjectsRow
+        from t6.notion.testing import select
+        page = self.notion.add_page('projects', {ProjectsRow.notion_name('name'): title('Coded show'),
+                                                 ProjectsRow.notion_name('project_code'): select('CODE')})
+        registered = self.registry.register(actor='setup', idempotency_key='coded', notion_page_id=page['id'], code=None, rotation=Rotation.IN)
+        assert isinstance(registered, Registered)
+        result = self.client.project_list(ProjectListInput())
+        assert isinstance(result, Done)
+        project = next(p for p in result.result['projects'] if p['name'] == 'Coded show')
+        self.assertEqual((project['project_code'], project['notion_project_code']), (None, 'CODE'))
+        got = self.client.project_get(ProjectGetInput(project=registered.project.id))
+        assert isinstance(got, Done)
+        self.assertEqual((got.result['project']['project_code'], got.result['project']['notion_project_code']), (None, 'CODE'))
+
+    def test_jo_reads_return_every_related_project(self) -> None:
+        from t6.verbs import JoListInput
+        second = self.notion.add_page('projects', {'Name': title('Second Show')})
+        both = self.notion.add_page('job_orders', {JobOrdersRow.notion_name('name'): title('Two projects'),
+                                                   JobOrdersRow.notion_name('projects'): relation(self.project['id'], second['id'])})
+        result = self.client.jo_list(JoListInput())
+        assert isinstance(result, Done)
+        order = next(o for o in result.result['job_orders'] if o['page_id'] == both['id'])
+        self.assertEqual(order['project_ids'], [self.project['id'], second['id']])
+        self.assertEqual(order['project_id'], self.project['id'])
+        single = next(o for o in result.result['job_orders'] if o['page_id'] == self.jo['id'])
+        self.assertEqual(single['project_ids'], [self.project['id']])
+
     def test_departments_include_misc_only_on_request(self) -> None:
         from t6.verbs import DepartmentsInput
         self.notion.add_option('job_orders', 'Department', 'MISC')
@@ -114,6 +170,42 @@ class ReadTests(unittest.TestCase):
         assert isinstance(result, Done)
         parsed = DeliverableListOutput.model_validate(result.result)
         self.assertEqual(set(parsed.deliverables[0].model_dump()), set(result.result['deliverables'][0]))
+
+    def test_deliverable_candidates_lists_notion_only_pages_with_name_status_and_class(self) -> None:
+        from t6.verbs import DeliverableCandidatesInput, DeliverableCandidatesOutput
+        row = DeliverablesRow
+        page = self.notion.add_page('deliverables', {row.notion_name('name'): title('Client Corp Finale'), row.notion_name('status'): select('Ready'),
+                                                     row.notion_name('deliverable_class'): select('Master'), row.notion_name('projects'): relation(self.project['id'])})
+        self.notion.add_page('deliverables', {row.notion_name('name'): title('Elsewhere'), row.notion_name('projects'): relation(self.notion.add_page('projects', {'Name': title('Other')})['id'])})
+        granted = Client(self.client.base_url, 'unmasked-secret')
+        result = granted.deliverable_candidates(DeliverableCandidatesInput(project=self.project['id']))
+        assert isinstance(result, Done)
+        DeliverableCandidatesOutput.model_validate(result.result)
+        by_page = {c['page_id']: c for c in result.result['candidates']}
+        self.assertEqual(set(by_page[page['id']]), {'page_id', 'name', 'status', 'deliverable_class'})
+        self.assertEqual((by_page[page['id']]['name'], by_page[page['id']]['status'], by_page[page['id']]['deliverable_class']), ('Client Corp Finale', 'Ready', 'Master'))
+        self.assertEqual(sorted(c['name'] for c in result.result['candidates']), ['Client Corp Finale', 'Trailer'])
+
+    def test_deliverable_candidates_names_are_masked_unless_unmasked(self) -> None:
+        from t6.verbs import DeliverableCandidatesInput
+        row = DeliverablesRow
+        self.notion.add_page('deliverables', {row.notion_name('name'): title('Client Corp Finale'), row.notion_name('projects'): relation(self.project['id'])})
+        masked = self.client.deliverable_candidates(DeliverableCandidatesInput(project=self.project['id']))
+        assert isinstance(masked, Done)
+        self.assertNotIn('Client Corp', str(masked.result))
+        self.assertEqual(len(masked.result['candidates']), 2)
+
+    def test_deliverable_candidates_includes_registered_pages_once_and_leaves_list_alone(self) -> None:
+        from t6.verbs import DeliverableCandidatesInput, DeliverableListInput
+        project = self.registry.register(actor='setup', idempotency_key='cand-project', notion_page_id=self.project['id'])
+        from t6.registry import Registered
+        assert isinstance(project, Registered)
+        result = self.client.deliverable_candidates(DeliverableCandidatesInput(project=project.project.id))
+        assert isinstance(result, Done)
+        self.assertEqual([c['name'] for c in result.result['candidates']], ['Trailer'])
+        listed = self.client.deliverable_list(DeliverableListInput(project=project.project.id))
+        assert isinstance(listed, Done)
+        self.assertEqual(listed.result, {'deliverables': []})
 
     def test_project_notes_returns_dated_lines(self) -> None:
         from t6.verbs import ProjectListInput, ProjectNotesInput
@@ -395,6 +487,21 @@ class ReadTests(unittest.TestCase):
             _, reader = Client(self.client.base_url, 'secret'), Client(self.client.base_url, 'secret').person_create(PersonCreateInput(name='Placeholder', kind='client'))
             self.assertIsInstance(reader, Refused)
 
+    def test_person_create_takes_freelancer_and_a_bad_kind_is_a_422(self) -> None:
+        from urllib.error import HTTPError
+        from urllib.request import Request, urlopen
+        import json
+        with patch.dict(os.environ, {'T6_PREVIEW_SIGNING_KEY': 'key'}):
+            _, created = self.person_create(kind='freelancer', idempotency_key='create-freelancer')
+            assert isinstance(created, Done)
+            self.assertEqual(created.result['person']['kind'], 'freelancer')
+        request = Request(f'http://127.0.0.1:{self.server.server_port}/v1/person/create', headers={'Authorization': 'Bearer operator'},
+                          data=json.dumps({'name': 'Placeholder Person', 'kind': 'contractor'}).encode())
+        with self.assertRaises(HTTPError) as error:
+            urlopen(request)
+        self.assertEqual(error.exception.code, 422)
+        error.exception.close()
+
     def test_person_create_after_an_unclear_notion_failure_is_ambiguous_and_makes_no_second_page(self) -> None:
         from t6.verbs import Ambiguous, PersonCreateInput
         before = self.contact_pages()
@@ -546,6 +653,82 @@ class ReadTests(unittest.TestCase):
         self.assertEqual(listed.result['deliverables'][0]['t6_id'], identifier)
         self.assertEqual(found.result['deliverable']['id'], identifier)
 
+    def add_contacts(self, *rows: tuple[str, str | None]) -> dict[str, str]:
+        from t6.notion.generated import ContactsRow
+        return {name + str(n): self.notion.add_page('contacts', {ContactsRow.notion_name('name'): title(name),
+                ContactsRow.notion_name('telegram_user_id'): rich_text(telegram)})['id'] for n, (name, telegram) in enumerate(rows)}
+
+    def contact_queries(self) -> int:
+        return sum(1 for r in self.notion.requests if r.method == 'POST' and r.url.path.endswith('/query') and 'contacts' in r.url.path)
+
+    def find(self, **fields: Any) -> dict[str, Any]:
+        from t6.verbs import PersonFindInput
+        result = self.client.person_find(PersonFindInput(**fields))
+        assert isinstance(result, Done), result
+        found: dict[str, Any] = result.result
+        return found
+
+    def test_person_find_suggest_gives_up_to_3_candidates_after_an_exact_match(self) -> None:
+        self.add_contacts(('Tomas Reyes', None), ('Tomas Reyez', None), ('Tomasa Reyes', None), ('Tomas Reyess', None), ('Quinn Okafor', None))
+        plain = self.find(mention='Tomas Reyes')
+        self.assertEqual((plain['match']['name'], plain['method'], [c['name'] for c in plain['candidates']]), ('Tomas Reyes', 'normalized', ['Tomas Reyes']))
+        suggested = self.find(mention='Tomas Reyes', suggest=True)
+        self.assertEqual({k: v for k, v in suggested.items() if k != 'candidates'}, {k: v for k, v in plain.items() if k != 'candidates'})
+        self.assertEqual(len(suggested['candidates']), 3)
+        self.assertEqual(suggested['candidates'][0]['name'], 'Tomas Reyes')
+        self.assertTrue(all(c['score'] >= 0.60 for c in suggested['candidates']))
+
+    def test_person_find_without_the_new_inputs_keeps_its_reply(self) -> None:
+        self.assertEqual(self.find(mention='Ana Cruz'), {
+            'match': {**self.find(mention='Ana Cruz')['match']}, 'method': 'normalized', 'score': 1.0, 'needs_review': False, 'reason': None,
+            'candidates': [{**self.find(mention='Ana Cruz')['match'], 'score': 1.0}]})
+        self.assertEqual(self.find(mention='Ana Cruz', suggest=False, prefer_telegram=False), self.find(mention='Ana Cruz'))
+
+    def test_person_find_prefer_telegram_picks_the_namesake_that_has_a_telegram_id(self) -> None:
+        ids = self.add_contacts(('Lena Moreau', None), ('Lena Moreau', '7001'))
+        self.assertTrue(self.find(mention='Lena Moreau')['needs_review'])
+        preferred = self.find(mention='Lena Moreau', prefer_telegram=True)
+        self.assertEqual((preferred['match']['page_id'], preferred['needs_review']), (ids['Lena Moreau1'], False))
+        self.assertEqual(self.find(mention='Lena Moreau', prefer_telegram=True, suggest=True)['candidates'][0]['page_id'], ids['Lena Moreau1'])
+
+    def test_person_find_prefer_telegram_falls_through_a_tie_in_the_preferred_set(self) -> None:
+        self.add_contacts(('Lena Moreau', '7001'), ('Lena Moreau', '7002'), ('Lena Moreau', None))
+        found = self.find(mention='Lena Moreau', prefer_telegram=True)
+        self.assertEqual((found['match'], found['needs_review'], len(found['candidates'])), (None, True, 3))
+
+    def test_person_find_mentions_answers_each_name_in_order_with_one_contact_read(self) -> None:
+        self.add_contacts(('Tomas Reyes', None), ('Lena Moreau', '7001'))
+        before = self.contact_queries()
+        found = self.find(mentions=['Lena Moreau', '  ', 'Tomas Reyes', 'Zzzzz Qqqqq'], suggest=True)
+        self.assertEqual(self.contact_queries() - before, 1)
+        results = found['results']
+        self.assertEqual([r['match']['name'] if r['match'] else None for r in results], ['Lena Moreau', None, 'Tomas Reyes', None])
+        self.assertEqual((results[1]['method'], results[1]['candidates']), ('none', []))
+        self.assertEqual(results[0], self.find(mention='Lena Moreau', suggest=True))
+
+    def test_person_find_refuses_a_bad_mention_list(self) -> None:
+        from t6.verbs import PersonFindInput
+        for fields in ({}, {'mention': 'Ana Cruz', 'mentions': ['Ana Cruz']}, {'mentions': ['Ana Cruz'] * 51}):
+            with self.subTest(fields=fields):
+                result = self.client.person_find(PersonFindInput(**fields))
+                self.assertIsInstance(result, Refused)
+                assert isinstance(result, Refused)
+                self.assertEqual(result.rule, 'input')
+        self.assertEqual(len(self.find(mentions=['Ana Cruz'] * 50)['results']), 50)
+
+    def test_person_list_registered_filters_on_the_t6_id(self) -> None:
+        from t6.verbs import PersonListInput
+        ids = self.add_contacts(('Registered One', None), ('Registered Two', None), ('Unregistered Three', None))
+        for n, name in enumerate(('Registered One0', 'Registered Two1'), start=1):
+            self.bound_person({'id': ids[name]}, n)
+        def names(**fields: Any) -> set[str]:
+            result = self.client.person_list(PersonListInput(**fields))
+            assert isinstance(result, Done)
+            return {p['name'] for p in result.result['people'] if p['name'] != 'Ana Cruz'}
+        self.assertEqual(names(registered=True), {'Registered One', 'Registered Two'})
+        self.assertEqual(names(registered=False), {'Unregistered Three'})
+        self.assertEqual(names(), {'Registered One', 'Registered Two', 'Unregistered Three'})
+
     def test_get_find_and_studio_reads(self) -> None:
         from t6.verbs import (ProjectGetInput, ProjectResolveInput, JoGetInput,
                               PersonFindInput, PersonGetInput, PersonListInput,
@@ -607,6 +790,32 @@ class ReadTests(unittest.TestCase):
         result = self.client.jo_list(JoListInput(project=project_id))
         assert isinstance(result, Done)
         self.assertEqual(result.result['job_orders'][0]['project_id'], project_id)
+
+    def test_project_resolve_in_text_scans_the_registry_codes(self) -> None:
+        from t6.registry import Rotation
+        from t6.verbs import ProjectResolveInput
+        self.registry.register(actor='setup', idempotency_key='p', notion_page_id=self.project['id'], code='EXS', rotation=Rotation.IN)
+        found = self.client.project_resolve(ProjectResolveInput(text='exs pilot cut', in_text=True))
+        assert isinstance(found, Done)
+        self.assertEqual((found.result['match']['page_id'], found.result['reason']), (self.project['id'], None))
+        none = self.client.project_resolve(ProjectResolveInput(text='Example Show', in_text=True))
+        assert isinstance(none, Done)
+        self.assertEqual((none.result['match'], none.result['reason'], none.result['candidates']), (None, 'no_code_in_text', []))
+        next_to_word = self.client.project_resolve(ProjectResolveInput(text='EXSX', in_text=True))
+        assert isinstance(next_to_word, Done)
+        self.assertEqual(next_to_word.result['reason'], 'no_code_in_text')
+
+    def test_project_resolve_without_in_text_is_unchanged(self) -> None:
+        from t6.registry import Rotation
+        from t6.verbs import ProjectResolveInput
+        self.registry.register(actor='setup', idempotency_key='p', notion_page_id=self.project['id'], code='EXS', rotation=Rotation.IN)
+        plain = self.client.project_resolve(ProjectResolveInput(text='EXS pilot cut'))
+        assert isinstance(plain, Done)
+        self.assertIsNone(plain.result['match'])
+        self.assertEqual(plain.result['candidates'], [])
+        named = self.client.project_resolve(ProjectResolveInput(text='Example Show'))
+        assert isinstance(named, Done)
+        self.assertEqual(named.result['candidates'][0]['name'], 'Example Show')
 
     def test_registered_output_schemas_describe_read_results(self) -> None:
         from t6.verbs import (VERBS, ProjectListInput, ProjectGetInput, ProjectResolveInput,
@@ -688,6 +897,25 @@ class ReadTests(unittest.TestCase):
         result = self.client.person_get(PersonGetInput(person_id=person_id))
         assert isinstance(result, Done)
         self.assertEqual(result.result['person']['t6_id'], person_id)
+
+    def test_jo_list_no_project_returns_only_job_orders_with_no_project_oldest_first(self) -> None:
+        import json
+        from t6.verbs import JoListInput
+        names = ('Orphan A', 'Orphan B')
+        for name in names:
+            self.notion.add_page('job_orders', {JobOrdersRow.notion_name('name'): title(name)})
+        result = self.client.jo_list(JoListInput(no_project=True))
+        assert isinstance(result, Done)
+        self.assertEqual([o['name'] for o in result.result['job_orders']], list(names))
+        self.assertEqual([o['project_id'] for o in result.result['job_orders']], [None, None])
+        queries = [json.loads(r.content) for r in self.notion.requests if r.url.path.endswith('/query')]
+        self.assertEqual(queries[-1]['sorts'], [{'timestamp': 'created_time', 'direction': 'ascending'}])
+        everything = self.client.jo_list(JoListInput())
+        assert isinstance(everything, Done)
+        self.assertEqual(len(everything.result['job_orders']), 3)
+        both = self.client.jo_list(JoListInput(project=self.project['id'], no_project=True))
+        assert isinstance(both, Refused)
+        self.assertEqual(both.rule, 'input')
 
     def test_external_link_find_for_reports_instagantt_reads_media_locations(self) -> None:
         from t6.ids import EntityKind, T6Id

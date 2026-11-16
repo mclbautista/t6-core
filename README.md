@@ -698,6 +698,15 @@ bound to, and returns that Project whoever holds its code now: this is how a
 reviewer selects a historical Project. Existing relationships are never looked
 up by code. `Resolution.reason` is `None` for every other lookup.
 
+`project_in_text(text)` finds a Project Code inside longer text, such as
+`AB-101 pilot cut`. It scans the registry's codes as whole tokens (no word
+character on either side), case-insensitive, longest code first, blanking each
+matched span so a shorter code inside a longer one does not match again. No code
+gives no match with `needs_review` and `reason="no_code_in_text"`. Several
+distinct codes give `reason="several_codes_in_text"` with their Projects as
+candidates. Exactly one code gives the answer of `project(code)`, so the table
+above applies. It never falls back to a Project name.
+
 ## Fleet
 
 `t6.fleet` (install `t6[notion]`) reads Bays as `Machine` and writes the fleet
@@ -1067,7 +1076,28 @@ properties through the typed write and appends the body blocks in chunks of
 100, returning the saved note, `Rejected` or `Ambiguous` (a body that could
 not be saved leaves a page, so it is `Ambiguous` with that page ID). `trash`
 and `mark_sent` change a note. A page body is a list of Notion blocks; read it
-with `NotionClient.list_block_children`.
+with `NotionClient.list_block_children`. `append(page_id, blocks)` adds blocks to
+an existing body in chunks of 100 and raises `NotionError` when Notion refuses.
+
+The API has four write verbs, role `minutes` (grant it to one service in
+`T6_API_SERVICE_PERMISSIONS`; it opens only these four): `meeting-notes create`
+(`title`, `meeting_date`, `project_ids` as T6 IDs or Notion page IDs,
+`attendee_ids` as Notion user IDs, `blocks`), `append` (`note`, `blocks`),
+`trash` (`note`) and `mark-sent` (`note`, optional `at`, default now in Manila).
+Body blocks have the shape `meeting-notes list` returns (`kind`, `text`,
+`spans`, `checked`, `children`); the kinds are `paragraph`, `heading_1`,
+`heading_2`, `heading_3`, `bulleted_list_item`, `numbered_list_item`, `to_do`
+and `toggle`, and any other kind is refused. `append` and `trash` are refused
+(rule `sent`) for a note that has a Sent at date; `append` is refused for a
+note in the trash; `mark-sent` on a sent note returns it unchanged. `create` is
+not idempotent: a caller that retries looks for the title with
+`meeting-notes list --title` first, and a body that failed leaves the page, so
+the outcome is `ambiguous` with its page ID. Each write adds a registry audit
+row (`meeting_note_create`, `meeting_note_append`, `meeting_note_trash`,
+`meeting_note_sent`) with the page ID and no text. `meeting-notes list` also
+takes `latest` (only the note with the newest meeting date after the other
+filters, ties to the later last edited, undated notes ignored; one body is
+fetched) and `include_body: false` (no block calls, `body: []`).
 
 ### Projects, Contacts and Deliverables
 
@@ -1079,7 +1109,17 @@ last-edited time. `Project` carries status, stage, health, playdate,
 submission and archival deadlines, PM and tech notes, `has_post_supe`, and the
 role relations as page IDs (`editor_ids`, `assistant_editor_ids`,
 `online_editor_ids`, `colorist_ids`, `sound_tech_ids`, `post_coordinator_ids`,
-`director_ids`, `cinematographer_ids`). `Contact.end_of_shift` is a time of day
+`director_ids`, `cinematographer_ids`). A date range keeps its end in
+`playdate_end`, `submission_deadline_end` and `archival_deadline_end` (`None`
+when the date has no end; a range end keeps its time as Notion holds it), and
+`prod_coor_supe_ids` holds the people in `Prod Coor/Supe`. A date with a time
+and no offset takes the `time_zone` Notion holds for it and is an aware
+datetime in that zone; with no offset and no zone it stays naive and is the
+workspace time. `JobOrder.health` is `None` when the Health formula gave no
+value and `""` when it computed an empty string. `Project.notion_project_code`
+is the Project Code as Notion shows it; the API's `project_code` is the
+registry's value once the Project is registered. `JobOrder.project_ids`
+holds every related Project; `project_id` is the first. `Contact.end_of_shift` is a time of day
 parsed from "10:00 PM", "10 PM" or "22:00"; "Flexible / Variable", blank and
 any other text are `None`, meaning flexible. `Deliverable` carries
 `deliverable_class` and `playdate`.
@@ -1436,6 +1476,10 @@ from `--data-sources FILE` (a JSON object of database key to data source ID,
 as for `admin schema-check`). They print JSON (indented) with Notion IDs and never write.
 Errors are JSON on stderr with exit status 2.
 
+A Person's kind is one of `staff`, `freelancer`, `client` or `vendor`; `person create`
+and `person classify` take any of the four, and `person list` and `person get` return it.
+Only staff have the staff role.
+
 `t6 departments --data-sources FILE` lists the live Departments (the
 `job_orders` source) in display order with their option IDs. MISC is left out.
 `t6 departments` and `t6 person get` still accept `--data-sources FILE`, but
@@ -1464,6 +1508,37 @@ $ t6 person find @msantos --data-sources sources.json
 }
 ```
 
+`person find` takes three more inputs (CLI flag, API field). All three are off by
+default, and then the reply is the one above.
+
+- `--suggest` (`suggest`): `candidates` are up to 3 Contacts that score 0.60 or
+  more, best first, even when `match` is set by an exact match. `match`, `method`,
+  `score`, `needs_review` and `reason` do not change.
+- `--prefer-telegram` (`prefer_telegram`): the Contacts that have a Telegram user
+  ID are searched first and win equal scores. A match found among them is returned
+  without searching the rest. It is a hint only: it sets no threshold and no
+  honorific list.
+- `--mention NAME`, repeated (`mentions`, at most 50 names): instead of the one
+  `mention`. The Contacts are read once and the reply is `{"results": [...]}`, one
+  reply of the shape above for each name in input order. A blank name gets its own
+  result with no match. Giving both `mention` and `mentions`, neither, or more than
+  50 names is refused with rule `input`. `suggest` and `prefer_telegram` apply to
+  each name.
+
+Name matching is this one call. Apps do not keep matching code of their own, so a
+change to the matching rule happens only here. It differs from the rules the apps
+used to keep, and these differences are not bugs. In the preferred set, a tie falls
+through to all Contacts here, while reports stopped at the tie. The normalizer here
+folds accents and punctuation and drops 16 leading honorifics, while the apps
+dropped 3 anywhere in the name.
+
+`person list` takes an optional `registered` filter (API field; there is no CLI
+flag). `true` returns only the Contacts that have a T6 ID, `false` only those that
+do not, and unset returns all. The items do not change. Nothing registers a
+Contact made in Notion after the first import, so a Contact with no T6 ID has to be
+registered: on the registry host run `t6 admin person migrate --data-sources FILE`
+without `--apply` to preview, then apply the preview with `--apply --preview FILE`.
+
 `t6 project resolve <code|name> --data-sources FILE [--registry-db FILE]` (the
 `projects` source) resolves a Project Code. A reused code is settled by rotation
 when the registry file knows the Projects (`--registry-db`, default
@@ -1471,6 +1546,12 @@ when the registry file knows the Projects (`--registry-db`, default
 an unreadable file is an error. Text that is not a known code is tried as a name
 and always needs review. The result has the same `match`, `method`,
 `needs_review`, `reason` and `candidates` fields.
+
+`--in-text` (API input `in_text`, default false) treats `text` as longer text
+that holds one Project Code, as `Lookup.project_in_text` does (see Reusable
+Project Codes). It never falls back to a name match; `reason` is
+`no_code_in_text` or `several_codes_in_text` when the text does not hold exactly
+one code. Without it the reply is unchanged.
 
 ```console
 $ t6 project resolve ALP --data-sources sources.json --registry-db t6-registry.sqlite
@@ -1517,6 +1598,31 @@ Watermark defaults to `none`. Confirm with `--confirm TOKEN` and the preview's
 `page_id` while Notion creation is pending; use `jo get` or replay the same
 confirmed request with a fresh preview after sync to obtain the page ID.
 
+Over the API, `jo raise` takes the fields as a JSON object in `fields` instead
+of a file; give exactly one of `file` and `fields` (rule `input` otherwise). A
+`fields` call uploads nothing and sends no data sources: the server checks the
+fields against its own `job_orders` data source. The two paths share the same
+checks, but the `fields` path adds no Watermark, so a caller that sends none
+leaves the property unset. The `--file` path still defaults it to `none`.
+
+The call does not wait for the worker. To get the page ID, call `jo get` with
+the returned `jo_id` until `job_order.page_id` is set (the worker makes the page
+a few seconds after the confirm). To recover after a crash with no `jo_id`,
+call `jo find` with the Telegram Key.
+
+A Job Order with no Project is raised only on purpose: send `no_project: true`
+(CLI `--no-project true`) with an empty or absent `project_id`. Nothing is
+guessed, the page is made with the Projects relation empty, and it keeps the
+Status the caller sends. It stays listed as an exception until a coordinator
+attaches the Project on the Notion page. `no_project` with a `project_id` is
+refused (rule `input`), and an empty `project_id` without the flag is refused
+(rule `project`). `assign`, `note`, `submit` and the other Job Order verbs
+refuse a Job Order with no Project (rule `project`) until one is attached.
+`jo list --no-project true` returns only those Job Orders, oldest first, with an
+empty `project_id`. It reads Notion, so a Job Order shows only after the worker
+has made its page and leaves the list when the Project is attached. It cannot
+be combined with `project` (rule `input`).
+
 `t6 jo assign JO PERSON`, `t6 jo reassign JO PERSON --reason TEXT`, and
 `t6 jo note JO TEXT` follow the same preview/confirm flow. PERSON is a `t6n_`
 ID. The local account is the actor. Notes and audit are append-only and each
@@ -1557,16 +1663,20 @@ $ t6 deadline "Nov 13 5pm" --posted 2026-11-12T09:00:00+08:00
 ### Check an app follows the consumer contract
 
 `t6 admin consumer-check PATH` scans Python and common configuration files for
-Notion and LLM adapter imports, credential names, and direct service hosts
-([ADR 0002](docs/adr/0002-consumer-contract.md)). The credential names are
+Notion and LLM adapter imports, any other `t6` import, credential names, and
+direct service hosts ([ADR 0002](docs/adr/0002-consumer-contract.md)). The credential names are
 `NOTION_API_KEY`, `NOTION_TOKEN`, `T6_NOTION_API_KEY` and `T6_NOTION_TOKEN`
 (not names that only start with one, such as `NOTION_TOKEN_FILE`), the LLM
 and Google keys such as `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
 `DEEPSEEK_API_KEY` and `GOOGLE_APPLICATION_CREDENTIALS`. The host rule reads
 every string constant, so a provider URL in test data (a message body that holds
 a Frame.io share link) is a finding too; record it in the allow-list as a
-`direct-http` exception for that file. The API client, pure domain
-rules, privacy helpers, and Frame.io client are allowed. Python docstrings and
+`direct-http` exception for that file. An app may import only `t6.client` and
+`t6.verbs` (and their submodules; `from t6 import client` is fine). Any other
+import from the `t6` package, in any `.py` file including tests, is a
+`t6-import` finding that names the file, the line and the module, for example
+`imports t6.domain.deadlines`; the rules run in the API, so the app calls it
+instead. Python docstrings and
 virtualenv or cache directories are skipped. The command prints JSON and exits
 1 for findings, or 2 if the path does not exist.
 
@@ -1583,7 +1693,8 @@ entries fail the check. For example:
 
 Exceptions match an exact path relative to the app root and a finding rule
 (`adapter-import`, `credential`, or `direct-http`); keep them narrow and remove
-them after migration. This is a static check and cannot detect dynamically
+them after migration. A `t6-import` entry is refused as invalid: that rule has
+no exception. This is a static check and cannot detect dynamically
 constructed names or calls.
 
 To add it to an app's CI, install t6 at the pinned release tag and run it on the
@@ -1876,7 +1987,14 @@ optional `code`) and `ids`. Keep this registry current: masking can only
 recognize registered names. Provider keys are read from the provider's named
 environment variable, never from the file. The configured providers and their
 models are the allowlist. `require_zdr` defaults to true; `max_bytes` defaults
-to 100000 for the combined UTF-8 template, input and canonical schema.
+to 100000 for the combined UTF-8 template, input, examples and canonical schema.
+`provider_min_retention` is optional: a map from a provider name in `llm` to
+`"unknown"` or `"zdr_enforced"`. It sets the retention floor for that provider
+only; other providers keep the `require_zdr` rule, and a caller's
+`require_zdr: true` still tightens it. A provider with retention `unknown` is
+used only when listed here as `"unknown"`. A name that is not a configured
+provider, or any other value, stops the server at start-up. Each audit record
+also holds the `provider` used and whether `zdr` was required.
 Install the `server` extra for JSON Schema validation.
 
 POST `/v1/llm/run` with `task_name`, `prompt_template`, `output_schema`,
@@ -1885,8 +2003,34 @@ The template must contain exactly one literal `{input}` marker. The response
 contains the restored output, provider, model, token counts and SHA-256 hashes:
 the template's UTF-8 bytes, and the schema serialized as UTF-8 JSON with sorted
 keys, no extra whitespace and non-ASCII characters preserved. Only local JSON
-Schema references are supported. Audit records contain the actor and outcome,
-not the task text or output.
+Schema references are supported. Audit records contain the actor, outcome,
+provider and `zdr` flag, not the task text or output.
+
+`examples` is an optional list of `{input_text, output}` pairs for few-shot
+prompting. Each becomes a user turn (the template with the masked example text)
+and an assistant turn (the masked JSON output), sent before the real user turn
+and masked with the same placeholders. An example `output` that does not match
+`output_schema` is refused with rule `schema`.
+
+A refusal with rule `provider`, `policy` or `masking` carries `failure`, one of
+`timeout`, `api_error`, `leak` or `policy`; for a 429 it also carries
+`retry_after` in seconds when the provider sent one. Other verbs' refusals have
+neither key. When the reply is not usable the call is `done` with
+`output_valid: false` and `failure` set to `empty`, `invalid_json`,
+`schema_violation` or `unresolved_placeholder`. The server never retries.
+
+Four more optional inputs serve reports. The leak check on the masked input and
+on the reply follows `masking_preset`, so `strict` no longer refuses a plain-word
+Project name it leaves visible on purpose. `allow_projects` lists Projects (by
+name or code, as in the privacy registry) whose names stay readable; any other
+entry, or a person, is refused with rule `allow`, and the audit record holds
+only the count. With `repair_quotes: true`, a reply that is not valid JSON gets
+one quote repair, and `repaired` says so. `restore: "per_field"` restores every
+string it can: a string with a placeholder the call did not issue stays as
+written and its path (for example `changes[2].text`) is listed in `unresolved`,
+and `output_valid` stays true. `masked_output` then holds the reply as the model
+wrote it, placeholders only. With `restore: "whole"` (the default) one such
+placeholder makes the call `output_valid: false`.
 
 ### Calling the t6 API
 

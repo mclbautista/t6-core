@@ -41,8 +41,24 @@ standard verb outcome or `Unavailable`. Related entities use T6 IDs where a
 binding exists and Notion page IDs otherwise; `page_id` always remains the
 Notion page ID. A Project reference may be its T6 ID or an active or legacy
 page ID. Project rotation is registry-owned and is never inferred from status.
+`project list` and `project get` return the end of each date range in
+`playdate_end`, `submission_deadline_end` and `archival_deadline_end` (`None`
+when the date has no end; a range end is returned as Notion holds it, with its
+time when it has one) and `prod_coor_supe_ids`, the people in `Prod Coor/Supe`
+as T6 Person IDs where bound. `jo list`, `jo get` and `jo find` return
+`project_ids`, every related Project in Notion's order, beside `project_id`,
+the first.
+A date with a time and no offset is returned in the `time_zone` Notion holds
+for it (an aware time); with no offset and no zone it stays naive, the
+workspace time. `jo list` Health is `null` when the formula gave no value and
+`""` when it computed an empty string. `project_code` is the registry's value
+(ADR 0001); `notion_project_code` is the code as the Notion property shows it,
+and an empty registry code does not fall back to it.
 `jo list` supports `project`, `assignee` and `status_group` (`not_started`,
-`started`, `cancelled`, or `active`). Meeting Notes can be filtered by Project,
+`started`, `cancelled`, or `active`). `no_project` returns only the Job Orders
+whose Notion page has no Project, oldest first, with an empty `project_id`; it
+is the list of Job Orders raised with no Project that wait for a coordinator.
+It cannot be combined with `project` (rule `input`). Meeting Notes can be filtered by Project,
 inclusive `since`, exclusive `before`, exact title, title prefix and readiness;
 their body is a tree of typed blocks. `external-link find` takes a typed
 external reference, not a Notion filter.
@@ -58,7 +74,7 @@ because the old draft used a Notion client.
 | gateway #86 | `Contacts.set_telegram_user_id`, `Contacts.create` | Writes; outside this read ticket. |
 | [watchdog #140](https://github.com/mclbautista/t6-jo-watchdog/pull/140) | `ContactReader.list()` | `person list` |
 | watchdog #140 | `ProjectReader.list()` | `project list` |
-| watchdog #140 | `DeliverableReader.for_project()` | `deliverable list` |
+| watchdog #140 | `DeliverableReader.for_project()` | `deliverable candidates` (every Deliverable page of one Project, with `page_id`, `name`, `status` and `deliverable_class`; `deliverable list` stays the registry list) |
 | watchdog #140 | `get_departments()` | `departments` |
 | watchdog #140 | `JobOrders.get()` | `jo get` |
 | watchdog #140 | `JobOrders.find_all_by_telegram_key()` | `jo find` |
@@ -74,9 +90,28 @@ because the old draft used a Notion client.
 | [munki #17](https://github.com/mclbautista/t6-munki-repo/pull/17) | Imports `t6.notion.writes` result types; its `Fleet.sync()` performs Bays matching and writes internally | No direct `t6.notion` read call in the draft. Fleet sync is a write, outside this read ticket. |
 
 The registry also exposes `project get`, `project resolve`, `person find` and
-`camera get` for the requested cutovers and other clients. The table documents
+`camera get` for the requested cutovers and other clients.
+
+`person find` answers one `mention`, or a list of up to 50 `mentions` in one call
+(one read of the Contacts, one result for each name in order). `suggest: true`
+makes `candidates` up to 3 suggestions at 0.60 or more, even after an exact match.
+`prefer_telegram: true` searches the Contacts that have a Telegram user ID first.
+A request with both `mention` and `mentions`, with neither, or with more than 50
+names is refused with rule `input`. See the README for the rule differences from
+the apps' old matching. The table documents
 what the referenced drafts actually call, including their local wrappers; it
 is not a claim that their separate write cutovers have already been built.
+
+`person list` and `person get` return the Person's kind, one of `staff`, `freelancer`,
+`client` or `vendor`. A freelancer does not have the staff role.
+
+`project resolve` takes `text`, and an optional `in_text` (default `false`).
+With `in_text` true, `text` is longer text (for example `AB-101 pilot cut`) and
+the verb finds the one known Project Code in it, as a whole token, case
+insensitive, longest code first, with the registry rotation rule applied to that
+code. No code gives `reason` `no_code_in_text`; several distinct codes give
+`several_codes_in_text` with their Projects as candidates. It never falls back
+to a name match. With `in_text` false the reply is as before.
 
 ### Concern brief replies
 

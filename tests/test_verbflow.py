@@ -78,3 +78,11 @@ class VocabularyTests(unittest.TestCase):
         self.assertEqual(tuple(entries[('drive', 'assign')]['role']['enum']), DRIVE_ROLES)
         self.assertEqual((KINDS, ROLES), (set(MEDIA_KINDS), set(MEDIA_ROLES)))
         self.assertEqual(tuple(role.value for role in Role), DRIVE_ROLES)
+
+    def test_the_person_kinds_are_listed_once(self) -> None:
+        from t6.verbs import catalogue
+        from t6.vocabulary import PERSON_KINDS
+        self.assertEqual(PERSON_KINDS, ('staff', 'freelancer', 'client', 'vendor'))
+        entries = {(e['noun'], e['verb']): e['input_schema']['properties'] for e in catalogue()}
+        self.assertEqual(tuple(entries[('person', 'create')]['kind']['enum']), PERSON_KINDS)
+        self.assertEqual(tuple(entries[('person', 'classify')]['kind']['enum']), PERSON_KINDS)

@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import tempfile
 import unittest
+from typing import Any
 
 from t6.ids import EntityKind, T6Id
 from t6.preview import PreviewTokens
@@ -79,6 +80,37 @@ class JobOrderStoreTests(unittest.TestCase):
         self.assertEqual(len(intents), 1)
         self.assertEqual(self.registry.activity(self.project)[0].subject_id, identifier)
         self.assertEqual(self.registry.audit(identifier)[0].action, 'jo_raise')
+
+    def test_raise_with_no_project_needs_the_flag_and_is_audited(self) -> None:
+        from t6.verbs import Done, Preview, Refused
+        fields = {'name': 'JO without a Project', 'status': 'Needs Intake Review'}
+        for unflagged in ({'fields': fields}, {'fields': {**fields, 'project_id': ''}}):
+            refused = self.orders.write('raise', unflagged, actor='alice', idempotency_key='no-flag')
+            assert isinstance(refused, Refused)
+            self.assertEqual(refused.rule, 'project')
+        both = self.orders.write('raise', {'fields': {**fields, 'project_id': self.project}, 'no_project': True}, actor='alice')
+        assert isinstance(both, Refused)
+        self.assertEqual(both.rule, 'input')
+        for project_id in (None, ''):
+            values: dict[str, Any] = {'fields': {**fields, 'project_id': project_id} if project_id is not None else fields, 'no_project': True}
+            key = f'no-project-{project_id!r}'
+            preview = self.orders.write('raise', values, actor='alice', idempotency_key=key)
+            assert isinstance(preview, Preview)
+            self.assertIsNone(preview.plan['project_id'])
+            done = self.orders.write('raise', values, actor='alice', idempotency_key=key, confirm=preview.token)
+            assert isinstance(done, Done)
+            jo = done.result['jo_id']
+            self.assertIsNone(done.result['project_id'])
+            self.assertIsNone(done.result['page_id'])
+            found = self.orders.get(jo)
+            assert found is not None
+            self.assertIsNone(found['project_id'])
+            self.assertEqual([e.action for e in self.registry.audit(jo)], ['jo_raise'])
+            self.assertEqual([(e.subject_id, e.action) for e in self.registry.activity(jo)], [(jo, 'jo_raise')])
+            self.assertNotIn('jo_raise', [e.action for e in self.registry.activity(self.project)])
+            note = self.orders.write('note', {'jo': jo, 'text': 'x'}, actor='alice')
+            assert isinstance(note, Refused)
+            self.assertEqual(note.rule, 'project')
 
     def test_assign_reassign_and_note_record_project_activity(self) -> None:
         from t6.person import People

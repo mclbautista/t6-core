@@ -38,4 +38,5 @@ class Resolution(Generic[E_co]):
     needs_review: bool
     reason: str | None = None
     """Why a Project Code lookup went to review, when it is not the usual tie:
-    `no_in_rotation_holder`, `several_in_rotation_holders` or `unclassified`."""
+    `no_in_rotation_holder`, `several_in_rotation_holders` or `unclassified`.
+    A lookup in longer text adds `no_code_in_text` and `several_codes_in_text`."""

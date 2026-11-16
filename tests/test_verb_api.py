@@ -332,6 +332,40 @@ class VerbAPITests(unittest.TestCase):
         self.assertEqual(result['outcome'], 'done')
         self.assertEqual(self.registry.audit(result['result']['jo_id'])[0].actor, self.actor)
 
+    def test_job_order_raise_with_fields_needs_no_uploads_and_uses_the_server_data_source(self) -> None:
+        from contextlib import nullcontext
+
+        project = self.registry.register(actor='setup', idempotency_key='jo-fields-setup')
+        assert isinstance(project, Registered)
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO person_permissions VALUES (?, 'coordinator')", (self.actor,))
+        self.api.open_notion = lambda _: nullcontext(None)
+        self.api.data_sources['job_orders'] = 'jo'
+        fields = {'project_id': project.project.id, 'name': 'SHOW - AE - JO #1', 'telegram_key': '-100:1'}
+        with patch.dict(os.environ, {'T6_NOTION_TOKEN': 'secret'}):
+            preview = self.request('/v1/jo/raise', {'fields': fields})[1]
+            self.assertEqual(preview['outcome'], 'preview')
+            self.assertNotIn('watermark', preview['plan']['fields'])
+            result = self.request('/v1/jo/raise', {'fields': fields, 'confirm': preview['token'],
+                                  'idempotency_key': preview['plan']['idempotency_key']})[1]
+            self.assertEqual((result['outcome'], result['result']['page_id']), ('done', None))
+            self.assertEqual(result['result']['project_id'], project.project.id)
+            self.assertIsInstance(result['result']['sync_intent_id'], int)
+            for body in ({}, {'fields': fields, 'file_contents': '{}'}, {'fields': {**fields, 'bogus': 1}}):
+                refused = self.request('/v1/jo/raise', body)[1]
+                self.assertEqual((refused['outcome'], refused['rule']), ('refused', 'input'))
+            # A path sent with no uploaded contents is dropped, never opened.
+            for paths in ({'file': '/etc/hosts'}, {'file': '/etc/hosts', 'data_sources': '/etc/hosts'}):
+                refused = self.request('/v1/jo/raise', paths)[1]
+                self.assertEqual((refused['outcome'], refused['rule']), ('refused', 'input'))
+            nobody = self.request('/v1/jo/raise', {'fields': {'name': 'No Project'}, 'idempotency_key': 'np'})[1]
+            self.assertEqual((nobody['outcome'], nobody['rule']), ('refused', 'project'))
+            flagged = {'fields': {'name': 'No Project', 'status': 'Needs Intake Review'}, 'no_project': True}
+            preview = self.request('/v1/jo/raise', flagged)[1]
+            done = self.request('/v1/jo/raise', {**flagged, 'confirm': preview['token'],
+                                'idempotency_key': preview['plan']['idempotency_key']})[1]
+        self.assertEqual((done['outcome'], done['result']['project_id']), ('done', None))
+
     def test_service_grant_configuration_validation(self) -> None:
         self.assertEqual(service_permissions_from_env({'T6_API_SERVICE_PERMISSIONS': '{"worker": ["operator"]}'}),
                          {'worker': frozenset({'operator'})})
@@ -490,23 +524,23 @@ class ClientTests(VerbAPITests):
             main(['health'])
         self.assertIsInstance(json.loads(out.getvalue())['api']['schema_version'], int)
 
-    def test_frameio_project_verbs_are_staff_write_verbs_and_refuse_clients_and_vendors(self) -> None:
+    def test_frameio_project_verbs_are_staff_write_verbs_and_refuse_clients_freelancers_and_vendors(self) -> None:
         from t6.client import Client
         from t6.verbs import Done, FrameioProjectInput, Preview, Refused
         entries = {v['verb']: v for v in catalogue() if v['noun'] == 'frameio'}
         self.assertEqual(set(entries), {'project link', 'project unlink'})
         for entry in entries.values():
             self.assertEqual((entry['role'], entry['read_only']), ('staff', False))
-        client_person, vendor = 't6n_' + '3' * 32, 't6n_' + '4' * 32
+        client_person, vendor, freelancer = 't6n_' + '3' * 32, 't6n_' + '4' * 32, 't6n_' + '5' * 32
         with self.registry._transaction() as db:
-            for person, kind, telegram in ((client_person, 'client', 44), (vendor, 'vendor', 45)):
+            for person, kind, telegram in ((client_person, 'client', 44), (vendor, 'vendor', 45), (freelancer, 'freelancer', 46)):
                 db.execute("INSERT INTO persons VALUES (?, ?, '[]', '[]', ?, 0, 1)", (person, kind, telegram))
-        self.api.secrets.update({'client-secret': client_person, 'vendor-secret': vendor})
+        self.api.secrets.update({'client-secret': client_person, 'vendor-secret': vendor, 'freelancer-secret': freelancer})
         project = self.registry.register(actor='setup', idempotency_key='fio-project')
         assert isinstance(project, Registered)
         body = {'project': project.project.id, 'frameio_project': 'fp1', 'idempotency_key': 'fio-link'}
         self.assertEqual(self.request('/v1/frameio/project/link', body, secret='worker-secret')[1]['rule'], 'permission')
-        for secret in ('client-secret', 'vendor-secret'):
+        for secret in ('client-secret', 'vendor-secret', 'freelancer-secret'):
             self.assertEqual(self.request('/v1/frameio/project/link', body, secret=secret)[1]['outcome'], 'refused')
         staff = Client('http://127.0.0.1:%s' % self.server.server_port, 'staff-secret')
         inputs = FrameioProjectInput(project=project.project.id, frameio_project='fp1', idempotency_key='fio-link')

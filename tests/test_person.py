@@ -19,6 +19,7 @@ from t6.person import People
 from t6.preview import PreviewTokens
 from t6.registry.core import normalize_page_id
 from t6.registry.sqlite import SqliteProjectRegistry, _migrate
+from t6.verbs import Refused
 
 
 class MemoryRegistry(SqliteProjectRegistry):
@@ -155,6 +156,25 @@ class PersonTests(unittest.TestCase):
         self.assertEqual(result['outcome'], 'done')
         self.assertIsNone(people.authorize(person_id, 'reader'))
         self.assertEqual(self.registry.activity(person_id)[0].action, 'person_classify')
+
+    def test_a_freelancer_can_be_classified_and_has_no_staff_role(self) -> None:
+        person_id = self.apply(self.migrate())['entries'][0]['t6_id']
+        people = People(self.registry, PreviewTokens('test'))
+        self.assertEqual(self.confirmed('classify', '--person-id', person_id, '--kind', 'freelancer')['outcome'], 'done')
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute('SELECT kind FROM persons WHERE id = ?', (person_id,)).fetchone()[0], 'freelancer')
+        for role in ('staff', 'reader'):
+            refusal = people.authorize(person_id, role)
+            assert refusal is not None
+            self.assertEqual(refusal.rule, 'permission')
+        self.assertFalse(people._allows(self.registry.db, person_id, 'role:staff'))
+
+    def test_the_store_refuses_a_bad_kind_for_classify_and_add(self) -> None:
+        person_id = self.apply(self.migrate())['entries'][0]['t6_id']
+        people = People(self.registry, PreviewTokens('test'))
+        refused = people.write('classify', {'person_id': person_id, 'kind': 'contractor'}, actor='test-actor', idempotency_key='bad-kind')
+        assert isinstance(refused, Refused)
+        self.assertEqual((refused.rule, refused.reason), ('input', 'A valid kind is required'))
 
     def test_shift_preview_confirm_deadline_and_history(self) -> None:
         applied = self.apply(self.migrate())

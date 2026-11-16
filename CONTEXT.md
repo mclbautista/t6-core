@@ -281,6 +281,17 @@ reuses the Transcript.
   speakers entry keeps the speaker map as given. Each entry shows in Activity
   for the Project.
 
+## Person
+
+A **Person** (`t6n_`) is someone t6 knows by a Contacts page, with one **kind**:
+staff, freelancer, client or vendor.
+
+- **Staff**: works for the studio and has the staff role (below).
+- **Freelancer**: a person who works on Projects for the studio and is not staff.
+  A freelancer does not have the staff role.
+- **Client**: a person at the client of a Project.
+- **Vendor**: a person at an outside supplier (the abang relay asks vendors).
+
 ## Delivery links and the staff role
 
 A **Delivery link** is how a Delivery reaches the client: its carrier, one of a
@@ -289,7 +300,7 @@ carrier is a Frame.io share, a client's view of it is recorded in the Project's
 Activity.
 
 The **staff role** is the role table's lowest write role: an active Person whose
-kind is staff. Clients, vendors, inactive Persons, services and internal actors
+kind is staff. Freelancers, clients, vendors, inactive Persons, services and internal actors
 do not have it. Verbs that need no named permission use it (`transcript create`,
 `transcript speakers`, `transcript translate`, `frameio project link`); the
 `reader` role is for reads only, never for a write.

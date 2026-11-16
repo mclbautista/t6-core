@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -43,3 +44,20 @@ class TranslateSwitchTest(unittest.TestCase):
                     with patch.dict(os.environ, env, clear=True), patch("t6.server.__main__.serve"), patch("t6.server.__main__.make_server"), patch("t6.server.__main__.threading.Thread"), patch("t6.server.__main__.VerbAPI") as api, contextlib.redirect_stderr(io.StringIO()):
                         self.assertEqual(main(), 0)
                     self.assertIs(api.call_args.kwargs["translate_enabled"], expected)
+
+
+class LLMConfigTest(unittest.TestCase):
+    def test_bad_provider_min_retention_stops_start_up(self) -> None:
+        provider = {"base_url": "https://llm.example/v1", "model": "m", "retention": "unknown", "api_key_env": "LLM_KEY"}
+        for bad in ({"nobody": "unknown"}, {"p": "zdr"}, ["p"]):
+            with self.subTest(bad=bad), tempfile.TemporaryDirectory() as directory:
+                config = Path(directory) / "llm.json"
+                config.write_text(json.dumps({"llm": {"default": "p", "providers": {"p": provider}},
+                                              "privacy_registry": {}, "provider_min_retention": bad}))
+                routes = Path(directory) / "routes.yaml"
+                routes.write_text('- {path: /events/notion, verifier: notion, secret_env: NOTION, job_kind: notion.event, queue: main}')
+                env = {"T6_SERVER_MODE": "full", "T6_ROUTES_FILE": str(routes), "T6_QUEUE_DB": str(Path(directory) / "queue.sqlite"),
+                       "T6_REGISTRY_DB": ":memory:", "T6_LLM_CONFIG": str(config), "LLM_KEY": "k"}
+                with patch.dict(os.environ, env, clear=True), patch("t6.server.__main__.serve"), patch("t6.server.__main__.make_server"), patch("t6.server.__main__.threading.Thread"), contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(ValueError):
+                        main()

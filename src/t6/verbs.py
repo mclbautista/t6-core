@@ -23,9 +23,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, get_args, get_origin
 from types import UnionType
 
-from pydantic import AwareDatetime, BaseModel, Field, ConfigDict, field_validator
+from pydantic import AwareDatetime, BaseModel, Field, ConfigDict, SerializerFunctionWrapHandler, field_validator, model_serializer
 from t6.domain import Project, JobOrder, Deliverable, MeetingNote, Contact, Camera, ExternalRef, Machine, Ring
-from t6.vocabulary import DRIVE_ROLES, DriveRole, MediaKind, MediaRole
+from t6.vocabulary import DRIVE_ROLES, DriveRole, MediaKind, MediaRole, PersonKind
 from t6.llm.api import Done as Done, LLMRunInput as LLMRunInput, LLMRunOutput as LLMRunOutput
 
 if TYPE_CHECKING:
@@ -53,6 +53,16 @@ class Refused(BaseModel):
     outcome: Literal["refused"] = "refused"
     rule: str
     reason: str
+    failure: str | None = None
+    retry_after: float | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_llm_fields(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        for key in ("failure", "retry_after"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
 
 
 class Ambiguous(BaseModel):
@@ -307,7 +317,7 @@ class PersonAddInput(BaseModel):
 
 class PersonCreateInput(BaseModel):
     name: str
-    kind: str
+    kind: PersonKind
     telegram_handle: str | None = None
     telegram_id: int | None = None
     note: str | None = None
@@ -363,7 +373,7 @@ def person_unassign(inputs: PersonProjectRoleInput, open_notion: Callable[..., A
 
 class PersonClassifyInput(BaseModel):
     person_id: str
-    kind: str
+    kind: PersonKind
     idempotency_key: str | None = None
     confirm: str | None = None
 
@@ -516,15 +526,17 @@ class LegacyJoGetInput(BaseModel):
 
 
 class JoRaiseInput(BaseModel):
-    file: Path
-    data_sources: Path
+    file: Path | None = None
+    data_sources: Path | None = None
+    fields: dict[str, Any] | None = None
+    no_project: bool = False
     idempotency_key: str | None = None
     confirm: str | None = None
 
 
 class JoWriteOutput(BaseModel):
     jo_id: str
-    project_id: str
+    project_id: str | None
     action: str
     idempotency_key: str
     page_id: str | None = None
@@ -575,9 +587,11 @@ class JoDelayInput(JoBlockInput):
     until: str
 
 
-def jo_write(inputs: JoRaiseInput | JoAssignInput | JoReassignInput | JoNoteInput | JoSubmitInput, open_notion: Callable[..., Any]) -> Outcome:
+def jo_write(inputs: JoRaiseInput | JoAssignInput | JoReassignInput | JoNoteInput | JoSubmitInput, open_notion: Callable[..., Any],
+             data_source: str | None = None) -> Outcome:
+    """Write a Job Order verb. `data_source` is the server's own Job Orders data source; the CLI, which has none, reads a file."""
     from t6.cli import TOKEN_VARIABLE, _read_data_sources
-    from t6.cli_jo import prepare_fields
+    from t6.cli_jo import check_fields, prepare_fields
     from t6.job_order import JobOrderStore
     from t6.notion import NotionError
     from t6.preview import PreviewTokens
@@ -594,12 +608,22 @@ def jo_write(inputs: JoRaiseInput | JoAssignInput | JoReassignInput | JoNoteInpu
             verb = state_verbs[type(inputs)]
             values = inputs.model_dump(exclude={'idempotency_key', 'confirm'})
         elif isinstance(inputs, JoRaiseInput):
+            if (inputs.file is None) == (inputs.fields is None):
+                return Refused(rule="input", reason="Give exactly one of file and fields")
             token = os.environ.get(TOKEN_VARIABLE)
             if not token:
                 return Refused(rule="credentials", reason=f"set {TOKEN_VARIABLE}")
+            if data_source is None and inputs.data_sources is not None:
+                data_source = _read_data_sources(inputs.data_sources)["job_orders"]
+            if data_source is None:
+                return Refused(rule="config", reason="The job_orders data source is not configured")
             with open_notion(token) as client:
-                fields = prepare_fields(client, _read_data_sources(inputs.data_sources)["job_orders"], inputs.file)
-            verb, values = "raise", {"fields": fields}
+                if inputs.fields is not None:
+                    fields = check_fields(client, data_source, inputs.fields)
+                else:
+                    assert inputs.file is not None
+                    fields = prepare_fields(client, data_source, inputs.file)
+            verb, values = "raise", {"fields": fields, **({"no_project": True} if inputs.no_project else {})}
         elif isinstance(inputs, JoReassignInput):
             verb, values = "reassign", {"jo": inputs.jo, "person": inputs.person, "reason": inputs.reason}
         elif isinstance(inputs, JoAssignInput):
@@ -927,7 +951,10 @@ class JoFormatInput(BaseModel):
 
 
 class LegacyPersonFindInput(BaseModel):
-    mention: str
+    mention: str | None = None
+    mentions: list[str] | None = None
+    suggest: bool = False
+    prefer_telegram: bool = False
     data_sources: Path
 
 
@@ -935,6 +962,7 @@ class LegacyProjectResolveInput(BaseModel):
     text: str
     data_sources: Path
     registry_db: Path | None = None
+    in_text: bool = False
 
 
 class LegacyCameraGetInput(BaseModel):
@@ -966,11 +994,14 @@ class PersonGetInput(ReadInput):
 
 
 class PersonFindInput(ReadInput):
-    mention: str
+    mention: str | None = None
+    mentions: list[str] | None = None
+    suggest: bool = False
+    prefer_telegram: bool = False
 
 
 class PersonListInput(ReadInput):
-    pass
+    registered: bool | None = None
 
 
 class ProjectGetInput(ReadInput):
@@ -995,6 +1026,7 @@ class ProjectFlagsOutput(BaseModel):
 
 class ProjectResolveInput(ReadInput):
     text: str
+    in_text: bool = False
 
 
 class JoGetInput(ReadInput):
@@ -1054,6 +1086,7 @@ class JoListInput(ReadInput):
     project: str | None = None
     assignee: str | None = None
     status_group: Literal["not_started", "started", "cancelled", "active"] | None = None
+    no_project: bool = False
 
 
 class JoFindInput(ReadInput):
@@ -1290,6 +1323,21 @@ class DeliverableListInput(ReadInput):
     project: str
 
 
+class DeliverableCandidatesInput(ReadInput):
+    project: str
+
+
+class DeliverableCandidate(BaseModel):
+    page_id: str
+    name: str | None = None
+    status: str | None = None
+    deliverable_class: str | None = None
+
+
+class DeliverableCandidatesOutput(BaseModel):
+    candidates: list[DeliverableCandidate]
+
+
 class FloorReadInput(ReadInput):
     project: str | None = None
 
@@ -1334,10 +1382,18 @@ class MeetingNotesListInput(ReadInput):
     title: str | None = None
     title_prefix: str | None = None
     ready_to_send: bool | None = None
+    latest: bool = False
+    include_body: bool = True
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ReadJobOrder(JobOrder):
+    """A Job Order as the API reads it.
+
+    `health` is Notion's Health formula: `None` when it gave no value and `""`
+    when it computed an empty string.
+    """
+
     t6_id: str | None = None
 
 
@@ -1399,6 +1455,10 @@ class PersonFindOutput(BaseModel):
     candidates: list[ContactCandidate]
 
 
+class PersonFindManyOutput(BaseModel):
+    results: list[PersonFindOutput]
+
+
 class JoGetOutput(BaseModel):
     job_order: ReadJobOrder
 
@@ -1444,6 +1504,32 @@ class ReadMeetingNote(MeetingNote):
 
 class MeetingNotesListOutput(BaseModel):
     meeting_notes: list[ReadMeetingNote]
+
+
+class MeetingNotesCreateInput(BaseModel):
+    title: str
+    meeting_date: str
+    project_ids: list[str] = []
+    attendee_ids: list[str] = []
+    blocks: list[NoteBlock] = []
+
+
+class MeetingNotesAppendInput(BaseModel):
+    note: str
+    blocks: list[NoteBlock]
+
+
+class MeetingNotesTrashInput(BaseModel):
+    note: str
+
+
+class MeetingNotesMarkSentInput(BaseModel):
+    note: str
+    at: AwareDatetime | None = None
+
+
+class MeetingNotesWriteOutput(BaseModel):
+    meeting_note: MeetingNote
 
 
 class MachineListInput(ReadInput):
@@ -2269,10 +2355,15 @@ VERBS = (
     Verb("deliverable", "rebind", "Bind a replacement Deliverables page", (), DeliverableRebindInput, DeliverableDefineOutput, "operator", "Retain the old page as a legacy binding.", deliverable_rebind),
     Verb("deliverable", "get", "Get a Deliverable", (), DeliverableGetInput, DeliverableGetOutput, "reader", "Read from t6.", api_read, read_only=True),
     Verb("deliverable", "list", "List Project Deliverables", (), DeliverableListInput, DeliverableListOutput, "reader", "Read from t6.", api_read, read_only=True),
+    Verb("deliverable", "candidates", "List every Deliverable page of a Project", (), DeliverableCandidatesInput, DeliverableCandidatesOutput, "reader", "Read from Notion: registered or not, one entry for each page, with name, Status and Class.", api_read, read_only=True),
     Verb("deliverable", "bangko", "List Deliverables ready ahead of air", (), FloorReadInput, FloorReadOutput, "reader", "Ready (kasado or delivered) at least the configured days before air; optional project.", floor_bangko, read_only=True),
     Verb("deliverable", "hand-to-mouth", "List Deliverables ready at the last moment", (), FloorReadInput, FloorReadOutput, "reader", "Ready within the configured days of air; optional project.", floor_hand_to_mouth, read_only=True),
     Verb("deliverable", "sabit", "List missed Deliverables", (), FloorReadInput, FloorReadOutput, "reader", "A recorded miss, not a delay; optional project.", floor_sabit, read_only=True),
     Verb("meeting-notes", "list", "List Project Meeting Notes", (), MeetingNotesListInput, MeetingNotesListOutput, "reader", "Read from Notion.", api_read, read_only=True),
+    Verb("meeting-notes", "create", "Create a Meeting Notes page", (), MeetingNotesCreateInput, MeetingNotesWriteOutput, "minutes", "Not idempotent: look for the title with list first. A failed body is ambiguous with the page ID.", api_write),
+    Verb("meeting-notes", "append", "Append blocks to a Meeting Notes page", (), MeetingNotesAppendInput, MeetingNotesWriteOutput, "minutes", "Refused when the note is sent or in the trash.", api_write),
+    Verb("meeting-notes", "trash", "Trash a Meeting Notes page", (), MeetingNotesTrashInput, MeetingNotesWriteOutput, "minutes", "Refused when the note is sent.", api_write),
+    Verb("meeting-notes", "mark-sent", "Set Sent at on a Meeting Notes page", (), MeetingNotesMarkSentInput, MeetingNotesWriteOutput, "minutes", "A note already sent keeps its first date.", api_write),
     Verb("project", "list", "List Projects", (), ProjectListInput, ProjectListOutput, "reader", "Read Projects.", api_read, read_only=True),
     Verb("llm", "run", "Run an LLM task on the API", (), LLMRunInput, LLMRunOutput, "llm", "Server policy and masking apply.", llm_api_only),
     Verb("person", "add", "Register a Person", (), PersonAddInput, PersonWriteOutput, "operator", "A page belongs to one Person.", person_write),
@@ -2690,6 +2781,14 @@ def add_parsers(commands: Any) -> None:
             parser.add_argument('message_id')
             parser.set_defaults(registered_verb=entry)
             continue
+        if entry.handler is jo_write and entry.verb == "raise":
+            parser.add_argument("--file", type=Path)
+            parser.add_argument("--data-sources", type=Path)
+            parser.add_argument("--no-project", type=_boolean, default=False)
+            parser.add_argument("--idempotency-key")
+            parser.add_argument("--confirm")
+            parser.set_defaults(registered_verb=entry, fields=None)
+            continue
         if entry.handler is jo_write and entry.verb != "raise":
             parser.add_argument("jo")
             if entry.verb == "note":
@@ -2754,6 +2853,23 @@ def add_parsers(commands: Any) -> None:
                 parser.add_argument(name)
             parser.add_argument('--idempotency-key')
             parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.input_model in (MeetingNotesCreateInput, MeetingNotesAppendInput):
+            if entry.input_model is MeetingNotesCreateInput:
+                parser.add_argument('--title', required=True)
+                parser.add_argument('--meeting-date', required=True, metavar='YYYY-MM-DD')
+                parser.add_argument('--project-ids', nargs='+', default=[])
+                parser.add_argument('--attendee-ids', nargs='+', default=[])
+            else:
+                parser.add_argument('--note', required=True)
+            parser.add_argument('--block', dest='blocks', action='append', type=json.loads, default=[], metavar='JSON',
+                                help='One body block as a JSON object (kind, text, spans, checked, children); repeat for more')
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.input_model is MeetingNotesMarkSentInput:
+            parser.add_argument('--note', required=True)
+            parser.add_argument('--at', type=datetime.fromisoformat, metavar='ISO', help='When it was sent, with a UTC offset (default: now, Manila)')
             parser.set_defaults(registered_verb=entry)
             continue
         if entry.input_model is MachineSyncInput:

@@ -113,6 +113,15 @@ class RestoreTests(unittest.TestCase):
     def test_text_without_placeholders_is_unchanged(self) -> None:
         self.assertEqual(self.session.restore("QC pending"), "QC pending")
 
+    def test_restore_fields_keeps_unissued_strings_and_lists_their_paths(self) -> None:
+        reply = {"changes": [{"text": "[person 1] away"}, {"text": "[person 8] away"}, {"text": "[person 9] and [person 8]"}],
+                 "note": "[person 1]", "count": 3}
+        restored, unresolved = self.session.restore_fields(reply)
+        self.assertEqual(restored, {"changes": [{"text": "Marco away"}, {"text": "[person 8] away"},
+                                                {"text": "[person 9] and [person 8]"}], "note": "Marco", "count": 3})
+        self.assertEqual(unresolved, ["changes[1].text", "changes[2].text"])
+        self.assertEqual(self.session.restore_fields("clean")[1], [])
+
     def test_walks_an_output_model_and_keeps_its_type(self) -> None:
         reply = Reply(
             changes=(Change("Pending [PERSON 1]", "Pending [person  1]", 1),),
