@@ -61,7 +61,7 @@ Mac mini. Both use only the standard library.
 - **Two listeners.** The public one serves only `/webhook` and `/webhook/*`
   (Frame.io and Notion) and `GET /frameio/callback` (the
   [Frame.io sign-in](#frameio) redirect). The tailnet one serves `POST /tap` (the gateway),
-  `/queue/*` (workers and callers), `POST /review/timers` (the Frame.io worker) and `/registry/*` (the
+  `/queue/*` (workers and callers), `POST /review/timers` (the Frame.io worker; an edge server serves this one too, because the timers live in its queue file and `frameio.review_done` is claimed from its `main` queue) and `/registry/*` (the
   [Project registry](#project-registry)). Nothing else is served on the
   public one.
 - **Signatures.** Frame.io: `v0:{timestamp}:{body}` HMAC-SHA256, five-minute

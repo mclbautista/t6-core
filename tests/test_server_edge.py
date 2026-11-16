@@ -3,9 +3,9 @@ from dataclasses import replace
 import json
 from pathlib import Path
 
-from t6.server import Request, WebhookApp
+from t6.server import Request, Response, WebhookApp
 from t6.server.routes import load_routes
-from test_server_app import ServerTestCase, comment, frameio_request, notion_event, notion_request
+from test_server_app import FRAMEIO_WORKER_SECRET, WORKER_SECRET, ServerTestCase, comment, frameio_request, notion_event, notion_request
 
 
 class EdgeTests(ServerTestCase):
@@ -48,10 +48,32 @@ class EdgeTests(ServerTestCase):
         response = self.app.public(Request("POST", "/events/notion", {}, json.dumps({"verification_token": "token"}).encode()))
         self.assertEqual(response.status, 401)
         self.assertEqual(self.tokens, [])
-        for path in ("/tap", "/registry/projects", "/operator/offers", "/review/timers", "/unknown"):
+        for path in ("/tap", "/registry/projects", "/operator/offers", "/unknown"):
             self.assertEqual(self.app.tailnet(Request("POST", path)).status, 404)
             self.assertEqual(self.app.public(Request("POST", path)).status, 404)
+        self.assertEqual(self.app.public(Request("POST", "/review/timers")).status, 404)
         self.assertEqual(self.app.public(Request("GET", "/health")).status, 200)
+
+    def arm(self, secret: str | None = FRAMEIO_WORKER_SECRET, comment_id: str = "c1") -> Response:
+        body = {"comment_id": comment_id, "file_id": "f1", "frameio_project_id": "fp1", "user_id": "u1", "user_name": "Reviewer One", "created_at": "2026-11-12T10:00:00+00:00"}
+        return self.app.tailnet(Request("POST", "/review/timers", {"Authorization": f"Bearer {secret}"} if secret else {}, json.dumps(body).encode()))
+
+    def test_the_edge_arms_review_timers_for_the_frameio_worker_and_the_job_is_claimable_from_main(self) -> None:
+        first, again = self.arm(), self.arm()
+        self.assertEqual((first.status, first.body), (200, {"counted": True}))
+        self.assertEqual(again.body, {"counted": False})
+        self.assertIsNone(self.queue.claim("main", 60))
+        self.clock.advance(15 * 60)
+        claim = self.queue.claim("main", 60)
+        assert claim is not None
+        self.assertEqual((claim.kind, claim.payload["count"]), ("frameio.review_done", 1))
+
+    def test_the_edge_review_timer_route_refuses_other_grants_and_unknown_secrets(self) -> None:
+        self.assertEqual(self.arm(WORKER_SECRET).status, 403)
+        self.assertEqual(self.arm("wrong").status, 401)
+        self.assertEqual(self.arm(None).status, 401)
+        self.clock.advance(3600)
+        self.assertEqual(self.pending(), 0)
 
     def test_example_routes_deliver_worker_payloads(self) -> None:
         routes = load_routes("docs/edge-routes.example.yaml", {"FRAMEIO_WEBHOOK_SECRET": "frameio-secret", "NOTION_WEBHOOK_TOKEN": "notion-token", "T6_GOOGLE_CHANNEL_TOKEN": "google-token"})
