@@ -228,21 +228,6 @@ class ApprovalCardTests(unittest.TestCase):
         with self.registry._transaction() as db:
             db.execute("INSERT INTO person_permissions VALUES (?, 'operator')", (self.actor,))
         store = ProjectStartStore(self.registry, self.people.tokens, None, lambda page: 'Example Show')
-        # The confirm asks the Frame.io worker through the `frameio` queue, which a worker on a fake Frame.io API serves.
-        from t6.frameio import FrameioWorker
-        from t6.frameio.api import FrameioApi
-        from t6.frameio.project_folders import LocalFrameioQueue, QueueFrameioWriter
-        from t6.frameio.reads import FrameioReads
-        from t6.frameio.testing import FakeFrameio, StaticTokens
-        from t6.worker import QueueClient, Worker
-        from test_frameio_worker import FakeTokens
-        from test_server_app import InProcess
-        fake = FakeFrameio()
-        frameio = FrameioWorker(FakeTokens(), FrameioReads(FrameioApi(StaticTokens(), fake.fetch, lambda _: None, send=fake.send)), lambda text, key: None)
-        served = Worker(QueueClient(InProcess(self.app), 'frameio-worker'), 'frameio', frameio.handlers())
-        def serve(_seconds: float) -> None:
-            served.run_once()
-        self.api.frameio = QueueFrameioWriter(LocalFrameioQueue(self.queue), sleep=serve)
         values = {'project': project.project.id, 'idempotency_key': 'start'}
         job = self.send('/v1/project/start', values)['result']['job_id']
         Worker(InternalQueueClient(InternalJobQueue(self.registry)), 'main', {JOB_KIND: lambda claimed: store.run_preview(claimed.payload)}).run_once()
@@ -255,7 +240,7 @@ class ApprovalCardTests(unittest.TestCase):
         self.assertEqual(self.send('/v1/project/start', {**values, 'confirm': preview['token']}), done)
         self.drain()
         self.assertEqual(self.gateway.sends, 1)
-        self.assertEqual((len(fake.projects), done['result']['frameio_project_id'] in fake.projects, len(fake.posts), fake.shares_created), (1, True, 1, 0))
+        self.assertEqual(done['result']['state'], 'waiting_for_approval')  # nothing else is applied before the Approval is granted
 
     def test_after_verb_gives_a_started_projects_approval_its_card_and_does_nothing_for_other_outcomes(self) -> None:
         from t6.verbs import Done, Refused

@@ -196,6 +196,7 @@ class ProjectStartOutput(BaseModel):
     project_id: str | None = None
     idempotency_key: str | None = None
     approval_id: str | None = None
+    reason: str | None = None
     deliverable_ids: list[str] = Field(default_factory=list)
     frameio_project_id: str | None = None
     frameio_folders: dict[str, str] = Field(default_factory=dict)
@@ -206,7 +207,7 @@ class ProjectStartOutput(BaseModel):
 
 
 def project_start(inputs: ProjectStartInput, open_notion: Callable[..., Any]) -> Outcome:
-    """Queue the plan job, read its Preview with `job`, or apply the t6 steps with `confirm`; the rules are in `t6.project_start`."""
+    """Queue the plan job, read its Preview (or the Start's state) with `job`, or request the Approval with `confirm`; the rules are in `t6.project_start`."""
     from t6.project_start import ProjectStartStore
     if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
         return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
@@ -2208,7 +2209,7 @@ VERBS = (
     Verb("person", "get", "Get a Person", (), PersonGetInput, PersonGetOutput, "reader", "Read a Person.", person_get, read_only=True),
     Verb("project", "link-chat", "Link a Telegram chat to a Project", (), ProjectChatInput, ProjectChatOutput, "coordinator", "Approval is required.", project_link_chat),
     Verb("project", "unlink-chat", "Unlink a Telegram chat from a Project", (), ProjectChatInput, ProjectChatOutput, "coordinator", "Approval is required.", project_unlink_chat),
-    Verb("project", "start", "Start a Project: a previewed plan, then its t6 steps", (), ProjectStartInput, ProjectStartOutput, "operator", "A preview by job; confirm applies the Approval, Deliverables, Media locations and Bookings once. The manual steps are listed and recorded.", project_start),
+    Verb("project", "start", "Start a Project: a previewed plan, then its t6 steps", (), ProjectStartInput, ProjectStartOutput, "operator", "A preview by job; confirm requests the Approval and the Start waits. When the Approval is granted the Frame.io step, Deliverables, Media locations and Bookings are applied once, as the Person who confirmed; a denied Approval applies nothing. The manual steps are listed and recorded then.", project_start),
     Verb("project", "archive", "Archive a Project", (), ProjectResumeInput, ProjectWriteOutput, "coordinator", "An archived Project cannot accept new work.", project_archive),
     Verb("project", "hold", "Hold a Project", (), ProjectHoldInput, ProjectWriteOutput,
          "operator", "A held Project cannot be held again.", project_hold),

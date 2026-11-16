@@ -1,13 +1,24 @@
-"""`project start`: a previewed plan built by a job, and the t6 steps it applies (#267).
+"""`project start`: a previewed plan built by a job, and the steps that wait for its Approval (#267, #382).
 
 The verb returns a job id. The main worker runs `run_preview`, whose result is the Preview with its signed
-token. Confirm applies the t6 steps (the Approval, the Deliverables with the milestone template of the Project
-Type, the Media locations and the initial Bookings) through the stores that own them, each under a key derived
-from the Start's own key, so a retry creates nothing twice. The steps that are done by hand (NAS folders, the
-Resolve project, the Resolve timelines with their stamps) are listed in the plan and recorded in Activity.
+token. Confirm checks the plan again, requests the Approval (gate `project start`) and stores the Start as
+waiting; it applies nothing else and does not ask Frame.io. When the Approval is granted (`approval grant`, which
+the operator card also uses), `decided` queues a `project_start.apply` job on the main queue and the main worker
+runs `run_apply`: the plan is built again, then the Frame.io step, then the t6 steps (the Deliverables with the
+milestone template of the Project Type, the Media locations and the initial Bookings) through the stores that own
+them, each under a key derived from the Start's own key, so a retry creates nothing twice. A denied Approval ends
+the Start and applies nothing. The steps that are done by hand (NAS folders, the Resolve project, the Resolve
+timelines with their stamps) are listed in the plan and recorded in Activity when the Start is applied.
+
+The apply runs as the Person who confirmed the Start. If the plan is no longer the one confirmed, a step is
+refused or Frame.io fails, nothing more is applied and the Start is `failed` with the reason (Audit and Activity);
+confirming again with the same key and token applies it again, with no second Approval. The same key (the job
+result read, or a retried confirm) returns the state: `waiting_for_approval`, `applying`, `applied`, `denied` or
+`failed`. One Start of a Project at a time: another one is refused while a Start waits; a denied Start does not
+block, and neither does a failed Start that applied no step.
 
 The Frame.io step (#275) asks the Frame.io worker, the only holder of the Frame.io token, for the Frame.io
-project and one folder per Deliverable code. Confirm asks first, before any t6 step, so a Frame.io failure
+project and one folder per Deliverable code. The apply asks first, before any t6 step, so a Frame.io failure
 leaves t6 unchanged. The answer is recorded as Media locations: the project through `frameio project link`
 (the one-Project holder rule) and one `frameio-folder` with role review per Deliverable. The request creates
 nothing that exists (see `CreateProjectFolders`), so a retry after a crash between the Frame.io call and the
@@ -17,6 +28,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import sqlite3
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -28,6 +40,7 @@ from t6.ids import EntityKind, T6Id
 from t6.media import MediaStore
 from t6.frameio.project_folders import FrameioProjectWriter
 from t6.frameio.requests import Failed
+from t6.frameio_hold import HeldActivity
 from t6.person import People
 from t6.preview import PreviewTokens
 from t6.registry.sqlite import SqliteProjectRegistry
@@ -36,6 +49,7 @@ from t6.worker.internal_queue import InternalJobQueue
 
 QUEUE = 'main'
 JOB_KIND = 'project_start.preview'
+APPLY_KIND = 'project_start.apply'
 VERB = 'project start'
 GATE = 'project start'
 # What a person does by hand after a Project Start, in the plan's order. The Frame.io project and the
@@ -58,6 +72,28 @@ def _fingerprint(actor: str, inputs: Mapping[str, Any]) -> str:
 def _step(outcome: Outcome, label: str) -> Refused | None:
     """A refusal from a step's own store, named by step; None when the store accepted the step."""
     return Refused(rule=outcome.rule, reason=f'{label}: {outcome.reason}') if isinstance(outcome, Refused) else None
+
+
+def _activity(db: sqlite3.Connection, project: str, now: float, actor: str, action: str, summary: str, audit_id: int | None) -> None:
+    db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+               (project, project, now, actor, action, summary, audit_id))
+
+
+def decided(registry: SqliteProjectRegistry, db: sqlite3.Connection, approval_id: str, verb: str, actor: str, reason: str | None, now: float,
+            audit_id: int | None) -> None:
+    """Called by `Approvals.write` in its transaction when an Approval is granted or denied.
+
+    A waiting Start of that Approval gets its apply job on the main queue (one job per Start, so a repeat adds none),
+    or ends as denied with the reason in Activity. Any other Approval is left alone.
+    """
+    row = db.execute("SELECT idempotency_key, project_id FROM project_starts WHERE approval_id=? AND state='waiting'", (approval_id,)).fetchone()
+    if row is None:
+        return
+    if verb == 'grant':
+        InternalJobQueue(registry, clock=registry._clock).submit(QUEUE, APPLY_KIND, row[0], {'key': row[0]}, db=db)
+        return
+    db.execute("UPDATE project_starts SET state='denied', reason=? WHERE idempotency_key=?", (reason, row[0]))
+    _activity(db, row[1], now, actor, 'project_start_denied', f'project start denied: {reason}', audit_id)
 
 
 class ProjectStartStore:
@@ -91,6 +127,9 @@ class ProjectStartStore:
         """The Preview a plan job produced, `pending` while it runs, or why it ended without one."""
         if self._job(job_id, 'actor') != actor:
             return Refused(rule='job', reason='Job not found')
+        start = self._start(self._job(job_id, 'inputs')['idempotency_key'])
+        if start and start['actor'] == actor:  # a confirmed Start: the job result read is its state
+            return Done(result=self._state(start))
         result = self.queue.result(job_id, QUEUE)
         if result is None:
             return Done(result={'job_id': job_id, 'state': 'pending'})
@@ -141,13 +180,21 @@ class ProjectStartStore:
             found = db.execute('SELECT 1 FROM projects WHERE id=?', (project,)).fetchone()
             archived = db.execute('SELECT 1 FROM project_archives WHERE project_id=?', (project,)).fetchone()
             started = db.execute("SELECT 1 FROM activity WHERE project_id=? AND action='project_start'", (project,)).fetchone()
-        approvals = Approvals(self.registry, self.tokens)
-        begun_by_other = approvals.made_for(GATE, project) and not approvals.requested_under(f'{key}:approval', GATE, project)
+            waiting = db.execute("SELECT 1 FROM project_starts s JOIN approvals a ON a.id = s.approval_id "
+                                 "WHERE s.project_id=? AND s.state='waiting' AND a.state='requested' AND s.idempotency_key != ?", (project, key)).fetchone()
+            # A failed Start that applied no step holds nothing: its granted Approval cannot be denied, so it must not block another Start.
+            held = db.execute("SELECT 1 FROM approvals a WHERE a.gate=? AND a.target=? AND a.state != 'denied' AND a.id NOT IN ("
+                              "SELECT s.approval_id FROM project_starts s WHERE s.state='failed' AND NOT EXISTS (SELECT 1 FROM verb_requests v "
+                              "WHERE instr(v.idempotency_key, s.idempotency_key || ':') = 1 AND v.idempotency_key != s.idempotency_key || ':approval'))",
+                              (GATE, project)).fetchone()
+        begun_by_other = held and not Approvals(self.registry, self.tokens).requested_under(f'{key}:approval', GATE, project)
         if not found:
             return Refused(rule='project', reason='Project not found')
         if archived:
             return Refused(rule='project_archived', reason='Project is archived')
-        if started or begun_by_other:  # a Start under another key has finished, or has made its Approval and stopped halfway
+        if waiting:
+            return Refused(rule='project_started', reason='A Start of this Project waits for its Approval')
+        if started or begun_by_other:  # a Start under another key has finished, or has its Approval (not denied) and waits, is being applied or stopped halfway
             return Refused(rule='project_started', reason='Project has already been started')
         if any(item['kind'] in FRAMEIO_KINDS for item in values['media']):
             return Refused(rule='frameio', reason='Frame.io Media locations come from the Frame.io step of the Start, not from `media`')
@@ -213,25 +260,34 @@ class ProjectStartStore:
 
     def confirm(self, values: dict[str, Any], *, actor: str, idempotency_key: str | None, token: str,
                 frameio: FrameioProjectWriter | None = None) -> Outcome:
-        """Apply a previewed plan once: the Frame.io step, then the t6 steps; the same key again returns the first result."""
+        """Request the Approval and store the Start as waiting; the same key again returns the Start's state.
+
+        Nothing else is applied here (see `run_apply`). A failed Start is applied again by confirming it again, which
+        asks Frame.io through `frameio` and does not ask for a second Approval.
+        """
         if not idempotency_key or not idempotency_key.strip():
             return Refused(rule='idempotency_key', reason='A nonblank idempotency key is required')
         key = idempotency_key
         inputs = {**values, 'idempotency_key': key}
         fingerprint = _fingerprint(actor, inputs)
         with self.registry._transaction() as db:
-            previous = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key=?', (key,)).fetchone()
+            previous = db.execute('SELECT fingerprint FROM verb_requests WHERE idempotency_key=?', (key,)).fetchone()
             archived = db.execute('SELECT 1 FROM project_archives WHERE project_id=?', (values['project'],)).fetchone() is not None
-        # Begun: the Approval of this Project's Start was made under this Start's key (the Approval store's own record of it).
-        begun = Approvals(self.registry, self.tokens).requested_under(f'{key}:approval', GATE, values['project'])
-        if previous and previous[0] != fingerprint:
+        start = self._start(key)
+        if previous and previous[0] != fingerprint or start and start['fingerprint'] != fingerprint:
             return Refused(rule='idempotency_key', reason='Idempotency key was used for a different request')
-        if previous:  # a retried confirm gets the first result, even after its token expired: never a second Start (ADR 0005)
-            return Done(result=json.loads(previous[1]))
-        if begun and archived:  # a resumed Start skips the token expiry only: it still refuses an archived Project
-            return Refused(rule='project_archived', reason='Project is archived')
-        # A Start of this key that stopped halfway (its Approval exists) is finished with the same signed token even past its expiry.
-        nonce = self.tokens.verify(token, VERB, actor, inputs, allow_expired=begun)
+        if previous or start and start['state'] != 'failed':  # a retried confirm gets the state, even after its token expired: never a second Start (ADR 0005)
+            return Done(result=self._state(start or {'idempotency_key': key, 'state': 'applied'}))
+        if start:  # a failed Start: the same token, even past its expiry, applies it again
+            if archived:
+                return Refused(rule='project_archived', reason='Project is archived')
+            nonce = self.tokens.verify(token, VERB, actor, inputs, allow_expired=True)
+            if isinstance(nonce, Refused):
+                return nonce
+            if frameio is None:
+                return Refused(rule='config', reason='The Frame.io worker is not reachable from this process; the Frame.io project cannot be made')
+            return self._apply_start(start, frameio)
+        nonce = self.tokens.verify(token, VERB, actor, inputs)
         if isinstance(nonce, Refused):
             return nonce
         with self.registry._transaction() as db:
@@ -241,20 +297,103 @@ class ProjectStartStore:
         if not saved:
             return Refused(rule='preview', reason='Preview not found')
         planned = json.loads(saved[0])
-        if not begun:  # a resumed Start applies the plan it began with: its own steps now exist and are not planned again
+        template = next(step['template'] for step in planned['steps'] if step['step'] == 'milestone template')
+        name = next(step['project_name'] for step in planned['steps'] if step['step'] == 'frameio')
+        fresh = self._plan(values, actor, key, template, name)
+        if isinstance(fresh, Refused):
+            return fresh
+        if fresh != planned:
+            return Refused(rule='project_changed', reason='The plan changed since the preview; preview again')
+        approval = self._call('approval', {'gate': GATE, 'target': values['project']}, actor, f'{key}:approval', None)
+        if isinstance(approval, Preview):
+            approval = self._call('approval', {'gate': GATE, 'target': values['project']}, actor, f'{key}:approval', approval.token)
+        if refusal := _step(approval, 'Approval'):
+            return refusal
+        if not isinstance(approval, Done):
+            return Refused(rule='step', reason='Approval: needs a person')
+        now = self.registry._clock()
+        with self.registry._transaction() as db:
+            made = db.execute('INSERT INTO project_starts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL) ON CONFLICT DO NOTHING',
+                              (key, values['project'], approval.result['approval_id'], actor, fingerprint, json.dumps(values), json.dumps(planned), nonce, 'waiting'))
+            if made.rowcount:
+                audit = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, NULL, ?)',
+                                   (values['project'], 'project_start_requested', actor, now, json.dumps({'idempotency_key': key, 'approval_id': approval.result['approval_id']})))
+                _activity(db, values['project'], now, actor, 'project_start_requested', 'project start requested', audit.lastrowid)
+        stored = self._start(key)
+        assert stored is not None
+        return Done(result=self._state(stored))
+
+    def _start(self, key: str) -> dict[str, Any] | None:
+        """The stored Start of this key, or None."""
+        with self.registry._transaction() as db:
+            row = db.execute('SELECT project_id, approval_id, actor, fingerprint, inputs, plan, nonce, state, reason FROM project_starts WHERE idempotency_key=?', (key,)).fetchone()
+        names = ('project_id', 'approval_id', 'actor', 'fingerprint', 'inputs', 'plan', 'nonce', 'state', 'reason')
+        return None if row is None else {'idempotency_key': key, **dict(zip(names, row))}
+
+    def _state(self, start: dict[str, Any]) -> dict[str, Any]:
+        """What a read of the Start returns: `waiting_for_approval`, `applying` (granted, not yet applied), `applied` with its result, `denied` or `failed`."""
+        key, state = start['idempotency_key'], start['state']
+        if state == 'applied':
+            with self.registry._transaction() as db:
+                return {'state': 'applied', **json.loads(db.execute('SELECT result FROM verb_requests WHERE idempotency_key=?', (key,)).fetchone()[0])}
+        if state == 'waiting':
+            approval = Approvals(self.registry, self.tokens).get(start['approval_id'])
+            assert approval is not None
+            state = 'waiting_for_approval' if approval['state'] == 'requested' else 'applying'
+        return {'state': state, 'project_id': start['project_id'], 'idempotency_key': key, 'approval_id': start['approval_id'],
+                **({'reason': start['reason']} if start['reason'] else {})}
+
+    # The apply, worker side
+
+    def run_apply(self, payload: Mapping[str, Any], frameio: FrameioProjectWriter) -> dict[str, Any]:
+        """Apply the Start of a granted Approval for a queued job; running it again changes nothing."""
+        start = self._start(payload['key'])
+        if start is None:
+            return {'outcome': 'refused', 'rule': 'start', 'reason': 'Start not found'}
+        outcome = self._apply_start(start, frameio)
+        if isinstance(outcome, Refused):
+            return {'outcome': 'refused', 'rule': outcome.rule, 'reason': outcome.reason}
+        HeldActivity(self.registry).release_linked(self.queue.submit)  # review activity that waited for this Frame.io project (#272)
+        return {'outcome': 'done', 'state': self._state(self._start(start['idempotency_key']) or start)['state']}
+
+    def _apply_start(self, start: dict[str, Any], frameio: FrameioProjectWriter) -> Outcome:
+        """The Frame.io step, then the t6 steps, as the Person who confirmed the Start; a refusal or a Frame.io failure records the Start as failed."""
+        key, project, actor = start['idempotency_key'], start['project_id'], start['actor']
+        if start['state'] in ('applied', 'denied'):
+            return Done(result=self._state(start))
+        approval = Approvals(self.registry, self.tokens).get(start['approval_id'])
+        if approval is None or approval['state'] != 'granted':
+            return Refused(rule='approval', reason='The Approval has not been granted')
+        values, planned = json.loads(start['inputs']), json.loads(start['plan'])
+        with self.registry._transaction() as db:
+            archived = db.execute('SELECT 1 FROM project_archives WHERE project_id=?', (project,)).fetchone() is not None
+            # A step of this Start has been applied: it is finished with the plan it began with, since its own steps now exist and are not planned again.
+            begun = db.execute('SELECT 1 FROM verb_requests WHERE instr(idempotency_key, ?) = 1 AND idempotency_key != ?', (f'{key}:', f'{key}:approval')).fetchone()
+        if archived:
+            return self._fail(start, Refused(rule='project_archived', reason='Project is archived'))
+        if not begun:
             template = next(step['template'] for step in planned['steps'] if step['step'] == 'milestone template')
             name = next(step['project_name'] for step in planned['steps'] if step['step'] == 'frameio')
             fresh = self._plan(values, actor, key, template, name)
             if isinstance(fresh, Refused):
-                return fresh
+                return self._fail(start, fresh)
             if fresh != planned:
-                return Refused(rule='project_changed', reason='The plan changed since the preview; preview again')
-        if frameio is None:
-            return Refused(rule='config', reason='The Frame.io worker is not reachable from this process; the Frame.io project cannot be made')
+                return self._fail(start, Refused(rule='project_changed', reason='The plan changed since it was confirmed'))
         result = self._apply(values, planned, actor, key, frameio)
         if isinstance(result, Refused):
-            return result
-        return self._finish(planned, result, nonce, fingerprint, actor, key)
+            return self._fail(start, result)
+        return self._finish(planned, result, start['nonce'], start['fingerprint'], actor, key)
+
+    def _fail(self, start: dict[str, Any], refusal: Refused) -> Refused:
+        """Record the Start as failed with the rule and reason, in Audit and Activity; nothing more is applied."""
+        reason, now = f'{refusal.rule}: {refusal.reason}', self.registry._clock()
+        with self.registry._transaction() as db:
+            db.execute("UPDATE project_starts SET state='failed', reason=? WHERE idempotency_key=?", (reason, start['idempotency_key']))
+            audit = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, NULL, ?)',
+                               (start['project_id'], 'project_start_failed', start['actor'], now,
+                                json.dumps({'idempotency_key': start['idempotency_key'], 'rule': refusal.rule, 'reason': refusal.reason})))
+            _activity(db, start['project_id'], now, start['actor'], 'project_start_failed', f'project start failed: {reason}', audit.lastrowid)
+        return refusal
 
     def _call(self, kind: str, values: dict[str, Any], actor: str, key: str, confirm: str | None) -> Outcome:
         """One step's write on the store that owns it: its preview without `confirm`, its Done with the preview's token."""
@@ -317,12 +456,12 @@ class ProjectStartStore:
                 'manual_steps': plan['manual_steps']}
 
     def _finish(self, plan: dict[str, Any], result: dict[str, Any], nonce: str, fingerprint: str, actor: str, key: str) -> Outcome:
-        """Record the Start in Audit and Activity with its manual steps, spend the token and keep the result under its key."""
+        """Record the Start in Audit and Activity with its manual steps, spend the token, keep the result under its key and mark the Start applied."""
         project, now = plan['project_id'], self.registry._clock()
         with self.registry._transaction() as db:
             previous = db.execute('SELECT result FROM verb_requests WHERE idempotency_key=?', (key,)).fetchone()
             if previous:
-                return Done(result=json.loads(previous[0]))
+                return Done(result={'state': 'applied', **json.loads(previous[0])})
             audit = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, NULL, ?)',
                                (project, 'project_start', actor, now, json.dumps(result)))
             for action, summary in [('project_start', 'project started'),
@@ -331,4 +470,5 @@ class ProjectStartStore:
                            (project, project, now, actor, action, summary, audit.lastrowid))
             db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
             db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(result)))
-        return Done(result=result)
+            db.execute("UPDATE project_starts SET state='applied', reason=NULL WHERE idempotency_key=?", (key,))
+        return Done(result={'state': 'applied', **result})

@@ -39,11 +39,6 @@ class Approvals:
                 return False
             return db.execute('SELECT 1 FROM approvals WHERE id = ? AND gate = ? AND target = ?', (row[0], gate, target)).fetchone() is not None
 
-    def made_for(self, gate: str, target: str) -> bool:
-        """Whether any Approval with this gate exists for this target."""
-        with self.registry._transaction() as db:
-            return db.execute('SELECT 1 FROM approvals WHERE gate = ? AND target = ?', (gate, target)).fetchone() is not None
-
     def write(self, verb: str, values: dict[str, Any], *, actor: str, idempotency_key: str | None = None, confirm: str | None = None) -> Outcome:
         if verb not in ('request', 'grant', 'deny'):
             return Refused(rule='verb', reason='Unknown Approval verb')
@@ -145,6 +140,9 @@ class Approvals:
                 project = version
             summary = 'Approval ' + verb + (' for Version ' + target if version else '')
             db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (project[0] if project and project[0] else approval_id, approval_id, now, actor, 'approval_' + verb, summary, cursor.lastrowid))
+            if verb != 'request':
+                from t6.project_start import decided
+                decided(self.registry, db, approval_id, verb, actor, plan['reason'], now, cursor.lastrowid)
             db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
             db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(plan)))
             return Done(result=plan)
