@@ -138,6 +138,38 @@ class SuggestionTests(unittest.TestCase):
         found = Lookup(Index(contacts=twins)).suggest_contacts("Lena Cruz", team=("y",))
         self.assertEqual([c.entity.page_id for c in found], ["y", "x"])
 
+    def test_an_exact_match_still_has_up_to_3_suggestions_and_stays_the_match(self) -> None:
+        found = self.lookup.contact("Pedro Reyes")
+        self.assertEqual((found.entity, found.method), (self.contacts[0], "normalized"))
+        self.assertEqual([c.entity.page_id for c in found.candidates], ["a"])
+        suggested = self.lookup.suggest_contacts("Pedro Reyes")
+        self.assertEqual(suggested[0].entity.page_id, "a")
+        self.assertEqual(len(suggested), 3)
+        self.assertTrue(all(c.score >= 0.60 for c in suggested))
+
+
+class PreferredSetTests(unittest.TestCase):
+    """The set `prefer_telegram` passes as `team`: Contacts that have a Telegram ID."""
+
+    def test_a_namesake_with_a_telegram_id_wins_over_one_without(self) -> None:
+        contacts = (contact("plain", "Lena Moreau"), contact("tg", "Lena Moreau", telegram_user_id=7))
+        lookup = Lookup(Index(contacts=contacts))
+        self.assertIsNone(picked(lookup, "Lena Moreau"))
+        self.assertEqual(picked(lookup, "Lena Moreau", team=("tg",)), "tg")
+        self.assertEqual([c.entity.page_id for c in lookup.suggest_contacts("Lena Moreau", team=("tg",))], ["tg", "plain"])
+
+    def test_a_tie_inside_the_preferred_set_falls_through_to_all_contacts(self) -> None:
+        contacts = (contact("one", "Lena Moreau", telegram_user_id=7), contact("two", "Lena Moreau", telegram_user_id=8), contact("plain", "Lena Moreau"))
+        found = Lookup(Index(contacts=contacts)).contact("Lena Moreau", team=("one", "two"))
+        self.assertEqual((found.entity, found.needs_review), (None, True))
+        self.assertEqual({c.entity.page_id for c in found.candidates}, {"one", "two", "plain"})
+
+    def test_a_match_in_the_preferred_set_is_returned_without_searching_the_rest(self) -> None:
+        contacts = (contact("tg", "Lena Moreau", telegram_user_id=7), contact("plain", "Lena Moreau"), contact("far", "Lena Moreaux"))
+        found = Lookup(Index(contacts=contacts)).contact("Lena Moreau", team=("tg",))
+        self.assertEqual(found.entity, contacts[0])
+        self.assertEqual([c.entity.page_id for c in found.candidates], ["tg"])
+
 
 if __name__ == "__main__":
     unittest.main()

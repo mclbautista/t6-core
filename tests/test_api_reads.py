@@ -479,6 +479,82 @@ class ReadTests(unittest.TestCase):
         self.assertEqual(listed.result['deliverables'][0]['t6_id'], identifier)
         self.assertEqual(found.result['deliverable']['id'], identifier)
 
+    def add_contacts(self, *rows: tuple[str, str | None]) -> dict[str, str]:
+        from t6.notion.generated import ContactsRow
+        return {name + str(n): self.notion.add_page('contacts', {ContactsRow.notion_name('name'): title(name),
+                ContactsRow.notion_name('telegram_user_id'): rich_text(telegram)})['id'] for n, (name, telegram) in enumerate(rows)}
+
+    def contact_queries(self) -> int:
+        return sum(1 for r in self.notion.requests if r.method == 'POST' and r.url.path.endswith('/query') and 'contacts' in r.url.path)
+
+    def find(self, **fields: Any) -> dict[str, Any]:
+        from t6.verbs import PersonFindInput
+        result = self.client.person_find(PersonFindInput(**fields))
+        assert isinstance(result, Done), result
+        found: dict[str, Any] = result.result
+        return found
+
+    def test_person_find_suggest_gives_up_to_3_candidates_after_an_exact_match(self) -> None:
+        self.add_contacts(('Tomas Reyes', None), ('Tomas Reyez', None), ('Tomasa Reyes', None), ('Tomas Reyess', None), ('Quinn Okafor', None))
+        plain = self.find(mention='Tomas Reyes')
+        self.assertEqual((plain['match']['name'], plain['method'], [c['name'] for c in plain['candidates']]), ('Tomas Reyes', 'normalized', ['Tomas Reyes']))
+        suggested = self.find(mention='Tomas Reyes', suggest=True)
+        self.assertEqual({k: v for k, v in suggested.items() if k != 'candidates'}, {k: v for k, v in plain.items() if k != 'candidates'})
+        self.assertEqual(len(suggested['candidates']), 3)
+        self.assertEqual(suggested['candidates'][0]['name'], 'Tomas Reyes')
+        self.assertTrue(all(c['score'] >= 0.60 for c in suggested['candidates']))
+
+    def test_person_find_without_the_new_inputs_keeps_its_reply(self) -> None:
+        self.assertEqual(self.find(mention='Ana Cruz'), {
+            'match': {**self.find(mention='Ana Cruz')['match']}, 'method': 'normalized', 'score': 1.0, 'needs_review': False, 'reason': None,
+            'candidates': [{**self.find(mention='Ana Cruz')['match'], 'score': 1.0}]})
+        self.assertEqual(self.find(mention='Ana Cruz', suggest=False, prefer_telegram=False), self.find(mention='Ana Cruz'))
+
+    def test_person_find_prefer_telegram_picks_the_namesake_that_has_a_telegram_id(self) -> None:
+        ids = self.add_contacts(('Lena Moreau', None), ('Lena Moreau', '7001'))
+        self.assertTrue(self.find(mention='Lena Moreau')['needs_review'])
+        preferred = self.find(mention='Lena Moreau', prefer_telegram=True)
+        self.assertEqual((preferred['match']['page_id'], preferred['needs_review']), (ids['Lena Moreau1'], False))
+        self.assertEqual(self.find(mention='Lena Moreau', prefer_telegram=True, suggest=True)['candidates'][0]['page_id'], ids['Lena Moreau1'])
+
+    def test_person_find_prefer_telegram_falls_through_a_tie_in_the_preferred_set(self) -> None:
+        self.add_contacts(('Lena Moreau', '7001'), ('Lena Moreau', '7002'), ('Lena Moreau', None))
+        found = self.find(mention='Lena Moreau', prefer_telegram=True)
+        self.assertEqual((found['match'], found['needs_review'], len(found['candidates'])), (None, True, 3))
+
+    def test_person_find_mentions_answers_each_name_in_order_with_one_contact_read(self) -> None:
+        self.add_contacts(('Tomas Reyes', None), ('Lena Moreau', '7001'))
+        before = self.contact_queries()
+        found = self.find(mentions=['Lena Moreau', '  ', 'Tomas Reyes', 'Zzzzz Qqqqq'], suggest=True)
+        self.assertEqual(self.contact_queries() - before, 1)
+        results = found['results']
+        self.assertEqual([r['match']['name'] if r['match'] else None for r in results], ['Lena Moreau', None, 'Tomas Reyes', None])
+        self.assertEqual((results[1]['method'], results[1]['candidates']), ('none', []))
+        self.assertEqual(results[0], self.find(mention='Lena Moreau', suggest=True))
+
+    def test_person_find_refuses_a_bad_mention_list(self) -> None:
+        from t6.verbs import PersonFindInput
+        for fields in ({}, {'mention': 'Ana Cruz', 'mentions': ['Ana Cruz']}, {'mentions': ['Ana Cruz'] * 51}):
+            with self.subTest(fields=fields):
+                result = self.client.person_find(PersonFindInput(**fields))
+                self.assertIsInstance(result, Refused)
+                assert isinstance(result, Refused)
+                self.assertEqual(result.rule, 'input')
+        self.assertEqual(len(self.find(mentions=['Ana Cruz'] * 50)['results']), 50)
+
+    def test_person_list_registered_filters_on_the_t6_id(self) -> None:
+        from t6.verbs import PersonListInput
+        ids = self.add_contacts(('Registered One', None), ('Registered Two', None), ('Unregistered Three', None))
+        for n, name in enumerate(('Registered One0', 'Registered Two1'), start=1):
+            self.bound_person({'id': ids[name]}, n)
+        def names(**fields: Any) -> set[str]:
+            result = self.client.person_list(PersonListInput(**fields))
+            assert isinstance(result, Done)
+            return {p['name'] for p in result.result['people'] if p['name'] != 'Ana Cruz'}
+        self.assertEqual(names(registered=True), {'Registered One', 'Registered Two'})
+        self.assertEqual(names(registered=False), {'Unregistered Three'})
+        self.assertEqual(names(), {'Registered One', 'Registered Two', 'Unregistered Three'})
+
     def test_get_find_and_studio_reads(self) -> None:
         from t6.verbs import (ProjectGetInput, ProjectResolveInput, JoGetInput,
                               PersonFindInput, PersonGetInput, PersonListInput,
