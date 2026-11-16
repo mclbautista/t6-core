@@ -139,6 +139,11 @@ answer carries `x-ratelimit-limit`, `x-ratelimit-remaining` and
 - The file reference does not say how to tell that a file is in a version
   stack. `t6.frameio` asks for the children of the file's `parent_id` and
   treats a 404 as "the parent is a folder".
+- A new version is a second file in a version stack. The live API (checked
+  2026-11-16, t6-core#423) answers 404 to `POST .../files/:file_id/version/local_upload`
+  and to `POST .../files/:file_id/versions`: no route adds a version to an
+  existing file. Upload a second file, then make a version stack from the two
+  files. A `file.versioned` event names the version stack (t6-core#410).
 
 Sources: the [Frame.io V4 API reference](https://developer.frame.io/platform/api-reference/accounts/index)
 pages for accounts, projects, shares, comments, files, version stacks and

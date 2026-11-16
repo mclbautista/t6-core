@@ -12,7 +12,6 @@ ROOT = Path(__file__).resolve().parent.parent
 # Run-time third-party import (lazy or not) -> (distribution, extra that provides it).
 # Not in the image on purpose:
 #   transcribe: the transcribe worker runs from its own virtualenv on Sixto (t6-netops#105);
-#   drives:     openpyxl is only needed by the admin drive import CLI;
 #   resolve:    no API or main-worker verb needs psycopg.
 RUNTIME_IMPORTS = {
     "httpx": ("httpx", "notion"),
@@ -21,6 +20,7 @@ RUNTIME_IMPORTS = {
     "referencing": ("referencing", "server"),
     "rapidfuzz": ("rapidfuzz", "lookup"),
     "cryptography": ("cryptography", "google"),
+    "openpyxl": ("openpyxl", "drives"),  # the admin drive workbook import (#417)
 }
 
 
@@ -48,7 +48,7 @@ class ImageExtrasTests(unittest.TestCase):
                 self.assertIn(distribution, {requirement_name(r) for r in optional[extra]})
 
     def test_the_drive_exceptions_read_needs_no_openpyxl(self) -> None:
-        """The image has no `drives` extra, and `drive exceptions` is an API read (#371)."""
+        """`drive exceptions` is an API read and stays free of openpyxl, which only the workbook import needs (#371)."""
         code = (
             "import os, sys, tempfile\n"
             "sys.modules['openpyxl'] = None\n"

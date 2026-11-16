@@ -1734,7 +1734,7 @@ app's source:
 ## Container image
 
 One image, `ghcr.io/mclbautista/t6`, runs every role. It installs the `server`,
-`worker`, `notion`, `privacy`, `llm` and `frameio` extras, runs as a non-root
+`worker`, `notion`, `privacy`, `llm`, `frameio` and `drives` extras (so `t6 admin drive import` runs in the image), runs as a non-root
 user, and keeps the queue and Project registry databases in the `/data` volume. The command picks the
 role; the default is the server.
 
@@ -2003,6 +2003,9 @@ Person's permissions instead of the gateway's grants. The legacy `camera enrich`
 endpoint returns `refused` because it does not yet support signed preview and
 confirmation. `GET /health` reports the
 package version, database schema version and job counts by state.
+With a valid API secret it also reports `data_gaps`: `projects_without_name` has the count of
+Projects whose Notion row has no name and their page ids (never a name), so the operator can
+fix the row in Notion. `t6 health` shows it under `api`; it does not fail the check.
 
 The API writes one request log line to stderr for each request (not `/health`):
 `t6.server: request time=<UTC> identity=<service or T6 Person ID> verb=<noun.verb>

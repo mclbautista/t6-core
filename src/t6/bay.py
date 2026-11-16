@@ -50,6 +50,12 @@ class BayStore:
                 db.execute('INSERT OR IGNORE INTO bay_migration_receipts VALUES (?, ?, ?)', (fingerprint, snapshot, json.dumps(entries)))
             return {'digest': fingerprint, 'entries': entries, 'review': [e for e in entries if e['action'] == 'review']}
 
+    def list(self) -> list[dict[str, Any]]:
+        """Every Bay in the registry with the page ID of its active Notion binding; the name stays in Notion."""
+        with self.registry._transaction() as db:
+            rows = db.execute("SELECT bays.id, bindings.page_id FROM bays LEFT JOIN bindings ON bindings.project_id = bays.id AND bindings.system = 'notion' AND bindings.active = 1 ORDER BY bays.id").fetchall()
+        return [{'bay_id': row[0], 'page_id': row[1]} for row in rows]
+
 
 class BookingStore:
     def __init__(self, registry: SqliteProjectRegistry, tokens: PreviewTokens) -> None:
