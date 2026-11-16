@@ -11,11 +11,16 @@ from typing import Any
 from t6.ids import EntityKind, T6Id
 from t6.person import AUTO_ACTOR, People
 from t6.preview import PreviewTokens
-from t6.registry.sqlite import SqliteProjectRegistry
+from t6.registry.sqlite import SqliteProjectRegistry, concern_key
 from t6.verbs import Done, Outcome, Refused
 from t6.domain.studio_time import MANILA
 
 WEEK = 7 * 24 * 60 * 60
+CHRONIC_DAYS = 28
+SOURCES = ('person', 'pm_notes_scan', 'date_rule', 'flag_rule', 'pm_notes_read', 'leave')
+_FIELDS = ('id', 'project_id', 'owner_id', 'waiting_on', 'text', 'source', 'anchor', 'as_of', 'opened_at', 'evidence_at', 'state', 'settles_id', 'closed_at')
+# A row the previous release wrote has no text of its own: the line it was raised from is the text.
+_SELECT = "SELECT id, project_id, owner_id, waiting_on, COALESCE(NULLIF(text, ''), anchor), source, anchor, as_of, opened_at, evidence_at, state, settles_id, closed_at FROM concerns"
 MAX_ATTEMPTS = 3
 _WAITING = re.compile(r"\b(?:wait(?:ing)?|await(?:ing)?|pending|hinihintay|hinintay|inaantay|inaabangan|antay|abang)\b", re.IGNORECASE)
 
@@ -29,10 +34,26 @@ def settle_linked(db: Any, settles_id: str, now: float) -> None:
         settle_concern(db, concern, now, settles_id)
 
 
+def _close(db: Any, concern: str, now: float) -> None:
+    db.execute("UPDATE concerns SET state = 'closed', closed_at = ?, revision = revision + 1 WHERE id = ?", (now, concern))
+
+
+def _open_duplicate(db: Any, project: str, text: str) -> bool:
+    """Whether a Concern that is not closed already carries this text in the Project."""
+    return db.execute("SELECT 1 FROM concerns WHERE project_id = ? AND text_key = ? AND state != 'closed'", (project, concern_key(text))).fetchone() is not None
+
+
+def _insert(db: Any, concern: str, project: str, owner: str | None, waiting_on: str | None, anchor: str, as_of: str, opened_at: float, evidence_at: float,
+            source: str, text: str | None = None, settles: str | None = None) -> None:
+    text = text or anchor
+    db.execute("INSERT INTO concerns (id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state, settles_id, text, source, text_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)",
+               (concern, project, owner, waiting_on or '', anchor, as_of, opened_at, evidence_at, settles, text, source, concern_key(text)))
+
+
 def settle_concern(db: Any, concern: str, now: float, evidence: str) -> None:
     row = db.execute("SELECT project_id, state FROM concerns WHERE id = ? AND manual_override = 0 AND state != 'closed'", (concern,)).fetchone()
     if row:
-        db.execute("UPDATE concerns SET state = 'closed', revision = revision + 1 WHERE id = ?", (concern,))
+        _close(db, concern, now)
         ConcernStore._log(db, row[0], concern, AUTO_ACTOR, 'concern_auto_resolve', now, row[1], {'evidence': evidence}, f'Concern resolved by {evidence}')
 
 
@@ -40,15 +61,31 @@ class ConcernStore:
     def __init__(self, registry: SqliteProjectRegistry, tokens: PreviewTokens) -> None:
         self.registry, self.tokens = registry, tokens
 
+    @staticmethod
+    def _record(row: Any, now: float) -> dict[str, Any]:
+        record = dict(zip(_FIELDS, row))
+        record['age_seconds'] = max(0, now - record['opened_at'])
+        return record
+
     def get(self, concern: str) -> dict[str, Any] | None:
         with self.registry._transaction() as db:
-            row = db.execute('SELECT id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state, settles_id FROM concerns WHERE id = ?', (concern,)).fetchone()
+            row = db.execute(_SELECT + ' WHERE id = ?', (concern,)).fetchone()
             if not row:
                 return None
-            record = dict(zip(('id', 'project_id', 'owner_id', 'waiting_on', 'anchor', 'as_of', 'opened_at', 'evidence_at', 'state', 'settles_id'), row))
-            record['age_seconds'] = max(0, self.registry._clock() - record['opened_at'])
+            record = self._record(row, self.registry._clock())
             record['notes'] = [dict(zip(('text', 'actor', 'at', 'message_id'), n)) for n in db.execute('SELECT text, actor, at, message_id FROM concern_notes WHERE concern_id = ? ORDER BY id', (concern,))]
             return record
+
+    def open_concerns(self, project: str | None = None) -> list[dict[str, Any]]:
+        """Every Concern that is not closed, oldest first."""
+        now = self.registry._clock()
+        with self.registry._transaction() as db:
+            rows = db.execute(_SELECT + " WHERE state != 'closed' AND (? IS NULL OR project_id = ?) ORDER BY opened_at, id", (project, project)).fetchall()
+        records = [self._record(row, now) for row in rows]
+        for record in records:
+            del record['closed_at']
+            record['chronic'] = record['age_seconds'] > CHRONIC_DAYS * 24 * 60 * 60
+        return records
 
     def raise_at_psr(self, project: str | None = None) -> list[dict[str, Any]]:
         """Concerns that went quiet (no new evidence for 2 weeks). Age alone never lists one; expired ones are shown elsewhere."""
@@ -74,7 +111,7 @@ class ConcernStore:
             rows = db.execute('SELECT p.concern_id, p.quote, p.revision, c.state, c.revision, c.manual_override FROM concern_pm_pending p JOIN concerns c ON c.id = p.concern_id WHERE c.project_id = ? AND p.due <= ?', (project, now)).fetchall()
             for concern, quote, revision, state, current, override in rows:
                 if revision == current and not override and state != 'closed':
-                    db.execute("UPDATE concerns SET state = 'closed', revision = revision + 1 WHERE id = ?", (concern,))
+                    _close(db, concern, now)
                     self._pm_log(db, project, concern, 'concern_auto_resolve', quote, now, state)
                 db.execute('DELETE FROM concern_pm_pending WHERE concern_id = ?', (concern,))
 
@@ -141,7 +178,10 @@ class ConcernStore:
                         continue
                 if choice == 'new':
                     concern = str(T6Id.mint(EntityKind.CONCERN))
-                    db.execute("INSERT INTO concerns (id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')", (concern, project, owner, waiting, quote, as_of, min(now, datetime.fromisoformat(as_of).replace(tzinfo=MANILA).timestamp()), now))
+                    if _open_duplicate(db, project, quote):
+                        self._rejected(project, as_of, text, db)
+                        continue
+                    _insert(db, concern, project, owner, waiting, quote, as_of, min(now, datetime.fromisoformat(as_of).replace(tzinfo=MANILA).timestamp()), now, 'pm_notes_scan')
                     assert isinstance(concern, str)
                     self._schedule(db, concern, now, 1)
                     self._pm_log(db, project, concern, 'concern_auto_raise', quote, now, None)
@@ -194,12 +234,14 @@ class ConcernStore:
                 row = db.execute('SELECT c.id, c.state FROM concern_date_rules r JOIN concerns c ON c.id = r.concern_id WHERE r.project_id = ? AND r.rule = ?', (project, rule)).fetchone()
                 evidence = f'{first} ({a}) is before {second} ({b})'
                 if a < b and row is None:
+                    if _open_duplicate(db, project, evidence):
+                        continue
                     concern = str(T6Id.mint(EntityKind.CONCERN))
-                    db.execute("INSERT INTO concerns (id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')", (concern, project, owner, 'data', evidence, today, now, now))
+                    _insert(db, concern, project, owner, 'data', evidence, today, now, now, 'date_rule')
                     db.execute('INSERT INTO concern_date_rules VALUES (?, ?, ?)', (project, rule, concern))
                     self._log(db, project, concern, AUTO_ACTOR, 'concern_auto_raise', now, None, evidence, evidence)
                 elif a < b and row and row[1] == 'closed':
-                    db.execute("UPDATE concerns SET state = 'open', revision = revision + 1 WHERE id = ?", (row[0],))
+                    db.execute("UPDATE concerns SET state = 'open', closed_at = NULL, revision = revision + 1 WHERE id = ?", (row[0],))
                     self._log(db, project, row[0], AUTO_ACTOR, 'concern_auto_reopen', now, 'closed', evidence, evidence)
                 elif a >= b and row:
                     settle_concern(db, row[0], now, f'{first} ({a}), {second} ({b})')
@@ -239,18 +281,25 @@ class ConcernStore:
                     return Done(result=json.loads(previous[1]))
                 return self.tokens.create(f'concern {verb}', actor, inputs, json.loads(previous[1]))
             if verb == 'raise':
-                if any(not isinstance(values.get(k), str) or not values[k].strip() for k in ('project', 'owner', 'waiting_on', 'anchor', 'as_of')):
-                    return Refused(rule='input', reason='Project, coordinator, waiting party, line and As of date are required')
+                source, waiting, text = values.get('source') or 'person', values.get('waiting_on') or '', values.get('text')
+                if source not in SOURCES:
+                    return Refused(rule='source', reason='Source must be one of ' + ', '.join(SOURCES))
+                if any(not isinstance(values.get(k), str) or not values[k].strip() for k in ('project', 'anchor', 'as_of')) or source == 'person' and (not isinstance(values.get('owner'), str) or not values['owner'].strip()):
+                    return Refused(rule='input', reason='Project, line and As of date are required, and a coordinator for a Concern a person raises')
+                if not isinstance(waiting, str) or text is not None and (not isinstance(text, str) or not text.strip()):
+                    return Refused(rule='input', reason='Waiting party and text must be text')
                 try:
                     date.fromisoformat(values['as_of'])
                 except ValueError:
                     return Refused(rule='as_of', reason='As of must be an ISO date')
-                if values['waiting_on'].strip().casefold() not in values['anchor'].casefold():
+                if waiting.strip() and waiting.strip().casefold() not in values['anchor'].casefold():
                     return Refused(rule='waiting_on', reason='The party it waits on must be named in the line')
                 if not db.execute('SELECT 1 FROM projects WHERE id = ?', (values['project'],)).fetchone():
                     return Refused(rule='project', reason='Project not found')
-                if not db.execute('SELECT 1 FROM persons WHERE id = ? AND active = 1', (values['owner'],)).fetchone():
+                if values.get('owner') is not None and not db.execute('SELECT 1 FROM persons WHERE id = ? AND active = 1', (values['owner'],)).fetchone():
                     return Refused(rule='owner', reason='Active coordinator Person not found')
+                if _open_duplicate(db, values['project'], text or values['anchor']):
+                    return Refused(rule='duplicate', reason='A Concern with this text is already open in the Project')
                 project, concern, revision, state = values['project'], None, None, None
             else:
                 concern = values.get('concern')
@@ -262,6 +311,8 @@ class ConcernStore:
                     return Refused(rule='rule_made', reason='Date-sanity Concerns follow data only')
                 if verb == 'note' and (not isinstance(values.get('text'), str) or not values['text'].strip()):
                     return Refused(rule='note', reason='A note is required')
+                if verb == 'reopen' and state == 'closed' and db.execute("SELECT 1 FROM concerns c JOIN concerns o ON o.project_id = c.project_id AND o.text_key = c.text_key AND o.state != 'closed' WHERE c.id = ?", (concern,)).fetchone():
+                    return Refused(rule='duplicate', reason='A Concern with this text is already open in the Project')
                 if verb == 'resolve' and state == 'closed' or verb == 'reopen' and state == 'open' and not db.execute('SELECT 1 FROM concern_pm_pending WHERE concern_id = ?', (concern,)).fetchone():
                     return Refused(rule='state', reason='Concern cannot make that transition')
             settles = values.get('settles_id')
@@ -293,7 +344,7 @@ class ConcernStore:
             now = self.registry._clock()
             if verb == 'raise':
                 concern = str(T6Id.mint(EntityKind.CONCERN))
-                db.execute('INSERT INTO concerns (id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state, settles_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (concern, project, values['owner'], values['waiting_on'], values['anchor'], values['as_of'], now, now, 'open', settles))
+                _insert(db, concern, project, values.get('owner'), values.get('waiting_on'), values['anchor'], values['as_of'], now, now, values.get('source') or 'person', values.get('text'), settles)
                 self._schedule(db, concern, now, 1)
                 if deliverable is not None:
                     db.execute('INSERT INTO concern_milestones VALUES (?, ?, ?)', (concern, deliverable, milestone))
@@ -311,7 +362,7 @@ class ConcernStore:
                 db.execute("UPDATE concerns SET evidence_at = ?, state = CASE WHEN state = 'quiet' THEN 'open' ELSE state END, revision = revision + 1 WHERE id = ?", (now, concern))
                 self._schedule(db, concern, now, revision + 1)
             else:
-                db.execute('UPDATE concerns SET state = ?, manual_override = 1, settles_id = COALESCE(?, settles_id), revision = revision + 1 WHERE id = ?', ('closed' if verb == 'resolve' else 'open', settles, concern))
+                db.execute('UPDATE concerns SET state = ?, closed_at = ?, manual_override = 1, settles_id = COALESCE(?, settles_id), revision = revision + 1 WHERE id = ?', ('closed' if verb == 'resolve' else 'open', now if verb == 'resolve' else None, settles, concern))
                 db.execute('DELETE FROM concern_pm_pending WHERE concern_id = ?', (concern,))
             assert isinstance(concern, str)
             self._log(db, project, concern, actor, 'concern_' + verb, now, state, values, f'Concern {verb}' + (f": {values['text']}" if verb == 'note' else ''))

@@ -187,6 +187,73 @@ class ReadTests(unittest.TestCase):
         self.assertNotIn('Client Corp', str(row))
         self.assertIsInstance(self.client.concern_list(ConcernListInput(project=project.project.id)), Refused)
 
+    def test_concern_raise_may_leave_owner_and_waiting_on_empty_unless_a_person_raises(self) -> None:
+        from t6.registry import Registered
+        from t6.verbs import ConcernRaiseInput
+        page = self.notion.add_page('projects', {'Name': title('Empty')})
+        project = self.registry.register(actor='setup', idempotency_key='empty-project', notion_page_id=page['id'])
+        assert isinstance(project, Registered)
+        operator = Client(self.client.base_url, 'operator')
+        with patch.dict(os.environ, {'T6_PREVIEW_SIGNING_KEY': 'key'}):
+            flag = operator.concern_raise(ConcernRaiseInput(project=project.project.id, anchor='No editor is named', as_of='2026-11-16', source='flag_rule', idempotency_key='flag'))
+            self.assertIsInstance(flag, Preview)
+            person = operator.concern_raise(ConcernRaiseInput(project=project.project.id, anchor='No editor is named', as_of='2026-11-16', idempotency_key='person'))
+        assert isinstance(person, Refused)
+        self.assertEqual(person.rule, 'input')
+
+    def seed_concerns(self) -> str:
+        from t6.registry import Registered
+        page = self.notion.add_page('projects', {'Name': title('Open')})
+        project = self.registry.register(actor='setup', idempotency_key='open-project', notion_page_id=page['id'])
+        assert isinstance(project, Registered)
+        with self.registry._transaction() as db:
+            for concern, state, opened, source in (('t6c_new', 'open', 300.0, 'flag_rule'), ('t6c_old', 'quiet', 100.0, 'person'), ('t6c_gone', 'closed', 0.0, 'person'), ('t6c_mid', 'expired', 200.0, 'pm_notes_read')):
+                db.execute("INSERT INTO concerns (id, project_id, owner_id, waiting_on, anchor, text, text_key, source, as_of, opened_at, evidence_at, state) VALUES (?, ?, NULL, '', 'Waiting on Client Corp', 'Client Corp has not replied', ?, ?, '2026-11-01', ?, 0, ?)", (concern, project.project.id, concern, source, opened, state))
+        return project.project.id
+
+    def test_concern_list_open_returns_every_open_state_oldest_first(self) -> None:
+        from t6.verbs import ConcernListInput
+        project = self.seed_concerns()
+        listed = Client(self.client.base_url, 'unmasked-secret').concern_list(ConcernListInput(open=True, project=project))
+        assert isinstance(listed, Done)
+        rows = listed.result['concerns']
+        self.assertEqual([(c['id'], c['state'], c['source'], c['owner_id'], c['waiting_on']) for c in rows], [('t6c_old', 'quiet', 'person', None, ''), ('t6c_mid', 'expired', 'pm_notes_read', None, ''), ('t6c_new', 'open', 'flag_rule', None, '')])
+        self.assertEqual(sorted(rows[0]), sorted(['id', 'project_id', 'owner_id', 'waiting_on', 'text', 'source', 'anchor', 'as_of', 'opened_at', 'evidence_at', 'state', 'settles_id', 'age_seconds', 'chronic']))
+        self.assertTrue(all(c['chronic'] for c in rows))
+        self.assertEqual(rows[0]['text'], 'Client Corp has not replied')
+
+    def test_concern_list_needs_exactly_one_of_the_two_lists(self) -> None:
+        from t6.verbs import ConcernListInput
+        project = self.seed_concerns()
+        for inputs in (ConcernListInput(project=project), ConcernListInput(raise_at_psr=True, open=True, project=project)):
+            refused = self.client.concern_list(inputs)
+            assert isinstance(refused, Refused)
+            self.assertEqual(refused.rule, 'input')
+
+    def test_raise_at_psr_reply_keeps_exactly_its_old_shape(self) -> None:
+        from t6.verbs import ConcernListInput
+        project = self.seed_concerns()
+        listed = Client(self.client.base_url, 'unmasked-secret').concern_list(ConcernListInput(raise_at_psr=True, project=project))
+        assert isinstance(listed, Done)
+        row = listed.result['concerns'][0]
+        self.assertEqual(sorted(row), ['age_seconds', 'id', 'label', 'owner_id', 'project_id', 'waiting_on'])
+        self.assertEqual((row['id'], row['owner_id'], row['waiting_on'], row['label']), ('t6c_old', None, '', 'no news for 2 weeks'))
+
+    def test_concern_text_is_masked_for_a_service_without_real_name_access(self) -> None:
+        from t6.verbs import ConcernGetInput, ConcernListInput
+        project = self.seed_concerns()
+        masked = self.client.concern_list(ConcernListInput(open=True, project=project))
+        assert isinstance(masked, Done)
+        self.assertNotIn('Client Corp', str(masked.result))
+        self.assertEqual(masked.result['concerns'][0]['id'], 't6c_old')
+        record = self.client.concern_get(ConcernGetInput(concern='t6c_new'))
+        assert isinstance(record, Done)
+        self.assertNotIn('Client Corp', str(record.result))
+        real = Client(self.client.base_url, 'unmasked-secret')
+        for result in (real.concern_list(ConcernListInput(open=True, project=project)), real.concern_get(ConcernGetInput(concern='t6c_new'))):
+            assert isinstance(result, Done)
+            self.assertIn('Client Corp has not replied', str(result.result))
+
     def test_the_three_main_reads_are_masked_for_the_mcp_service(self) -> None:
         import json
         from t6.registry import Registered

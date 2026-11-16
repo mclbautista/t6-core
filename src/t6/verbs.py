@@ -616,10 +616,12 @@ def jo_write(inputs: JoRaiseInput | JoAssignInput | JoReassignInput | JoNoteInpu
 
 class ConcernRaiseInput(BaseModel):
     project: str
-    owner: str
-    waiting_on: str
+    owner: str | None = None
+    waiting_on: str | None = None
     anchor: str
     as_of: str
+    text: str | None = None
+    source: Literal['person', 'pm_notes_scan', 'date_rule', 'flag_rule', 'pm_notes_read', 'leave'] = 'person'
     settles_id: str | None = None
     settles_deliverable: str | None = None
     settles_milestone: str | None = None
@@ -687,6 +689,7 @@ class ConcernScanOutput(BaseModel):
 
 class ConcernListInput(BaseModel):
     raise_at_psr: bool = False
+    open: bool = False
     project: str | None = None
 
 
@@ -735,9 +738,10 @@ def concern_changes(inputs: ConcernChangesInput, open_notion: Callable[..., Any]
 
 def concern_list(inputs: ConcernListInput, open_notion: Callable[..., Any]) -> Outcome:
     from t6.concern import ConcernStore
-    if not inputs.raise_at_psr:
-        return Refused(rule='raise_at_psr', reason='Only the Raise at PSR list is available: pass raise_at_psr')
-    return Done(result={'concerns': ConcernStore(_people().registry, _people().tokens).raise_at_psr(inputs.project)})
+    if inputs.raise_at_psr == inputs.open:
+        return Refused(rule='input', reason='Pass exactly one of raise_at_psr and open')
+    store = ConcernStore(_people().registry, _people().tokens)
+    return Done(result={'concerns': store.open_concerns(inputs.project) if inputs.open else store.raise_at_psr(inputs.project)})
 
 
 def concern_scan(inputs: ConcernScanInput, open_notion: Callable[..., Any]) -> Outcome:

@@ -1947,6 +1947,23 @@ Date sanity compares Submission Deadline with Playdate and Archival Deadline
 with Submission Deadline. Bound Project page observations reconcile those
 rule-made Concerns when a single bound coordinator and both dates are known.
 
+A Concern is shared information: a waiting-on record that also holds the text
+of the brief. It carries `text` (the line the brief shows; it defaults to the
+`anchor`), `source` and `closed_at` (set by every path that closes it, empty
+while it is open). `source` is `person` (`concern raise`, the default),
+`pm_notes_scan`, `date_rule`, `flag_rule`, `pm_notes_read` or `leave`; a bad
+value is refused with rule `source`. A Concern whose source is not `person` may
+be raised with no `owner`, and any Concern may have an empty `waiting_on`: the
+"named in the line" rule applies only when `waiting_on` is given, and a
+`person` raise still needs an owner. A Concern that is not closed is unique by
+Project and `text` (whitespace collapsed, case folded); a second one is refused
+with rule `duplicate`. `concern get` returns the new fields. `concern list
+--open` returns every Concern that is not closed (`open`, `quiet`, `expired`),
+oldest first, with `age_seconds` and `chronic` (open longer than
+`CHRONIC_DAYS`, 28); pass exactly one of `--raise-at-psr` and `--open`. `text`
+is masked like `waiting_on` and `anchor` for a caller without real-name access;
+reading it needs the `unmasked` permission.
+
 `project flags` recomputes date warnings and missing health from the current
 Project data, without Concern IDs or ages. Health-vs-evidence and source
 conflict are judgments supplied by the reports app. Its stale-milestone

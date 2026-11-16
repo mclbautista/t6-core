@@ -93,6 +93,20 @@ of the replier. The write uses preview and confirmation; an unmapped reference
 is ignored without storing the text. A message carrying several Concerns has a
 separate mapping for each, and the relay must select the intended Concern.
 
+### Concern text and the open list
+
+A Concern holds `text` (the line the brief shows), `source` (`person`,
+`pm_notes_scan`, `date_rule`, `flag_rule`, `pm_notes_read` or `leave`) and
+`closed_at` (empty while open). `owner_id` may be null and `waiting_on` may be
+empty. `concern list` with `open: true` returns every Concern that is not
+closed, oldest first, optionally for one `project`. Each item holds `id`,
+`project_id`, `owner_id`, `waiting_on`, `text`, `source`, `anchor`, `as_of`,
+`opened_at`, `evidence_at`, `state`, `settles_id`, `age_seconds` and `chronic`
+(open longer than 28 days). Exactly one of `raise_at_psr` and `open` must be
+true, else rule `input`; the `raise_at_psr` reply is unchanged. `text`, like
+`waiting_on` and `anchor`, is masked for a caller without real-name access, so a
+caller that renders names needs the `unmasked` permission and the `reader` role.
+
 ### Drive reads
 
 `drive list`, `drive get`, `drive find`, `drive shipments`, `drive shipment` and

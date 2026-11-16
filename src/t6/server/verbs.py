@@ -207,7 +207,7 @@ class VerbAPI:
         if (entry.noun, entry.verb) in {('transcript', 'create'), ('transcript', 'speakers'), ('transcript', 'translate')}:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._transcripts().request(entry.verb, inputs, actor, translate_enabled=self.translate_enabled)
-        elif (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'notes'), ('project', 'flags'), ('project', 'resolve'), ('concern', 'list'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find'), ('version', 'get')}:
+        elif (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'notes'), ('project', 'flags'), ('project', 'resolve'), ('concern', 'list'), ('concern', 'get'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find'), ('version', 'get')}:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._typed_read(entry.noun, entry.verb, inputs)
             if isinstance(outcome, Done) and entry.noun in {'project', 'concern', 'jo', 'person', 'camera', 'deliverable', 'meeting-notes', 'external-link', 'studio'} and not self._reads_unmasked(actor):
@@ -292,7 +292,7 @@ class VerbAPI:
         elif (entry.noun, entry.verb) == ('person', 'set-telegram') and (page := self._contact_page(inputs.person_id)):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._person_set_telegram(inputs, actor, page)
-        elif (entry.noun, entry.verb) == ('concern', 'raise') and inputs.owner not in self._coordinators(inputs.project):
+        elif (entry.noun, entry.verb) == ('concern', 'raise') and inputs.owner is not None and inputs.owner not in self._coordinators(inputs.project):
             outcome = self.people.authorize(actor, entry.role) or Refused(rule='owner', reason='Owner must be a Project coordinator')
         elif entry.handler is None:
             refusal = self.people.authorize(actor, entry.role)
@@ -656,7 +656,14 @@ class VerbAPI:
         from t6.cli import TOKEN_VARIABLE
         if (noun, verb) == ('concern', 'list'):
             from t6.concern import ConcernStore
-            return Done(result={'concerns': ConcernStore(self.people.registry, self.people.tokens).raise_at_psr(inputs.project)}) if inputs.raise_at_psr else Refused(rule='raise_at_psr', reason='Only the Raise at PSR list is available: pass raise_at_psr')
+            if inputs.raise_at_psr == inputs.open:
+                return Refused(rule='input', reason='Pass exactly one of raise_at_psr and open')
+            concerns = ConcernStore(self.people.registry, self.people.tokens)
+            return Done(result={'concerns': concerns.open_concerns(inputs.project) if inputs.open else concerns.raise_at_psr(inputs.project)})
+        if (noun, verb) == ('concern', 'get'):
+            from t6.concern import ConcernStore
+            record = ConcernStore(self.people.registry, self.people.tokens).get(inputs.concern)
+            return Done(result={'concern': record}) if record else Refused(rule='concern', reason='Concern not found')
         if noun == 'standing-cc':
             from t6.domain.studio_people import standing_cc
             page = standing_cc()
