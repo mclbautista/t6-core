@@ -1,9 +1,9 @@
 """Meeting Notes in studio terms: `t6.domain.MeetingNote` in and out, no Notion property names.
 
-`MeetingNotes` reads, creates, trashes and marks sent the pages of one Meeting
+`MeetingNotes` reads, creates, appends to, trashes and marks sent the pages of one Meeting
 Notes data source. Fields are addressed by property ID through
 `t6.notion.generated.MeetingNotesRow`. A page body is a list of Notion blocks:
-write it with `create` (it appends in chunks) and read it with
+write it with `create` or `append` (they append in chunks) and read it with
 `NotionClient.list_block_children`.
 
 `list` and the finders skip pages in the trash or archived. `create` saves
@@ -116,6 +116,11 @@ class MeetingNotes:
                 reason = error.code if error.code in ("timeout", "network_error") else "readback_failed"
                 return Ambiguous(reason, f"the page was created but its body was not saved: {error}", saved.page_id)  # type: ignore[arg-type]
         return note_from_page(self._client.retrieve_page(saved.page_id))
+
+    def append(self, page_id: str, blocks: Sequence[JSON]) -> None:
+        """Append Notion `blocks` to the body in chunks. Raises `NotionError` if Notion refuses."""
+        for start in range(0, len(blocks), BLOCKS_PER_REQUEST):
+            self._client.append_block_children(page_id, list(blocks[start : start + BLOCKS_PER_REQUEST]))
 
     def trash(self, page_id: str) -> None:
         """Move the note to the trash. Raises `NotionError` if Notion refuses."""

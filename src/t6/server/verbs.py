@@ -280,6 +280,9 @@ class VerbAPI:
         elif (entry.noun, entry.verb) == ('llm', 'run'):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or (self.llm_service.run(inputs, actor=actor, registry=self.people.registry) if self.llm_service else Refused(rule='config', reason='LLM service is not configured'))
+        elif entry.noun == 'meeting-notes':
+            refusal = self.people.authorize(actor, entry.role)
+            outcome = refusal or self._meeting_notes(entry.verb, inputs, actor)
         elif entry.noun == 'machine':
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._machine(entry.verb, inputs, actor)
@@ -497,6 +500,97 @@ class VerbAPI:
             with registry._transaction() as db:
                 db.execute('UPDATE verb_requests SET result=? WHERE idempotency_key=?', (json.dumps(result), key))
             return Done(result=result)
+        except (ValueError, KeyError, OSError, NotionError) as error:
+            return Refused(rule='input', reason=str(error))
+
+    def _meeting_notes(self, verb: str, inputs: Any, actor: str) -> Any:
+        """The Meeting Notes write verbs. Each write adds an audit row (the page ID, never the title or text)."""
+        from dataclasses import asdict
+        from datetime import date, datetime, timedelta, timezone
+        from t6.notion import NotionError
+        from t6.notion.meeting_notes import MeetingNotes, note_from_page
+        from t6.notion.writes import Ambiguous as WriteAmbiguous, Rejected
+        from t6.registry import ProjectRefs
+        from t6.registry.core import normalize_page_id
+        from t6.verbs import Ambiguous
+        kinds = ('paragraph', 'heading_1', 'heading_2', 'heading_3', 'bulleted_list_item', 'numbered_list_item', 'to_do', 'toggle')
+        registry = self.people.registry
+        refs = ProjectRefs(registry)
+
+        def notion_blocks(blocks: list[Any]) -> list[dict[str, Any]]:
+            result = []
+            for block in blocks:
+                if block.kind not in kinds:
+                    raise ValueError(f'Unknown block kind {block.kind}; use one of {", ".join(kinds)}')
+                parts = [{'type': 'text', 'text': {'content': span.text, **({'link': {'url': span.url}} if span.url else {})},
+                          'annotations': {key: getattr(span, key) for key in ('bold', 'italic', 'underline', 'strikethrough', 'code')}} for span in block.spans]
+                content: dict[str, Any] = {'rich_text': parts or [{'type': 'text', 'text': {'content': block.text}}]}
+                if block.kind == 'to_do':
+                    content['checked'] = bool(block.checked)
+                if block.children:
+                    content['children'] = notion_blocks(block.children)
+                result.append({'type': block.kind, block.kind: content})
+            return result
+
+        def audit(action: str, page_id: str) -> None:
+            with registry._transaction() as db:
+                _audit(db, page_id, action, actor, registry._clock(), None, {})
+
+        def done(note: Any) -> Any:
+            item = asdict(note)
+            item['project_ids'] = [refs.identity(page) or page for page in note.project_ids]
+            return Done(result={'meeting_note': item})
+
+        try:
+            source = self.data_sources['meeting_notes']
+            token = os.environ['T6_NOTION_TOKEN']
+            with self.open_notion(token) as client:
+                notes = MeetingNotes(client, source)
+                if verb == 'create':
+                    day = date.fromisoformat(inputs.meeting_date)
+                    pages = []
+                    for ref in inputs.project_ids:
+                        found = refs.pages(ref)
+                        if not found:
+                            return Refused(rule='project', reason=f'Project {ref} not found')
+                        pages.append(found[0])
+                    saved = notes.create(title=inputs.title, meeting_date=day, project_ids=pages, attendee_ids=inputs.attendee_ids, blocks=notion_blocks(inputs.blocks))
+                    if isinstance(saved, Rejected):
+                        return Refused(rule='notion', reason=str(saved))
+                    if isinstance(saved, WriteAmbiguous):
+                        if saved.page_id:
+                            audit('meeting_note_create', saved.page_id)
+                        return Ambiguous(candidates=[{'pending': True, 'reason': str(saved), 'page_id': saved.page_id}])
+                    audit('meeting_note_create', saved.page_id)
+                    return done(saved)
+                page = client.retrieve_page(inputs.note)
+                if normalize_page_id((page.get('parent') or {}).get('data_source_id') or '') != normalize_page_id(source):
+                    return Refused(rule='input', reason='Not a Meeting Notes page')
+                note = note_from_page(page)
+                if verb == 'mark-sent':
+                    if note.sent_at is not None:
+                        return done(note)
+                    when = inputs.at or datetime.now(timezone(timedelta(hours=8)))
+                    saved = notes.mark_sent(note.page_id, when)
+                    if isinstance(saved, Rejected):
+                        return Refused(rule='notion', reason=str(saved))
+                    if isinstance(saved, WriteAmbiguous):
+                        return Ambiguous(candidates=[{'pending': True, 'reason': str(saved), 'page_id': note.page_id}])
+                    audit('meeting_note_sent', note.page_id)
+                    return done(saved)
+                if note.sent_at is not None:
+                    return Refused(rule='sent', reason='The note is already sent')
+                if verb == 'trash':
+                    notes.trash(note.page_id)
+                    audit('meeting_note_trash', note.page_id)
+                else:
+                    if page.get('in_trash') or page.get('archived'):
+                        return Refused(rule='sent', reason='The note is in the trash')
+                    try:
+                        notes.append(note.page_id, notion_blocks(inputs.blocks))
+                    finally:
+                        audit('meeting_note_append', note.page_id)  # a refused later chunk leaves the earlier ones written
+                return done(note_from_page(client.retrieve_page(note.page_id)))
         except (ValueError, KeyError, OSError, NotionError) as error:
             return Refused(rule='input', reason=str(error))
 
@@ -839,6 +933,11 @@ class VerbAPI:
                         and (inputs.title_prefix is None or n.name.startswith(inputs.title_prefix))
                         and (inputs.ready_to_send is None or (n.ready_to_send and n.sent_at is None) == inputs.ready_to_send))
                 notes = [n for n in notes if matches_note(n)]
+                if inputs.latest:
+                    def meeting_day(n: Any) -> Any:
+                        return n.meeting_date.date() if isinstance(n.meeting_date, datetime) else n.meeting_date
+                    dated = [n for n in notes if meeting_day(n) is not None]
+                    notes = [max(dated, key=lambda n: (meeting_day(n), n.last_edited.timestamp() if n.last_edited else 0))] if dated else []
                 def blocks(parent: str) -> list[dict[str, Any]]:
                     result = []
                     for block in client.list_block_children(parent):
@@ -860,7 +959,7 @@ class VerbAPI:
                 for note in notes:
                     item = asdict(note)
                     item['project_ids'] = [refs.identity(page) or page for page in note.project_ids]
-                    item['body'] = blocks(note.page_id)
+                    item['body'] = blocks(note.page_id) if inputs.include_body else []
                     items.append(item)
                 return Done(result={'meeting_notes': items})
         except (KeyError, ValueError, OSError, NotionError):

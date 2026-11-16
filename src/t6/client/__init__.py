@@ -25,7 +25,7 @@ from t6.verbs import (
     DeliverableDeliverInput, PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
     ConcernScanInput, ConcernListInput, ConcernChangesInput, ConcernForMessageInput, ConcernRecordMessageInput, ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
-    JoListInput, JoFindInput, DeliverableListInput, FloorReadInput, DeliverableGetInput, DeliverableDefineInput, DeliverableEditInput, DeliverableRebindInput, DeliverableMissInput, DeliverableDelayInput, MilestoneRecordInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, ProjectNotesInput, ProjectFlagsInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
+    JoListInput, JoFindInput, DeliverableListInput, FloorReadInput, DeliverableGetInput, DeliverableDefineInput, DeliverableEditInput, DeliverableRebindInput, DeliverableMissInput, DeliverableDelayInput, MilestoneRecordInput, MeetingNotesListInput, MeetingNotesCreateInput, MeetingNotesAppendInput, MeetingNotesTrashInput, MeetingNotesMarkSentInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, ProjectNotesInput, ProjectFlagsInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
     JoSubmitInput, JoCloseInput, JoBlockInput, JoUnblockInput, JoDelayInput, JoCancelInput,
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
     LLMRunInput, PersonAddInput, PersonCreateInput, PersonFindInput,
@@ -378,6 +378,18 @@ class Client:
 
     def meeting_notes_list(self, inputs: MeetingNotesListInput) -> Result:
         return self.call('meeting-notes', 'list', inputs)
+
+    def meeting_notes_create(self, inputs: MeetingNotesCreateInput) -> Result:
+        return self.call('meeting-notes', 'create', inputs)
+
+    def meeting_notes_append(self, inputs: MeetingNotesAppendInput) -> Result:
+        return self.call('meeting-notes', 'append', inputs)
+
+    def meeting_notes_trash(self, inputs: MeetingNotesTrashInput) -> Result:
+        return self.call('meeting-notes', 'trash', inputs)
+
+    def meeting_notes_mark_sent(self, inputs: MeetingNotesMarkSentInput) -> Result:
+        return self.call('meeting-notes', 'mark-sent', inputs)
 
     def project_list(self, inputs: ProjectListInput) -> Result:
         return self.call('project', 'list', inputs)

@@ -1066,7 +1066,28 @@ properties through the typed write and appends the body blocks in chunks of
 100, returning the saved note, `Rejected` or `Ambiguous` (a body that could
 not be saved leaves a page, so it is `Ambiguous` with that page ID). `trash`
 and `mark_sent` change a note. A page body is a list of Notion blocks; read it
-with `NotionClient.list_block_children`.
+with `NotionClient.list_block_children`. `append(page_id, blocks)` adds blocks to
+an existing body in chunks of 100 and raises `NotionError` when Notion refuses.
+
+The API has four write verbs, role `minutes` (grant it to one service in
+`T6_API_SERVICE_PERMISSIONS`; it opens only these four): `meeting-notes create`
+(`title`, `meeting_date`, `project_ids` as T6 IDs or Notion page IDs,
+`attendee_ids` as Notion user IDs, `blocks`), `append` (`note`, `blocks`),
+`trash` (`note`) and `mark-sent` (`note`, optional `at`, default now in Manila).
+Body blocks have the shape `meeting-notes list` returns (`kind`, `text`,
+`spans`, `checked`, `children`); the kinds are `paragraph`, `heading_1`,
+`heading_2`, `heading_3`, `bulleted_list_item`, `numbered_list_item`, `to_do`
+and `toggle`, and any other kind is refused. `append` and `trash` are refused
+(rule `sent`) for a note that has a Sent at date; `append` is refused for a
+note in the trash; `mark-sent` on a sent note returns it unchanged. `create` is
+not idempotent: a caller that retries looks for the title with
+`meeting-notes list --title` first, and a body that failed leaves the page, so
+the outcome is `ambiguous` with its page ID. Each write adds a registry audit
+row (`meeting_note_create`, `meeting_note_append`, `meeting_note_trash`,
+`meeting_note_sent`) with the page ID and no text. `meeting-notes list` also
+takes `latest` (only the note with the newest meeting date after the other
+filters, ties to the later last edited, undated notes ignored; one body is
+fetched) and `include_body: false` (no block calls, `body: []`).
 
 ### Projects, Contacts and Deliverables
 

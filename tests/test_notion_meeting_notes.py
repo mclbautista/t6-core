@@ -2,8 +2,10 @@
 
 import datetime as dt
 import unittest
+from unittest.mock import patch
 
 from t6.domain import MeetingNote
+from t6.notion.errors import NotionError
 from t6.notion.meeting_notes import MeetingNotes, note_from_page
 from t6.notion.reads import ContactReader, ProjectReader, page_edited
 from t6.notion.testing import FakeNotion, checkbox, title
@@ -47,6 +49,28 @@ class MeetingNotesTests(unittest.TestCase):
         self.assertEqual(saved.meeting_date, dt.date(2026, 11, 16))
         self.assertEqual(saved.project_ids, ("11111111-1111-1111-1111-111111111111",))
         self.assertEqual(len(self.client.list_block_children(saved.page_id)), 250)
+
+    def test_append_adds_blocks_to_an_existing_page_in_chunks(self) -> None:
+        saved = self.make("PSR MOM 2026-11-16", dt.date(2026, 11, 16))
+        blocks = [
+            {"type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": f"line {i}"}}]}}
+            for i in range(250)
+        ]
+        calls: list[int] = []
+        real = self.client.append_block_children
+
+        def counted(parent: str, children: list[dict[str, object]]) -> list[dict[str, object]]:
+            calls.append(len(children))
+            return real(parent, children)
+
+        with patch.object(self.client, "append_block_children", counted):
+            self.notes.append(saved.page_id, blocks)
+        self.assertEqual(calls, [100, 100, 50])
+        self.assertEqual(len(self.client.list_block_children(saved.page_id)), 250)
+
+    def test_append_raises_when_notion_refuses(self) -> None:
+        with self.assertRaises(NotionError):
+            self.notes.append("missing-page", [{"type": "paragraph", "paragraph": {"rich_text": []}}])
 
     def test_with_title_finds_only_an_exact_title(self) -> None:
         self.make("PSR MOM 2026-11-16", dt.date(2026, 11, 16))
