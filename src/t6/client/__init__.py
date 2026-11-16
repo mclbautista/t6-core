@@ -21,7 +21,7 @@ from t6.verbs import (
     DriveAddInput, DriveEditInput, DrivePromoteSerialInput, DriveListInput, DriveGetInput, DriveFindInput, DriveShipmentsInput, DriveShipmentInput, DriveExceptionsInput,
     MachineListInput, MachineSyncInput,
     SwingAssignInput, SwingUnassignInput, SwingReturnInput, SwingOverdueInput,
-    BayBookInput, BookingMoveInput, BookingExtendInput, BookingCancelInput, BookingGetInput, BookingListInput,
+    BayBookInput, BayListInput, BookingMoveInput, BookingExtendInput, BookingCancelInput, BookingGetInput, BookingListInput,
     DeliverableDeliverInput, PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
     ConcernScanInput, ConcernObserveInput, ConcernCountsInput, ConcernListInput, ConcernChangesInput, ConcernForMessageInput, ConcernRecordMessageInput, ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
@@ -216,6 +216,9 @@ class Client:
 
     def bay_book(self, inputs: BayBookInput) -> Result:
         return self.call('bay', 'book', inputs)
+
+    def bay_list(self, inputs: BayListInput) -> Result:
+        return self.call('bay', 'list', inputs)
 
     def booking_move(self, inputs: BookingMoveInput) -> Result:
         return self.call('booking', 'move', inputs)

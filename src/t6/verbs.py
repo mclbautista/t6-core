@@ -1767,6 +1767,19 @@ class BookingCancelInput(BaseModel):
     confirm: str | None = None
 
 
+class BayListInput(BaseModel):
+    pass
+
+
+class BayListOutput(BaseModel):
+    bays: list[dict[str, Any]]
+
+
+def bay_list(inputs: BayListInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.bay import BayStore
+    return Done(result={'bays': BayStore(_people().registry).list()})
+
+
 class BookingGetInput(BaseModel):
     booking: str
 
@@ -2433,6 +2446,7 @@ VERBS = (
     Verb('timeline', 'list', 'List Timelines of a Project', (), TimelineListInput, TimelineListOutput, 'reader', 'Read Timelines with their canonical copy.', timeline_list, read_only=True),
     Verb('media', 'list', 'List Media locations', (), MediaListInput, MediaListOutput, 'reader', 'Read Media locations.', media_list, read_only=True),
     Verb('bay', 'book', 'Book a Bay', (), BayBookInput, BookingOutput, 'bookings', 'Overlaps require force.', booking_write),
+    Verb('bay', 'list', 'List Bays', (), BayListInput, BayListOutput, 'reader', 'Read the Bays in the registry: each Bay ID with the page ID of its Notion row. Names stay in Notion.', bay_list, read_only=True),
     Verb('booking', 'move', 'Move a Booking', (), BookingMoveInput, BookingOutput, 'bookings', 'Overlaps require force.', booking_write),
     Verb('booking', 'extend', 'Extend a Booking', (), BookingExtendInput, BookingOutput, 'bookings', 'Overlaps require force.', booking_write),
     Verb('booking', 'cancel', 'Cancel a Booking', (), BookingCancelInput, BookingOutput, 'bookings', 'Cancel an active Booking.', booking_write),

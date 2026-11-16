@@ -79,6 +79,13 @@ class ReadTests(unittest.TestCase):
         assert isinstance(anonymous, dict)
         self.assertNotIn('data_gaps', anonymous)
 
+    def test_bay_list_is_a_typed_client_read(self) -> None:
+        from t6.verbs import BayListInput
+        result = self.client.bay_list(BayListInput())
+        self.assertIsInstance(result, Done)
+        assert isinstance(result, Done)
+        self.assertEqual(result.result, {'bays': []})
+
     def test_project_list_returns_project_health_beside_health(self) -> None:
         from t6.verbs import ProjectListInput
         from t6.notion.generated import ProjectsRow
