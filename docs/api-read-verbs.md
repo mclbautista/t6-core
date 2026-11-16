@@ -1,4 +1,4 @@
-# API read verbs for app cutovers
+# API read verbs
 
 The API owns the Notion token. Set `T6_READ_DATA_SOURCES` to the path of a
 server-side JSON object whose keys are `projects`, `contacts`, `job_orders`,
@@ -113,9 +113,9 @@ inclusive `since`, exclusive `before`, exact title, title prefix and readiness;
 their body is a tree of typed blocks. `external-link find` takes a typed
 external reference, not a Notion filter.
 
-The following table inventories the library/Notion reads in the referenced
-cutover drafts. It also calls out writes, which do not become reads merely
-because the old draft used a Notion client.
+The following table maps the library and Notion reads that the apps made before
+they moved onto the API to the verb that answers each. It also calls out writes,
+which do not become reads merely because the old code used a Notion client.
 
 | Draft | Draft call or use | API verb |
 | --- | --- | --- |
@@ -136,11 +136,11 @@ because the old draft used a Notion client.
 | reports #116 | Meeting Notes queries by title, date or readiness; `list_block_children` for note bodies | `meeting-notes list` |
 | reports #116 | Project data source description for leave and upcoming notices | `studio notices` |
 | reports #116 | `link_timelines()` | `external-link find`, now answered from Media locations (kind `instagantt-project`); `media list` is the replacement |
-| reports #116 | Meeting Notes create, append, trash and mark sent | Writes; outside this read ticket. |
-| [munki #17](https://github.com/mclbautista/t6-munki-repo/pull/17) | Imports `t6.notion.writes` result types; its `Fleet.sync()` performs Bays matching and writes internally | No direct `t6.notion` read call in the draft. Fleet sync is a write, outside this read ticket. |
+| reports #116 | Meeting Notes create, append, trash and mark sent | Writes: `meeting-notes create`, `append`, `trash` and `mark-sent` (permission `minutes`). |
+| [munki #17](https://github.com/mclbautista/t6-munki-repo/pull/17) | Imports `t6.notion.writes` result types; its `Fleet.sync()` performs Bays matching and writes internally | No direct `t6.notion` read call in the draft. Fleet sync is a write: `machine sync` (permission `fleet`); `machine list` reads the Machines. |
 
 The registry also exposes `project get`, `project resolve`, `person find` and
-`camera get` for the requested cutovers and other clients.
+`camera get` for the apps and other clients.
 
 `person find` answers one `mention`, or a list of up to 50 `mentions` in one call
 (one read of the Contacts, one result for each name in order). `suggest: true`
@@ -148,9 +148,8 @@ makes `candidates` up to 3 suggestions at 0.60 or more, even after an exact matc
 `prefer_telegram: true` searches the Contacts that have a Telegram user ID first.
 A request with both `mention` and `mentions`, with neither, or with more than 50
 names is refused with rule `input`. See the README for the rule differences from
-the apps' old matching. The table documents
-what the referenced drafts actually call, including their local wrappers; it
-is not a claim that their separate write cutovers have already been built.
+the apps' old matching. The table records
+what the referenced drafts actually called, including their local wrappers.
 
 `person list` and `person get` return the Person's kind, one of `staff`, `freelancer`,
 `client` or `vendor`. A freelancer does not have the staff role.
@@ -168,8 +167,8 @@ to a name match. With `in_text` false the reply is as before.
 `concern for-message` accepts `chat` and `message_id` as strings and returns
 `concern_ids` (an empty list for an unknown message). A brief sender can record
 each Concern on a sent message with `concern record-message`, using the usual
-preview and confirm flow. The reports app must call this after sending a brief;
-that integration is part of the reports cutover follow-up.
+preview and confirm flow. The sender of the brief (the reports app) calls this
+after sending it, with `brief_date`, so that `concern counts` can tell which Concerns were sent.
 
 For a reply, the relay selects a Concern from that lookup and calls `concern
 note` with `concern`, `text`, `from_reply` in `<chat>:<brief message id>` form,

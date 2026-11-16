@@ -336,7 +336,7 @@ Job Orders belong to a **Department**. Notion's `Department` options are the
 truth: `t6.notion.departments.get_departments` reads them live, with option
 IDs. t6-core owns the display order (TOC, AE, OE, COOR, COLOR, VFX, SOUND,
 ADMIN, then any other Department A to Z, then none) and the alias `TO` for
-`TOC`. MISC is not a Department. A token that matches no live option is an
+`TOC`. MISC is not a Department, unless a reader asks for it (`departments --include-misc`). A token that matches no live option is an
 `UnknownDepartment`, never a guess.
 
 ## Studio time and deadlines
@@ -455,7 +455,7 @@ sources is chat text (ADR 0007).
 
 ## Consumer contract
 
-The rules every app follows to use t6-core (scope, boundary, `t6.domain`,
+The rules every app follows to use t6-core (scope, boundary, the API,
 Notion IDs, CI enforcement, version pins) are recorded in
 [ADR 0002](docs/adr/0002-consumer-contract.md). The related decisions are
 [credential ownership](docs/adr/0003-one-owner-per-credential.md),
@@ -558,7 +558,7 @@ A **T6 ID** is an opaque, permanent identifier whose prefix identifies its kind.
 The prefixes are Project `t6p_`, Deliverable `t6v_`, Package `t6k_`, Version
 `t6r_`, Timeline `t6t_`, Person `t6n_`, Bay `t6b_`, Booking `t6g_`, Media
 location `t6m_`, Concern `t6c_`, Approval `t6a_`, Job Order `t6j_`, Drive
-`t6d_`, Milestone `t6s_`, Chat link `t6h_`, and Transcript `t6x_`. Project
+`t6d_`, Milestone `t6s_`, Chat link `t6h_`, Transcript `t6x_`, and Abang relay `t6q_`. Project
 IDs retain their existing 24-hex-digit format; the others use 32 lowercase hex
 digits. Drive IDs retain their UUID4 format. Existing IDs are never rewritten.
 A binding links an external page to an entity ID; replaced pages remain legacy

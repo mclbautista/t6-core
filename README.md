@@ -56,7 +56,8 @@ webhook server, the worker and poll-and-diff.
 ## Webhook server, queue and worker
 
 `t6.server` runs on the VPS: `python -m t6.server`. `t6.worker` runs on the
-Mac mini. Both use only the standard library.
+Mac mini. Both use the standard library; the `server` extra adds the packages
+that the edge route file and the API need.
 
 - **Two listeners.** The public one serves only `/webhook` and `/webhook/*`
   (Frame.io and Notion) and `GET /frameio/callback` (the
@@ -146,7 +147,7 @@ Mac mini. Both use only the standard library.
 
 On first open of a t6 database, `T6_OPERATOR_IDS` seeds the `operator` permission for matching Persons; unmatched IDs are reported on stderr. The seed is recorded even when the variable is empty, and later changes to it do not change Person permissions. Set it before the first open of an existing database containing Persons. Legacy operator cards still use the variable independently until their authorization is migrated.
 
-Until the CLI becomes an API client (#200), set `T6_PERSON_ID` to the local caller’s Person ID. Registered verbs use that Person’s stored permissions; it is configuration, not a command-line actor flag. API authentication will supply the actor in #197 and #200.
+The CLI is an API client: set `T6_API_URL` and `T6_API_SECRET`. The API secret is bound to one Person or service, and that identity and its stored permissions decide what a registered verb may do. There is no command-line actor flag.
 
 Tests use `t6.server.testing.FakeClock`; no test opens a connection to a
 provider.
@@ -154,7 +155,12 @@ provider.
 ## Consumer contract
 
 Every app uses t6-core for Notion, LLMs, privacy, Frame.io, Resolve and the
-fleet. The rules are in
+fleet, through the API. An app imports only `t6.client` and `t6.verbs` and calls
+the verbs; the rules run in the API, and an app holds no Notion token or LLM key.
+`t6 admin consumer-check` enforces it (see
+[Check an app follows the consumer contract](#check-an-app-follows-the-consumer-contract)).
+The sections below on the domain model, lookup, privacy, LLM, Notion and
+fleet modules describe what t6-core itself runs; an app does not import them. The rules are in
 [`docs/adr/0002-consumer-contract.md`](docs/adr/0002-consumer-contract.md).
 
 ## MCP server
@@ -745,13 +751,16 @@ Install only the adapters an application needs, for example
 | `instagantt` | Instagantt export reader |
 | `lookup` | rapidfuzz, for fuzzy Contact matching |
 | `drives` | One-off importer for the legacy drive workbooks |
-| `server` | Webhook server and queue (stdlib only) |
+| `server` | Webhook server, queue and API (PyYAML, jsonschema, referencing) |
 | `worker` | Job workers (stdlib only) |
+| `google` | Google Calendar adapter (cryptography, to sign the service account sign-in) |
+| `transcribe` | Transcription worker (elevenlabs, httpx) |
+| `client` | The API client `t6.client` (stdlib only) |
 
 The `notion` extra installs `httpx`, the `lookup` extra installs `rapidfuzz`, the `resolve` extra installs `psycopg` and the `drives` extra installs `openpyxl`.
-The `privacy`, `instagantt`, `server` and `worker` extras are implemented and
-need no third-party packages. The `frameio` extra holds the
-[Frame.io worker](#frameio) and needs none; its briefing feed also needs the `notion` extra. The `notion` extra does not install Frame.io, Adobe sign-in, or
+The `client`, `privacy`, `instagantt` and `worker` extras are implemented and
+need no third-party packages. The `server` extra installs `PyYAML`, `jsonschema` and `referencing`, the `google` extra installs `cryptography` and the `transcribe` extra installs `elevenlabs` and `httpx`. The `frameio` extra holds the
+[Frame.io worker](#frameio) and needs none; its briefing feed reads the Media locations through the t6 API. The `notion` extra does not install Frame.io, Adobe sign-in, or
 LLM libraries.
 
 ## Frame.io
@@ -793,7 +802,8 @@ if isinstance(result, Ok):
   `Approvals(file_id)` gives the file's `Status` metadata field, because
   Frame.io V4 has no separate approval object. A 401 gets one token refresh
   and one more try. A 429 waits and tries again, five times at most.
-  `CreateProjectFolders` is not built (t6-core#23) and is answered `Failed`.
+  `CreateProjectFolders` (Project Start, #275) makes the Frame.io project and a
+  folder for each name, only where missing, and never a share.
 - **Briefing feed.** `BriefingFeed(since)` answers, per Frame.io project, the
   live share links whose latest activity is after `since`. Activity is the
   later of the share's last view and its newest entry in Frame.io's activity
@@ -1208,19 +1218,22 @@ when the command cannot run (for example, no token).
 ### Cameras
 
 `t6 camera get` and `t6 camera enrich` let a skill read and change Cameras
-without Notion property names. Both need the Notion extra, `T6_NOTION_TOKEN`,
-and the same `--data-sources` file, which must have a `cameras` entry. Fields
+without Notion property names. Both call the API, so they need `T6_API_URL`
+and `T6_API_SECRET`; `camera get` is a reader verb and `camera enrich` needs the
+`operator` role. The API holds the Notion token and its data-sources file
+(`T6_READ_DATA_SOURCES`) must have a `cameras` entry. Fields
 use the generated model's names: `name`, `tags`, `related_to_projects_cameras`
 and `wiki`, plus the row `id`.
 
 ```console
-$ t6 camera get --data-sources data-sources.json            # JSON list
-$ t6 camera get --page-id <page id> --data-sources data-sources.json
-$ echo '{"tags": ["Sony", "Full frame"]}' | t6 camera enrich <page id> --data-sources data-sources.json
+$ t6 camera get                                # JSON list
+$ t6 camera get --page-id <page id>
+$ echo '{"tags": ["Sony", "Full frame"]}' | t6 camera enrich <page id>
 ```
 
-`update` reads a JSON object from stdin (or `--json FILE`), writes only those
-fields, and prints the updated row. An unknown field, an invalid value, a page
+`enrich` reads a JSON object from stdin (or `--json FILE`) and previews the
+change; the same call with `--confirm` and the key from the preview writes only
+those fields and prints the updated row. An unknown field, an invalid value, a page
 outside Cameras or a Notion error prints `{"error": ...}` on stderr and exits 2.
 
 ## Privacy
@@ -1288,7 +1301,8 @@ placeholder it did not issue in both.
 ## LLM
 
 `t6.llm` runs typed LLM tasks. Pydantic v2 is a base dependency. A `Task` has a prompt tag, an input
-model and a pydantic output model. Prompts stay in the app: the task's
+model and a pydantic output model. An app does not import this module: it
+calls `llm run`, `llm decide` and `llm filter` on the API, which runs it. Prompts stay with the caller: the task's
 `render` function turns the input into chat messages.
 
 ```python
@@ -1346,8 +1360,9 @@ If the provider's retention is below the task's minimum, `run` returns
 
 ### Provider config
 
-Provider choice and retention live in the app's config, not in code. The app
-parses its own config file and passes the `llm` section as a mapping:
+Provider choice and retention live in config, not in code. The API reads the
+file named by `T6_LLM_CONFIG` (see [LLM tasks on the API](#llm-tasks-on-the-api))
+and passes its `llm` section as a mapping:
 
 ```yaml
 llm:
@@ -1471,17 +1486,17 @@ variables and are described in `docs/deployment.md`.
 
 ### Studio commands
 
-These read the Notion token from `$T6_NOTION_TOKEN` and the data source IDs
-from `--data-sources FILE` (a JSON object of database key to data source ID,
-as for `admin schema-check`). They print JSON (indented) with Notion IDs and never write.
-Errors are JSON on stderr with exit status 2.
+The read commands in this section call the API (`T6_API_URL` and `T6_API_SECRET`), which reads
+Notion with its own token and data source IDs. `--data-sources FILE` is still accepted on
+`person find`, `project resolve`, `jo get` and `camera get`, and the API ignores it. They print JSON (indented)
+with Notion IDs and never write. Errors are JSON on stderr with exit status 2.
 
 A Person's kind is one of `staff`, `freelancer`, `client` or `vendor`; `person create`
 and `person classify` take any of the four, and `person list` and `person get` return it.
 Only staff have the staff role.
 
-`t6 departments --data-sources FILE` lists the live Departments (the
-`job_orders` source) in display order with their option IDs. MISC is left out.
+`t6 departments` lists the live Departments (the `job_orders` source) in display
+order with their option IDs. MISC is left out unless `--include-misc` is given.
 `t6 departments` and `t6 person get` still accept `--data-sources FILE`, but
 the flag is ignored: the API reads with its own data sources. It will be
 removed in a later release.
@@ -1542,11 +1557,9 @@ Contact made in Notion after the first import, so a Contact with no T6 ID has to
 registered: on the registry host run `t6 admin person migrate --data-sources FILE`
 without `--apply` to preview, then apply the preview with `--apply --preview FILE`.
 
-`t6 project resolve <code|name> --data-sources FILE [--registry-db FILE]` (the
+`t6 project resolve <code|name>` (the
 `projects` source) resolves a Project Code. A reused code is settled by rotation
-when the registry file knows the Projects (`--registry-db`, default
-`$T6_REGISTRY_DB`); with no registry file every Project counts as a holder, and
-an unreadable file is an error. Text that is not a known code is tried as a name
+in the API's own registry; a caller supplies no registry file. Text that is not a known code is tried as a name
 and always needs review. The result has the same `match`, `method`,
 `needs_review`, `reason` and `candidates` fields.
 
@@ -1557,7 +1570,7 @@ Project Codes). It never falls back to a name match; `reason` is
 one code. Without it the reply is unchanged.
 
 ```console
-$ t6 project resolve ALP --data-sources sources.json --registry-db t6-registry.sqlite
+$ t6 project resolve ALP
 {
   "match": {"id": "<page id>", "t6_id": "<T6 Project ID>", "name": "Alpha Show", "project_code": "ALP", "status": "In Progress", "rotation": "in"},
   "method": "exact_id",
@@ -1651,7 +1664,7 @@ be combined with `project` (rule `input`).
 
 `t6 jo assign JO PERSON`, `t6 jo reassign JO PERSON --reason TEXT`, and
 `t6 jo note JO TEXT` follow the same preview/confirm flow. PERSON is a `t6n_`
-ID. The local account is the actor. Notes and audit are append-only and each
+ID. The actor is the authenticated caller. Notes and audit are append-only and each
 write appears in Project Activity. A repeat with the same idempotency key and
 a fresh preview returns the original result.
 
@@ -1734,7 +1747,7 @@ app's source:
 ## Container image
 
 One image, `ghcr.io/mclbautista/t6`, runs every role. It installs the `server`,
-`worker`, `notion`, `privacy`, `llm`, `frameio` and `drives` extras (so `t6 admin drive import` runs in the image), runs as a non-root
+`worker`, `notion`, `privacy`, `llm`, `frameio`, `google`, `lookup` and `drives` extras (so `t6 admin drive import` runs in the image), runs as a non-root
 user, and keeps the queue and Project registry databases in the `/data` volume. The command picks the
 role; the default is the server.
 
@@ -1864,7 +1877,7 @@ server (PostgreSQL 13.4, server app 20) on 2026-11-16.
 
 Release 0.5.0 removed the old commands. Each now fails with exit status 2 and
 an error naming the new command, for example `t6 jo create was renamed to t6 jo
-raise`; the error stays for one more release.
+raise`; the error is still there in 0.6.8.
 
 | Previous command | Current command |
 | --- | --- |
@@ -1884,18 +1897,18 @@ raise`; the error stays for one more release.
 | `drives-import-dry-run` | `admin drive import` |
 | `version`, `commands --json`, `health` | unchanged |
 
-Project hold and resume use a preview followed by confirmation. Configure
-`T6_REGISTRY_DB` and `T6_PREVIEW_SIGNING_KEY` for the local CLI. For example,
+Project hold and resume use a preview followed by confirmation. They are API
+verbs, so the CLI needs `T6_API_URL` and `T6_API_SECRET`; the API holds
+`T6_PREVIEW_SIGNING_KEY`. For example,
 `t6 project hold PROJECT --reason "waiting"` returns a token and an
 `idempotency_key` in its plan. Repeat the same command with `--confirm TOKEN`
 and `--idempotency-key KEY` to confirm it; resume uses `t6 project resume
-PROJECT` in the same way. The local operating-system account is recorded as
+PROJECT` in the same way. The authenticated caller is recorded as
 the actor. Tokens expire after 15 minutes and are single-use. Keep the same
 idempotency key for retries and obtain a fresh preview token for each attempt.
 
-Hold and resume queue Project Status projection intents. The current sync
-worker only projects identity fields, so these intents remain pending until a
-Status-capable worker is provided.
+Hold and resume queue a Project Status projection (`project.status_sync`) that
+the main worker writes to Notion.
 
 The worker never creates a Status option. Before it writes Archived, Standby or
 In-Progress it reads the live Status options of the Projects data source and
@@ -1979,7 +1992,7 @@ A recorded live run (#213) must pass before the task is released.
 The full server exposes the studio API on its tailnet listener. Set
 `T6_API_SECRETS` to a JSON object mapping each distinct bearer secret to one
 Person ID (for example `t6n_...`) or one of `gateway`, `worker`, `reports`,
-`watchdog`, `munki`, `hermes`, and `Sixto (auto)`. `Sixto (auto)` is the actor of
+`watchdog`, `munki`, `hermes`, `mcp`, `transcribe` and `Sixto (auto)`. `Sixto (auto)` is the actor of
 automatic Concern changes: it may run Concern verbs and nothing else, and its
 reach is fixed in code, not in `T6_API_SERVICE_PERMISSIONS`. Keep this
 configuration secret. Set
@@ -1993,15 +2006,13 @@ to that ID. Named services have the `reader` role by default. To grant additiona
 set `T6_API_SERVICE_PERMISSIONS` to a JSON object mapping service names to role
 lists, for example `{"worker":["operator"],"reports":["coordinator"]}`.
 Valid additional roles are `operator`, `coordinator`, `bookings`, `drives`,
-`llm`, `unmasked`, `fleet` and `admin`; admin includes operator. `unmasked` lets a
+`llm`, `unmasked`, `fleet`, `minutes` and `admin`; admin includes operator. `unmasked` lets a
 caller read real client names (read replies are otherwise masked) and grants
 nothing else; the `mcp` service stays masked. `fleet` allows `machine sync` and
 nothing else (`machine list` needs only `reader`; for example
 `{"munki":["fleet"]}`). Grants apply to every secret bound to
 that service. Gateway requests carrying `X-Telegram-User-Id` use the resolved
-Person's permissions instead of the gateway's grants. The legacy `camera enrich`
-endpoint returns `refused` because it does not yet support signed preview and
-confirmation. `GET /health` reports the
+Person's permissions instead of the gateway's grants. `GET /health` reports the
 package version, database schema version and job counts by state.
 With a valid API secret it also reports `data_gaps`: `projects_without_name` has the count of
 Projects whose Notion row has no name and their page ids (never a name), so the operator can
@@ -2139,10 +2150,8 @@ invalid input raise `APIError`. Only the gateway may set `telegram_user_id` on
 the client to act on behalf of a Telegram user. The gateway can deliver `/tap`
 with `client.tap(payload, idempotency_key=key)`; use `client.llm_run` for LLM tasks.
 
-`camera enrich` is temporarily local-only: its legacy write lacks the API's
-signed preview and confirmation contract. It uses the admin's own credentials
-until it gains that contract. `jo raise` uses the API for signed preview and
-confirmation. The client sends the contents of data-source configuration and draft files to the API. Project
+`camera enrich` and `jo raise` use the API for signed preview and
+confirmation. The client sends the contents of draft files to the API. Project
 resolution uses the server's registry, not a caller-supplied database file.
 
 ### Package handoffs
