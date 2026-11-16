@@ -79,6 +79,49 @@ class ApprovalTests(unittest.TestCase):
         self.assertEqual(entries[0].subject_id, done.result['approval_id'])
         self.assertTrue(any(item.action == 'approval_request' for item in self.registry.audit(done.result['approval_id'])))
 
+    def test_a_new_preview_of_the_same_request_reuses_the_open_approval(self) -> None:
+        values = {'gate': 'grade', 'target': 'cut 1', 'tapper_rule': 'person:' + self.actor}
+
+        def request(key: str, who: str | None = None, **extra: str) -> Done:
+            who = who or self.actor
+            preview = self.approvals.write('request', {**values, **extra}, actor=who, idempotency_key=key)
+            assert isinstance(preview, Preview)
+            done = self.approvals.write('request', {**values, **extra}, actor=who, idempotency_key=key, confirm=preview.token)
+            assert isinstance(done, Done)
+            return done
+
+        def count() -> int:
+            with self.registry._transaction() as db:
+                return int(db.execute('SELECT COUNT(*) FROM approvals').fetchone()[0])
+
+        first = request('one')
+        self.assertEqual(request('two').result['approval_id'], first.result['approval_id'])
+        self.assertEqual(count(), 1)
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM audit WHERE action = 'approval_request'").fetchone()[0], 1)
+        request('other-target', target='cut 2')
+        self.assertEqual(count(), 2)
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES ('t6n_22222222222222222222222222222222', 'vendor', '[]', '[]', 43, 0, 1)")
+        request('other-caller', who='t6n_22222222222222222222222222222222')
+        self.assertEqual(count(), 3)
+
+    def test_a_denied_approval_does_not_block_a_new_request(self) -> None:
+        values = {'gate': 'grade', 'target': 'cut 1', 'tapper_rule': 'person:' + self.actor}
+        ids = []
+        for key in ('one', 'two'):
+            preview = self.approvals.write('request', values, actor=self.actor, idempotency_key=key)
+            assert isinstance(preview, Preview)
+            done = self.approvals.write('request', values, actor=self.actor, idempotency_key=key, confirm=preview.token)
+            assert isinstance(done, Done)
+            ids.append(done.result['approval_id'])
+            if key == 'one':
+                deny = {'approval': ids[0], 'reason': 'no'}
+                decision = self.approvals.write('deny', deny, actor=self.actor, idempotency_key='deny')
+                assert isinstance(decision, Preview)
+                self.assertIsInstance(self.approvals.write('deny', deny, actor=self.actor, idempotency_key='deny', confirm=decision.token), Done)
+        self.assertNotEqual(ids[0], ids[1])
+
     def test_client_cut_targets_version_and_records_grant(self) -> None:
         from t6.deliverable import DeliverableStore
         from t6.registry import Registered

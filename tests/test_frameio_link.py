@@ -488,6 +488,38 @@ class UnlinkedActivityTests(MainWorkerCase):
         self.assertEqual(done.body['outcome'], 'done', done.body)
         return dict(done.body)
 
+    def test_a_link_made_by_a_verb_closes_the_pending_card_and_updates_it_in_telegram(self) -> None:
+        self.event('fp-1', 'evt-1')
+        self.event('fp-2', 'evt-2')
+        self.drain()
+        self.assertEqual(len(self.cards()), 2)
+        self.verb('/v1/frameio/project/link', {'project': self.show_a, 'frameio_project': 'fp-1', 'idempotency_key': 'verb-link'})
+        self.drain()
+        closed = self.service.store.find_offer('frameio_link:fp-1')
+        other = self.service.store.find_offer('frameio_link:fp-2')
+        assert closed is not None and other is not None
+        self.assertEqual((closed.state, closed.result and closed.result['outcome']), ('done', 'frameio_linked_elsewhere'))
+        self.assertEqual(other.state, 'pending')
+        self.assertEqual(len(self.cards()), 1)  # the closed card lost its buttons
+        texts = [message['text'] for message in self.gateway.messages.values()]
+        self.assertTrue(any('another way' in text and 'SHOWA' in text for text in texts), texts)
+        self.assertEqual(self.tap(f'op:{closed.token}:p0')['outcome'], 'already_handled')
+        self.assertEqual(self.linked(), {'fp-1': self.show_a})
+
+    def test_a_link_by_media_link_or_made_before_a_restart_closes_the_pending_card(self) -> None:
+        self.event('fp-1', 'evt-1')
+        self.event('fp-2', 'evt-2')
+        self.drain()
+        self.verb('/v1/media/link', {'owner': self.show_a, 'kind': 'frameio-project', 'ref': 'fp-1', 'role': 'frameio-project', 'idempotency_key': 'media-link'})
+        first = self.service.store.find_offer('frameio_link:fp-1')
+        assert first is not None
+        self.assertEqual(first.state, 'done')
+        self.link(self.show_b, 'fp-2')  # no verb call: the API was down
+        self.app.close_linked_frameio_cards()
+        second = self.service.store.find_offer('frameio_link:fp-2')
+        assert second is not None
+        self.assertEqual(second.state, 'done')
+
     def test_media_link_of_a_frameio_project_releases_the_held_activity(self) -> None:
         self.event('fp-1', 'evt-1')
         self.drain()

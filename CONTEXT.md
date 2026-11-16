@@ -255,6 +255,11 @@ ready on the earlier of its `delivered` Milestone date and the day its delivery
 Package (Package kind `delivery`) became kasado. Other Package kinds are
 handoffs between people and never make a Deliverable ready for air.
 
+A Package for the recipient `client` (the delivery Package `deliverable deliver` makes
+and a prepared one) ends at handoff: the client is not a Person, so no one can accept
+or reject it, and `package accept` and `package reject` refuse it with a reason that
+says so. Only a Package whose recipient is a Person is accepted or rejected.
+
 **Kasado** (ready) is one rule, used by `package get` and by these reads (#178):
 every blocking item of the Package's checklist is ticked. Every spec starts with
 zero blocking items, so a Package with none is kasado from the day it was
@@ -430,6 +435,14 @@ Manifest, Ring, Munki Client Version, Last Check-in and OS Version.
   stale. Its observed facts (client version, OS version, last check-in) are
   not written.
 
+## Failed jobs
+
+A job that used all its attempts is failed (dead, in the internal queue). It is never run again. An operator
+**dismisses** it with a reason: the job keeps its row, failure and dedupe key, stops counting as failed, and the
+dismissal is audited. There are two queues (ADR 0006): the internal jobs in the t6 database (verbs `queue failed` and
+`queue dismiss`) and the webhook jobs in the VPS edge queue file (`t6 admin queue`, run on the edge host, with the
+dismissal kept in that file). Failed jobs are not re-run: the operator fixes the data another way.
+
 ## Concern
 
 A Concern is shared information. It is a waiting-on record, and it is also the
@@ -525,6 +538,7 @@ fields, read from Notion) and `t6.registry` (identity).
   held activity is then **released**, each event once, whatever linked the project
   (the card, the verb, or anything else). It is never dropped and no comment text is
   stored with it. Skipping the card leaves it held and the next event posts a new card.
+  When the Frame.io project is linked another way, the pending card is closed as linked elsewhere and edited in Telegram.
 - **Link Frame.io project**: a button on the `/project` card, for any active staff
   Person (a staff Person who is not an operator gets the card with only this
   button). It lists the Frame.io projects of the configured T6 Frame.io account that

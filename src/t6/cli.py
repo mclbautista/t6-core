@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import argparse
 from datetime import date
+import getpass
 import hashlib
 from collections.abc import Callable, Sequence
 import json
 import os
+import sqlite3
 from importlib import resources
 from importlib.metadata import version
 from pathlib import Path
@@ -281,6 +283,24 @@ def _calendar_resync(args: argparse.Namespace) -> int:
     except (OSError, ValueError) as error:
         return _fail(str(error))
     print(json.dumps({"queued": queued}, indent=2))
+    return 0
+
+
+def _edge_queue(args: argparse.Namespace) -> int:
+    """`admin queue failed` and `admin queue dismiss`: the VPS edge's queue file (the webhook jobs), run on the edge host."""
+    from t6.server import JobQueue
+    try:
+        queue = JobQueue(args.queue_db)
+        if args.queue_admin_command == "failed":
+            print(json.dumps({"jobs": [{"job": job.job_id, "queue": job.queue, "kind": job.kind, "dedupe_key": job.dedupe_key, "failure": job.reason}
+                                       for job in queue.failed()]}, indent=2))
+            return 0
+        args.by = args.by or getpass.getuser()
+        if not queue.dismiss(args.job, actor=args.by, reason=args.reason):
+            return _fail("job not found, or it has not failed", 1)
+    except (OSError, ValueError, sqlite3.Error) as error:
+        return _fail(str(error), 1)
+    print(json.dumps({"job": args.job, "state": "dismissed", "by": args.by, "reason": args.reason.strip()}, indent=2))
     return 0
 
 
@@ -740,6 +760,21 @@ def main(
         description="Run on the database host. Queues one booking.calendar_sync job per Booking and prints how many. "
         "Safe to run twice: a Booking whose sync is still queued is not queued again.")
     calendar_resync.add_argument("--registry-db", type=Path, default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)), metavar="FILE", help="the t6 database")
+    queue_admin = admin_commands.add_parser("queue", help="Failed webhook jobs on the VPS edge queue")
+    queue_commands = queue_admin.add_subparsers(dest="queue_admin_command", required=True)
+    queue_db_default = Path(os.environ.get("T6_QUEUE_DB", "t6-queue.sqlite"))
+    queue_failed = queue_commands.add_parser(
+        "failed", help="List the jobs that failed for good in the edge queue file",
+        description="Run on the edge host. Reads T6_QUEUE_DB. The internal jobs in the t6 database are `t6 queue failed`.")
+    queue_dismiss = queue_commands.add_parser(
+        "dismiss", help="Dismiss one failed job of the edge queue file, with a reason",
+        description="Run on the edge host. The job is never run again and no longer counts as failed; it keeps its dedupe key and "
+        "stored failure, and the actor and reason are recorded in the queue file. The internal jobs in the t6 database are `t6 queue dismiss`.")
+    queue_dismiss.add_argument("job", type=int)
+    queue_dismiss.add_argument("--reason", required=True)
+    queue_dismiss.add_argument("--by", help="who dismisses it; default the operating-system user")
+    for queue_parser in (queue_failed, queue_dismiss):
+        queue_parser.add_argument("--queue-db", type=Path, default=queue_db_default, metavar="FILE", help="the edge queue file; default T6_QUEUE_DB")
     privacy_registry = admin_commands.add_parser(
         "privacy-registry", help="Build the client-name file that masked reads use (T6_READ_PRIVACY_REGISTRY)",
         description="Run in the API container. Reads every Studio name and alias, then every Project name, and writes them as a "
@@ -792,6 +827,8 @@ def main(
         return _migrate_media(args)
     if getattr(args, "admin_command", None) == "calendar":
         return _calendar_resync(args)
+    if getattr(args, "admin_command", None) == "queue":
+        return _edge_queue(args)
     if getattr(args, "admin_command", None) == "privacy-registry":
         return _privacy_registry(args, open_notion)
     if getattr(args, "admin_command", None) == "bay":

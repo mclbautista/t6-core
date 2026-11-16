@@ -100,6 +100,17 @@ class InternalJobQueue:
             return bool(conn.execute("UPDATE internal_jobs SET result = json_set(COALESCE(result, '{}'), '$.settled', json('true')) "
                                      "WHERE id = ? AND state = 'dead' AND json_extract(COALESCE(result, '{}'), '$.settled') IS NULL", (job_id,)).rowcount)
 
+    def dead(self, *, db: sqlite3.Connection | None = None) -> list[JobRecord]:
+        """The dead jobs of every kind in id order (a dismissed job is not dead any more)."""
+        with self._within(db) as conn:
+            rows = conn.execute(f"SELECT {_COLUMNS} FROM internal_jobs WHERE state = 'dead' ORDER BY id").fetchall()
+        return [_record(row) for row in rows]
+
+    def dismiss(self, job_id: int, *, db: sqlite3.Connection | None = None) -> bool:
+        """Dismiss a dead job: it is never claimed again. Its row, result and dedupe key stay. False unless the job is dead."""
+        with self._within(db) as conn:
+            return conn.execute("UPDATE internal_jobs SET state = 'dismissed' WHERE id = ? AND state = 'dead'", (job_id,)).rowcount == 1
+
     def submit(self, queue: str, kind: str, dedupe_key: str,
                payload: Mapping[str, JsonValue] | None = None, run_at: float | None = None,
                db: sqlite3.Connection | None = None) -> Submitted:
@@ -175,7 +186,7 @@ class InternalJobQueue:
     def result(self, job_id: int, queue: str) -> JobResult | None:
         with self._db._transaction() as db:
             row = db.execute("SELECT state, result FROM internal_jobs WHERE id = ? AND queue = ?", (job_id, queue)).fetchone()
-        if row is None or row[0] not in ('done', 'failed', 'dead'):
+        if row is None or row[0] not in ('done', 'failed', 'dead', 'dismissed'):
             return None
         result = json.loads(row[1])
         return JobResult(result['status'], result.get('value'))

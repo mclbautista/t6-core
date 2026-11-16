@@ -983,6 +983,47 @@ def package_list(inputs: PackageListInput, open_notion: Callable[..., Any]) -> O
     return Done(result={'packages': PackageStore(_people().registry, _people().tokens).list(inputs.missing)})
 
 
+class QueueFailedInput(BaseModel):
+    pass
+
+
+class QueueFailedOutput(BaseModel):
+    jobs: list[dict[str, Any]]
+
+
+class QueueDismissInput(BaseModel):
+    job: int
+    reason: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class QueueDismissOutput(BaseModel):
+    job: int
+    queue: str
+    kind: str
+    dedupe_key: str
+    failure: Any
+    reason: str
+    state: str
+    idempotency_key: str
+
+
+def queue_failed(inputs: QueueFailedInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.queue_dismiss import JobDismissals
+    return Done(result={'jobs': JobDismissals(_people().registry, _people().tokens).failed()})
+
+
+def queue_dismiss(inputs: QueueDismissInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.preview import PreviewTokens
+    from t6.queue_dismiss import JobDismissals
+    key = os.environ.get('T6_PREVIEW_SIGNING_KEY', '')
+    if not key:
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    return JobDismissals(_people().registry, PreviewTokens(key)).write(
+        {'job': inputs.job, 'reason': inputs.reason}, actor=_actor.get(), idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
 def package_get(inputs: PackageGetInput, open_notion: Callable[..., Any]) -> Outcome:
     from t6.package import PackageStore
     record = PackageStore(_people().registry, _people().tokens).get(inputs.package)
@@ -2519,12 +2560,14 @@ VERBS = (
     Verb("project", "activity", "Show Project activity, newest first", (),
          ActivityInput, ActivityOutput, "reader", "Activity is append-only.", project_activity, read_only=True),
     Verb('package', 'list', 'List open Packages', (), PackageListInput, PackageListOutput, 'reader', 'Filter to Packages with missing items.', package_list, read_only=True),
+    Verb('queue', 'failed', 'List the failed internal jobs', (), QueueFailedInput, QueueFailedOutput, 'operator', 'The dead jobs of the internal queue in the t6 database, not the webhook jobs on the VPS edge (see `t6 admin queue`).', queue_failed, read_only=True),
+    Verb('queue', 'dismiss', 'Dismiss a failed internal job', (), QueueDismissInput, QueueDismissOutput, 'operator', 'Preview and confirm; a reason is required and the dismissal is audited. A dismissed job is never run again and no longer counts as failed. Covers the internal queue in the t6 database only.', queue_dismiss),
     Verb('package', 'get', 'Get a Package', (), PackageGetInput, PackageGetOutput, 'reader', 'Read a Package and its checklist.', package_get, read_only=True),
     Verb('package', 'prepare', 'Prepare a Package', (), PackagePrepareInput, PackageOutput, 'person', 'Copy the Package Spec.', package_write),
     Verb('package', 'check', 'Check a Package item', (), PackageCheckInput, PackageOutput, 'person', 'Record who checked the item and when.', package_write),
     Verb('package', 'handoff', 'Hand off a Package', (), PackageHandoffInput, PackageOutput, 'person', 'Blocking items must be checked.', package_write),
-    Verb('package', 'accept', 'Accept a Package', (), PackageAcceptInput, PackageOutput, 'person', 'The recipient accepts.', package_write),
-    Verb('package', 'reject', 'Reject a Package', (), PackageRejectInput, PackageOutput, 'person', 'The recipient gives a reason.', package_write),
+    Verb('package', 'accept', 'Accept a Package', (), PackageAcceptInput, PackageOutput, 'person', 'The recipient accepts. A Package for the client ends at handoff and is refused.', package_write),
+    Verb('package', 'reject', 'Reject a Package', (), PackageRejectInput, PackageOutput, 'person', 'The recipient gives a reason. A Package for the client ends at handoff and is refused.', package_write),
     Verb("concern", "for-message", "Find Concerns carried by a brief", (), ConcernForMessageInput, ConcernForMessageOutput, "reader", "Return Concern IDs for a brief message.", concern_for_message, read_only=True),
     Verb("concern", "record-message", "Record a Concern carried by a brief", (), ConcernRecordMessageInput, ConcernOutput, "coordinator", "Record a brief message reference without chat text.", concern_write),
     Verb("concern", "scan", "Scan PM Notes for Concerns", (), ConcernScanInput, ConcernScanOutput, "coordinator", "Match new dated lines through llm run.", concern_scan),
