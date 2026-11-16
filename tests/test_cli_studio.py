@@ -134,6 +134,16 @@ class StudioCommandTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual((result["match"]["id"], result["match"]["project_code"], result["method"]), (self.alpha["id"], "ALP", "exact_id"))
 
+    def test_projects_resolve_in_text_finds_one_code_and_never_guesses_a_name(self) -> None:
+        _, out, _ = self.run_command(["project", "resolve", "alp pilot cut", "--in-text"])
+        result = json.loads(out)
+        self.assertEqual((result["match"]["id"], result["method"]), (self.alpha["id"], "exact_id"))
+        _, out, _ = self.run_command(["project", "resolve", "ALP and BET", "--in-text"])
+        self.assertEqual((json.loads(out)["match"], json.loads(out)["reason"]), (None, "several_codes_in_text"))
+        _, out, _ = self.run_command(["project", "resolve", "Alpha Show", "--in-text"])
+        result = json.loads(out)
+        self.assertEqual((result["match"], result["reason"], result["candidates"]), (None, "no_code_in_text", []))
+
     def test_projects_resolve_a_name_goes_to_review_with_candidates(self) -> None:
         _, out, _ = self.run_command(["project", "resolve", "Alpha Show"])
         result = json.loads(out)

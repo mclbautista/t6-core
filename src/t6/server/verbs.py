@@ -211,7 +211,7 @@ class VerbAPI:
         if (entry.noun, entry.verb) in {('transcript', 'create'), ('transcript', 'speakers'), ('transcript', 'translate')}:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._transcripts().request(entry.verb, inputs, actor, translate_enabled=self.translate_enabled)
-        elif (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'notes'), ('project', 'flags'), ('project', 'resolve'), ('concern', 'list'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find'), ('version', 'get')}:
+        elif (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'notes'), ('project', 'flags'), ('project', 'resolve'), ('concern', 'list'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'candidates'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find'), ('version', 'get')}:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._typed_read(entry.noun, entry.verb, inputs)
             if isinstance(outcome, Done) and entry.noun in {'project', 'concern', 'jo', 'person', 'camera', 'deliverable', 'meeting-notes', 'external-link', 'studio'} and not self._reads_unmasked(actor):
@@ -772,7 +772,7 @@ class VerbAPI:
                 record = versions.get(inputs.version)
                 return Done(result={'version': record}) if record else Refused(rule='version', reason='Version not found')
             return Done(result={'version': versions.for_file(inputs.frameio_file)})
-        if noun == 'deliverable':
+        if noun == 'deliverable' and verb != 'candidates':
             from t6.deliverable import DeliverableStore
             store = DeliverableStore(self.people.registry, self.people.tokens)
             if verb == 'get':
@@ -879,9 +879,12 @@ class VerbAPI:
                         from t6.lookup import Index, Lookup
                         from t6.cli_studio import _resolution
                         lookup = Lookup(Index(projects=tuple(projects)))
-                        found = lookup.project(inputs.text)
-                        if found.entity is None and not found.candidates:
-                            found = lookup.project(None, name=inputs.text)
+                        if inputs.in_text:
+                            found = lookup.project_in_text(inputs.text)
+                        else:
+                            found = lookup.project(inputs.text)
+                            if found.entity is None and not found.candidates:
+                                found = lookup.project(None, name=inputs.text)
                         return Done(result=_resolution(found, asdict))
                     return Done(result={'projects': [p for p in projects if (inputs.rotation is None or p.rotation == inputs.rotation)
                                 and (inputs.status is None or p.status == inputs.status)]})
@@ -934,11 +937,8 @@ class VerbAPI:
                     return Done(result={'job_orders': items})
                 if noun == 'deliverable':
                     pages = refs.pages(inputs.project)
-                    items = [asdict(d) for page in pages for d in DeliverableReader(client, self.data_sources['deliverables']).for_project(page)]
-                    for item in items:
-                        item['t6_id'] = self.people.registry.bound_entity('notion', item['page_id'])
-                        item['project_id'] = refs.identity(item['project_id']) or item['project_id']
-                    return Done(result={'deliverables': list({item['page_id']: item for item in items}.values())})
+                    known = {d.page_id: d for page in pages for d in DeliverableReader(client, self.data_sources['deliverables']).for_project(page)}
+                    return Done(result={'candidates': [{'page_id': d.page_id, 'name': d.name, 'status': d.status, 'deliverable_class': d.deliverable_class} for d in known.values()]})
                 since = date.fromisoformat(inputs.since) if inputs.since else None
                 notes = [note_from_page(p) for p in client.query_data_source(self.data_sources['meeting_notes']) if is_live(p)]
                 before = date.fromisoformat(inputs.before) if inputs.before else None
@@ -1010,7 +1010,7 @@ class VerbAPI:
                             item['t6_id'] = self.people.registry.bound_entity('notion', item['id'])
                 elif (noun, verb) == ('project', 'resolve'):
                     result = _projects_resolve(client, sources['projects'], inputs.text,
-                                               inputs.registry_db or Path(os.environ.get('T6_REGISTRY_DB', 't6-registry.sqlite')))
+                                               inputs.registry_db or Path(os.environ.get('T6_REGISTRY_DB', 't6-registry.sqlite')), inputs.in_text)
                 elif (noun, verb) == ('camera', 'get'):
                     from t6.notion.cameras import get_cameras
                     result = get_cameras(client, sources['cameras'], page_id=inputs.page_id)

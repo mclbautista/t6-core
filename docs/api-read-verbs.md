@@ -74,7 +74,7 @@ because the old draft used a Notion client.
 | gateway #86 | `Contacts.set_telegram_user_id`, `Contacts.create` | Writes; outside this read ticket. |
 | [watchdog #140](https://github.com/mclbautista/t6-jo-watchdog/pull/140) | `ContactReader.list()` | `person list` |
 | watchdog #140 | `ProjectReader.list()` | `project list` |
-| watchdog #140 | `DeliverableReader.for_project()` | `deliverable list` |
+| watchdog #140 | `DeliverableReader.for_project()` | `deliverable candidates` (every Deliverable page of one Project, with `page_id`, `name`, `status` and `deliverable_class`; `deliverable list` stays the registry list) |
 | watchdog #140 | `get_departments()` | `departments` |
 | watchdog #140 | `JobOrders.get()` | `jo get` |
 | watchdog #140 | `JobOrders.find_all_by_telegram_key()` | `jo find` |
@@ -104,6 +104,14 @@ is not a claim that their separate write cutovers have already been built.
 
 `person list` and `person get` return the Person's kind, one of `staff`, `freelancer`,
 `client` or `vendor`. A freelancer does not have the staff role.
+
+`project resolve` takes `text`, and an optional `in_text` (default `false`).
+With `in_text` true, `text` is longer text (for example `AB-101 pilot cut`) and
+the verb finds the one known Project Code in it, as a whole token, case
+insensitive, longest code first, with the registry rotation rule applied to that
+code. No code gives `reason` `no_code_in_text`; several distinct codes give
+`several_codes_in_text` with their Projects as candidates. It never falls back
+to a name match. With `in_text` false the reply is as before.
 
 ### Concern brief replies
 

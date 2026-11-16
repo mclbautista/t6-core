@@ -908,6 +908,7 @@ class LegacyProjectResolveInput(BaseModel):
     text: str
     data_sources: Path
     registry_db: Path | None = None
+    in_text: bool = False
 
 
 class LegacyCameraGetInput(BaseModel):
@@ -971,6 +972,7 @@ class ProjectFlagsOutput(BaseModel):
 
 class ProjectResolveInput(ReadInput):
     text: str
+    in_text: bool = False
 
 
 class JoGetInput(ReadInput):
@@ -1265,6 +1267,21 @@ def deliverable_define(inputs: DeliverableDefineInput, open_notion: Callable[...
 
 class DeliverableListInput(ReadInput):
     project: str
+
+
+class DeliverableCandidatesInput(ReadInput):
+    project: str
+
+
+class DeliverableCandidate(BaseModel):
+    page_id: str
+    name: str | None = None
+    status: str | None = None
+    deliverable_class: str | None = None
+
+
+class DeliverableCandidatesOutput(BaseModel):
+    candidates: list[DeliverableCandidate]
 
 
 class FloorReadInput(ReadInput):
@@ -2284,6 +2301,7 @@ VERBS = (
     Verb("deliverable", "rebind", "Bind a replacement Deliverables page", (), DeliverableRebindInput, DeliverableDefineOutput, "operator", "Retain the old page as a legacy binding.", deliverable_rebind),
     Verb("deliverable", "get", "Get a Deliverable", (), DeliverableGetInput, DeliverableGetOutput, "reader", "Read from t6.", api_read, read_only=True),
     Verb("deliverable", "list", "List Project Deliverables", (), DeliverableListInput, DeliverableListOutput, "reader", "Read from t6.", api_read, read_only=True),
+    Verb("deliverable", "candidates", "List every Deliverable page of a Project", (), DeliverableCandidatesInput, DeliverableCandidatesOutput, "reader", "Read from Notion: registered or not, one entry for each page, with name, Status and Class.", api_read, read_only=True),
     Verb("deliverable", "bangko", "List Deliverables ready ahead of air", (), FloorReadInput, FloorReadOutput, "reader", "Ready (kasado or delivered) at least the configured days before air; optional project.", floor_bangko, read_only=True),
     Verb("deliverable", "hand-to-mouth", "List Deliverables ready at the last moment", (), FloorReadInput, FloorReadOutput, "reader", "Ready within the configured days of air; optional project.", floor_hand_to_mouth, read_only=True),
     Verb("deliverable", "sabit", "List missed Deliverables", (), FloorReadInput, FloorReadOutput, "reader", "A recorded miss, not a delay; optional project.", floor_sabit, read_only=True),
