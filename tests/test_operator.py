@@ -299,11 +299,17 @@ class SafetyTests(OperatorTestCase):
         self.assertIn("expired", self.card()["text"])
         self.assertEqual(self.card()["buttons"], [])
 
-    def test_a_tap_before_the_gateway_confirmed_the_send_is_retried_later(self) -> None:
+    def test_a_tap_without_a_message_id_before_the_gateway_confirmed_the_send_is_retried_later(self) -> None:
         token = self.offer(page_id=PAGE_A)  # not delivered yet
-        answer = self.tap(f"{CALLBACK_PREFIX}op:{token}:reg", message_id=1001)
+        answer = self.tap(f"{CALLBACK_PREFIX}op:{token}:reg", message_id=None)
         self.assertEqual(answer.status, 503)
         self.assertEqual(self.all_projects(), [])
+
+    def test_a_tap_before_the_gateway_confirmed_the_send_is_carried_out_at_once(self) -> None:
+        token = self.offer(page_id=PAGE_A)  # not delivered yet
+        answer = self.tap(f"{CALLBACK_PREFIX}op:{token}:reg", message_id=1001)
+        self.assertEqual(answer.status, 200)
+        self.assertNotEqual(self.all_projects(), [])
 
     def test_a_tap_works_after_a_restart(self) -> None:
         self.offer_and_deliver()
