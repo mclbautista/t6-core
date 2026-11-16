@@ -250,6 +250,11 @@ ready on the earlier of its `delivered` Milestone date and the day its delivery
 Package (Package kind `delivery`) became kasado. Other Package kinds are
 handoffs between people and never make a Deliverable ready for air.
 
+A Package for the recipient `client` (the delivery Package `deliverable deliver` makes
+and a prepared one) ends at handoff: the client is not a Person, so no one can accept
+or reject it, and `package accept` and `package reject` refuse it with a reason that
+says so. Only a Package whose recipient is a Person is accepted or rejected.
+
 **Kasado** (ready) is one rule, used by `package get` and by these reads (#178):
 every blocking item of the Package's checklist is ticked. Every spec starts with
 zero blocking items, so a Package with none is kasado from the day it was

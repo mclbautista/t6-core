@@ -2133,7 +2133,9 @@ The authenticated Person is the sender. Check an item with `package check
 <package-id> <item>`, then use `package handoff <package-id>`. Missing advisory
 items remain visible in Activity and `package list --missing`; missing blocking
 items prevent handoff. The recipient uses `package accept <package-id>` or
-`package reject <package-id> --reason <reason>`. These writes use the usual
+`package reject <package-id> --reason <reason>`. A Package for the recipient
+`client` is complete at handoff: the client is not a Person, so `package accept`
+and `package reject` refuse it. These writes use the usual
 preview, confirmation token, and idempotency key. `package get <package-id>`
 shows the snapshot, checklist, and derived `kasado` readiness.
 
