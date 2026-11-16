@@ -2045,6 +2045,24 @@ enough. Without a top-level `decisions` key in the config file (`url`, `model`,
 floor is the `provider_min_retention` entry named `decisions`. Failures carry
 `failure` as for `llm run`; a reply off the Decisions shape is `schema_violation`.
 
+POST `/v1/llm/filter` (`llm filter`, role `llm`) asks the Decisions provider whether
+one message passes a named rule. Send `rule`, `text` and optionally `reply_to_text`
+(the message it answers). The question and the `match`, `maybe` and `no` criteria
+belong to the rule, defined in t6-core (`t6.domain.message_filter`); the first rule,
+`job_order`, asks whether the message is a Job Order and sits with the Job Order
+rules. `text` and `reply_to_text` are masked in one Session and checked for leaks, as
+in `llm decide`; the Decisions provider, its retention floor, the size limit and the
+`failure` classes are the same. An unknown `rule` is refused with rule `input`. The
+reply holds `verdict` (`pass`, `drop` or `unsure`), `probabilities` (`match`, `maybe`,
+`no`), `rule`, `model`, `provider`, `tokens` and `zdr`. `pass` means the probability of
+`match` is at least 0.5; `drop` means the probability of `no` is at least 0.9; anything
+else is `unsure`. A top-level `filters` key in the config file overrides them for a
+rule, for example `"filters": {"job_order": {"pass": 0.5, "drop": 0.9}}`; an unknown
+rule or a value outside 0 to 1 stops the server at start. The audit row holds the
+outcome, rule, verdict, provider and `zdr`, never text or probabilities. The verdict is
+advice: the caller decides what a `drop` does. A caller must treat a refusal as
+"go on" (fail open).
+
 ### Calling the t6 API
 
 Install `t6[client]` and set `T6_API_URL` and `T6_API_SECRET`. The client

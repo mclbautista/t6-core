@@ -64,6 +64,22 @@ class LLMDecideAnswer(BaseModel):
     probabilities: dict[Literal['match', 'maybe', 'no'], float]
 
 
+class LLMFilterInput(BaseModel):
+    rule: str = Field(min_length=1, max_length=200)
+    text: str
+    reply_to_text: str | None = None
+
+
+class LLMFilterOutput(BaseModel):
+    verdict: Literal['pass', 'drop', 'unsure']
+    probabilities: dict[Literal['match', 'maybe', 'no'], float]
+    rule: str
+    model: str
+    provider: str
+    tokens: dict[str, int | None]
+    zdr: bool = False
+
+
 class LLMDecideOutput(BaseModel):
     answers: list[LLMDecideAnswer]
     model: str
