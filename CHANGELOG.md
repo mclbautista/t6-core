@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Changed
+
+- Drive custody verbs refuse a step that cannot follow the last one (#378): `drive receive` is refused for a Drive in custody or retired, `drive release` for one released or retired (the whole release, naming every such Drive), `drive return` unless the Drive is released, and `drive retire` for one already retired. The refusal has rule `custody`, comes at preview and again at confirm in the write transaction, and names the Drive and its status. A retired Drive can no longer be received or returned through the verbs.
+
 ### Fixed
 
 - `drive exceptions` on a server without the `drives` extra (#371): the read reached the workbook importer, which imported `openpyxl` when it loaded, so the request crashed on the image. The importer now imports `openpyxl` only when it opens a workbook.

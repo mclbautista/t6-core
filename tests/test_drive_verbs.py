@@ -207,7 +207,7 @@ class DriveVerbTests(unittest.TestCase):
         self.assertEqual(sorted(used - protocol), [])
         self.assertFalse([n for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str) and re.match(r'\s*(SELECT|INSERT|UPDATE|DELETE)', n.value)])
 
-    def test_custody_sequence_derives_status_and_retire_is_not_terminal(self) -> None:
+    def test_custody_sequence_derives_status(self) -> None:
         drive, project = self.drives[0], self.projects[0]
         self.write('receive', {'drive': drive, 'project': project, 'party': CONTACT, 'party_kind': 'contact', 'on': '2026-11-01'})
         self.assertIs(self.store.status(drive), DriveStatus.IN_CUSTODY)
@@ -218,13 +218,72 @@ class DriveVerbTests(unittest.TestCase):
         self.assertIs(self.store.status(drive), DriveStatus.IN_CUSTODY)
         self.write('retire', {'drive': drive, 'project': project, 'reason': 'dead', 'on': '2026-11-04'})
         self.assertIs(self.store.status(drive), DriveStatus.RETIRED)
-        self.write('receive', {'drive': drive, 'project': project, 'on': '2026-11-05'})
-        self.assertIs(self.store.status(drive), DriveStatus.IN_CUSTODY)
         events = self.store.list_events(drive)
-        self.assertEqual([e.kind.value for e in events], ['received', 'released', 'returned', 'retired', 'received'])
+        self.assertEqual([e.kind.value for e in events], ['received', 'released', 'returned', 'retired'])
         self.assertEqual(events[1].party.ref.text, 'Invented Studio')  # type: ignore[union-attr]
         self.assertEqual(events[0].party.ref.page_id, CONTACT)  # type: ignore[union-attr]
         self.assertEqual(events[3].reason, 'dead')
+
+    def custody(self, drive: str, kind: str, project: str | None = None) -> None:
+        """Put the Drive's custody log at the end of a path that reaches `kind`: none, received, released, returned or retired."""
+        project = project or self.projects[0]
+        steps = {'none': [], 'received': ['receive'], 'released': ['release'], 'returned': ['release', 'return'], 'retired': ['retire']}[kind]
+        for verb in steps:
+            values: dict[str, Any] = {'drives': [drive]} if verb == 'release' else {'drive': drive}
+            self.write(verb, {**values, 'project': project, 'party': 'Invented Studio', 'party_kind': 'studio', 'reason': 'dead'})
+
+    def test_custody_verbs_refuse_a_step_that_cannot_follow_the_status_and_write_nothing(self) -> None:
+        project = self.projects[0]
+        cases = [('receive', 'received', 'in custody'), ('receive', 'retired', 'retired'),
+                 ('release', 'released', 'released'), ('release', 'retired', 'retired'),
+                 ('return', 'none', 'no custody events'), ('return', 'received', 'in custody'), ('return', 'retired', 'retired'),
+                 ('retire', 'retired', 'retired')]
+        for verb, before, said in cases:
+            with self.subTest(verb=verb, before=before):
+                drive = self.store.add_drive(Drive(serial=f'CASE-{verb}-{before}', label=f'Case {verb} {before}')).id
+                self.custody(drive, before)
+                events = self.store.list_events(drive)
+                values: dict[str, Any] = {'drives': [drive]} if verb == 'release' else {'drive': drive}
+                refused = self.call('drive', verb, {**values, 'project': project, 'party': 'Invented Studio', 'party_kind': 'studio', 'reason': 'dead', 'idempotency_key': 'k'})
+                self.assertIsInstance(refused, Refused)
+                self.assertEqual(refused.rule, 'custody')
+                self.assertIn(drive, refused.reason)
+                self.assertIn(said, refused.reason)
+                self.assertEqual(self.store.list_events(drive), events)
+
+    def test_custody_verbs_allow_the_steps_that_can_follow(self) -> None:
+        for verb, before in [('receive', 'none'), ('receive', 'released'), ('release', 'none'), ('release', 'received'),
+                             ('release', 'returned'), ('return', 'released'), ('retire', 'none'), ('retire', 'received'), ('retire', 'released')]:
+            with self.subTest(verb=verb, before=before):
+                drive = self.store.add_drive(Drive(serial=f'OK-{verb}-{before}', label=f'Ok {verb} {before}')).id
+                self.custody(drive, before)
+                count = len(self.store.list_events(drive))
+                values: dict[str, Any] = {'drives': [drive]} if verb == 'release' else {'drive': drive}
+                self.write(verb, {**values, 'project': self.projects[0], 'party': 'Invented Studio', 'party_kind': 'studio', 'reason': 'dead'}, key=f'{verb}-{before}')
+                self.assertEqual(len(self.store.list_events(drive)), count + 1)
+
+    def test_a_release_with_one_drive_that_cannot_be_released_is_refused_whole_naming_each_such_drive(self) -> None:
+        free, held, gone = self.drives
+        self.custody(held, 'released')
+        self.custody(gone, 'retired')
+        refused = self.call('drive', 'release', {'drives': [free, held, gone], 'project': self.projects[0], 'party': 'Invented Studio', 'party_kind': 'studio', 'idempotency_key': 'k'})
+        self.assertIsInstance(refused, Refused)
+        self.assertEqual(refused.rule, 'custody')
+        self.assertIn(held, refused.reason)
+        self.assertIn(gone, refused.reason)
+        self.assertNotIn(free, refused.reason)
+        self.assertEqual(self.store.list_events(free), ())
+
+    def test_the_custody_check_runs_again_at_confirm(self) -> None:
+        drive, project = self.drives[0], self.projects[0]
+        values = {'drive': drive, 'project': project, 'idempotency_key': 'late'}
+        preview = self.call('drive', 'receive', values)
+        self.assertIsInstance(preview, Preview)
+        self.custody(drive, 'received')
+        refused = self.call('drive', 'receive', {**values, 'confirm': preview.token})
+        self.assertIsInstance(refused, Refused)
+        self.assertEqual(refused.rule, 'custody')
+        self.assertEqual(len(self.store.list_events(drive)), 1)
 
     def test_release_groups_a_shipment_and_links_a_free_text_delivery(self) -> None:
         project = self.projects[0]
@@ -465,11 +524,11 @@ class DriveVerbTests(unittest.TestCase):
         self.assertEqual([a.action for a in self.registry.activity(project)][:1], ['drive_receive'])
         self.assertEqual(self.registry.activity(project)[0].actor, 'keeper')
         self.assertEqual(len(self.registry.audit(drive)), 1)
-        stale = self.call('drive', 'return', {'drive': drive, 'project': project, 'idempotency_key': 'late'})
-        self.write('retire', {'drive': drive, 'project': project, 'reason': 'lost'})
-        changed = self.call('drive', 'return', {'drive': drive, 'project': project, 'idempotency_key': 'late', 'confirm': stale.token})
+        stale = self.call('drive', 'retire', {'drive': drive, 'project': project, 'reason': 'lost', 'idempotency_key': 'late'})
+        self.write('release', {'drives': [drive], 'project': project, 'party': 'Invented Studio', 'party_kind': 'studio'})
+        changed = self.call('drive', 'retire', {'drive': drive, 'project': project, 'reason': 'lost', 'idempotency_key': 'late', 'confirm': stale.token})
         self.assertEqual(changed.rule, 'drive_changed')
-        self.assertEqual(self.registry.activity(project)[0].action, 'drive_retire')
+        self.assertEqual(self.registry.activity(project)[0].action, 'drive_release')
 
     def test_catalogue_and_cli(self) -> None:
         from cli_api_fake import client_patch

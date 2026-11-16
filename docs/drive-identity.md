@@ -70,7 +70,11 @@ assert store.get_drive(drive.id) is not None
 ```
 
 Assignments, receive, release, return and retirement remain available regardless
-of serial/review state. Existing event validation (such as a retirement reason)
+of serial/review state. The custody verbs do refuse a step that cannot follow the
+Drive's derived status (rule `custody`, at preview and again at confirm): receive
+when the Drive is in custody or retired, release when released or retired, return
+unless released, and retire when already retired. A Drive with no events can be
+received, released or retired. Existing event validation (such as a retirement reason)
 still applies. A manifest carries `drive_id`, accepted `serial`, separately named
 `suspected_serial`, available label/description/capacity and review flag/note.
 Physical facts are current, while the release event and historical Assignment

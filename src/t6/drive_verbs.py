@@ -20,7 +20,7 @@ from typing import Any, NamedTuple
 
 from t6 import verbflow
 from t6.domain.studio_time import MANILA
-from t6.drives import Assignment, CustodyEvent, CustodyKind, Drive, DriveStore, FormFactor, Party, PartyKind, Ref, Role, open_duplicate
+from t6.drives import Assignment, CustodyEvent, CustodyKind, Drive, DriveStatus, DriveStore, FormFactor, Party, PartyKind, Ref, Role, open_duplicate
 from t6.drives.sqlite import SqliteDriveStore, audit_json
 from t6.preview import PreviewTokens
 from t6.registry.core import normalize_page_id
@@ -31,6 +31,8 @@ FACT_VERBS = ('add', 'edit', 'promote_serial')
 WRITE_VERBS = ('receive', 'release', 'return', 'retire', 'assign', 'unassign', 'swing_assign', 'swing_unassign', 'swing_return', *FACT_VERBS)
 _EDITABLE = ('label', 'form_factor', 'serial', 'suspected_serial', 'needs_review', 'review_note')
 _KINDS = {'receive': CustodyKind.RECEIVED, 'release': CustodyKind.RELEASED, 'return': CustodyKind.RETURNED, 'retire': CustodyKind.RETIRED}
+_CANNOT_FOLLOW: dict[str, set[DriveStatus | None]] = {'receive': {DriveStatus.IN_CUSTODY, DriveStatus.RETIRED}, 'release': {DriveStatus.RELEASED, DriveStatus.RETIRED},
+                  'return': {None, DriveStatus.IN_CUSTODY, DriveStatus.RETIRED}, 'retire': {DriveStatus.RETIRED}}
 _PAGE = re.compile(r'[0-9a-f]{32}')
 
 Change = tuple[str, dict[str, Any] | None, dict[str, Any] | None]
@@ -333,6 +335,10 @@ class DriveVerbs:
             store.check_project(Ref(page_id=project))
         except ValueError as error:
             return Refused(rule='project', reason=str(error))
+        blocked = [f"{drive_id} ({status.value if status else 'no custody events'})" for drive_id in ids
+                   if (status := store.status(drive_id)) in _CANNOT_FOLLOW.get(verb, ())]
+        if blocked:
+            return Refused(rule='custody', reason=f"Cannot {verb} Drive {', '.join(blocked)}: the last custody step does not allow it")
         state = self._state(store, ids)
         today = self._today()
         plan: dict[str, Any] = {'action': 'drive_' + verb, 'drive_ids': ids, 'project_id': project, 'idempotency_key': key}
