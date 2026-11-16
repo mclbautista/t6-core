@@ -770,9 +770,12 @@ class VerbAPI:
                         from t6.lookup import Index, Lookup
                         from t6.cli_studio import _resolution
                         lookup = Lookup(Index(projects=tuple(projects)))
-                        found = lookup.project(inputs.text)
-                        if found.entity is None and not found.candidates:
-                            found = lookup.project(None, name=inputs.text)
+                        if inputs.in_text:
+                            found = lookup.project_in_text(inputs.text)
+                        else:
+                            found = lookup.project(inputs.text)
+                            if found.entity is None and not found.candidates:
+                                found = lookup.project(None, name=inputs.text)
                         return Done(result=_resolution(found, asdict))
                     return Done(result={'projects': [p for p in projects if (inputs.rotation is None or p.rotation == inputs.rotation)
                                 and (inputs.status is None or p.status == inputs.status)]})
@@ -892,7 +895,7 @@ class VerbAPI:
                         item['t6_id'] = self.people.registry.bound_entity('notion', item['id'])
                 elif (noun, verb) == ('project', 'resolve'):
                     result = _projects_resolve(client, sources['projects'], inputs.text,
-                                               inputs.registry_db or Path(os.environ.get('T6_REGISTRY_DB', 't6-registry.sqlite')))
+                                               inputs.registry_db or Path(os.environ.get('T6_REGISTRY_DB', 't6-registry.sqlite')), inputs.in_text)
                 elif (noun, verb) == ('camera', 'get'):
                     from t6.notion.cameras import get_cameras
                     result = get_cameras(client, sources['cameras'], page_id=inputs.page_id)

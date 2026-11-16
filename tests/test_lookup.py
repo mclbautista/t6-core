@@ -91,6 +91,46 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual((r.entity.page_id if r.entity else None, r.method), ("pg1", "exact_id"))
 
 
+class ProjectInTextTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.short = Project(page_id="p1", name="Blue Harbor", project_code="AB-1")
+        self.long = Project(page_id="p2", name="Red Canyon", project_code="AB-101")
+        self.lookup = Lookup(Index(projects=(self.short, self.long)))
+
+    def test_one_code_inside_longer_text_resolves(self) -> None:
+        r = self.lookup.project_in_text("ab-101 pilot cut")
+        self.assertEqual((r.entity, r.needs_review), (self.long, False))
+
+    def test_a_shorter_code_inside_a_longer_code_does_not_match_twice(self) -> None:
+        r = self.lookup.project_in_text("AB-101 pilot cut")
+        self.assertEqual((r.entity, r.reason), (self.long, None))
+
+    def test_two_different_codes_need_review_with_their_projects(self) -> None:
+        r = self.lookup.project_in_text("AB-1 and AB-101 trailer")
+        self.assertEqual((r.entity, r.needs_review, r.reason), (None, True, "several_codes_in_text"))
+        self.assertEqual(ids(r), ["p1", "p2"])
+
+    def test_no_code_needs_review_without_candidates(self) -> None:
+        r = self.lookup.project_in_text("Blue Harbor pilot cut")
+        self.assertEqual((r.entity, r.method, r.needs_review, r.reason, r.candidates), (None, "none", True, "no_code_in_text", ()))
+
+    def test_a_code_next_to_a_word_character_does_not_match(self) -> None:
+        for text in ("XAB-101", "AB-101X", "AB-101_final", "AB-1011"):
+            self.assertEqual(self.lookup.project_in_text(text).reason, "no_code_in_text", text)
+
+    def test_a_shared_code_with_one_in_rotation_resolves_to_it(self) -> None:
+        old = dataclasses.replace(self.long, page_id="p3", rotation="out")
+        current = dataclasses.replace(self.long, rotation="in")
+        r = Lookup(Index(projects=(old, current))).project_in_text("AB-101 pilot")
+        self.assertEqual((r.entity.page_id if r.entity else None, r.needs_review), ("p2", False))
+
+    def test_a_shared_code_with_none_in_rotation_needs_review(self) -> None:
+        a = dataclasses.replace(self.long, rotation="out")
+        b = dataclasses.replace(self.long, page_id="p3", rotation="out")
+        r = Lookup(Index(projects=(a, b))).project_in_text("AB-101 pilot")
+        self.assertEqual((r.entity, r.needs_review, r.reason), (None, True, "no_in_rotation_holder"))
+
+
 class DeliverableTests(unittest.TestCase):
     def setUp(self) -> None:
         self.master = Deliverable(page_id="d1", name="Final Master ProRes", project_id="p1")

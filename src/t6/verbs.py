@@ -881,6 +881,7 @@ class LegacyProjectResolveInput(BaseModel):
     text: str
     data_sources: Path
     registry_db: Path | None = None
+    in_text: bool = False
 
 
 class LegacyCameraGetInput(BaseModel):
@@ -941,6 +942,7 @@ class ProjectFlagsOutput(BaseModel):
 
 class ProjectResolveInput(ReadInput):
     text: str
+    in_text: bool = False
 
 
 class JoGetInput(ReadInput):

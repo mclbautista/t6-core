@@ -697,6 +697,15 @@ bound to, and returns that Project whoever holds its code now: this is how a
 reviewer selects a historical Project. Existing relationships are never looked
 up by code. `Resolution.reason` is `None` for every other lookup.
 
+`project_in_text(text)` finds a Project Code inside longer text, such as
+`AB-101 pilot cut`. It scans the registry's codes as whole tokens (no word
+character on either side), case-insensitive, longest code first, blanking each
+matched span so a shorter code inside a longer one does not match again. No code
+gives no match with `needs_review` and `reason="no_code_in_text"`. Several
+distinct codes give `reason="several_codes_in_text"` with their Projects as
+candidates. Exactly one code gives the answer of `project(code)`, so the table
+above applies. It never falls back to a Project name.
+
 ## Fleet
 
 `t6.fleet` (install `t6[notion]`) reads Bays as `Machine` and writes the fleet
@@ -1470,6 +1479,12 @@ when the registry file knows the Projects (`--registry-db`, default
 an unreadable file is an error. Text that is not a known code is tried as a name
 and always needs review. The result has the same `match`, `method`,
 `needs_review`, `reason` and `candidates` fields.
+
+`--in-text` (API input `in_text`, default false) treats `text` as longer text
+that holds one Project Code, as `Lookup.project_in_text` does (see Reusable
+Project Codes). It never falls back to a name match; `reason` is
+`no_code_in_text` or `several_codes_in_text` when the text does not hold exactly
+one code. Without it the reply is unchanged.
 
 ```console
 $ t6 project resolve ALP --data-sources sources.json --registry-db t6-registry.sqlite

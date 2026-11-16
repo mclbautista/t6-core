@@ -541,6 +541,32 @@ class ReadTests(unittest.TestCase):
         assert isinstance(result, Done)
         self.assertEqual(result.result['job_orders'][0]['project_id'], project_id)
 
+    def test_project_resolve_in_text_scans_the_registry_codes(self) -> None:
+        from t6.registry import Rotation
+        from t6.verbs import ProjectResolveInput
+        self.registry.register(actor='setup', idempotency_key='p', notion_page_id=self.project['id'], code='EXS', rotation=Rotation.IN)
+        found = self.client.project_resolve(ProjectResolveInput(text='exs pilot cut', in_text=True))
+        assert isinstance(found, Done)
+        self.assertEqual((found.result['match']['page_id'], found.result['reason']), (self.project['id'], None))
+        none = self.client.project_resolve(ProjectResolveInput(text='Example Show', in_text=True))
+        assert isinstance(none, Done)
+        self.assertEqual((none.result['match'], none.result['reason'], none.result['candidates']), (None, 'no_code_in_text', []))
+        next_to_word = self.client.project_resolve(ProjectResolveInput(text='EXSX', in_text=True))
+        assert isinstance(next_to_word, Done)
+        self.assertEqual(next_to_word.result['reason'], 'no_code_in_text')
+
+    def test_project_resolve_without_in_text_is_unchanged(self) -> None:
+        from t6.registry import Rotation
+        from t6.verbs import ProjectResolveInput
+        self.registry.register(actor='setup', idempotency_key='p', notion_page_id=self.project['id'], code='EXS', rotation=Rotation.IN)
+        plain = self.client.project_resolve(ProjectResolveInput(text='EXS pilot cut'))
+        assert isinstance(plain, Done)
+        self.assertIsNone(plain.result['match'])
+        self.assertEqual(plain.result['candidates'], [])
+        named = self.client.project_resolve(ProjectResolveInput(text='Example Show'))
+        assert isinstance(named, Done)
+        self.assertEqual(named.result['candidates'][0]['name'], 'Example Show')
+
     def test_registered_output_schemas_describe_read_results(self) -> None:
         from t6.verbs import (VERBS, ProjectListInput, ProjectGetInput, ProjectResolveInput,
                               JoListInput, JoGetInput, JoFindInput, PersonListInput, PersonGetInput,

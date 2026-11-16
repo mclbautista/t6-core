@@ -52,6 +52,11 @@ def add_parsers(commands: Any) -> None:
     resolve.add_argument("text", help="a Project Code, or part of a Project name")
     data_sources(resolve)
     resolve.add_argument(
+        "--in-text",
+        action="store_true",
+        help="find one known Project Code inside longer text (whole token, longest first); never falls back to a name match",
+    )
+    resolve.add_argument(
         "--registry-db",
         type=Path,
         default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)),
@@ -94,7 +99,7 @@ def run(args: argparse.Namespace, open_notion: Callable[[str], NotionClient]) ->
                     for item in ([result["match"]] if result["match"] else []) + result["candidates"]:
                         item["t6_id"] = people.registry.bound_entity("notion", item["id"]) if people else None
             else:
-                result = _projects_resolve(client, sources[source_key], args.text, args.registry_db)
+                result = _projects_resolve(client, sources[source_key], args.text, args.registry_db, args.in_text)
     except (OSError, ValueError, ImportError, NotionError) as error:
         return _fail(str(error))
     return _print(result)
@@ -149,7 +154,7 @@ def _contacts_find(client: NotionClient, data_source_id: str, mention: str) -> J
     return _resolution(lookup.contact(mention), _contact)
 
 
-def _projects_resolve(client: NotionClient, data_source_id: str, text: str, registry_db: Path) -> JSON:
+def _projects_resolve(client: NotionClient, data_source_id: str, text: str, registry_db: Path, in_text: bool = False) -> JSON:
     from t6.lookup import Index, Lookup
     from t6.notion.reads import ProjectReader
 
@@ -163,6 +168,8 @@ def _projects_resolve(client: NotionClient, data_source_id: str, text: str, regi
         except (RegistryUnavailable, sqlite3.Error) as error:
             raise ValueError(f"the registry at {registry_db} cannot be read: {error}") from error
     lookup = Lookup(Index(projects=projects))
+    if in_text:
+        return _resolution(lookup.project_in_text(text), _project)
     found = lookup.project(text)
     if found.entity is None and not found.candidates:
         found = lookup.project(None, name=text)

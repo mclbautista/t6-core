@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -206,6 +207,42 @@ class Lookup:
             return Resolution(None, "review", ranked[0].score if ranked else 0.0, ranked, True)
         uncoded = tuple(Candidate(p, 0.0) for p in self._index.projects if not p.project_code)
         return Resolution(None, "review", 0.0, uncoded, True)
+
+    def project_in_text(self, text: str) -> Resolution[Project]:
+        """The Project a Project Code inside longer text names.
+
+        Finds every known Project Code (the registry's `project_code`) in `text`
+        as a whole token, case-insensitive, longest code first. Each matched span
+        is blanked, so a shorter code inside a longer one cannot match again.
+        Whole token means no word character on either side.
+
+        - no code found: no match, review, `reason` `no_code_in_text`;
+        - several distinct codes: no match, review, `reason` `several_codes_in_text`,
+          the Projects of those codes as candidates;
+        - one code: the answer of `project(code)`, so the rotation rule applies.
+
+        It never falls back to a name match.
+        """
+        spelled: dict[str, str] = {}
+        for p in self._index.projects:
+            code = (p.project_code or "").strip()
+            if code:
+                spelled.setdefault(code.casefold(), code)
+        remaining = text
+        found: list[str] = []
+        for folded in sorted(spelled, key=len, reverse=True):
+            pattern = re.compile(rf"(?<!\w){re.escape(folded)}(?!\w)", re.IGNORECASE)
+            if pattern.search(remaining):
+                found.append(folded)
+                remaining = pattern.sub(lambda m: " " * len(m.group(0)), remaining)
+        if not found:
+            return Resolution(None, "none", 0.0, (), True, "no_code_in_text")
+        if len(found) > 1:
+            holders = tuple(
+                Candidate(p, 1.0) for p in self._index.projects if (p.project_code or "").strip().casefold() in found
+            )
+            return Resolution(None, "review", 1.0, holders, True, "several_codes_in_text")
+        return self.project(spelled[found[0]])
 
     def project_by_id(self, project_id: str) -> Resolution[Project]:
         """The Project a T6 Project ID, or any page it was bound to, names.
