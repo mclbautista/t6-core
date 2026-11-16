@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -23,10 +23,12 @@ __all__ = [
     "StatusGroup",
     "code_labels",
     "date_flags",
+    "date_sanity",
     "health_missing",
     "health_rank",
     "is_snapshotted",
     "missing_roles",
+    "relevant_dates",
     "status_gate",
     "status_key",
 ]
@@ -47,6 +49,9 @@ _ON_HOLD = {"standby", "archiving"}
 _INCOMING = {"leads", "lead", "negotiations", "proposal made"}
 """Refine later with the CRM's own definition of a lead."""
 _NEVER_SNAPSHOTTED = {"archived", "lost"}
+_IN_PROGRESS_DATES = ("playdate", "submission_deadline")
+_ARCHIVING_DATES = ("archival_deadline",)
+_INCOMING_DATES = ("playdate",)
 
 ROLES = (
     "editor_ids",
@@ -117,16 +122,49 @@ def date_flags(
             flags.append(DateFlag("overdue", name, (today - when).days))
 
     if key in _IN_PROGRESS:
-        for name in ("playdate", "submission_deadline"):
+        for name in _IN_PROGRESS_DATES:
             check(name, blank=True, late=key != "airing")
     elif key == "archiving":
-        check("archival_deadline", blank=True, late=True)
+        check(_ARCHIVING_DATES[0], blank=True, late=True)
     elif key in _INCOMING:
         check("playdate", blank=False, late=True)
         when = _day(project.playdate)
         if when is not None and 0 <= (when - today).days < lead_warning_days:
             flags.append(DateFlag("upcoming", "playdate", (when - today).days))
     return tuple(sorted(flags, key=lambda flag: flag.kind != "overdue"))
+
+
+def relevant_dates(status: object) -> tuple[str, ...]:
+    """The date properties (Project attribute names) that matter for a Status.
+
+    The ones `date_flags` looks at: a blank value of one could be filled in from the PM Notes.
+    """
+    key = status_key(status)
+    if key in _IN_PROGRESS:
+        return _IN_PROGRESS_DATES
+    if key == "archiving":
+        return _ARCHIVING_DATES
+    if key in _INCOMING:
+        return _INCOMING_DATES
+    return ()
+
+
+def date_sanity(dates: Mapping[str, dt.date | dt.datetime | None]) -> tuple[tuple[str, str, str, dt.date, dt.date], ...]:
+    """The date orderings that are broken, as `(kind, first, second, first_date, second_date)`.
+
+    `dates` maps `playdate`, `submission_deadline` and `archival_deadline` to a date (a missing
+    key is blank). `submission_before_playdate`: the Submission Deadline is before the Playdate.
+    `archival_before_submission`: the Archival Deadline is before the Submission Deadline. `first`
+    is the date that is too early, `second` the one it is compared with.
+    """
+    day = {name: _day(dates.get(name)) for name in ("playdate", "submission_deadline", "archival_deadline")}
+    problems: list[tuple[str, str, str, dt.date, dt.date]] = []
+    playdate, submission, archival = day["playdate"], day["submission_deadline"], day["archival_deadline"]
+    if playdate and submission and submission < playdate:
+        problems.append(("submission_before_playdate", "submission_deadline", "playdate", submission, playdate))
+    if submission and archival and archival < submission:
+        problems.append(("archival_before_submission", "archival_deadline", "submission_deadline", archival, submission))
+    return tuple(problems)
 
 
 def missing_roles(project: Project) -> tuple[str, ...]:
