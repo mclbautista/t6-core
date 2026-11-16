@@ -9,7 +9,7 @@ from datetime import date
 from typing import Any
 from unittest.mock import patch
 
-from t6.drives import Assignment, Drive, DriveStatus, FormFactor, Role, SourceRow
+from t6.drives import Assignment, Drive, DriveStatus, FormFactor, Ref, Role, SourceRow
 from t6.drives.importer import ReviewItem
 from t6.drives.sqlite import SqliteDriveStore
 from t6.ids import EntityKind, T6Id
@@ -363,6 +363,32 @@ class DriveVerbTests(unittest.TestCase):
         self.write('unassign', {'drive': other.id, 'project': one, 'assignment': 2, 'end': '2026-11-02'})
         self.assertEqual([a.start for a in self.store.list_assignments(other.id) if a.is_open], [date(2026, 1, 1)])
         self.assertEqual(self.call('drive', 'unassign', {'drive': other.id, 'project': one, 'assignment': 2}).rule, 'assignment')
+
+    def test_unassign_by_number_ends_an_assignment_whatever_its_project_is_and_without_a_number_the_project_is_required(self) -> None:
+        one = self.projects[0]
+        self.store.import_row('row-1', Drive(serial='SYNTH-T'), Assignment(label='T', project=Ref(text='Invented Show'), role=Role.MASTER, start=date(2026, 1, 1)), [])
+        text_only = self.store.find_by_serial('SYNTH-T')
+        assert text_only is not None
+        self.write('assign', {'drive': text_only.id, 'project': one, 'label': 'T2', 'role': 'backup', 'start': '2026-02-01'})
+        self.assertEqual(self.call('drive', 'unassign', {'drive': text_only.id}).rule, 'input')
+        self.assertEqual(self.call('drive', 'unassign', {'drive': text_only.id, 'assignment': 0}).rule, 'input')
+        self.assertEqual(self.call('drive', 'unassign', {'drive': text_only.id, 'project': one, 'assignment': 1}).rule, 'assignment')
+        done = self.write('unassign', {'drive': text_only.id, 'assignment': 1, 'end': '2026-03-01'})
+        self.assertEqual((done.result['assignment'], done.result['label'], done.result['project_id']), (1, 'T', None))
+        self.assertEqual([(a.label, a.end) for a in self.store.list_assignments(text_only.id)], [('T', date(2026, 3, 1)), ('T2', None)])
+        self.assertEqual(self.call('drive', 'unassign', {'drive': text_only.id, 'assignment': 1}).rule, 'assignment')
+        self.write('unassign', {'drive': text_only.id, 'assignment': 2, 'end': '2026-03-02'})  # a registered Project needs no name either
+        self.assertEqual([a.end for a in self.store.list_assignments(text_only.id)], [date(2026, 3, 1), date(2026, 3, 2)])
+        self.assertEqual([x.action for x in self.registry.activity(text_only.id)], ['drive_unassign'])  # no Project to file it under
+        self.assertEqual([x.action for x in self.registry.activity(one)][:2], ['drive_unassign', 'drive_assign'])
+
+    def test_assign_stores_remarks_and_drive_get_shows_them(self) -> None:
+        drive, one = self.drives[0], self.projects[0]
+        self.write('assign', {'drive': drive, 'project': one, 'label': 'A1', 'role': 'master', 'remarks': 'sticker on the left'}, 'a')
+        self.write('assign', {'drive': drive, 'project': one, 'label': 'A2', 'role': 'backup'}, 'b')
+        shown = self.read('get', {'drive': drive})['assignments']
+        self.assertEqual([(a['label'], a['remarks']) for a in shown], [('A1', 'sticker on the left'), ('A2', None)])
+        self.assertEqual(self.store.list_assignments(drive)[0].remarks, 'sticker on the left')
 
     def test_the_delivery_link_is_shown_on_the_delivery_and_named_in_the_audit_entry(self) -> None:
         from t6.package import PackageStore

@@ -10,6 +10,9 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 - `drive edit` changes every Drive fact (#370): description, brand, model, capacity, format, owner, ownership, purchase date, warranty and remarks, with the rules of `drive add`; a blank value clears. `drive get`, `drive list` and `drive find` return a `version` (a digest of the Drive's facts), and `drive edit` takes an optional `expected_version`, refused with rule `drive_changed` at preview and at confirm when it is not current. The `DriveStore` gains `set_facts`.
 
+- `drive assign` takes `remarks`, stored on the Assignment and shown by `drive get` (#370).
+- `drive unassign` ends an Assignment by its number alone (#370): `project` is optional when `assignment` is given, so an Assignment whose Project is text only (a workbook import) can be ended. Without `assignment`, `project` is still required.
+
 ### Changed
 
 - Drive custody verbs refuse a step that cannot follow the last one (#378): `drive receive` is refused for a Drive in custody or retired, `drive release` for one released or retired (the whole release, naming every such Drive), `drive return` unless the Drive is released, and `drive retire` for one already retired. The refusal has rule `custody`, comes at preview and again at confirm in the write transaction, and names the Drive and its status. A retired Drive can no longer be received or returned through the verbs.

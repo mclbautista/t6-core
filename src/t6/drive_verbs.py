@@ -119,8 +119,8 @@ class DriveVerbs:
         drives = values.get('drives') if verb == 'release' else [values.get('drive')]
         if not isinstance(drives, list) or not drives or not all(isinstance(d, str) for d in drives):
             return Refused(rule='input', reason='At least one Drive is required')
-        if not isinstance(values.get('project'), str):
-            return Refused(rule='input', reason='A Project is required')
+        if not isinstance(values.get('project'), str) and not (verb == 'unassign' and values.get('assignment') is not None):
+            return Refused(rule='input', reason='A Project is required unless the Assignment number is given')
         for name in ('on', 'start', 'end'):
             if values.get(name) is not None:
                 try:
@@ -331,9 +331,10 @@ class DriveVerbs:
         for drive_id in ids:
             if store.get_drive(drive_id) is None:
                 return Refused(rule='drive', reason=f'Drive {drive_id} not found')
-        project = values['project']
+        project = values.get('project')
         try:
-            store.check_project(Ref(page_id=project))
+            if project is not None:
+                store.check_project(Ref(page_id=project))
         except ValueError as error:
             return Refused(rule='project', reason=str(error))
         blocked = [f"{drive_id} ({status.value if status else 'no custody events'})" for drive_id in ids
@@ -367,18 +368,19 @@ class DriveVerbs:
             start = values.get('start') or today
             try:
                 assignment = Assignment(label=values['label'], project=Ref(page_id=project), role=Role(values['role']),
-                                        start=date.fromisoformat(start), end=date.fromisoformat(values['end']) if values.get('end') else None)
+                                        start=date.fromisoformat(start), end=date.fromisoformat(values['end']) if values.get('end') else None,
+                                        remarks=values.get('remarks'))
             except ValueError as error:
                 return Refused(rule='input', reason=str(error))
             clash = open_duplicate(store.list_assignments(ids[0]), assignment)
             if clash is not None:
                 return Refused(rule='assignment', reason=f'The Drive already has an open Assignment ({clash.label}) for this Project and role; unassign it first')
-            plan.update(label=assignment.label, role=values['role'], start=start, end=values.get('end'))
+            plan.update(label=assignment.label, role=values['role'], start=start, end=values.get('end'), remarks=assignment.remarks)
             return Plan(plan, state, lambda store_: self._assign(store_, ids[0], assignment))
         end = values.get('end') or today
         label = values['label'].strip() if values.get('label') is not None else None
         found = [(number, a) for number, a in enumerate(store.list_assignments(ids[0]), 1)
-                 if a.is_open and a.project is not None and a.project.page_id == project
+                 if a.is_open and (project is None or (a.project is not None and a.project.page_id == project))
                  and (label is None or a.label == label)
                  and (values.get('role') is None or (a.role is not None and a.role.value == values['role']))
                  and (values.get('assignment') is None or number == values['assignment'])]
@@ -395,6 +397,8 @@ class DriveVerbs:
         except ValueError as error:
             return Refused(rule='input', reason=str(error))
         plan.update(label=held.label, end=end, assignment=number)
+        if project is None:
+            plan['project_id'] = held.project.page_id if held.project else None
         state.append(number)
         return Plan(plan, state, lambda store_: self._close(store_, ids[0], number, held, date.fromisoformat(end)))
 

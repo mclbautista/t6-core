@@ -1679,13 +1679,14 @@ class DriveAssignInput(BaseModel):
     role: DriveRole
     start: str | None = None
     end: str | None = None
+    remarks: str | None = None
     idempotency_key: str | None = None
     confirm: str | None = None
 
 
 class DriveUnassignInput(BaseModel):
     drive: str
-    project: str
+    project: str | None = None  # needed unless `assignment` names the Assignment
     label: str | None = None
     role: DriveRole | None = None
     assignment: int | None = None
@@ -1697,7 +1698,7 @@ class DriveUnassignInput(BaseModel):
 class DriveWriteOutput(BaseModel):
     action: str
     drive_ids: list[str]
-    project_id: str
+    project_id: str | None = None
     on: str | None = None
     shipment_id: str | None = None
     delivery_id: str | None = None
@@ -1706,6 +1707,7 @@ class DriveWriteOutput(BaseModel):
     assignment: int | None = None
     start: str | None = None
     end: str | None = None
+    remarks: str | None = None
     idempotency_key: str
 
 
@@ -1748,7 +1750,7 @@ class SwingReturnInput(SwingUnassignInput):
 
 
 class SwingWriteOutput(DriveWriteOutput):
-    project_id: str | None = None  # type: ignore[assignment]
+    project_id: str | None = None
     holder: str | None = None
     return_date: str | None = None
 
