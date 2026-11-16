@@ -18,7 +18,7 @@ from contextvars import ContextVar
 import json
 import os
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import date as IsoDate, datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, get_args, get_origin
 from types import UnionType
@@ -1018,10 +1018,26 @@ class ProjectNotesOutput(BaseModel):
 
 class ProjectFlagsInput(ReadInput):
     project: str
+    as_of: IsoDate | None = None
+    """The day the flags are judged on; the Manila day today when not given."""
+    lead_warning_days: int = 30
+    stated: dict[Literal["playdate", "submission_deadline", "archival_deadline"], IsoDate | None] = {}
+    """A date the caller read from the PM Notes for a blank date property. `None` is a fuzzy value: not missing, never overdue."""
+
+
+class DateSanityProblem(BaseModel):
+    kind: Literal["submission_before_playdate", "archival_before_submission"]
+    first: Literal["playdate", "submission_deadline", "archival_deadline"]
+    second: Literal["playdate", "submission_deadline", "archival_deadline"]
+    first_date: IsoDate
+    second_date: IsoDate
+    from_notes: bool
 
 
 class ProjectFlagsOutput(BaseModel):
     flags: list[dict[str, Any]]
+    missing_roles: list[str] = []
+    sanity: list[DateSanityProblem] = []
 
 
 class ProjectResolveInput(ReadInput):
@@ -1073,13 +1089,31 @@ class ExternalLinkFindOutput(BaseModel):
     link: ExternalLinkRead | None
 
 
+@dataclass(frozen=True, slots=True, kw_only=True, eq=False)
+class ReadProject(Project):
+    """A Project as the API reads it: with the results of the Studio rules (`t6.domain.project_rules`).
+
+    Apps do not evaluate these rules. `missing_roles` are Project attribute names in report order;
+    `relevant_dates` are Project date attribute names.
+    """
+
+    status_key: str = ""
+    status_group: Literal["in_progress", "on_hold", "incoming"] | None = None
+    snapshotted: bool = True
+    missing_roles: tuple[str, ...] = ()
+    relevant_dates: tuple[str, ...] = ()
+    health_missing: bool = False
+    health_rank: int = 0
+
+
 class ProjectListInput(ReadInput):
     rotation: Literal["in", "out", "unclassified"] | None = None
     status: str | None = None
+    status_group: Literal["in_progress", "on_hold", "incoming"] | None = None
 
 
 class ProjectListOutput(BaseModel):
-    projects: list[Project]
+    projects: list[ReadProject]
 
 
 class JoListInput(ReadInput):
@@ -1426,7 +1460,7 @@ class ContactCandidate(ReadContact):
 
 
 class ProjectGetOutput(BaseModel):
-    project: Project
+    project: ReadProject
 
 
 class ProjectResolveOutput(BaseModel):
@@ -2901,6 +2935,14 @@ def add_parsers(commands: Any) -> None:
         if entry.handler is departments:
             parser.add_argument("--data-sources", type=Path)
             parser.add_argument("--include-misc", action="store_true")
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if (entry.noun, entry.verb) == ("project", "flags"):
+            parser.add_argument("--project", required=True)
+            parser.add_argument("--as-of")
+            parser.add_argument("--lead-warning-days", type=int, default=30)
+            parser.add_argument("--stated", type=json.loads, default={}, metavar="JSON",
+                                help='Dates from the PM Notes for blank properties, like {"playdate": "2026-11-20", "archival_deadline": null}')
             parser.set_defaults(registered_verb=entry)
             continue
         for name, field in entry.input_model.model_fields.items():

@@ -2150,7 +2150,14 @@ last 12 run dates. A reply holds counts only: no text, names or Project names.
 reports store is not imported, so earlier listings are unknown.
 
 `project flags` recomputes date warnings and missing health from the current
-Project data, without Concern IDs or ages. Health-vs-evidence and source
+Project data, without Concern IDs or ages. It takes `as_of`, `lead_warning_days`
+and `stated` (dates the PM Notes give for blank date properties; `null` is a
+fuzzy value), and also returns `missing_roles` and `sanity` (the date problems,
+as kinds and dates, with `from_notes`). `project list` and `project get` return
+`status_key`, `status_group`, `snapshotted`, `missing_roles`, `relevant_dates`,
+`health_missing` and `health_rank`, and `project list` filters on `status_group`;
+`jo list`, `jo get` and `jo find` return `status_group`, `active` and
+`health_flags`. Apps do not evaluate these rules: see `docs/api-read-verbs.md`. Health-vs-evidence and source
 conflict are judgments supplied by the reports app. Its stale-milestone
 judgment also depends on dated notes and later mentions, which are not stored
 as structured milestone expectations in t6; the read cannot infer that flag

@@ -54,6 +54,27 @@ workspace time. `jo list` Health is `null` when the formula gave no value and
 `""` when it computed an empty string. `project_code` is the registry's value
 (ADR 0001); `notion_project_code` is the code as the Notion property shows it,
 and an empty registry code does not fall back to it.
+Reads return the results of the Studio status and flag rules, so apps do not
+evaluate these rules. `project list` and `project get` add `status_key` (the
+Status without emoji and punctuation, lower case), `status_group`
+(`in_progress`, `on_hold`, `incoming` or `null`), `snapshotted` (false for
+Archived and Lost), `missing_roles` (the empty role attributes, in report
+order; empty unless the Status is In-Progress, In-Progress TVC or Airing),
+`relevant_dates` (the date attributes that matter for the Status),
+`health_missing` and `health_rank` (Critical 0, At Risk 1, On Track 2,
+Incoming 3, any other value 4, blank 5). `project list` also filters on
+`status_group`. `jo list`, `jo get` and `jo find` add `status_group`
+(`not_started`, `started`, `cancelled` or `null`), `active` and `health_flags`
+(Blocked, Delayed, Urgent, ignoring emoji). `project flags` also takes `as_of`
+(an ISO date, default today in Manila), `lead_warning_days` (default 30) and
+`stated`, a map of `playdate`, `submission_deadline` or `archival_deadline` to
+an ISO date the caller read from the PM Notes for a blank property, or `null`
+for a fuzzy value. A stated date is not missing and is judged like the
+property's own; `null` is never overdue. Its reply keeps `flags` and adds
+`missing_roles` and `sanity`: one `{kind, first, second, first_date,
+second_date, from_notes}` for each date problem (`submission_before_playdate`,
+`archival_before_submission`), where `from_notes` is true when a stated date
+causes it. No sentence is returned; the wording stays in the app.
 `jo list` supports `project`, `assignee` and `status_group` (`not_started`,
 `started`, `cancelled`, or `active`). `no_project` returns only the Job Orders
 whose Notion page has no Project, oldest first, with an empty `project_id`; it
