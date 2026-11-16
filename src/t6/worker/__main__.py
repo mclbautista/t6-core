@@ -528,6 +528,8 @@ def _wait_with_internal_checks(
     worker: Worker, stop: threading.Event, poll_seconds: float, clock: Callable[[], float]
 ) -> None:
     """Wait `poll_seconds`, running the internal jobs that fall due meanwhile; `stop` ends the wait at once."""
+    from t6.registry.core import RegistryUnavailable  # what the job table raises when the database is locked or gone
+
     deadline = clock() + poll_seconds
     while not stop.is_set():
         remaining = deadline - clock()
@@ -538,7 +540,7 @@ def _wait_with_internal_checks(
         try:
             while not stop.is_set() and worker.run_internal_once():
                 pass
-        except (OSError, URLError) as error:
+        except (OSError, URLError, RegistryUnavailable) as error:
             print(f"t6.worker: internal job table unreachable ({error}); waiting without checking it", file=sys.stderr, flush=True)
             stop.wait(max(0.0, deadline - clock()))
             return

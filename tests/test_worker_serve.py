@@ -4,6 +4,7 @@ import threading
 import unittest
 from urllib.error import URLError
 
+from t6.registry.core import RegistryUnavailable
 from t6.worker.__main__ import INTERNAL_POLL_SECONDS, serve
 from t6.worker.client import QueueRejected, WorkerJob
 from t6.worker.runner import Worker
@@ -160,6 +161,14 @@ class InternalChecksTests(unittest.TestCase):
         self.run_serve(until=12.0)
         self.assertEqual(self.remote.claims, 3)
         self.assertEqual(self.internal.claims, 6)  # per wait: the poll in run_once and one failed short check, then the plain wait
+
+    def test_a_locked_database_during_a_short_check_does_not_end_the_worker(self) -> None:
+        def lock() -> None:
+            self.internal.error = RegistryUnavailable("database is locked")
+
+        self.stop.on_wait.append(lock)  # the full poll's own read succeeds; the short check after the first wait fails
+        self.run_serve(until=4.0)
+        self.assertEqual(self.internal.claims, 2)
 
     def test_run_internal_once_without_an_internal_client_claims_nothing(self) -> None:
         worker = Worker(self.remote, "main", {"x": lambda j: None})
