@@ -25,7 +25,7 @@ from types import UnionType
 
 from pydantic import AwareDatetime, BaseModel, Field, ConfigDict, SerializerFunctionWrapHandler, field_validator, model_serializer
 from t6.domain import Project, JobOrder, Deliverable, MeetingNote, Contact, Camera, ExternalRef, Machine, Ring
-from t6.vocabulary import DRIVE_ROLES, DriveRole, MediaKind, MediaRole
+from t6.vocabulary import DRIVE_ROLES, DriveRole, MediaKind, MediaRole, PersonKind
 from t6.llm.api import Done as Done, LLMRunInput as LLMRunInput, LLMRunOutput as LLMRunOutput
 
 if TYPE_CHECKING:
@@ -317,7 +317,7 @@ class PersonAddInput(BaseModel):
 
 class PersonCreateInput(BaseModel):
     name: str
-    kind: str
+    kind: PersonKind
     telegram_handle: str | None = None
     telegram_id: int | None = None
     note: str | None = None
@@ -373,7 +373,7 @@ def person_unassign(inputs: PersonProjectRoleInput, open_notion: Callable[..., A
 
 class PersonClassifyInput(BaseModel):
     person_id: str
-    kind: str
+    kind: PersonKind
     idempotency_key: str | None = None
     confirm: str | None = None
 

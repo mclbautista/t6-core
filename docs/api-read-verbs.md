@@ -89,6 +89,9 @@ the apps' old matching. The table documents
 what the referenced drafts actually call, including their local wrappers; it
 is not a claim that their separate write cutovers have already been built.
 
+`person list` and `person get` return the Person's kind, one of `staff`, `freelancer`,
+`client` or `vendor`. A freelancer does not have the staff role.
+
 ### Concern brief replies
 
 `concern for-message` accepts `chat` and `message_id` as strings and returns

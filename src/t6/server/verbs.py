@@ -21,6 +21,7 @@ from t6.server.app import Request, Response, WebhookApp
 from t6.server.queue import MAIN_QUEUE
 from t6.registry.sqlite import _audit
 from t6.verbs import VERBS, Done, Preview, Refused, catalogue, invoke
+from t6.vocabulary import PERSON_KINDS
 
 
 class VerbAPI:
@@ -447,7 +448,7 @@ class VerbAPI:
         if inputs.confirm and not inputs.idempotency_key:
             return Refused(rule='idempotency_key', reason='Supply the key from the preview')
         name, handle, note = inputs.name.strip(), (inputs.telegram_handle or '').strip().lstrip('@'), (inputs.note or '').strip()
-        if not name or inputs.kind not in ('staff', 'client', 'vendor'):
+        if not name or inputs.kind not in PERSON_KINDS:
             return Refused(rule='input', reason='A name and valid kind are required')
         values = {'name': name, 'kind': inputs.kind, 'telegram_handle': handle or None, 'telegram_id': inputs.telegram_id, 'note': note or None, 'idempotency_key': key}
         fingerprint = json.dumps({'verb': 'person create', 'actor': actor, **values}, sort_keys=True, separators=(',', ':'))

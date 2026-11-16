@@ -1456,6 +1456,10 @@ from `--data-sources FILE` (a JSON object of database key to data source ID,
 as for `admin schema-check`). They print JSON (indented) with Notion IDs and never write.
 Errors are JSON on stderr with exit status 2.
 
+A Person's kind is one of `staff`, `freelancer`, `client` or `vendor`; `person create`
+and `person classify` take any of the four, and `person list` and `person get` return it.
+Only staff have the staff role.
+
 `t6 departments --data-sources FILE` lists the live Departments (the
 `job_orders` source) in display order with their option IDs. MISC is left out.
 `t6 departments` and `t6 person get` still accept `--data-sources FILE`, but
