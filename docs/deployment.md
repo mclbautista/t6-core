@@ -119,6 +119,11 @@ An example client entry (made-up values):
   worker holds under a live lease, is not waiting. This is a problem now, not history:
   `--ignore-history` does not hide it.
 
+- `api.privacy_registry` (unless `--local`): the client-name list of masked reads, as the API
+  has it. `names` in use, `age_seconds` of the file, `reload_failed` true when a changed file
+  was refused. It is information and never fails the check. See
+  [read verbs](api-read-verbs.md).
+
 Failed jobs and syncs are also listed under `history`. Two flags narrow the check for
 deploy tools and monitors:
 

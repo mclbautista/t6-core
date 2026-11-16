@@ -18,7 +18,7 @@ from t6.server.http import serve
 from t6.server.queue import JobQueue
 from t6.server.routes import load_routes
 from t6.server.llm import service_from_env
-from t6.server.verbs import VerbAPI, secrets_from_env, service_permissions_from_env, read_config_from_env
+from t6.server.verbs import VerbAPI, secrets_from_env, service_permissions_from_env, read_config_from_env, PrivacyList
 from t6.person import People
 from t6.preview import PreviewTokens
 from t6.cli import _open_notion
@@ -89,6 +89,7 @@ def main() -> int:
     ), registry=registry, operator=operator, inside=inside)
     if registry is not None:
         sources, privacy_registry = read_config_from_env(environ)
+        privacy_list = PrivacyList(environ['T6_READ_PRIVACY_REGISTRY'], privacy_registry, lambda line: print(line, file=sys.stderr, flush=True)) if privacy_registry is not None else None
         frameio_queue = None
         queue_url, queue_secret = (environ.get('T6_FRAMEIO_QUEUE_URL') or '').strip(), environ.get('T6_FRAMEIO_QUEUE_SECRET') or ''
         if queue_url and queue_secret:  # Project Start asks the Frame.io worker through the queue server the worker polls
@@ -98,7 +99,7 @@ def main() -> int:
         api = VerbAPI(People(registry, PreviewTokens(signing_key),
                              service_permissions_from_env(environ)),
                       queue, secrets_from_env(environ), _open_notion, app,
-                      llm_service=service_from_env(environ), data_sources=sources, privacy_registry=privacy_registry,
+                      llm_service=service_from_env(environ), data_sources=sources, privacy_registry=privacy_registry, privacy_list=privacy_list,
                       transcribe_rate=float(environ.get('T6_TRANSCRIBE_RATE', '0.4')),
                       frameio_timeout=float(environ.get('T6_FRAMEIO_WRITE_TIMEOUT_SECONDS', '60')), frameio_queue=frameio_queue,
                       translate_enabled=environ.get('T6_TRANSCRIPT_TRANSLATE', '').lower() == 'true',

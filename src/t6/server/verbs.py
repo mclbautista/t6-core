@@ -7,6 +7,7 @@ import os
 import sys
 import re
 import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,7 +36,7 @@ class VerbAPI:
                  privacy_registry: PrivacyRegistry | None = None, transcribe_rate: float = 0.4,
                  translate_enabled: bool = False, frameio_timeout: float = 60.0,
                  frameio_queue: Any = None, concern_observe_closes: bool = False,
-                 request_log: Callable[[str], None] | None = None) -> None:
+                 request_log: Callable[[str], None] | None = None, privacy_list: PrivacyList | None = None) -> None:
         import math
         if not math.isfinite(transcribe_rate) or transcribe_rate < 0:
             raise ValueError('Transcription rate must be finite and non-negative')
@@ -46,7 +47,7 @@ class VerbAPI:
         self.tap_app = tap_app
         self.llm_service = llm_service
         self.data_sources = dict(data_sources or {})
-        self.privacy_registry = privacy_registry
+        self._privacy_registry, self.privacy_list = privacy_registry, privacy_list
         self.transcribe_rate = transcribe_rate
         self.translate_enabled = translate_enabled
         self.concern_observe_closes = concern_observe_closes
@@ -57,6 +58,14 @@ class VerbAPI:
             if verb.noun == 'approval':
                 for alias in verb.aliases:
                     self.routes['/v1/' + alias.replace(' ', '/')] = verb
+
+    @property
+    def privacy_registry(self) -> PrivacyRegistry | None:
+        return self.privacy_list.current() if self.privacy_list else self._privacy_registry
+
+    @privacy_registry.setter
+    def privacy_registry(self, value: PrivacyRegistry | None) -> None:
+        self._privacy_registry, self.privacy_list = value, None
 
     def __call__(self, request: Request) -> Response:
         """Answer a request and write its one request log line (see `request_line`); `/health` is not logged."""
@@ -82,7 +91,8 @@ class VerbAPI:
                 schema = db.execute('SELECT MAX(version) FROM schema_version').fetchone()[0]
             with self.queue._transaction() as db:
                 jobs = dict(db.execute('SELECT state, COUNT(*) FROM jobs GROUP BY state').fetchall())
-            return Response(200, {'version': version('t6'), 'schema_version': schema, 'jobs': jobs})
+            return Response(200, {'version': version('t6'), 'schema_version': schema, 'jobs': jobs,
+                                  'privacy_registry': self.privacy_list.status() if self.privacy_list else None})
         auth = request.header('authorization')
         supplied = auth[7:] if auth.lower().startswith('bearer ') else ''
         actor = next((identity for secret, identity in self.secrets.items()
@@ -1318,17 +1328,75 @@ def service_permissions_from_env(environ: Mapping[str, str]) -> dict[str, frozen
     return grants
 
 
+def _read_privacy_names(path: str) -> PrivacyRegistry:
+    from t6.privacy import Person
+    with open(path, encoding='utf-8') as file:
+        names = json.load(file)
+    if not isinstance(names, list) or any(not isinstance(name, str) or not name.strip() for name in names):
+        raise ValueError('T6_READ_PRIVACY_REGISTRY must contain a JSON array of client names')
+    return PrivacyRegistry(people=[Person(name=name) for name in names])
+
+
+class PrivacyList:
+    """The client-name file of masked reads, read again when it changes (no restart).
+
+    A file that cannot be read (missing, bad JSON, wrong shape) keeps the last good list and logs one
+    line for that state of the file; the next change is tried again. `status` is shown by `/health`.
+    """
+
+    def __init__(self, path: str, registry: PrivacyRegistry, log: Callable[[str], None] | None = None,
+                 clock: Callable[[], float] = time.time) -> None:
+        self.path, self._registry, self._log, self._clock = path, registry, log, clock
+        self._lock = threading.Lock()
+        self._seen: tuple[int, int] | None = None  # (mtime_ns, size) of the file last tried
+        self._loaded: tuple[int, int] | None = None  # the same, of the list in use
+        self._failed = False
+        self._names = len(registry.people)
+        try:
+            self._seen = self._loaded = self._stamp()
+        except OSError:
+            pass
+
+    def _stamp(self) -> tuple[int, int]:
+        info = os.stat(self.path)
+        return info.st_mtime_ns, info.st_size
+
+    def current(self) -> PrivacyRegistry:
+        with self._lock:
+            stamp: tuple[int, int] | None = None
+            failure: str | None = None
+            try:
+                stamp = self._stamp()
+            except OSError as error:
+                failure = type(error).__name__
+            if stamp != self._seen:
+                self._seen = stamp
+                if stamp is not None:
+                    try:
+                        self._registry = _read_privacy_names(self.path)
+                        self._loaded, self._failed, self._names = stamp, False, len(self._registry.people)
+                        return self._registry
+                    except (OSError, ValueError) as error:  # JSONDecodeError is a ValueError
+                        failure = type(error).__name__
+                self._failed = True
+                if self._log is not None:
+                    self._log(f't6.server: read privacy registry not reloaded ({failure}); the last good list stays in use')
+            return self._registry
+
+    def status(self) -> dict[str, Any]:
+        """How many names are in use, how old the file they came from is, and whether a later file was refused."""
+        self.current()
+        with self._lock:
+            age = None if self._loaded is None else max(0, round(self._clock() - self._loaded[0] / 1e9))
+            return {'names': self._names, 'age_seconds': age, 'reload_failed': self._failed}
+
+
 def read_config_from_env(environ: Mapping[str, str]) -> tuple[dict[str, str], PrivacyRegistry | None]:
     """Load API-owned Notion source IDs and client-name masking terms."""
-    from t6.privacy import Person
     from t6.cli import _read_data_sources
     source_path = environ.get('T6_READ_DATA_SOURCES')
     privacy_path = environ.get('T6_READ_PRIVACY_REGISTRY')
     sources = _read_data_sources(Path(source_path)) if source_path else {}
     if not privacy_path:
         return sources, None
-    with open(privacy_path, encoding='utf-8') as file:
-        names = json.load(file)
-    if not isinstance(names, list) or any(not isinstance(name, str) or not name.strip() for name in names):
-        raise ValueError('T6_READ_PRIVACY_REGISTRY must contain a JSON array of client names')
-    return sources, PrivacyRegistry(people=[Person(name=name) for name in names])
+    return sources, _read_privacy_names(privacy_path)
