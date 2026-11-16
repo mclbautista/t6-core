@@ -70,6 +70,7 @@ def project_from_row(row: ProjectsRow, last_edited: dt.datetime | None = None) -
         studio_id=row.studio[0] if row.studio else None,
         stage=row.stage,
         health=row.health,
+        project_health=row.project_health,
         playdate=row.playdate,
         submission_deadline=row.submission_deadline,
         archival_deadline=row.archival_deadline,

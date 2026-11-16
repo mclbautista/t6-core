@@ -4,7 +4,7 @@ Notion owns which Departments exist: this module reads the options of the
 `Department` select (by property ID, so a rename of the property or an option
 needs no code change) and hands them back in the studio's display order, each
 with its option ID. t6-core owns only the display order and the alias `TO` for
-`TOC`. MISC is not a Department.
+`TOC`. MISC is not a Department, unless a reader asks for it.
 """
 
 from __future__ import annotations
@@ -42,15 +42,17 @@ class UnknownDepartment:
     token: str
 
 
-def get_departments(client: NotionClient, data_source_id: str) -> tuple[Department, ...]:
-    """The live Department options, in display order. MISC is left out."""
+def get_departments(
+    client: NotionClient, data_source_id: str, *, include_misc: bool = False
+) -> tuple[Department, ...]:
+    """The live Department options, in display order. MISC is left out unless `include_misc`."""
     live = client.retrieve_data_source(data_source_id).get("properties") or {}
     prop = _department_property(live)
     options = ((prop or {}).get("select") or {}).get("options") or []
     found = [
         Department(str(option["id"]), str(option["name"]))
         for option in options
-        if str(option["name"]).strip().upper() not in NOT_DEPARTMENTS
+        if include_misc or str(option["name"]).strip().upper() not in NOT_DEPARTMENTS
     ]
     return tuple(sorted(found, key=lambda department: display_rank(department.name)))
 
