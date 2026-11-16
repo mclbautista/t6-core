@@ -93,6 +93,7 @@ def observe(store: ConcernStore, values: Mapping[str, Any], *, actor: str, coord
             result = _apply(db, store, run_date, accepted, missing, skipped, closes, now)
             if dry:
                 raise _DryRun(result)
+            db.executemany('INSERT OR IGNORE INTO concern_listings VALUES (?, ?)', [(run_date, item['id']) for project in result['projects'] for item in project['open'] if item['opened_on'] <= run_date])
             _audit(db, 'observe:' + run_date, 'concern_observe', actor, now, None, {'run_date': run_date, 'counts': result['counts']}, summary='Concern observe run')
             db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(result)))
             return Done(result=result)

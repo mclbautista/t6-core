@@ -123,6 +123,19 @@ Concern that is not closed, oldest first: `id`, `text`, `source`, `opened_on`,
 The run closes nothing unless the server has `T6_CONCERN_OBSERVE_CLOSES` on. The
 reply names Concern text, so it is masked for a caller without real-name access.
 
+### Concern counts
+
+`concern counts` is read only (role `reader`) and returns counts, never text,
+names or Project names. Input: optional `since` and `until` (ISO dates; the default
+is the last 12 run dates) and optional `project` (a T6 Project ID or a Notion page
+ID), which limits every count. The reply has `runs`, one for each `run_date`
+oldest first, each with `listed`, `sent`, `new`, `closed`, `age_buckets` and
+`by_source`, and for the range `closed_in_range`, `median_days_open` (days between
+`opened_at` and `closed_at`) and `still_open`. A Concern is `listed` on a date when
+a real `concern observe` run for it returned the Concern in `open`; it is `sent`
+when `concern record-message` recorded a message for it with that `brief_date`.
+`listed` starts at the first real run after the switch.
+
 ### Drive reads
 
 `drive list`, `drive get`, `drive find`, `drive shipments`, `drive shipment` and

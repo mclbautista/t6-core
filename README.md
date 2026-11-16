@@ -1992,6 +1992,19 @@ writes one `concern_observe` audit row and one log line holding the counts, neve
 text, names or IDs; the PM Notes scan writes a line of its counts too
 (`projects`, `raised`, `continued`, `announced`).
 
+`concern counts` (role `reader`, read only; `t6 concern counts --since DATE
+--until DATE [--project P]`) answers how many Concerns each PSR raised and how
+they age and close. For each `run_date` in range, oldest first, it returns
+`listed` (the Concerns `concern observe` returned in `open` on that real run),
+`sent` (of those, the ones with a `concern record-message` for that date: pass
+`brief_date` to it), `new` (opened that day), `closed` (closed since the previous
+listed date, up to and including that day), `age_buckets` (`under_2_weeks`,
+`2_to_4_weeks`, `over_4_weeks`) and `by_source`. For the whole range it returns
+`closed_in_range`, `median_days_open` and `still_open`. The default range is the
+last 12 run dates. A reply holds counts only: no text, names or Project names.
+`listed` starts at the first real `concern observe` run after the switch; the old
+reports store is not imported, so earlier listings are unknown.
+
 `project flags` recomputes date warnings and missing health from the current
 Project data, without Concern IDs or ages. Health-vs-evidence and source
 conflict are judgments supplied by the reports app. Its stale-milestone

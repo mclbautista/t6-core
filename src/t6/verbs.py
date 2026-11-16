@@ -643,6 +643,7 @@ class ConcernRecordMessageInput(BaseModel):
     concern: str
     chat: str
     message_id: str
+    brief_date: str | None = None
     idempotency_key: str | None = None
     confirm: str | None = None
 
@@ -724,6 +725,19 @@ class ConcernObserveOutput(BaseModel):
     counts: dict[str, int]
 
 
+class ConcernCountsInput(BaseModel):
+    since: str | None = None
+    until: str | None = None
+    project: str | None = None
+
+
+class ConcernCountsOutput(BaseModel):
+    runs: list[dict[str, Any]]
+    closed_in_range: int
+    median_days_open: float | None
+    still_open: int
+
+
 class ConcernGetInput(BaseModel):
     concern: str
 
@@ -777,6 +791,11 @@ def concern_scan(inputs: ConcernScanInput, open_notion: Callable[..., Any]) -> O
 
 def concern_observe(inputs: ConcernObserveInput, open_notion: Callable[..., Any]) -> Outcome:
     return Refused(rule='api', reason='Concern observe runs on the t6 API')
+
+
+def concern_counts(inputs: ConcernCountsInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.concern import ConcernStore
+    return ConcernStore(_people().registry, _people().tokens).counts(inputs.since, inputs.until, inputs.project)
 
 
 def concern_get(inputs: ConcernGetInput, open_notion: Callable[..., Any]) -> Outcome:
@@ -2290,6 +2309,7 @@ VERBS = (
     Verb("concern", "record-message", "Record a Concern carried by a brief", (), ConcernRecordMessageInput, ConcernOutput, "coordinator", "Record a brief message reference without chat text.", concern_write),
     Verb("concern", "scan", "Scan PM Notes for Concerns", (), ConcernScanInput, ConcernScanOutput, "coordinator", "Match new dated lines through llm run.", concern_scan),
     Verb("concern", "observe", "Hand over the findings of one brief run", (), ConcernObserveInput, ConcernObserveOutput, "coordinator", "The API decides which findings are new, known or not seen; it closes nothing unless T6_CONCERN_OBSERVE_CLOSES is on.", concern_observe),
+    Verb("concern", "counts", "Count the Concerns each PSR listed", (), ConcernCountsInput, ConcernCountsOutput, "reader", "Counts only: listed, sent, new, closed, ages and sources for each run date.", concern_counts, read_only=True),
     Verb("concern", "list", "List Concerns to raise at PSR", (), ConcernListInput, ConcernListOutput, "reader", "Quiet Concerns only (no news for 2 weeks); age alone never lists one.", concern_list, read_only=True),
     Verb("concern", "changes", "Read automatic Concern changes", (), ConcernChangesInput, ConcernChangesOutput, "reader", "Read receipts since a date.", concern_changes, read_only=True),
     Verb("concern", "get", "Get a Concern", (), ConcernGetInput, ConcernGetOutput, "reader", "Read a Concern and its age.", concern_get, read_only=True),

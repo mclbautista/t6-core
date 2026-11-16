@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 import json
 import re
 import secrets
+import statistics
 from typing import Any
 
 from t6.ids import EntityKind, T6Id
@@ -16,6 +17,7 @@ from t6.verbs import Done, Outcome, Refused
 from t6.domain.studio_time import MANILA
 
 WEEK = 7 * 24 * 60 * 60
+DAY = 24 * 60 * 60
 CHRONIC_DAYS = 28
 SOURCES = ('person', 'pm_notes_scan', 'date_rule', 'flag_rule', 'pm_notes_read', 'leave')
 _FIELDS = ('id', 'project_id', 'owner_id', 'waiting_on', 'text', 'source', 'anchor', 'as_of', 'opened_at', 'evidence_at', 'state', 'settles_id', 'closed_at')
@@ -32,6 +34,10 @@ def settle_linked(db: Any, settles_id: str, now: float) -> None:
     rows = db.execute("SELECT id, project_id, state FROM concerns WHERE settles_id = ? AND manual_override = 0 AND state != 'closed'", (settles_id,)).fetchall()
     for concern, _, _ in rows:
         settle_concern(db, concern, now, settles_id)
+
+
+def _midnight(day: str) -> float:
+    return datetime.fromisoformat(day).replace(tzinfo=MANILA).timestamp()
 
 
 def _close(db: Any, concern: str, now: float) -> None:
@@ -84,7 +90,7 @@ class ConcernStore:
         records = [self._record(row, now) for row in rows]
         for record in records:
             del record['closed_at']
-            record['chronic'] = record['age_seconds'] > CHRONIC_DAYS * 24 * 60 * 60
+            record['chronic'] = record['age_seconds'] > CHRONIC_DAYS * DAY
         return records
 
     def raise_at_psr(self, project: str | None = None) -> list[dict[str, Any]]:
@@ -93,6 +99,39 @@ class ConcernStore:
         with self.registry._transaction() as db:
             rows = db.execute("SELECT id, project_id, owner_id, waiting_on, opened_at FROM concerns WHERE state = 'quiet' AND (? IS NULL OR project_id = ?) ORDER BY opened_at, id", (project, project)).fetchall()
         return [{'id': row[0], 'project_id': row[1], 'owner_id': row[2], 'waiting_on': row[3], 'age_seconds': max(0, now - row[4]), 'label': 'no news for 2 weeks'} for row in rows]
+
+    def counts(self, since: str | None = None, until: str | None = None, project: str | None = None) -> Outcome:
+        """Counts for each run date the brief listed Concerns on: no text, no names."""
+        try:
+            for bound in (since, until):
+                if bound is not None:
+                    date.fromisoformat(bound)
+        except ValueError:
+            return Refused(rule='input', reason='since and until must be ISO dates')
+        found = None if project is None else self.registry.get(project) or self.registry.get_by_page(project)
+        if project is not None and found is None:
+            return Refused(rule='project', reason='Project not found')
+        scope = None if found is None else found.id
+        with self.registry._transaction() as db:
+            dates = [d for (d,) in db.execute('SELECT DISTINCT run_date FROM concern_listings ORDER BY run_date')]
+            before = dict(zip(dates[1:], dates))
+            chosen = [d for d in dates if (since is None or d >= since) and (until is None or d <= until)]
+            chosen = chosen if since is not None else chosen[-12:]
+            runs = []
+            for day in chosen:
+                start = _midnight(before[day]) + DAY if day in before else _midnight(day) - 7 * DAY
+                rows = db.execute('SELECT c.opened_at, c.source, EXISTS (SELECT 1 FROM concern_brief_messages m WHERE m.concern_id = c.id AND m.brief_date = l.run_date) FROM concern_listings l JOIN concerns c ON c.id = l.concern_id '
+                                  'WHERE l.run_date = ? AND (? IS NULL OR c.project_id = ?)', (day, scope, scope)).fetchall()
+                ages = [(date.fromisoformat(day) - datetime.fromtimestamp(opened, MANILA).date()).days for opened, _, _ in rows]
+                runs.append({'run_date': day, 'listed': len(rows), 'sent': sum(sent for _, _, sent in rows), 'new': sum(age == 0 for age in ages),
+                             'closed': db.execute("SELECT COUNT(*) FROM concerns WHERE state = 'closed' AND closed_at >= ? AND closed_at < ? AND (? IS NULL OR project_id = ?)", (start, _midnight(day) + DAY, scope, scope)).fetchone()[0],
+                             'age_buckets': {'under_2_weeks': sum(age < 14 for age in ages), '2_to_4_weeks': sum(14 <= age <= CHRONIC_DAYS for age in ages), 'over_4_weeks': sum(age > CHRONIC_DAYS for age in ages)},
+                             'by_source': {source: sum(s == source for _, s, _ in rows) for source in SOURCES}})
+            first, last = since or (chosen[0] if chosen else None), until or (chosen[-1] if chosen else None)
+            spent = [] if first is None or last is None else [(closed - opened) / DAY for opened, closed in db.execute(
+                "SELECT opened_at, closed_at FROM concerns WHERE state = 'closed' AND closed_at >= ? AND closed_at < ? AND (? IS NULL OR project_id = ?)", (_midnight(first), _midnight(last) + DAY, scope, scope))]
+            still = db.execute("SELECT COUNT(*) FROM concerns WHERE state != 'closed' AND (? IS NULL OR project_id = ?)", (scope, scope)).fetchone()[0]
+        return Done(result={'runs': runs, 'closed_in_range': len(spent), 'median_days_open': round(statistics.median(spent), 2) if spent else None, 'still_open': still})
 
     def changes(self, project: str, since: str) -> list[dict[str, Any]]:
         start = datetime.fromisoformat(since).replace(tzinfo=MANILA).timestamp()
@@ -276,6 +315,11 @@ class ConcernStore:
                 return Refused(rule='input', reason='A reply message ID requires a brief reference')
             if verb == 'record-message' and any(not isinstance(values.get(k), str) or not values[k].strip() for k in ('chat', 'message_id')):
                 return Refused(rule='input', reason='Chat and message ID are required')
+            if verb == 'record-message' and values.get('brief_date') is not None:
+                try:
+                    date.fromisoformat(values['brief_date'])
+                except (TypeError, ValueError):
+                    return Refused(rule='input', reason='The brief date must be an ISO date')
             if nonce and db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce = ?', (nonce,)).fetchone():
                 return Refused(rule='token_used', reason='Preview token has already been used')
             previous = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key = ?', (key,)).fetchone()
@@ -361,7 +405,7 @@ class ConcernStore:
                 if settles and (db.execute("SELECT 1 FROM jo_state WHERE job_order_id = ? AND status = 'Done'", (settles,)).fetchone() or db.execute("SELECT 1 FROM approvals WHERE id = ? AND state = 'granted'", (settles,)).fetchone() or db.execute('SELECT 1 FROM milestones WHERE id = ?', (settles,)).fetchone()):
                     settle_linked(db, settles, now)
             elif verb == 'record-message':
-                db.execute('INSERT OR IGNORE INTO concern_brief_messages (chat, message_id, concern_id) VALUES (?, ?, ?)', (values['chat'], values['message_id'], concern))
+                db.execute('INSERT OR IGNORE INTO concern_brief_messages (chat, message_id, concern_id, brief_date) VALUES (?, ?, ?, ?)', (values['chat'], values['message_id'], concern, values.get('brief_date')))
             elif verb == 'note':
                 assert isinstance(concern, str) and revision is not None
                 db.execute('INSERT INTO concern_notes (concern_id, text, actor, at, message_id) VALUES (?, ?, ?, ?, ?)', (concern, values['text'], actor, now, values.get('message_id')))

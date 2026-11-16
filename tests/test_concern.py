@@ -231,6 +231,16 @@ class ConcernTests(unittest.TestCase):
             dump = '\n'.join(db.iterdump())
             self.assertNotIn('unrelated chat text', dump)
 
+    def test_record_message_keeps_the_date_of_the_brief_when_given(self) -> None:
+        concern = self.raise_concern()
+        self.write('record-message', {'concern': concern, 'chat': '-100', 'message_id': '1', 'brief_date': '2026-11-16'}, 'dated')
+        self.write('record-message', {'concern': concern, 'chat': '-100', 'message_id': '2'}, 'undated')
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute('SELECT message_id, brief_date FROM concern_brief_messages ORDER BY message_id').fetchall(), [('1', '2026-11-16'), ('2', None)])
+        refused = self.store.write('record-message', {'concern': concern, 'chat': '-100', 'message_id': '3', 'brief_date': 'Monday'}, actor='person', idempotency_key='bad-date')
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'input')
+
     def test_brief_can_carry_multiple_concerns(self) -> None:
         first = self.raise_concern()
         second = self.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'studio', 'anchor': 'Waiting on studio', 'as_of': '2026-11-01'}, 'second')['concern_id']
