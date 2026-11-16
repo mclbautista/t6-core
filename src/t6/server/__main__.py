@@ -102,7 +102,8 @@ def main() -> int:
                       transcribe_rate=float(environ.get('T6_TRANSCRIBE_RATE', '0.4')),
                       frameio_timeout=float(environ.get('T6_FRAMEIO_WRITE_TIMEOUT_SECONDS', '60')), frameio_queue=frameio_queue,
                       translate_enabled=environ.get('T6_TRANSCRIPT_TRANSLATE', '').lower() == 'true',
-                      concern_observe_closes=environ.get('T6_CONCERN_OBSERVE_CLOSES', '').strip().lower() in {'1', 'true', 'on', 'yes'})
+                      concern_observe_closes=environ.get('T6_CONCERN_OBSERVE_CLOSES', '').strip().lower() in {'1', 'true', 'on', 'yes'},
+                      request_log=lambda line: print(line, file=sys.stderr, flush=True))
         interval = concern_autoscan_seconds(environ)
         if interval is not None and api.llm_service is not None:
             threading.Thread(target=_autoscan, args=(api, interval), daemon=True).start()

@@ -5,7 +5,10 @@ import hmac
 import json
 import os
 import sys
+import re
 import tempfile
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from importlib.metadata import version
 from typing import Any, Callable, Mapping, cast
@@ -31,7 +34,8 @@ class VerbAPI:
                  *, llm_service: Any = None, data_sources: Mapping[str, str] | None = None,
                  privacy_registry: PrivacyRegistry | None = None, transcribe_rate: float = 0.4,
                  translate_enabled: bool = False, frameio_timeout: float = 60.0,
-                 frameio_queue: Any = None, concern_observe_closes: bool = False) -> None:
+                 frameio_queue: Any = None, concern_observe_closes: bool = False,
+                 request_log: Callable[[str], None] | None = None) -> None:
         import math
         if not math.isfinite(transcribe_rate) or transcribe_rate < 0:
             raise ValueError('Transcription rate must be finite and non-negative')
@@ -46,6 +50,7 @@ class VerbAPI:
         self.transcribe_rate = transcribe_rate
         self.translate_enabled = translate_enabled
         self.concern_observe_closes = concern_observe_closes
+        self.request_log = request_log
         self.frameio = QueueFrameioWriter(frameio_queue or LocalFrameioQueue(queue), timeout=frameio_timeout)  # asks the Frame.io worker; holds no token
         self.routes = {f'/v1/{v.noun}' + ('/' + v.verb.replace(' ', '/') if v.verb else ''): v for v in VERBS}
         for verb in VERBS:
@@ -54,6 +59,21 @@ class VerbAPI:
                     self.routes['/v1/' + alias.replace(' ', '/')] = verb
 
     def __call__(self, request: Request) -> Response:
+        """Answer a request and write its one request log line (see `request_line`); `/health` is not logged."""
+        path = urlsplit(request.path).path
+        if self.request_log is None or path == '/health':
+            return self._handle(request, {})
+        seen: dict[str, str] = {}
+        started = time.monotonic()
+        try:
+            response = self._handle(request, seen)
+        except Exception:
+            self.request_log(request_line(path, seen.get('identity'), Response(500), time.monotonic() - started, self.routes))
+            raise
+        self.request_log(request_line(path, seen.get('identity'), response, time.monotonic() - started, self.routes))
+        return response
+
+    def _handle(self, request: Request, seen: dict[str, str]) -> Response:
         path = urlsplit(request.path).path
         if path == '/health':
             if request.method != 'GET':
@@ -69,6 +89,7 @@ class VerbAPI:
                       if supplied and hmac.compare_digest(secret, supplied)), None)
         if actor is None:
             return Response(401, {'error': 'unauthorized'})
+        seen['identity'] = actor
         if path.startswith('/v1/transcribe/'):
             return self._transcribe_route(path, request, actor)
         if path == '/tap':
@@ -86,6 +107,7 @@ class VerbAPI:
             if not row:
                 return self.refused('identity', 'No active Person for Telegram user ID')
             actor = row[0]
+            seen['identity'] = actor
         if path == '/v1/commands':
             return Response(200, cast(Mapping[str, JsonValue], catalogue())) if request.method == 'GET' else Response(405)
         if path == '/v1/admin/media/migrate':
@@ -1246,6 +1268,32 @@ class VerbAPI:
                     _audit(db, person[0], 'tap_accepted', person[0], self.people.registry._clock(), None,
                            {'key': key, 'data': body.get('data'), 'outcome': outcome})
         return response
+
+
+_FIXED_PATHS = {'/tap': 'tap', '/v1/commands': 'commands', '/v1/admin/media/migrate': 'admin.media.migrate'}
+
+
+def request_line(path: str, identity: str | None, response: Response, seconds: float, routes: Mapping[str, Any]) -> str:
+    """The request log line: `t6.server: request time=<UTC> identity=<service or T6 Person ID> verb=<noun.verb> outcome=<kind> ms=<n>`.
+
+    `outcome` is `done`, `preview`, `refused:<rule>` or `error:<HTTP status>`. The line holds no input,
+    result, secret, name or path: the verb comes from the route table, never from the request text.
+    """
+    entry = routes.get(path)
+    verb = '.'.join(part for part in (entry.noun, entry.verb.replace(' ', '.')) if part) if entry else \
+        'transcribe' if path.startswith('/v1/transcribe/') else _FIXED_PATHS.get(path, 'unknown')
+    body = response.body if isinstance(response.body, Mapping) else {}
+    kind = body.get('outcome')
+    if response.status == 401:
+        outcome = 'refused:unauthorized'
+    elif response.status == 200 and kind in {None, 'done', 'preview'}:
+        outcome = str(kind or 'done')
+    elif response.status == 200 and kind == 'refused':
+        outcome = 'refused:' + (re.fullmatch(r'[a-z0-9_-]{1,40}', str(body.get('rule'))) or ['other'])[0]
+    else:
+        outcome = f'error:{response.status}'
+    stamp = datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+    return f't6.server: request time={stamp} identity={identity or "-"} verb={verb} outcome={outcome} ms={round(seconds * 1000)}'
 
 
 def secrets_from_env(environ: Mapping[str, str]) -> dict[str, str]:

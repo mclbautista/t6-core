@@ -131,6 +131,29 @@ deploy tools and monitors:
 With `T6_SERVER_MODE=edge` (the VPS server) no registry database is required. For a
 deploy check: `t6 health --local --ignore-history`.
 
+## Request log
+
+The API writes one line to stderr for each request to a `/v1/` verb route, `/tap` and the
+transcribe routes. `/health` is not logged. The format is fixed:
+
+```
+t6.server: request time=2026-11-16T07:03:05.123Z identity=reports verb=llm.run outcome=done ms=412
+```
+
+- `time`: UTC, with milliseconds.
+- `identity`: the service name, or the T6 Person ID (`t6n_...`) of a Person-bound secret or of
+  the Telegram user the gateway acts for. `-` when the secret was not known.
+- `verb`: `noun.verb` (`project.hold`, `llm.run`; a noun without a verb is the noun alone).
+  `unknown` for a path that is no route, `tap`, `commands`, `transcribe` and `admin.media.migrate`
+  for the routes outside the verb table.
+- `outcome`: `done`, `preview`, `refused:<rule>` (the rule name of the refusal, for example
+  `permission`, `masking`, `unauthorized`) or `error:<HTTP status>` (a bad body is `error:422`).
+- `ms`: how long the API took, in milliseconds.
+
+The line holds no input, result, secret, name or path. It answers "who calls which verb" and
+"was a caller refused in this window" (`grep 'outcome=refused'`). Nothing is stored: the lines
+live as long as the container's log.
+
 ## Backup and restore
 
 ```sh

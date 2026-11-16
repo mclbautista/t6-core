@@ -2004,6 +2004,11 @@ endpoint returns `refused` because it does not yet support signed preview and
 confirmation. `GET /health` reports the
 package version, database schema version and job counts by state.
 
+The API writes one request log line to stderr for each request (not `/health`):
+`t6.server: request time=<UTC> identity=<service or T6 Person ID> verb=<noun.verb>
+outcome=<done|preview|refused:<rule>|error:<status>> ms=<duration>`. It holds no
+input, result, secret or name. See [deployment](docs/deployment.md#request-log).
+
 For gateway tap delivery, bind its secret to `gateway` in `T6_API_SECRETS` and
 set the gateway's `t6core.push_url` to `http://<t6-api-lan-address>:8081/tap`.
 Each push must include `X-Telegram-User-Id` matching the payload's `from.id`.
