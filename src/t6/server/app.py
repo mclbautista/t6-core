@@ -409,6 +409,8 @@ class WebhookApp:
                 return Response(200) if request.method == "GET" else Response(405)
             if parts.path.startswith("/queue/"):
                 return self._queue_route(parts.path[len("/queue/") :], parts.query, request)
+            if parts.path == "/review/timers":
+                return self._review_timer(request)
             return Response(404)
         if parts.path == "/tap":
             return self._tap(request)
