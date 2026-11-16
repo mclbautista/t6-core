@@ -8,6 +8,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 - `t6 admin drive import WORKBOOK` can apply the previewed import into the t6 database (#391): the preview report gains a `digest` (SHA-256 over the workbook, the `--log-sheet` and the `--projects` files given), and `--apply --preview FILE --actor NAME [--registry-db FILE]` writes the Drives, Assignments, custody events and exceptions only when the files still have that digest, then prints the counts written. A Project counts as resolved only when its Notion page is bound in the registry; any other name becomes an `unresolved project` exception. A second apply adds nothing. `--swing` is unchanged.
 
+### Changed
+
+- `/project` is quicker to use (#406): **New Project** on a New Projects page card now keeps the same card and asks for the code (`/project CODE` sets it and puts the Project in rotation; **Keep out of rotation, no code** closes it), and `/project TEXT` with no card waiting opens the Project whose code is TEXT or lists the Projects whose code contains TEXT or (from four characters) whose T6 ID ends with it, replacing the "No Project is waiting for a code" line.
+
 ### Fixed
 
 - A refused `/link`, `/unlink` or `/abang` command now gets one short reply in its chat and topic (#400): the usage line, the verb's refusal reason, the coordinator-only line, or `No Person matches that mention.`. The API queues a `chat.reply` job per pushed command (a retried push queues one), and the main worker sends it when `T6_GATEWAY_URL` and `T6_GATEWAY_SECRET` are set; without them the job waits unclaimed. The answer to the gateway stays `rejected`.

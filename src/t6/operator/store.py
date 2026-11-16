@@ -188,6 +188,7 @@ class ActionStore:
         project_id: str | None = None,
         shown_sync: str | None = None,
         allowed_tapper: JsonValue = "permission:operator",
+        stage: str = "choose",
     ) -> tuple[Action, bool]:
         """A new pending action, or the live one already offered under `offer_key`.
 
@@ -214,8 +215,8 @@ class ActionStore:
             token = self._new_token()
             db.execute(
                 "INSERT INTO actions (token, kind, stage, state, params, chat, created_at, expires_at, project_id, "
-                "shown_sync, offer_key, allowed_tapper) VALUES (?, ?, 'choose', 'pending', ?, ?, ?, ?, ?, ?, ?, ?)",
-                (token, kind, json.dumps(dict(params)), chat, now, now + ttl, project_id, shown_sync, offer_key, json.dumps(allowed_tapper)),
+                "shown_sync, offer_key, allowed_tapper) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)",
+                (token, kind, stage, json.dumps(dict(params)), chat, now, now + ttl, project_id, shown_sync, offer_key, json.dumps(allowed_tapper)),
             )
             created = self._read(db, token)
             assert created is not None

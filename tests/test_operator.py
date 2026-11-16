@@ -191,11 +191,14 @@ class UnboundPageTests(OperatorTestCase):
         self.assertEqual([b["page_id"] for b in project["bindings"]], [PAGE_A])
         self.assertEqual(self.audit_actors(project["id"]), {f"telegram:{OPERATOR}"})
 
-        self.drain()  # the card is edited: accepted, Notion still pending
+        self.drain()  # the same card is edited: it now asks for a code
+        self.assertEqual([b["text"] for row in self.card()["buttons"] for b in row], ["Keep out of rotation, no code"])
+        self.assertEqual(self.tap(self.payload(1, "Keep out of rotation, no code")).body["outcome"], "registered")
+        self.drain()
         self.assertEqual(self.card()["buttons"], [])
         self.assertIn("Registered as a new Project", self.card()["text"])
         self.assertIn("Notion update pending", self.card()["text"])
-        self.assertEqual(self.gateway.sends, 2)
+        self.assertEqual(self.gateway.sends, 3)
 
     def test_existing_identity_gets_the_new_page_and_the_old_one_stays_legacy(self) -> None:
         old = self.new("ABC", "in", page=PAGE_B)
@@ -279,7 +282,7 @@ class SafetyTests(OperatorTestCase):
         data = self.payload(1, "New Project")
         self.assertEqual(self.tap(data, key="tap-1").body["outcome"], "registered")
         self.assertEqual(self.tap(data, key="tap-1").body["outcome"], "already_handled")  # gateway retry
-        self.assertEqual(self.tap(data, key="tap-2").body["outcome"], "already_handled")  # a second tap
+        self.assertEqual(self.tap(data, key="tap-2").body["outcome"], "rejected")  # a second tap: the card moved on
         self.assertEqual(len(self.all_projects()), 1)
 
     def test_a_stale_stage_is_refused(self) -> None:
@@ -317,7 +320,7 @@ class SafetyTests(OperatorTestCase):
         self.start()
         self.assertEqual(self.tap(data).body["outcome"], "registered")
         self.start()
-        self.assertEqual(self.tap(data).body["outcome"], "already_handled")
+        self.assertEqual(self.tap(data).body["outcome"], "rejected")  # a new tap key: the card moved on to the code
         self.assertEqual(len(self.all_projects()), 1)
 
     def test_operator_routes_need_the_right_grant(self) -> None:
@@ -658,13 +661,13 @@ class RotationAndCodeTests(ManageTestCase):
         # A Project with no code is not offered Clear code.
         self.assertNotIn("Clear code", self.texts(self.open_project(project)))
 
-    def test_a_typed_code_with_no_card_waiting_changes_nothing_and_opens_the_list(self) -> None:
+    def test_a_typed_text_with_no_card_waiting_changes_nothing_and_says_nothing_matches(self) -> None:
         project = self.new("ABC", "in")
         before = self.footprint(project)
         self.assertEqual(self.command("XYZ").body["outcome"], "opened")
         self.drain()
         self.assertEqual(self.footprint(project), before)
-        self.assertIn("No Project is waiting for a code", self.card(1)["text"])
+        self.assertNotIn("No Project is waiting for a code", self.card(1)["text"])
 
     def test_the_list_pages_and_every_button_fits_telegrams_limit(self) -> None:
         for number in range(7):
@@ -826,3 +829,227 @@ class ManageSyncTests(ManageTestCase):
         self.drain()
         self.assertEqual(self.gateway.sends, 1)
         self.assertIn("Projects in rotation", self.card(1)["text"])
+
+
+class NewProjectCodeTests(ManageTestCase):
+    """#406 part A: New Project continues on the same card, which asks for the code."""
+
+    def registered(self, page: str = PAGE_A) -> dict[str, Any]:
+        """Offer a page, deliver the card and tap New Project. The card is message 1."""
+        self.offer_and_deliver(page)
+        self.new_project_tap = self.payload(1, "New Project")
+        self.assertEqual(self.tap(self.new_project_tap, key="tap-reg").body["outcome"], "registered")
+        self.drain()
+        (project,) = [p for p in self.all_projects() if p["bindings"] and p["bindings"][0]["page_id"] == page]
+        return project
+
+    def test_new_project_then_a_typed_code_puts_it_in_rotation_on_one_card_once(self) -> None:
+        project = self.registered()
+        text = self.card()["text"]
+        self.assertIn(project["id"], text)
+        self.assertIn("Registered as a new Project.", text)
+        self.assertIn("/project NEWCODE", text)
+        self.assertIn("The Project then enters rotation with that code.", text)
+        self.assertEqual(self.texts(1), ["Keep out of rotation, no code"])
+
+        self.assertEqual(self.command("new-1", key="cmd-code").body["outcome"], "rotation_in")
+        self.drain()
+        self.assertEqual((self.read(project)["code"], self.read(project)["rotation"]), ("new-1", "in"))
+        self.assertEqual(self.card()["buttons"], [])
+        for words in ("Registered as a new Project", "new-1", "Now in rotation"):
+            self.assertIn(words, self.card()["text"])
+        self.assertEqual(len(self.gateway.messages), 1)
+
+        # The tap and the command delivered twice change nothing more.
+        self.assertEqual(self.tap(self.new_project_tap, key="tap-reg").body["outcome"], "already_handled")
+        self.assertEqual(self.command("new-1", key="cmd-code").body["outcome"], "already_handled")
+        actions = [entry.action for entry in self.registry.audit(project["id"])]
+        for action in ("registered", "code_changed", "rotation_changed"):
+            self.assertEqual(actions.count(action), 1, actions)
+
+    def test_keep_out_of_rotation_closes_the_card_with_the_project_registered_and_no_code(self) -> None:
+        project = self.registered()
+        self.assertEqual(self.press(1, "Keep out of rotation, no code"), "registered")
+        self.assertEqual((self.read(project)["code"], self.read(project)["rotation"]), (None, "out"))
+        self.assertEqual(self.card()["buttons"], [])
+        self.assertIn("Registered as a new Project (out of rotation, no code).", self.card()["text"])
+        self.assertEqual(self.command("late").body["outcome"], "opened")  # nothing waits: a search, not a code
+        self.assertEqual(self.read(project)["code"], None)
+
+    def test_a_code_another_project_in_rotation_holds_shows_the_conflict_choices(self) -> None:
+        holder = self.new("ABC", "in")
+        project = self.registered()
+        before = self.state(holder)
+        self.assertEqual(self.command("abc").body["outcome"], "conflict")
+        self.drain()
+        self.assertEqual(self.read(project)["rotation"], "out")
+        self.assertEqual(
+            self.texts(1),
+            [
+                "Clear this Project's code and enter",
+                "Change this Project's code",
+                f"Take {self.label(holder)} out of rotation",
+                "Cancel",
+            ],
+        )
+        self.assertEqual(self.state(holder), before)
+
+    def test_conflict_choice_clear_and_enter_works_on_this_card(self) -> None:
+        self.new("ABC", "in")
+        project = self.registered()
+        self.assertEqual(self.command("abc").body["outcome"], "conflict")
+        self.drain()
+        self.assertEqual(self.press(1, "Clear this Project's code and enter"), "rotation_in")
+        self.assertEqual((self.read(project)["code"], self.read(project)["rotation"]), (None, "in"))
+        self.assertIn("Registered as a new Project", self.card()["text"])
+
+    def test_conflict_choice_change_code_works_on_this_card(self) -> None:
+        self.new("ABC", "in")
+        project = self.registered()
+        self.assertEqual(self.command("abc").body["outcome"], "conflict")
+        self.drain()
+        self.assertEqual(self.press(1, "Change this Project's code"), "enter_code")
+        self.assertEqual(self.command("ABD").body["outcome"], "rotation_in")
+        self.assertEqual((self.read(project)["code"], self.read(project)["rotation"]), ("ABD", "in"))
+
+    def test_after_a_held_code_the_code_stage_offers_cancel_and_never_says_no_code(self) -> None:
+        self.new("ABC", "in")
+        project = self.registered()
+        self.assertEqual(self.command("abc").body["outcome"], "conflict")
+        self.drain()
+        self.assertEqual(self.press(1, "Change this Project's code"), "enter_code")
+        self.assertEqual(self.texts(1), ["Cancel"])  # the Project holds the typed code now, so "no code" is not offered
+        self.assertEqual(self.press(1, "Cancel"), "skipped")
+        self.assertEqual((self.read(project)["code"], self.read(project)["rotation"]), ("abc", "out"))
+        self.assertIn("Registered as a new Project. It stays out of rotation.", self.card()["text"])
+        self.assertNotIn("no code", self.card()["text"].split("\n", 1)[1])
+
+    def test_conflict_choice_take_the_holder_out_works_on_this_card(self) -> None:
+        holder = self.new("ABC", "in")
+        project = self.registered()
+        self.assertEqual(self.command("abc").body["outcome"], "conflict")
+        self.drain()
+        self.assertEqual(self.press(1, f"Take {self.label(holder)} out of rotation"), "rotation_in")
+        self.assertEqual((self.read(project)["code"], self.read(project)["rotation"]), ("abc", "in"))
+        self.assertEqual(self.read(holder)["rotation"], "out")
+
+    def test_cancel_on_the_conflict_leaves_the_project_registered_and_out(self) -> None:
+        self.new("ABC", "in")
+        project = self.registered()
+        self.assertEqual(self.command("abc").body["outcome"], "conflict")
+        self.drain()
+        self.assertEqual(self.press(1, "Cancel"), "skipped")
+        self.assertEqual(self.read(project)["rotation"], "out")
+        self.assertIn("Registered as a new Project", self.card()["text"])
+
+    def test_a_text_that_cannot_be_a_code_asks_again_and_a_good_code_then_works(self) -> None:
+        project = self.registered()
+        self.assertEqual(self.command("--").body["outcome"], "bad_code")
+        self.drain()
+        self.assertIn("cannot be a code", self.card()["text"])
+        self.assertEqual(self.texts(1), ["Keep out of rotation, no code"])
+        self.assertEqual(self.read(project)["code"], None)
+        self.assertEqual(self.command("GOOD1").body["outcome"], "rotation_in")
+        self.assertEqual((self.read(project)["code"], self.read(project)["rotation"]), ("GOOD1", "in"))
+
+    def test_a_page_taken_in_the_meantime_still_closes_the_card(self) -> None:
+        self.offer_and_deliver()
+        self.new(page=PAGE_A)
+        self.assertEqual(self.press(1, "New Project"), "page_taken")
+        self.assertEqual(self.card()["buttons"], [])
+
+    def test_only_an_operator_card_takes_the_typed_code_and_keep(self) -> None:
+        project = self.registered()
+        self.assertEqual(self.command("XYZ", who=OUTSIDER).body["outcome"], "rejected")
+        data = self.payload(1, "Keep out of rotation, no code")
+        self.assertEqual(self.tap(data, who=OUTSIDER).body["outcome"], "rejected")
+        self.assertEqual((self.read(project)["code"], self.read(project)["rotation"]), (None, "out"))
+
+
+class FindProjectTests(ManageTestCase):
+    """#406 part B: `/project TEXT` with no card waiting opens a Project or lists matches."""
+
+    def test_an_exact_code_opens_that_projects_card_directly(self) -> None:
+        self.new("ABC", "in")
+        other = self.new("XYZ", "out")
+        self.assertEqual(self.command("xyz").body["outcome"], "opened")
+        self.drain()
+        self.assertIn(other["id"], self.card(1)["text"])
+        self.assertEqual(self.texts(1)[:2], ["Put in rotation", "Change code"])
+        self.assertEqual(self.press(1, "Put in rotation"), "rotation_in")
+        self.assertEqual(self.read(other)["rotation"], "in")
+
+    def test_an_exact_code_of_a_person_who_is_not_an_operator_is_refused(self) -> None:
+        self.new("ABC", "in")
+        self.assertEqual(self.command("ABC", who=OUTSIDER).body["outcome"], "rejected")
+        self.assertEqual(self.drain(), 0)
+
+    def test_a_code_part_lists_the_matches_of_both_rotations_five_to_a_page(self) -> None:
+        for number in range(7):
+            self.new(f"AB{number}", "in" if number % 2 else "out")
+        self.new("ZZ9", "in")
+        self.assertEqual(self.command("b").body["outcome"], "opened")
+        self.drain()
+        self.assertIn("Search: <code>b</code>", self.card(1)["text"])
+        self.assertNotIn("ZZ9", self.card(1)["text"])
+        self.assertEqual([t.split(" ")[0] for t in self.texts(1)][:5], [f"AB{n}" for n in range(5)])
+        self.assertIn("Next", self.texts(1))
+        self.assertEqual(self.press(1, "Next"), "choose_project")  # the same search, page 2
+        self.assertEqual([t.split(" ")[0] for t in self.texts(1)][:3], ["AB5", "AB6", "Previous"])
+        self.assertIn("Search: <code>b</code>", self.card(1)["text"])
+        self.assertEqual(self.press(1, "Previous"), "choose_project")
+        self.assertEqual(self.texts(1)[0].split(" ")[0], "AB0")
+        self.assertEqual(self.press(1, self.texts(1)[1]), "project")  # a match opens as from the list
+
+    def test_the_end_of_a_t6_id_lists_the_project(self) -> None:
+        project = self.new("ABC", "out")
+        self.new("XYZ", "in")
+        self.assertEqual(self.command(project["id"][-5:].upper()).body["outcome"], "opened")
+        self.drain()
+        self.assertEqual(self.texts(1)[0], self.label(project))
+        self.assertNotIn("XYZ", self.card(1)["text"])
+
+    def test_a_short_text_never_matches_the_end_of_a_t6_id(self) -> None:
+        project = self.new("1-2", "out")  # a T6 ID holds no "-", so its ending is never part of this code
+        self.assertEqual(self.command(project["id"][-3:]).body["outcome"], "opened")
+        self.drain()
+        self.assertIn("No Project matches that.", self.card(1)["text"])
+
+    def test_a_code_held_by_two_projects_lists_both_instead_of_opening_one(self) -> None:
+        first, second = self.new("ABC", "out"), self.new("abc", "in")
+        self.command("ABC")
+        self.drain()
+        self.assertEqual(sorted(self.texts(1)[:2]), sorted([self.label(first), self.label(second)]))
+
+    def test_no_match_says_so_and_offers_the_two_lists(self) -> None:
+        self.new("ABC", "in")
+        self.command("nothing")
+        self.drain()
+        self.assertIn("No Project matches", self.card(1)["text"])
+        self.assertEqual(self.texts(1), ["Projects in rotation", "Historical Projects", "Close"])
+        self.assertEqual(self.press(1, "Historical Projects"), "choose_project")
+        self.assertNotIn("Search:", self.card(1)["text"])
+
+    def test_the_text_is_escaped_and_cut_to_the_query_length(self) -> None:
+        self.command("<i>&")
+        self.drain()
+        self.assertIn("<code>&lt;i&gt;&amp;</code>", self.card(1)["text"])
+        self.command("Q" * 60)
+        self.drain()
+        self.assertIn("<code>" + "Q" * 40 + "</code>", self.card(2)["text"])
+
+    def test_a_card_waiting_for_a_code_still_gets_the_text_first(self) -> None:
+        project = self.new("ABC", "in")
+        other = self.new("XYZ", "in")
+        ref = self.open_project(project)
+        self.press(ref, "Change code")
+        self.assertEqual(self.command("XYZ2").body["outcome"], "code_set")  # not a search, though XYZ is a code
+        self.assertEqual((self.read(project)["code"], self.read(other)["code"]), ("XYZ2", "XYZ"))
+        self.assertEqual(len(self.gateway.messages), 1)
+
+    def test_a_redelivered_search_opens_one_card(self) -> None:
+        self.new("ABC", "in")
+        self.assertEqual(self.command("AB", key="cmd-31").body["outcome"], "opened")
+        self.assertEqual(self.command("AB", key="cmd-31").body["outcome"], "already_handled")
+        self.drain()
+        self.assertEqual(self.gateway.sends, 1)

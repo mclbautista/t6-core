@@ -9,7 +9,14 @@ derived from the card and the choice, so a retry never changes anything twice.
 `/project` opens a `manage` card: the operator picks a Project by its T6 ID and
 changes its code or rotation. A code is typed as `/project NEWCODE` after tapping
 Change code. A Project that cannot enter rotation because another holds its code
-gets explicit choices; nothing is moved or released without one.
+gets explicit choices; nothing is moved or released without one. `/project TEXT`
+with no card waiting for text opens the card on the Project whose code is TEXT, or
+lists the Projects whose code contains TEXT or whose T6 ID ends with it (#406).
+
+New Project on an `unbound_page` card registers the Project and the same card then
+waits for its code (stage `code`, `enter` set): `/project CODE` sets it and enters
+rotation, **Keep out of rotation, no code** closes the card. The stages `code` and
+`conflict` of that card use the `manage` logic (#406).
 
 The project card also has Link Frame.io project (#272): it lists the Frame.io projects of the T6 account that no
 show holds, newest first, with a typed search (`/project TEXT`), and links the chosen one to the card's show
@@ -63,6 +70,8 @@ MAX_PAYLOAD = 53
 MAX_CANDIDATES = 5
 MAX_CODE_LENGTH = 40
 MAX_QUERY_LENGTH = 40
+MIN_ID_ENDING = 4
+"""A search matches the end of a T6 ID only from this many characters, so a short code search lists no chance matches."""
 FRAMEIO_COORDINATOR_RULE = "permission:coordinator"
 """Who may pick a show on the card that waits for a Frame.io project's link."""
 _OPERATOR_ONLY = frozenset({"in", "out", "clr", "chg", "cclr", "bout"})
@@ -237,11 +246,16 @@ class OperatorService:
                 self._store.reject('not_allowed', operator=operator, token=waiting.token, rule=waiting.allowed_tapper)
                 return TapResult(True, 'rejected')
             if waiting is None:
-                params = self._listing("in", 0)
+                params, stage, project_id = self._listing("in", 0), "choose", None
                 if text and not staff:
-                    params["unasked"] = True
+                    text = text[:MAX_QUERY_LENGTH]
+                    params = self._listing("find", 0, text)
+                    exact = self._with_code(text)
+                    if exact is not None:
+                        params, stage, project_id = {"revision": exact.revision}, "project", exact.id
                 opened, _ = self._store.create("manage", params, chat=operator, offer_key=f"manage:{key}", ttl=self._ttl,
-                                               allowed_tapper=STAFF_RULE if staff else "permission:operator")
+                                               allowed_tapper=STAFF_RULE if staff else "permission:operator",
+                                               stage=stage, project_id=project_id)
                 return TapResult(True, "opened", opened, changed=True)
             claim = self._store.claim(waiting.token, key, operator, waiting.stage)
             refused = self._refused(claim)
@@ -258,17 +272,37 @@ class OperatorService:
         except RegistryUnavailable:
             return TapResult(False, "registry_unavailable")
 
-    def _listing(self, which: str, page: int) -> dict[str, JsonValue]:
-        """One page of Projects to pick from: those in rotation, or the historical and unclassified ones."""
-        projects = sorted(
-            (p for p in self._registry.list_projects() if (p.rotation is Rotation.IN) == (which == "in")),
-            key=lambda p: ((p.code or "\uffff").casefold(), p.created_at),
-        )
+    def _with_code(self, text: str) -> RegisteredProject | None:
+        """The one Project whose code is `text` (as `normalize_code` compares), or None when none or several have it."""
+        try:
+            form = normalize_code(text)[1]
+        except RegistryError:
+            return None
+        found = [p for p in self._registry.list_projects() if p.code is not None and normalize_code(p.code)[1] == form]
+        return found[0] if len(found) == 1 else None
+
+    def _listing(self, which: str, page: int, query: str | None = None) -> dict[str, JsonValue]:
+        """One page of Projects to pick from: those in rotation, or the historical and unclassified ones.
+
+        `which` "find" with a `query` lists the Projects of either rotation whose code contains it or, from
+        `MIN_ID_ENDING` characters, whose T6 ID ends with it.
+        """
+        if query is None:
+            chosen = [p for p in self._registry.list_projects() if (p.rotation is Rotation.IN) == (which == "in")]
+        else:
+            wanted = query.casefold()
+            chosen = [p for p in self._registry.list_projects()
+                      if wanted in (p.code or "").casefold()
+                      or (len(wanted) >= MIN_ID_ENDING and p.id.casefold().endswith(wanted))]
+        projects = sorted(chosen, key=lambda p: ((p.code or "\uffff").casefold(), p.created_at))
         start = page * MAX_CANDIDATES
         shown: list[JsonValue] = [
             {"project_id": p.id, "revision": p.revision} for p in projects[start : start + MAX_CANDIDATES]
         ]
-        return {"list": which, "page": page, "more": len(projects) > start + MAX_CANDIDATES, "candidates": shown}
+        listing: dict[str, JsonValue] = {"list": which, "page": page, "more": len(projects) > start + MAX_CANDIDATES, "candidates": shown}
+        if query is not None:
+            listing["query"] = query
+        return listing
 
     # -- taps ------------------------------------------------------------------
 
@@ -364,7 +398,12 @@ class OperatorService:
             return self._bind(action, int(choice[1:]), actor, key)
         if action.kind == "classify" and choice in {"in", "out"}:
             return self._classify(action, Rotation(choice), actor, key)
-        if action.kind == "manage":
+        if action.kind == "unbound_page" and action.stage == "code" and choice == "keep":
+            kept = self._registry.get(str(action.project_id))
+            if kept is not None and kept.code:  # a held code was typed first: the Project keeps it, so "no code" would be wrong
+                return self._done(action, {"outcome": "skipped"})
+            return self._done(action, {"outcome": "registered"}, kept)
+        if action.kind == "manage" or (action.kind == "unbound_page" and action.stage in {"code", "conflict"}):
             managed = self._manage(action, choice, actor, operator)
             if managed is not None:
                 return managed
@@ -394,7 +433,9 @@ class OperatorService:
             actor=actor, idempotency_key=key, notion_page_id=str(action.params["page_id"]), rotation=Rotation.OUT
         )
         if isinstance(made, Registered):
-            return self._done(action, {"outcome": "registered"}, made.project)
+            asked: dict[str, JsonValue] = {"revision": made.project.revision, "enter": True}
+            moved = self._store.advance(action.token, stage="code", params=asked, project_id=made.project.id)
+            return TapResult(True, "registered", moved, changed=True)
         if isinstance(made, PageAlreadyBound):
             return self._done(action, {"outcome": "page_taken", "project_id": made.project_id})
         return self._done(action, {"outcome": "stale"})
@@ -460,7 +501,7 @@ class OperatorService:
                 return self._list(action, "in" if choice == "lin" else "hist", 0)
             if choice in {"next", "prev"}:
                 page = int(str(params["page"])) + (1 if choice == "next" else -1)
-                return self._list(action, str(params["list"]), max(page, 0))
+                return self._list(action, str(params["list"]), max(page, 0), params.get("query"))
             if choice in _PICKS:
                 return self._open(action, int(choice[1:]))
             return None
@@ -598,8 +639,9 @@ class OperatorService:
         reason = outcome.reason if isinstance(outcome, Refused) else "not linked"
         return self._done(action, {"outcome": "frameio_refused", **base, "reason": reason})
 
-    def _list(self, action: Action, which: str, page: int) -> TapResult:
-        moved = self._store.advance(action.token, stage="choose", params=self._listing(which, page))
+    def _list(self, action: Action, which: str, page: int, query: JsonValue = None) -> TapResult:
+        listing = self._listing(which, page, query if isinstance(query, str) else None)
+        moved = self._store.advance(action.token, stage="choose", params=listing)
         return TapResult(True, "choose_project", moved, changed=True)
 
     def _open(self, action: Action, index: int) -> TapResult:
@@ -742,6 +784,10 @@ def _render(
         return head + '\nGrant this Approval?', [[('Grant', 'grant'), ('Deny', 'deny')]]
     if action.kind == "manage":
         return _render_manage(action, project, registry, frameio)
+    if action.kind == "unbound_page" and project is not None and (
+        action.stage in {"code", "conflict"} or (action.result or {}).get("outcome") not in {"registered", "bound", None}
+    ):
+        return _render_manage(action, project, registry, frameio)  # registered on this card, now being given a code
     label = html.escape(str(action.params.get("label") or "(untitled)"))
     result = action.result or {}
     outcome = str(result.get("outcome", ""))
@@ -796,10 +842,14 @@ def _render_manage(
 ) -> tuple[str, list[list[tuple[str, str]]]]:
     params, result = action.params, action.result or {}
     if action.state == "done":
-        return _render_managed(result, project, registry), []
+        return _render_managed(result, project, registry, action.kind == "unbound_page"), []
     if action.stage == "choose":
         in_rotation = params.get("list") == "in"
-        lines = ["<b>Projects in rotation</b>" if in_rotation else "<b>Historical Projects</b> (not in rotation)"]
+        query = params.get("query")
+        if isinstance(query, str):
+            lines = ["<b>Projects found</b>", f"Search: <code>{html.escape(query)}</code> (in a code, or at the end of a T6 ID)"]
+        else:
+            lines = ["<b>Projects in rotation</b>" if in_rotation else "<b>Historical Projects</b> (not in rotation)"]
         rows: list[list[tuple[str, str]]] = []
         candidates = params.get("candidates")
         for index, candidate in enumerate(candidates if isinstance(candidates, list) else []):
@@ -811,22 +861,23 @@ def _render_manage(
             lines.append(f"{_identity(found)}{unclassified}")
             rows.append([(_button(found), f"p{index}")])
         if not rows:
-            lines.append("None on this page.")
-        if params.get("unasked"):
-            lines.append("No Project is waiting for a code. Pick one, then tap Change code.")
+            lines.append("No Project matches that." if isinstance(query, str) else "None on this page.")
         lines.append("Pick a Project to change its code or rotation.")
         turn = [("Previous", "prev")] if int(str(params.get("page", 0))) > 0 else []
         if params.get("more"):
             turn.append(("Next", "next"))
         if turn:
             rows.append(turn)
-        rows.append([("Historical Projects", "lhist") if in_rotation else ("Projects in rotation", "lin")])
+        both = [("Projects in rotation", "lin"), ("Historical Projects", "lhist")]
+        rows.append(both if isinstance(query, str) else [("Historical Projects", "lhist") if in_rotation else ("Projects in rotation", "lin")])
         return "\n".join(lines), rows + [[("Close", "skip")]]
     head = f"<b>Project</b> {_identity(project)}"
     if action.stage in {"fio", "fio_search"}:
         return _render_frameio_list(action, head)
     if action.stage == "code":
         lines = [head]
+        if action.kind == "unbound_page":
+            lines.append("Registered as a new Project.")
         if "refused" in params:
             lines.append(
                 f"<code>{html.escape(str(params['refused']))}</code> cannot be a code: a code needs a letter or "
@@ -835,7 +886,8 @@ def _render_manage(
         lines.append("Send the new code as <code>/project NEWCODE</code>.")
         if params.get("enter"):
             lines.append("The Project then enters rotation with that code.")
-        return "\n".join(lines), [[("Cancel", "skip")]]
+        keeps = action.kind == "unbound_page" and (project is None or not project.code)
+        return "\n".join(lines), [[("Keep out of rotation, no code", "keep")] if keeps else [("Cancel", "skip")]]
     if action.stage == "conflict":
         holders = params.get("holders")
         found_holders = [
@@ -870,9 +922,12 @@ def _render_manage(
 
 
 def _render_managed(
-    result: Mapping[str, JsonValue], project: RegisteredProject | None, registry: ProjectRegistry
+    result: Mapping[str, JsonValue], project: RegisteredProject | None, registry: ProjectRegistry, registered: bool = False
 ) -> str:
-    """The text of a used `manage` card: what the registry accepted, then where Notion stands."""
+    """The text of a used `manage` card: what the registry accepted, then where Notion stands.
+
+    `registered` is a card that registered the Project first (New Project): its line starts by saying so.
+    """
     outcome = str(result.get("outcome", ""))
     head = "<b>Projects</b>" if project is None else f"<b>Project</b> {_identity(project)}"
     released = registry.get(str(result["released"])) if "released" in result else None
@@ -894,7 +949,10 @@ def _render_managed(
         "expired": "This card expired. Nothing changed.",
     }
     lines.update(_frameio_lines(result, registry))
-    text = f"{head}\n<b>{lines.get(outcome, html.escape(outcome))}</b>"
+    line = lines.get(outcome, html.escape(outcome))
+    if registered:
+        line = "Registered as a new Project. " + ("It stays out of rotation." if outcome == "skipped" else line.removesuffix(" Nothing changed."))
+    text = f"{head}\n<b>{line}</b>"
     if project is not None and outcome in _SHOWS_SYNC:
         text += "\n" + _SYNC_LINES[project.sync]
         if released is not None:

@@ -31,6 +31,16 @@ Answer `200 {"offered": true, "created": true, "token": "..."}`. Offering the sa
 page or the same Project revision again returns the live card instead of a new one.
 A `classify` offer for a Project that is not unclassified answers `{"offered": false}`.
 
+**New Project continues on the same card (#406).** On an `unbound_page` card, **New Project**
+registers the Project (out of rotation, no code) as before. The card then does not close: it names
+the new Project and asks for a code (stage `code`, `enter` set). `/project CODE` sets the code and
+puts the Project in rotation in one step, and the card shows that it was registered, its code and
+that it is in rotation. **Keep out of rotation, no code** closes the card with "Registered as a new
+Project (out of rotation, no code)". A text that cannot be a code is asked for again. A code another
+Project holds gives the choices of **A held code** below, on this card. `page_taken` and `stale`
+close the card as before. The tap answers `registered` for the registration; the card keeps its
+kind, and its `code` and `conflict` stages use the same logic as a `/project` card.
+
 ## The card
 
 `operator.deliver` jobs (main queue) read `GET /operator/actions/{token}/card`
@@ -87,9 +97,10 @@ Any other pushed command answers `200 {"outcome": "ignored"}`.
 | `/project` | opens a card listing Projects in rotation, five to a page, each with its code and T6 ID. **Historical Projects** lists the ones out of rotation or unclassified |
 | a Project's button | shows its rotation and Notion sync state with **Put in rotation** or **Take out of rotation**, **Change code**, **Clear code**, **Close** |
 | **Change code**, then `/project NEWCODE` | the card waits for the code; the newest waiting card of that operator takes it. A code with no letter or digit, or over 40 characters, is asked for again |
-| `/project NEWCODE` with no card waiting | changes nothing and opens the list |
+| `/project TEXT` with no card waiting for text | for an operator only. TEXT is cut to 40 characters. If TEXT is, as a code, the code of exactly one Project, opens that Project's card (as if picked from the list). Otherwise opens a list of the Projects, in rotation or not, whose code contains TEXT or, when TEXT has four or more characters, whose T6 ID ends with TEXT (case-insensitive), five to a page, with **Next** and **Previous** that keep the search. With no match the card says so and offers both lists. Nothing is changed |
 
-The Project is picked from a list core keeps with the card, by T6 ID and
+A card waiting for a code or a Frame.io search takes the typed text first. The staff card is the
+same for any text. The Project is picked from a list core keeps with the card, by T6 ID and
 revision. The button label is only a display.
 
 **Link Frame.io project (#272).** With the API able to read the Frame.io worker
