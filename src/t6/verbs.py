@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, get_args, get_origin
 from types import UnionType
 
-from pydantic import AwareDatetime, BaseModel, Field, ConfigDict, SerializerFunctionWrapHandler, field_validator, model_serializer
+from pydantic import AwareDatetime, BaseModel, Field, ConfigDict, SerializerFunctionWrapHandler, field_validator, model_serializer, model_validator
 from t6.domain import Project, JobOrder, Deliverable, MeetingNote, Contact, Camera, ExternalRef, Machine, Ring
 from t6.vocabulary import DRIVE_ROLES, DriveRole, MediaKind, MediaRole, PersonKind
 from t6.llm.api import Done as Done, LLMDecideInput as LLMDecideInput, LLMDecideOutput as LLMDecideOutput, LLMFilterInput as LLMFilterInput, LLMFilterOutput as LLMFilterOutput, LLMRunInput as LLMRunInput, LLMRunOutput as LLMRunOutput
@@ -1069,13 +1069,28 @@ class ProjectNotesOutput(BaseModel):
     lines: list[dict[str, str]]
 
 
-class ProjectFlagsInput(ReadInput):
+class ProjectFlagsItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     project: str
+    stated: dict[Literal["playdate", "submission_deadline", "archival_deadline"], IsoDate | None] = {}
+
+
+class ProjectFlagsInput(ReadInput):
+    project: str | None = None
+    projects: list[ProjectFlagsItem] = Field(default=[], max_length=500)
+    """Several Projects in one call, each with its own `stated`, in place of `project`; the Projects are read once."""
     as_of: IsoDate | None = None
     """The day the flags are judged on; the Manila day today when not given."""
     lead_warning_days: int = 30
     stated: dict[Literal["playdate", "submission_deadline", "archival_deadline"], IsoDate | None] = {}
     """A date the caller read from the PM Notes for a blank date property. `None` is a fuzzy value: not missing, never overdue."""
+
+    @model_validator(mode="after")
+    def _one_or_several(self) -> "ProjectFlagsInput":
+        if (self.project is None) == (not self.projects) or (self.projects and self.stated):
+            raise ValueError("Give project (with stated) or projects (each with its own stated)")
+        return self
 
 
 class DateSanityProblem(BaseModel):
@@ -1088,9 +1103,11 @@ class DateSanityProblem(BaseModel):
 
 
 class ProjectFlagsOutput(BaseModel):
-    flags: list[dict[str, Any]]
+    flags: list[dict[str, Any]] = []
     missing_roles: list[str] = []
     sanity: list[DateSanityProblem] = []
+    projects: list[dict[str, Any]] = []
+    """For `projects` in the input, one entry each in the same order: `project` as sent, `found`, and when found its `flags`, `missing_roles` and `sanity`."""
 
 
 class ProjectResolveInput(ReadInput):
@@ -3006,7 +3023,9 @@ def add_parsers(commands: Any) -> None:
             parser.set_defaults(registered_verb=entry)
             continue
         if (entry.noun, entry.verb) == ("project", "flags"):
-            parser.add_argument("--project", required=True)
+            parser.add_argument("--project")
+            parser.add_argument("--projects", type=json.loads, default=[], metavar="JSON",
+                                help='Several Projects in place of --project, like [{"project": "t6p_...", "stated": {}}]')
             parser.add_argument("--as-of")
             parser.add_argument("--lead-warning-days", type=int, default=30)
             parser.add_argument("--stated", type=json.loads, default={}, metavar="JSON",

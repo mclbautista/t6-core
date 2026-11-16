@@ -396,7 +396,7 @@ words, ignoring emoji, case and spaces.
 - **Missing roles**: for in-progress Projects, each of the eight roles
   (editor, assistant editor, online editor, colorist, sound tech, post
   coordinator, director, cinematographer) with nobody assigned.
-- **Health**: a blank Health is flagged. Order: Critical, At Risk, On Track,
+- **Health**: a blank Project Health is flagged. Order: Critical, At Risk, On Track,
   Incoming, other, blank.
 - **Code display**: the code in capitals, or "CODE (Name)" when several
   Projects share it; the name when there is no code.
