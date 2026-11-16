@@ -41,7 +41,11 @@ class Unavailable:
 
 
 class APIError(Exception):
-    """The API returned a non-success HTTP response."""
+    """The API returned a non-success HTTP response. `status` is its HTTP status, None when the request never went out."""
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 Result = Outcome | Unavailable
@@ -103,7 +107,7 @@ class Client:
             with urlopen(request, timeout=self.timeout) as response:
                 return json.load(response)
         except HTTPError as error:
-            raise APIError(f'API returned HTTP {error.code}: {error.read().decode(errors="replace")}') from error
+            raise APIError(f'API returned HTTP {error.code}: {error.read().decode(errors="replace")}', error.code) from error
         except (URLError, TimeoutError, OSError) as error:
             return Unavailable(str(error), key)
 

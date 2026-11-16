@@ -44,6 +44,9 @@ Modelled in `t6.drives`.
   Project and who logged it. The date and the party are blank when they were
   never recorded. Retired needs a reason. Events are never edited or
   deleted; a correction is a new event.
+  The custody verbs refuse a step that cannot follow the status: receive when in
+  custody or retired, release when released or retired, return unless released,
+  retire when retired.
 - **Shipment**: one handover of several Drives: released events that share a
   shipment ID. A **manifest** is a view over those events: each permanent Drive
   ID, accepted and separately suspected serial, available label, description,

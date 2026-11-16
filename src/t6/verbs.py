@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, get_args, get_origin
 from types import UnionType
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from t6.domain import Project, JobOrder, Deliverable, MeetingNote, Contact, Camera, ExternalRef
 from t6.vocabulary import DRIVE_ROLES, DriveRole, MediaKind, MediaRole
 from t6.llm.api import Done as Done, LLMRunInput as LLMRunInput, LLMRunOutput as LLMRunOutput
@@ -1686,6 +1686,8 @@ class DriveReleaseInput(BaseModel):
     party_kind: Literal['contact', 'studio']
     on: str | None = None
     delivery: str | None = None
+    reason: str | None = None
+    recipient: str | None = None  # the person who took the Drives, in free text
     idempotency_key: str | None = None
     confirm: str | None = None
 
@@ -1706,13 +1708,14 @@ class DriveAssignInput(BaseModel):
     role: DriveRole
     start: str | None = None
     end: str | None = None
+    remarks: str | None = None
     idempotency_key: str | None = None
     confirm: str | None = None
 
 
 class DriveUnassignInput(BaseModel):
     drive: str
-    project: str
+    project: str | None = None  # needed unless `assignment` names the Assignment
     label: str | None = None
     role: DriveRole | None = None
     assignment: int | None = None
@@ -1724,7 +1727,7 @@ class DriveUnassignInput(BaseModel):
 class DriveWriteOutput(BaseModel):
     action: str
     drive_ids: list[str]
-    project_id: str
+    project_id: str | None = None
     on: str | None = None
     shipment_id: str | None = None
     delivery_id: str | None = None
@@ -1733,6 +1736,7 @@ class DriveWriteOutput(BaseModel):
     assignment: int | None = None
     start: str | None = None
     end: str | None = None
+    remarks: str | None = None
     idempotency_key: str
 
 
@@ -1775,7 +1779,7 @@ class SwingReturnInput(SwingUnassignInput):
 
 
 class SwingWriteOutput(DriveWriteOutput):
-    project_id: str | None = None  # type: ignore[assignment]
+    project_id: str | None = None
     holder: str | None = None
     return_date: str | None = None
 
@@ -1836,8 +1840,24 @@ class DriveEditInput(BaseModel):
     suspected_serial: str | None = None
     needs_review: bool | None = None
     review_note: str | None = None
+    description: str | None = None
+    brand: str | None = None
+    model: str | None = None
+    capacity_tb: str | None = None  # TB as a number; blank clears
+    format: str | None = None
+    owner_studio_id: str | None = None
+    ownership_known: bool | None = None
+    purchase_date: str | None = None
+    warranty: str | None = None
+    remarks: str | None = None
+    expected_version: str | None = None
     idempotency_key: str | None = None
     confirm: str | None = None
+
+    @field_validator('capacity_tb', mode='before')
+    @classmethod
+    def _capacity_number(cls, value: Any) -> Any:
+        return str(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else value
 
 
 class DrivePromoteSerialInput(BaseModel):
@@ -1922,6 +1942,7 @@ class DriveItem(BaseModel):
     purchase_date: str | None
     warranty: str | None
     remarks: str | None
+    version: str
     status: str
 
 
@@ -1954,8 +1975,12 @@ class DriveSourceItem(BaseModel):
     row: int
 
 
+class DriveListItem(DriveItem):
+    open_assignments: list[DriveAssignmentItem]  # the Assignments not yet ended, numbered as `drive get` numbers them
+
+
 class DriveListOutput(BaseModel):
-    drives: list[DriveItem]
+    drives: list[DriveListItem]
 
 
 class DriveGetOutput(BaseModel):
@@ -1993,7 +2018,11 @@ class DriveRelease(BaseModel):
 
 
 class DriveShipmentOutput(BaseModel):
+    """`releases` hold each Drive's facts as they were at release, unless `facts_at_release` is false: the
+    shipment was released before facts were kept, and they are the Drive's current facts."""
     shipment_id: str
+    recipient: str | None
+    facts_at_release: bool
     releases: list[DriveRelease]
 
 
@@ -2100,20 +2129,20 @@ VERBS = (
     Verb('transcript', 'speakers', 'Name Transcript speakers', (), TranscriptSpeakersInput, TranscriptCreateOutput, 'staff', 'Preview and confirm speaker names.', api_read),
     Verb('transcript', 'translate', 'Translate a Transcript', (), TranscriptTranslateInput, TranscriptCreateOutput, 'staff', 'Preview and confirm translation.', api_read),
     Verb('transcript', 'get', 'Get a Transcript', (), TranscriptGetInput, TranscriptGetOutput, 'reader', 'Read progress and summary.', transcript_get, read_only=True),
-    Verb('drive', 'receive', 'Receive a Drive into custody', (), DriveReceiveInput, DriveWriteOutput, 'drives', 'Preview and confirm; appends a received event.', drive_write),
-    Verb('drive', 'release', 'Release Drives in one shipment', (), DriveReleaseInput, DriveWriteOutput, 'drives', 'Preview and confirm; one released event per Drive, grouped by shipment.', drive_write),
-    Verb('drive', 'return', 'Return a Drive to custody', (), DriveReturnInput, DriveWriteOutput, 'drives', 'Preview and confirm; appends a returned event.', drive_write),
-    Verb('drive', 'retire', 'Retire a Drive', (), DriveRetireInput, DriveWriteOutput, 'drives', 'Needs a reason; a later receive or return brings the Drive back.', drive_write),
-    Verb('drive', 'assign', 'Assign a Drive to a Project', (), DriveAssignInput, DriveWriteOutput, 'drives', 'Preview and confirm; adds an Assignment with label and role.', drive_write),
-    Verb('drive', 'unassign', 'End a Drive Assignment', (), DriveUnassignInput, DriveWriteOutput, 'drives', 'Ends the open Assignment and keeps it in history; when several are open, pick by label, role or assignment number.', drive_write),
+    Verb('drive', 'receive', 'Receive a Drive into custody', (), DriveReceiveInput, DriveWriteOutput, 'drives', 'Preview and confirm; appends a received event. Refused for a Drive in custody or retired.', drive_write),
+    Verb('drive', 'release', 'Release Drives in one shipment', (), DriveReleaseInput, DriveWriteOutput, 'drives', 'Preview and confirm; one released event per Drive, grouped by shipment, with the Drives\' facts kept as they are now. Optional reason and free-text recipient. Refused whole if a Drive is released or retired.', drive_write),
+    Verb('drive', 'return', 'Return a Drive to custody', (), DriveReturnInput, DriveWriteOutput, 'drives', 'Preview and confirm; appends a returned event. Only for a released Drive.', drive_write),
+    Verb('drive', 'retire', 'Retire a Drive', (), DriveRetireInput, DriveWriteOutput, 'drives', 'Needs a reason; refused for a Drive already retired.', drive_write),
+    Verb('drive', 'assign', 'Assign a Drive to a Project', (), DriveAssignInput, DriveWriteOutput, 'drives', 'Preview and confirm; adds an Assignment with label, role and optional remarks.', drive_write),
+    Verb('drive', 'unassign', 'End a Drive Assignment', (), DriveUnassignInput, DriveWriteOutput, 'drives', 'Ends the open Assignment and keeps it in history; when several are open, pick by label, role or assignment number. The number alone is enough, and the only way to end one whose Project is text only.', drive_write),
     Verb('drive', 'add', 'Register a Drive', (), DriveAddInput, DriveFactsOutput, 'drives', 'Preview and confirm; a serial already recorded is refused, naming the Drive that holds it.', drive_fact_write),
-    Verb('drive', 'edit', 'Correct the facts of a Drive', (), DriveEditInput, DriveFactsOutput, 'drives', 'Preview and confirm; changes only the facts named, and an empty value clears one. Custody events and Assignments are not touched.', drive_fact_write),
+    Verb('drive', 'edit', 'Correct the facts of a Drive', (), DriveEditInput, DriveFactsOutput, 'drives', 'Preview and confirm; changes only the facts named, and an empty value clears one. expected_version (from drive get or list) refuses the edit if the Drive changed since. Custody events and Assignments are not touched.', drive_fact_write),
     Verb('drive', 'promote-serial', 'Accept the suspected serial of a Drive', (), DrivePromoteSerialInput, DriveFactsOutput, 'drives', 'Preview and confirm; the suspected serial becomes the accepted one, only if no other Drive holds it.', drive_fact_write),
-    Verb('drive', 'list', 'List Drives with their custody status', (), DriveListInput, DriveListOutput, 'reader', 'Filters (q, serial, needs_review, project, status) combine with AND. project is a T6 Project ID with an open Assignment.', drive_read, read_only=True),
+    Verb('drive', 'list', 'List Drives with their custody status', (), DriveListInput, DriveListOutput, 'reader', 'Filters (q, serial, needs_review, project, status) combine with AND. project is a T6 Project ID with an open Assignment. Each Drive carries its version and open Assignments.', drive_read, read_only=True),
     Verb('drive', 'get', 'Show one Drive', (), DriveGetInput, DriveGetOutput, 'reader', 'Facts, status, custody events in append order, numbered Assignments, source rows and linked Deliveries.', drive_read, read_only=True),
     Verb('drive', 'find', 'Find Drives by serial', (), DriveFindInput, DriveFindOutput, 'reader', 'Matches an accepted or a suspected serial, in any spelling.', drive_read, read_only=True),
     Verb('drive', 'shipments', 'List Drive shipments', (), DriveShipmentsInput, DriveShipmentsOutput, 'reader', 'One entry for each shipment, in the order first released.', drive_read, read_only=True),
-    Verb('drive', 'shipment', 'Show one Drive shipment', (), DriveShipmentInput, DriveShipmentOutput, 'reader', 'The Drives of the shipment with their release events.', drive_read, read_only=True),
+    Verb('drive', 'shipment', 'Show one Drive shipment', (), DriveShipmentInput, DriveShipmentOutput, 'reader', 'The Drives of the shipment with their release events and the recipient. Facts are as they were at release; facts_at_release is false for an earlier shipment, which shows current facts.', drive_read, read_only=True),
     Verb('drive', 'exceptions', 'List the Drive import exceptions', (), DriveExceptionsInput, DriveExceptionsOutput, 'reader', 'Rows the Drive import could not read, kept for review.', drive_read, read_only=True),
     Verb('swing', 'assign', 'Assign a swing Drive to a Person or Project', (), SwingAssignInput, SwingWriteOutput, 'drives', 'Preview and confirm; adds a swing Assignment, with an optional return date. A Person target needs no Project; --project may be added.', swing_write),
     Verb('swing', 'unassign', 'End a swing Assignment', (), SwingUnassignInput, SwingWriteOutput, 'drives', 'Ends the open swing Assignment and keeps it, with its return date, in history. When several are open, pick by --project, --person or --assignment.', swing_write),
