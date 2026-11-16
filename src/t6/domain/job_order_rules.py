@@ -28,6 +28,7 @@ __all__ = [
     "health_flags",
     "is_active",
     "is_deliverable_code",
+    "is_done",
     "is_mfg_shuttle",
     "jo_id",
     "jo_key",
@@ -204,6 +205,14 @@ def status_group(status: str | None) -> JobOrderStatusGroup | None:
 def is_active(status: str | None) -> bool:
     """A Job Order that is neither Done nor Cancelled."""
     return status not in (JobOrderStatus.DONE, JobOrderStatus.CANCELLED)
+
+
+def is_done(status: str | None) -> bool:
+    """A Job Order whose status is Done, matched the way `status_group` matches it."""
+    try:
+        return JobOrderStatus(status or "") is JobOrderStatus.DONE
+    except ValueError:
+        return False
 
 
 HEALTH_FLAGS = ("Blocked", "Delayed", "Urgent")

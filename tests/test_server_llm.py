@@ -67,6 +67,17 @@ class LLMAPITests(unittest.TestCase):
         self.assertEqual(self.call()['outcome'], 'done')
         self.assertIn('Home with J', str(self.fake.calls[0].messages))
 
+    def test_strict_restores_a_withheld_id_in_the_reply_whole_or_per_field(self) -> None:
+        line = 'see https://t.me/c/123/45 and @jane_x or 12345678'
+        for restore in ('whole', 'per_field'):
+            self.fake = FakeProvider().reply('{"summary": "see [id 1] and [id 2] or [id 3]"}')
+            self.api.llm_service = LLMService({'fake': self.fake}, 'fake', Registry())
+            self.body.update(input_text=line, masking_preset='strict', restore=restore)
+            result = self.call()['result']
+            self.assertEqual(result['failure'], None, restore)
+            self.assertEqual(result['output'], {'summary': line}, restore)
+            self.assertNotIn('t.me', str(self.fake.calls[0].messages))
+
     def test_names_preset_still_refuses_a_name_in_the_template(self) -> None:
         self.body.update(prompt_template='Ask Jane Doe: {input}')
         self.assertEqual(self.call()['rule'], 'masking')

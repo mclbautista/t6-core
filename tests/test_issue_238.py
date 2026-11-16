@@ -45,6 +45,8 @@ class TemplateProjectionTests(unittest.TestCase):
         self.fake.add_snapshot_data_source('projects', 'projects')
         self.fake.add_snapshot_data_source('deliverables', 'deliverables')
         self.fake.add_property('deliverables', 'T6 ID', 'rich_text')
+        for option in ('Staged', 'Waiting for Lock', 'In Progress', 'Mastering', 'QC Passed', 'Delivered', 'Archiving', 'Archived'):
+            self.fake.add_option('deliverables', 'Status', option)
         self.client = self.fake.client()
         self.addCleanup(self.client.close)
         self.project_page = str(self.fake.add_page('projects', project_properties(name='Show', project_type='Feature Film'))['id'])
