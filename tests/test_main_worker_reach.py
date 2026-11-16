@@ -163,6 +163,19 @@ class EdgeReachTests(Reach, SyncTestCase):
         self.assertTrue(any(p.startswith("/registry/") for p in self.api.paths))
         self.assertTrue(any(p.startswith("/operator/") for p in self.api.paths))
 
+    def test_chat_reply_has_a_handler_only_with_the_gateway_and_sends_to_the_topic(self) -> None:
+        self.assertNotIn("chat.reply", self.handlers())
+        handlers = self.handlers(T6_GATEWAY_URL=GATEWAY_URL, T6_GATEWAY_SECRET="g", T6_REVIEW_CHAT="-100")
+        sent: list[Any] = []
+        from t6.worker.operator import ChatReply
+        class Transport:
+            def send(self, method: str, path: str, headers: Any, body: bytes) -> tuple[int, dict[str, Any]]:
+                sent.append((method, path, json.loads(body)))
+                return 202, {"message_ref": 5}
+        ChatReply(GatewayClient(Transport(), "g")).deliver(WorkerJob(1, "main", "chat.reply", "chat.reply:k", {"chat": -100, "topic": 12, "text": "Usage: /link CODE", "key": "k"}, "token", 3))
+        self.assertEqual([(m, p, b["to"], b["topic"], b["text"], b["idempotency_key"]) for m, p, b in sent], [("POST", "/notify", -100, 12, "Usage: /link CODE", "cmd-reply:k")])
+        self.assertIn("chat.reply", handlers)
+
     def test_the_review_message_gets_its_version_and_chat_links_from_the_api(self) -> None:
         registry = self.registry
         registered = registry.register(actor="test", idempotency_key="register", notion_page_id="page-1", code="SHOW")

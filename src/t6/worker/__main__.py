@@ -121,7 +121,7 @@ def configured_handlers(
     queue gets the Project registry's Notion handlers: `registry.sync` and
     `notion.page_changed` (needs the `notion` extra). With `T6_GATEWAY_URL` and
     `T6_GATEWAY_SECRET` set, it also gets `operator.deliver` (operator cards in
-    Sixto), and a Projects page no Project owns is offered to the operator.
+    Sixto), `chat.reply` (the reason a refused chat command gets), and a Projects page no Project owns is offered to the operator.
     The gateway settings also give it `frameio.review_done` (a message to the
     review chat when a person goes quiet on a Frame.io file), which needs
     `T6_REVIEW_CHAT` (and may have `T6_REVIEW_TOPIC`).
@@ -139,7 +139,8 @@ def configured_handlers(
         gateway = GatewayClient(HttpTransport(gateway_url), gateway_secret)
         handlers.update(CardDelivery(operator, gateway).handlers())
         from t6.domain.studio_people import operator_ids
-        from t6.worker.operator import StateEditNotification
+        from t6.worker.operator import ChatReply, StateEditNotification
+        handlers[JobKind.CHAT_REPLY.value] = ChatReply(gateway).deliver
         handlers['notion.state_flagged'] = StateEditNotification(gateway, operator_ids(environ)).deliver
     token, projects = environ.get("T6_NOTION_TOKEN"), environ.get("T6_NOTION_PROJECTS_DATA_SOURCE")
     if token and projects:

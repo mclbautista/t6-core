@@ -101,6 +101,37 @@ class ChatLinkTests(unittest.TestCase):
             with self.registry._transaction() as db:
                 self.assertEqual(db.execute('SELECT count(*) FROM chat_links').fetchone()[0], 0)
 
+    def test_refused_commands_get_one_reply_each(self) -> None:
+        import tempfile
+        from t6.server import Request, ServerConfig, WebhookApp
+        from t6.server.queue import JobQueue
+        from t6.server.verbs import VerbAPI
+        with tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ', {'T6_PREVIEW_SIGNING_KEY': 'test'}):
+            queue = JobQueue(tmp + '/queue')
+            api = VerbAPI(People(self.registry, self.tokens), queue, {'gateway': 'gateway'}, lambda _: None, WebhookApp(queue, ServerConfig(), registry=self.registry))
+            def push(who: int, command: str, args: str, key: str, topic: int | None = 12, chat: Any = -100) -> Any:
+                body = {'kind': 'command', 'command': command, 'args': args, 'chat': chat, 'topic': topic, 'from': {'id': who}}
+                return api(Request('POST', '/tap', {'Authorization': 'Bearer gateway', 'X-Telegram-User-Id': str(who), 'Idempotency-Key': key}, json.dumps(body).encode()))
+            def replies() -> list[Any]:
+                return [(job.kind, job.dedupe_key, dict(job.payload)) for job in queue.waiting('main') if job.kind == 'chat.reply']
+            self.assertEqual(push(42, 'unlink', '', 'k1').body, {'outcome': 'rejected'})
+            self.assertEqual(replies(), [('chat.reply', 'chat.reply:k1', {'chat': -100, 'topic': 12, 'text': 'Usage: /unlink CODE', 'key': 'k1'})])
+            push(42, 'unlink', '', 'k1')
+            self.assertEqual(len(replies()), 1)
+            push(42, 'link', '', 'k2')
+            push(42, 'link', 'A B', 'k3', topic=None)
+            self.assertEqual([r[2]['text'] for r in replies()[1:]], ['Usage: /link CODE', 'Usage: /link CODE'])
+            self.assertIsNone(replies()[2][2]['topic'])
+            self.assertEqual(push(42, 'link', 'NOPE', 'k4').body, {'outcome': 'rejected'})
+            self.assertRegex(replies()[3][2]['text'], r'^/link NOPE: .+')
+            push(99, 'link', self.project, 'k5')
+            push(42, 'link', self.project, 'k6', chat=None)
+            self.assertEqual(len(replies()), 4)
+            with self.registry._transaction() as db:
+                db.execute('DELETE FROM person_permissions WHERE person_id = ?', (self.actor,))
+            push(42, 'unlink', self.project, 'k7')
+            self.assertEqual(replies()[4][2]['text'], 'Only a coordinator can use /unlink.')
+
     def test_preview_and_approval_name_a_known_topic(self) -> None:
         with self.registry._transaction() as db:
             db.execute("INSERT INTO linked_chat_topics VALUES (-100, 12, 'ABC123 - Edit')")
@@ -125,6 +156,7 @@ class ChatLinkTests(unittest.TestCase):
             body = {'kind': 'command', 'command': 'link', 'args': '', 'chat': -100, 'topic': 12, 'from': {'id': 42}}
             response = api(Request('POST', '/tap', {'Authorization': 'Bearer gateway', 'X-Telegram-User-Id': '42', 'Idempotency-Key': 'prefill'}, json.dumps(body).encode()))
             self.assertEqual(response.body['outcome'], 'accepted')
+            self.assertEqual([job for job in queue.waiting('main') if job.kind == 'chat.reply'], [])
             with self.registry._transaction() as db:
                 request = json.loads(db.execute('SELECT request FROM chat_link_previews').fetchone()[0])
                 self.assertEqual(request['values']['project'], 'ABC123')
