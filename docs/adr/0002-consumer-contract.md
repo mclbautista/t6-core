@@ -1,6 +1,6 @@
 # 2. The consumer contract: every app uses t6-core
 
-Date: 2026-11-13. Status: accepted; amended 2026-11-14. Source: specs #115 and #178.
+Date: 2026-11-13. Status: accepted; amended 2026-11-14 and 2026-11-16. Source: specs #115 and #178.
 
 ## Context
 
@@ -18,8 +18,11 @@ Every app follows these ten rules. Each has its reason.
 
 1. **Scope.** Apps call the t6 API for Notion, LLM and Google work;
    they do not hold those credentials or import those adapters. Frame.io,
-   Resolve, privacy and fleet work also goes through t6-core. Pure rules
-   remain importable. Hermes skills use the `t6` CLI. Read-only exploration
+   Resolve, privacy and fleet work also goes through t6-core. Apps import
+   only `t6.client` and `t6.verbs`; rules run in the API. Owner, 2026-11-16:
+   "No imports via the t6 package. All of these should go through the API.
+   Apps should only change in logic, not in rules." Hermes skills use the
+   `t6` CLI. Read-only exploration
    by Claude through the Notion connector is exempt; any write goes through
    t6. *Why:* one service owns the credentials and outside-system changes.
 2. **Boundary.** t6-core owns studio facts and rules. Each app keeps its
@@ -40,8 +43,9 @@ Every app follows these ten rules. Each has its reason.
    retry API writes from their own outboxes with the same idempotency key.
    *Why:* app retry and retention choices stay local, while t6 tracks its jobs.
 6. **Enforced in CI.** `t6 admin consumer-check` runs in every app and fails on
-   direct calls to Notion, LLM providers or Frame.io and follows the API
-   boundary; a bare mention of Frame.io in a string is not a call. The check
+   direct calls to Notion, LLM providers or Frame.io, on any `t6` import other
+   than `t6.client` and `t6.verbs` (rule `t6-import`, no exception allowed) and
+   follows the API boundary; a bare mention of Frame.io in a string is not a call. The check
    cannot tell a request target from a host in test data: it flags every string
    constant that holds a provider host, because narrowing to assignments or
    non-test files would miss real calls such as a literal URL passed to a

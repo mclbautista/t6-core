@@ -1637,16 +1637,20 @@ $ t6 deadline "Nov 13 5pm" --posted 2026-11-12T09:00:00+08:00
 ### Check an app follows the consumer contract
 
 `t6 admin consumer-check PATH` scans Python and common configuration files for
-Notion and LLM adapter imports, credential names, and direct service hosts
-([ADR 0002](docs/adr/0002-consumer-contract.md)). The credential names are
+Notion and LLM adapter imports, any other `t6` import, credential names, and
+direct service hosts ([ADR 0002](docs/adr/0002-consumer-contract.md)). The credential names are
 `NOTION_API_KEY`, `NOTION_TOKEN`, `T6_NOTION_API_KEY` and `T6_NOTION_TOKEN`
 (not names that only start with one, such as `NOTION_TOKEN_FILE`), the LLM
 and Google keys such as `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
 `DEEPSEEK_API_KEY` and `GOOGLE_APPLICATION_CREDENTIALS`. The host rule reads
 every string constant, so a provider URL in test data (a message body that holds
 a Frame.io share link) is a finding too; record it in the allow-list as a
-`direct-http` exception for that file. The API client, pure domain
-rules, privacy helpers, and Frame.io client are allowed. Python docstrings and
+`direct-http` exception for that file. An app may import only `t6.client` and
+`t6.verbs` (and their submodules; `from t6 import client` is fine). Any other
+import from the `t6` package, in any `.py` file including tests, is a
+`t6-import` finding that names the file, the line and the module, for example
+`imports t6.domain.deadlines`; the rules run in the API, so the app calls it
+instead. Python docstrings and
 virtualenv or cache directories are skipped. The command prints JSON and exits
 1 for findings, or 2 if the path does not exist.
 
@@ -1663,7 +1667,8 @@ entries fail the check. For example:
 
 Exceptions match an exact path relative to the app root and a finding rule
 (`adapter-import`, `credential`, or `direct-http`); keep them narrow and remove
-them after migration. This is a static check and cannot detect dynamically
+them after migration. A `t6-import` entry is refused as invalid: that rule has
+no exception. This is a static check and cannot detect dynamically
 constructed names or calls.
 
 To add it to an app's CI, install t6 at the pinned release tag and run it on the
