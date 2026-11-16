@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from t6.bay import BayStore
 from t6.notion.generated import BaysRow
-from t6.notion.testing import FakeNotion, title
+from t6.notion.testing import FakeNotion, multi_select, title
 from test_person import MemoryRegistry
 
 
@@ -231,3 +231,36 @@ class BayCliTests(unittest.TestCase):
             self.assertEqual([e['t6_id'] for e in first['entries']], [e['t6_id'] for e in second['entries']])
             catalogue = run('commands', '--json')
             self.assertTrue({('bay', 'book'), ('booking', 'move'), ('booking', 'extend'), ('booking', 'cancel')} <= {(e['noun'], e['verb']) for e in catalogue})
+
+    def test_admin_migrate_with_a_type_registers_only_the_rows_of_that_type(self) -> None:
+        import io
+        import json
+        import os
+        import tempfile
+        from contextlib import redirect_stdout, redirect_stderr
+        from pathlib import Path
+        from t6.cli import main
+        registry = MemoryRegistry()
+        self.addCleanup(registry.db.close)
+        fake = FakeNotion()
+        fake.add_snapshot_data_source('bays', 'bays')
+        name, kind = BaysRow.notion_name('name'), BaysRow.notion_name('type')
+        fake.add_page('bays', {name: title('Suite'), kind: multi_select('Suite', 'Loaner')})
+        fake.add_page('bays', {name: title('Laptop'), kind: multi_select('Loaner')})
+        fake.add_page('bays', {name: title('Untyped')})
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / 'sources.json'
+            source.write_text(json.dumps({'bays': 'bays'}))
+            def run(*args: str) -> Any:
+                out = io.StringIO()
+                with patch.dict(os.environ, {'T6_NOTION_TOKEN': 'fake'}, clear=True), patch('t6.registry.SqliteProjectRegistry', return_value=registry), redirect_stdout(out), redirect_stderr(io.StringIO()):
+                    self.assertEqual(main(list(args), open_notion=lambda _: fake.client()), 0)
+                return json.loads(out.getvalue())
+            args = ('admin', 'bay', 'migrate', '--data-sources', str(source), '--type', 'Suite')
+            preview = run(*args)
+            self.assertEqual([e['action'] for e in preview['entries']], ['register'])
+            path = Path(tmp) / 'preview.json'
+            path.write_text(json.dumps(preview))
+            applied = run(*args, '--apply', '--preview', str(path))
+            self.assertEqual([e['action'] for e in applied['entries']], ['registered'])
+            self.assertEqual(registry.db.execute('SELECT COUNT(*) FROM bays').fetchone()[0], 1)
