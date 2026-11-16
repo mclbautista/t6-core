@@ -158,6 +158,41 @@ class ReadTests(unittest.TestCase):
                 self.assertIn('Client Corp', call('operator', True))
                 self.assertIn('Client Corp', call('operator', False))
 
+    def seed_drive(self, label: str) -> str:
+        """Register a Drive the way a person does: `drive add`, preview then confirm."""
+        from t6.drive_verbs import DriveVerbs
+        verbs = DriveVerbs(self.registry, PreviewTokens('seed-signing'))
+        values = {'label': label}
+        preview = verbs.write('add', values, actor='setup', idempotency_key='seed-' + label)
+        assert isinstance(preview, Preview)
+        done = verbs.write('add', values, actor='setup', idempotency_key='seed-' + label, confirm=preview.token)
+        assert isinstance(done, Done)
+        return str(done.result['drive_ids'][0])
+
+    def test_drive_reads_are_called_through_the_client(self) -> None:
+        from t6.verbs import DriveGetInput, DriveListInput
+        drive = self.seed_drive('Example master')
+        listed = self.client.drive_list(DriveListInput(q='example'))
+        assert isinstance(listed, Done)
+        self.assertEqual([d['id'] for d in listed.result['drives']], [drive])
+        got = self.client.drive_get(DriveGetInput(drive=drive))
+        assert isinstance(got, Done)
+        self.assertEqual(got.result['drive']['label'], 'Example master')
+
+    def test_drive_reads_are_masked_for_the_mcp_service(self) -> None:
+        import json
+        from t6.server.app import Request
+        drive = self.seed_drive('Client Corp master')
+        for path, body in (('/v1/drive/get', {'drive': drive}), ('/v1/drive/list', {})):
+            with self.subTest(path):
+                def call(secret: str, header: bool, path: str = path, body: Any = body) -> str:
+                    headers = {'Authorization': 'Bearer ' + secret, **({'X-T6-MCP': '1'} if header else {})}
+                    return json.dumps(self.api(Request('POST', path, headers, json.dumps(body).encode())).body)
+                self.assertNotIn('Client Corp', call('mcp-secret', False))
+                self.assertNotIn('Client Corp', call('mcp-secret', True))
+                self.assertIn('Client Corp', call('operator', True))
+                self.assertIn('Client Corp', call('operator', False))
+
     def test_project_flags_are_read_without_ids_or_age(self) -> None:
         from t6.verbs import ProjectFlagsInput
         result = self.client.project_flags(ProjectFlagsInput(project=self.project['id']))

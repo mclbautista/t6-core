@@ -404,6 +404,10 @@ class DriveStore(Protocol):
         """Find by permanent ID only. Unknown IDs return None."""
         ...
 
+    def list_drives(self) -> tuple[Drive, ...]:
+        """Every recorded Drive, in the order they were added."""
+        ...
+
     def find_by_serial(self, serial: str) -> Drive | None:
         """Normalize and match accepted serials only; never suspected values."""
         ...
@@ -431,6 +435,14 @@ class DriveStore(Protocol):
 
     def set_review(self, drive_id: str, *, needs_review: bool, note: str | None = None) -> Drive:
         """Set general review state without changing serials or workflow rights."""
+        ...
+
+    def set_label(self, drive_id: str, label: str | None) -> Drive:
+        """Correct or clear the label. Clearing the only identifying detail raises ValueError."""
+        ...
+
+    def set_form_factor(self, drive_id: str, form_factor: FormFactor | None) -> Drive:
+        """Correct or clear the form factor."""
         ...
 
     def save_preview(self, nonce: str, snapshot: str) -> None:
@@ -528,6 +540,10 @@ class DriveStore(Protocol):
         """
         ...
 
+    def list_shipments(self) -> tuple[str, ...]:
+        """The ID of every shipment, once each, in the order each was first released."""
+        ...
+
     def add_assignment(self, drive_id: str, assignment: Assignment) -> None:
         """Assign a recorded Drive. Raises UnknownDrive if the ID is not recorded.
 
@@ -604,6 +620,10 @@ class DriveStore(Protocol):
 
     def delivery_drives(self, delivery_id: str) -> tuple[str, ...]:
         """The IDs of the Drives linked to a Delivery, sorted. Empty if none."""
+        ...
+
+    def drive_deliveries(self, drive_id: str) -> tuple[str, ...]:
+        """The IDs of the Deliveries a Drive is linked to, sorted. Raises UnknownDrive if the ID is not recorded."""
         ...
 
     def delivery_carrier(self, delivery_id: str) -> tuple[str, str] | None:

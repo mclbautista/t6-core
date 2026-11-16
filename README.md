@@ -515,6 +515,24 @@ I/O and needs no extra.
   `overdue_returns(today)` lists the open Assignments due back before `today`,
   and `check_person(person_id)` checks a holder.
 
+### Drive reads and inventory verbs
+
+The reads are open to any active staff Person, read only, and so also MCP tools: `t6 drive list [--q TEXT]
+[--serial S] [--needs-review true|false] [--project T6P] [--status S]` (the filters of the Drive web
+app's inventory screen, combined with AND; `--q` searches the Drive ID, serials, label and
+description, and `--project` finds Drives with an open Assignment for that Project), `t6 drive get
+--drive ID` (facts, status, custody events in append order, numbered Assignments, source rows and
+linked Deliveries), `t6 drive find --serial S` (accepted or suspected serial, in any spelling),
+`t6 drive shipments`, `t6 drive shipment --shipment ID` and `t6 drive exceptions` (the import
+exception queue). A Drive with no custody events has the status `unknown`.
+
+The writes need the `drives` permission, preview, then confirm with `--confirm`, and are idempotent
+by key: `t6 drive add --label L [--serial S] [--brand B] ...` registers a Drive (a serial already
+recorded is refused, naming the Drive that holds it), `t6 drive edit --drive ID [--label L]
+[--form-factor F] [--serial S] [--suspected-serial S] [--needs-review true|false] [--review-note N]`
+changes only the facts named (an empty value clears one), and `t6 drive promote-serial --drive ID`
+accepts the suspected serial. Custody events and Assignments are not touched.
+
 ### Swing Drives
 
 Swing Drives live once, in `t6.drives`. The verbs, all with the `drives`

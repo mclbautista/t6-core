@@ -54,6 +54,7 @@ class FakeFrameio:
         self.comments: dict[str, list[JSON]] = {}
         self.stacks: dict[str, list[str]] = {}
         self.stack_parents: dict[str, str] = {}
+        self.not_a_stack_status = 422  # what Frame.io answers when a folder ID is asked for as a version stack (seen live 2026-11-16)
         self.metadata: dict[str, list[JSON]] = {}
         self.requests: list[str] = []
         self.tokens_seen: list[str] = []
@@ -207,12 +208,14 @@ class FakeFrameio:
             match = re.fullmatch(pattern, rest)
             if match:
                 rows = answer(*match.groups())
-                return (404, {}, {}) if rows is None else self._page(parts.path, query, rows)
+                if rows is None:
+                    return (self.not_a_stack_status if "/version_stacks/" in rest else 404), {}, {}
+                return self._page(parts.path, query, rows)
         match = re.fullmatch(r"/version_stacks/([^/]+)", rest)
         if match:
             stack_id = match.group(1)
             if stack_id not in self.stacks:
-                return 404, {}, {}
+                return self.not_a_stack_status, {}, {}
             return 200, {}, {"data": {"id": stack_id, "type": "version_stack", "name": stack_id, "parent_id": self.stack_parents[stack_id]}}
         match = re.fullmatch(r"/projects/([^/]+)", rest)
         if match:

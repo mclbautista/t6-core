@@ -4,6 +4,14 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- Drive reads and inventory verbs (#365): `drive list` (text, exact serial, needs review, Project with an open Assignment and status filters), `drive get`, `drive find`, `drive shipments`, `drive shipment` and `drive exceptions`, all read only and MCP tools, and `drive add`, `drive edit` and `drive promote-serial` with the `drives` permission. The `DriveStore` gains `list_drives`, `list_shipments`, `drive_deliveries`, `set_label` and `set_form_factor`.
+
+### Fixed
+
+- Frame.io file location and versions of a file in a plain folder (#366): Frame.io answers 422, not 404, when a folder ID is asked for as a version stack. The reads now take both to mean the file is in no stack, so the read API answers 200 with no stack instead of 502.
+
 ## [0.6.0] - 2026-11-16
 
 Phase 3 of the t6-core shape (#178) and transcription (#180): Bays, Media locations, Drives, Timelines, Project Start, Google Calendar, MCP and Transcripts. Released by #279.

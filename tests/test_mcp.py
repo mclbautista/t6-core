@@ -65,7 +65,7 @@ class MCPTests(unittest.TestCase):
     TOOL_NAMES = [
         'booking__get', 'booking__list', 'camera__get', 'concern__changes', 'concern__for-message', 'concern__get', 'concern__list', 'deliverable__bangko',
         'deliverable__get', 'deliverable__hand-to-mouth', 'deliverable__list', 'deliverable__sabit', 'departments',
-        'external-link__find', 'jo__find', 'jo__get', 'jo__list', 'media__list', 'meeting-notes__list', 'package__get',
+        'drive__exceptions', 'drive__find', 'drive__get', 'drive__list', 'drive__shipment', 'drive__shipments', 'external-link__find', 'jo__find', 'jo__get', 'jo__list', 'media__list', 'meeting-notes__list', 'package__get',
         'package__list', 'person__find', 'person__get', 'person__list', 'project__activity', 'project__flags',
         'project__get', 'project__list', 'project__notes', 'project__resolve', 'standing-cc', 'studio__notices', 'swing__overdue', 'timeline__list', 'transcript__get',
         'version__find', 'version__get']
@@ -77,7 +77,7 @@ class MCPTests(unittest.TestCase):
             self.assertNotIn('confirm', tool['inputSchema'].get('properties', {}), tool['name'])
             self.assertNotIn('idempotency_key', tool['inputSchema'].get('properties', {}), tool['name'])
         names = {t['name'] for t in tools}
-        for write in ('swing__assign', 'swing__unassign', 'swing__return', 'transcript__create', 'transcript__speakers', 'transcript__translate', 'jo__format'):
+        for write in ('swing__assign', 'swing__unassign', 'swing__return', 'drive__add', 'drive__edit', 'drive__promote-serial', 'transcript__create', 'transcript__speakers', 'transcript__translate', 'jo__format'):
             self.assertNotIn(write, names)
 
     def test_project_activity_read_is_masked_for_the_mcp_service_and_a_non_operator_person(self) -> None:

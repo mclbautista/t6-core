@@ -21,6 +21,7 @@ from t6.drives import (
     DriveStatus,
     DuplicateAssignment,
     DuplicateSerial,
+    FormFactor,
     Party,
     Ref,
     SourceRow,
@@ -109,8 +110,21 @@ class InMemoryDriveStore:
         self._drives[drive_id] = drive
         return drive
 
+    def set_label(self, drive_id: str, label: str | None) -> Drive:
+        drive = replace(self._drive(drive_id), label=label)
+        self._drives[drive_id] = drive
+        return drive
+
+    def set_form_factor(self, drive_id: str, form_factor: FormFactor | None) -> Drive:
+        drive = replace(self._drive(drive_id), form_factor=form_factor)
+        self._drives[drive_id] = drive
+        return drive
+
     def get_drive(self, drive_id: str) -> Drive | None:
         return self._drives.get(drive_id)
+
+    def list_drives(self) -> tuple[Drive, ...]:
+        return tuple(self._drives.values())
 
     def find_by_serial(self, serial: str) -> Drive | None:
         normalized = normalize_serial(serial)
@@ -193,6 +207,9 @@ class InMemoryDriveStore:
             if event.shipment_id == shipment_id
         )
 
+    def list_shipments(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(event.shipment_id for _, event in self._shipped if event.shipment_id is not None))
+
     def list_events(self, drive_id: str) -> tuple[CustodyEvent, ...]:
         return tuple(self._log(drive_id))
 
@@ -254,6 +271,10 @@ class InMemoryDriveStore:
 
     def delivery_drives(self, delivery_id: str) -> tuple[str, ...]:
         return tuple(sorted(self._delivery_drives.get(delivery_id, ())))
+
+    def drive_deliveries(self, drive_id: str) -> tuple[str, ...]:
+        self._drive(drive_id)
+        return tuple(sorted(delivery for delivery, drives in self._delivery_drives.items() if drive_id in drives))
 
     def delivery_carrier(self, delivery_id: str) -> tuple[str, str] | None:
         return self._deliveries.get(delivery_id)

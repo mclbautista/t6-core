@@ -51,6 +51,9 @@ Modelled in `t6.drives`.
   data; the web app prints it.
 - **Status**: where a Drive stands (in custody, released or retired), always
   derived from the last custody event and never stored. No events, no status.
+- **Inventory**: the Drives with their derived status, read with `drive list`. Its
+  filters combine with AND: text, exact accepted serial, needs review, a Project with an
+  open Assignment, and status. A Drive with no custody events shows the status `unknown`.
 - **Assignment**: one stretch of a Drive's life on one Project: label, Project
   (a registered T6 Project ID, or text when unresolved), role (master, backup,
   offline, swing, archive), start, end and remarks. The label, role and start

@@ -1780,6 +1780,232 @@ def swing_overdue(inputs: SwingOverdueInput, open_notion: Callable[..., Any]) ->
     return Done(result=DriveVerbs(people.registry, people.tokens).overdue())
 
 
+class DriveAddInput(BaseModel):
+    label: str
+    serial: str | None = None
+    suspected_serial: str | None = None
+    description: str | None = None
+    brand: str | None = None
+    model: str | None = None
+    capacity_tb: float | None = None
+    format: str | None = None
+    form_factor: Literal['portable', 'powered desktop'] | None = None
+    owner_studio_id: str | None = None
+    ownership_known: bool = True
+    purchase_date: str | None = None
+    warranty: str | None = None
+    remarks: str | None = None
+    needs_review: bool = False
+    review_note: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class DriveEditInput(BaseModel):
+    drive: str
+    label: str | None = None
+    form_factor: Literal['portable', 'powered desktop', ''] | None = None
+    serial: str | None = None
+    suspected_serial: str | None = None
+    needs_review: bool | None = None
+    review_note: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class DrivePromoteSerialInput(BaseModel):
+    drive: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class DriveFactsOutput(BaseModel):
+    action: str
+    drive_ids: list[str]
+    facts: dict[str, Any]
+    idempotency_key: str
+
+
+def drive_fact_write(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.drive_verbs import DriveVerbs
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    people = _people()
+    verb = next(name for model, name in ((DriveAddInput, 'add'), (DriveEditInput, 'edit'), (DrivePromoteSerialInput, 'promote_serial'))
+                if type(inputs) is model)
+    return DriveVerbs(people.registry, people.tokens).write(
+        verb, inputs.model_dump(exclude={'idempotency_key', 'confirm'}, exclude_none=True), actor=_actor.get(),
+        idempotency_key=getattr(inputs, 'idempotency_key'), confirm=getattr(inputs, 'confirm'))
+
+
+class DriveListInput(BaseModel):
+    q: str | None = None
+    serial: str | None = None
+    needs_review: bool | None = None
+    project: str | None = None
+    status: Literal['in custody', 'released', 'retired', 'unknown'] | None = None
+
+
+class DriveGetInput(BaseModel):
+    drive: str
+
+
+class DriveFindInput(BaseModel):
+    serial: str
+
+
+class DriveShipmentsInput(BaseModel):
+    pass
+
+
+class DriveShipmentInput(BaseModel):
+    shipment: str
+
+
+class DriveExceptionsInput(BaseModel):
+    pass
+
+
+class DriveRef(BaseModel):
+    page_id: str | None
+    text: str | None
+
+
+class DriveParty(BaseModel):
+    kind: str
+    ref: DriveRef
+
+
+class DriveItem(BaseModel):
+    """A Drive's facts and its status, derived from the custody log ('unknown' when there are no events)."""
+    id: str
+    label: str | None
+    description: str | None
+    serial: str | None
+    suspected_serial: str | None
+    needs_review: bool
+    review_note: str | None
+    brand: str | None
+    model: str | None
+    capacity_tb: float | None
+    format: str | None
+    form_factor: str | None
+    ownership: str
+    owner_studio_id: str | None
+    purchase_date: str | None
+    warranty: str | None
+    remarks: str | None
+    status: str
+
+
+class DriveEventItem(BaseModel):
+    kind: str
+    on: str | None
+    party: DriveParty | None
+    project: DriveRef
+    logged_by: DriveRef
+    reason: str | None
+    shipment_id: str | None
+
+
+class DriveAssignmentItem(BaseModel):
+    number: int
+    label: str | None
+    project: DriveRef | None
+    role: str | None
+    start: str | None
+    end: str | None
+    remarks: str | None
+    return_date: str | None
+    holder: str | None
+    open: bool
+
+
+class DriveSourceItem(BaseModel):
+    workbook: str
+    sheet: str
+    row: int
+
+
+class DriveListOutput(BaseModel):
+    drives: list[DriveItem]
+
+
+class DriveGetOutput(BaseModel):
+    drive: DriveItem
+    events: list[DriveEventItem]
+    assignments: list[DriveAssignmentItem]
+    sources: list[DriveSourceItem]
+    deliveries: list[str]
+
+
+class DriveMatch(DriveItem):
+    match: Literal['accepted', 'suspected']
+
+
+class DriveFindOutput(BaseModel):
+    serial: str
+    matches: list[DriveMatch]
+
+
+class DriveShipmentItem(BaseModel):
+    shipment_id: str
+    on: str | None
+    party: DriveParty | None
+    project: DriveRef
+    drive_count: int
+
+
+class DriveShipmentsOutput(BaseModel):
+    shipments: list[DriveShipmentItem]
+
+
+class DriveRelease(BaseModel):
+    drive: DriveItem
+    event: DriveEventItem
+
+
+class DriveShipmentOutput(BaseModel):
+    shipment_id: str
+    releases: list[DriveRelease]
+
+
+class DriveExceptionItem(BaseModel):
+    workbook: str
+    sheet: str
+    row: int
+    reason: str
+    detail: str
+
+
+class DriveExceptionsOutput(BaseModel):
+    exceptions: list[DriveExceptionItem]
+
+
+def drive_read(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6 import drive_reads
+    from t6.drives.sqlite import SqliteDriveStore
+    store = SqliteDriveStore(_people().registry)
+    result: BaseModel | None
+    if isinstance(inputs, DriveListInput):
+        result = drive_reads.list_drives(store, **inputs.model_dump())
+    elif isinstance(inputs, DriveGetInput):
+        result = drive_reads.get(store, inputs.drive)
+        if result is None:
+            return Refused(rule='drive', reason=f'Drive {inputs.drive} not found')
+    elif isinstance(inputs, DriveFindInput):
+        result = drive_reads.find(store, inputs.serial)
+    elif isinstance(inputs, DriveShipmentInput):
+        result = drive_reads.shipment(store, inputs.shipment)
+        if result is None:
+            return Refused(rule='shipment', reason=f'Shipment {inputs.shipment} not found')
+    elif isinstance(inputs, DriveShipmentsInput):
+        result = drive_reads.shipments(store)
+    else:
+        result = drive_reads.exceptions(store)
+    return Done(result=result.model_dump(mode='json'))
+
+
 class TranscriptCreateInput(BaseModel):
     media: str
     deliverable: str | None = None
@@ -1853,6 +2079,15 @@ VERBS = (
     Verb('drive', 'retire', 'Retire a Drive', (), DriveRetireInput, DriveWriteOutput, 'drives', 'Needs a reason; a later receive or return brings the Drive back.', drive_write),
     Verb('drive', 'assign', 'Assign a Drive to a Project', (), DriveAssignInput, DriveWriteOutput, 'drives', 'Preview and confirm; adds an Assignment with label and role.', drive_write),
     Verb('drive', 'unassign', 'End a Drive Assignment', (), DriveUnassignInput, DriveWriteOutput, 'drives', 'Ends the open Assignment and keeps it in history; when several are open, pick by label, role or assignment number.', drive_write),
+    Verb('drive', 'add', 'Register a Drive', (), DriveAddInput, DriveFactsOutput, 'drives', 'Preview and confirm; a serial already recorded is refused, naming the Drive that holds it.', drive_fact_write),
+    Verb('drive', 'edit', 'Correct the facts of a Drive', (), DriveEditInput, DriveFactsOutput, 'drives', 'Preview and confirm; changes only the facts named, and an empty value clears one. Custody events and Assignments are not touched.', drive_fact_write),
+    Verb('drive', 'promote-serial', 'Accept the suspected serial of a Drive', (), DrivePromoteSerialInput, DriveFactsOutput, 'drives', 'Preview and confirm; the suspected serial becomes the accepted one, only if no other Drive holds it.', drive_fact_write),
+    Verb('drive', 'list', 'List Drives with their custody status', (), DriveListInput, DriveListOutput, 'reader', 'Filters (q, serial, needs_review, project, status) combine with AND. project is a T6 Project ID with an open Assignment.', drive_read, read_only=True),
+    Verb('drive', 'get', 'Show one Drive', (), DriveGetInput, DriveGetOutput, 'reader', 'Facts, status, custody events in append order, numbered Assignments, source rows and linked Deliveries.', drive_read, read_only=True),
+    Verb('drive', 'find', 'Find Drives by serial', (), DriveFindInput, DriveFindOutput, 'reader', 'Matches an accepted or a suspected serial, in any spelling.', drive_read, read_only=True),
+    Verb('drive', 'shipments', 'List Drive shipments', (), DriveShipmentsInput, DriveShipmentsOutput, 'reader', 'One entry for each shipment, in the order first released.', drive_read, read_only=True),
+    Verb('drive', 'shipment', 'Show one Drive shipment', (), DriveShipmentInput, DriveShipmentOutput, 'reader', 'The Drives of the shipment with their release events.', drive_read, read_only=True),
+    Verb('drive', 'exceptions', 'List the Drive import exceptions', (), DriveExceptionsInput, DriveExceptionsOutput, 'reader', 'Rows the Drive import could not read, kept for review.', drive_read, read_only=True),
     Verb('swing', 'assign', 'Assign a swing Drive to a Person or Project', (), SwingAssignInput, SwingWriteOutput, 'drives', 'Preview and confirm; adds a swing Assignment, with an optional return date. A Person target needs no Project; --project may be added.', swing_write),
     Verb('swing', 'unassign', 'End a swing Assignment', (), SwingUnassignInput, SwingWriteOutput, 'drives', 'Ends the open swing Assignment and keeps it, with its return date, in history. When several are open, pick by --project, --person or --assignment.', swing_write),
     Verb('swing', 'return', 'Return a swing Drive', (), SwingReturnInput, SwingWriteOutput, 'drives', 'Ends the open swing Assignment and clears its return date.', swing_write),
