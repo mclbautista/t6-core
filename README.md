@@ -2066,6 +2066,11 @@ and `output_valid` stays true. `masked_output` then holds the reply as the model
 wrote it, placeholders only. With `restore: "whole"` (the default) one such
 placeholder makes the call `output_valid: false`.
 
+With `masking_preset: "strict"` the links, handles and long numbers of the input
+are hidden from the model, and the reply gets them back as they were written (the
+Python `strict` preset restores them as `[id]`; `llm run` does not). A quoted line
+therefore equals its source line.
+
 POST `/v1/llm/decide` (`llm decide`, role `llm`) asks the Decisions provider about
 candidates. Send `task_name`, `state` (text values), `question` (exactly one
 `{candidate}` marker), `criteria` (`match`, `maybe` and `no`) and `candidates`.
