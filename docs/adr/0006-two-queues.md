@@ -34,3 +34,5 @@ it cannot read a job table there. No other work that starts inside T6 may use th
 VPS queue without a new note here.
 
 Note, 2026-11-16 (#398): the Frame.io review timer (`POST /review/timers`, then the `frameio.review_done` job on `main`) is part of this exception. The timers live in the VPS queue file, so the edge also serves that one route and the worker on the VPS `main` queue runs `frameio.review_done`. The edge still answers 404 to everything else.
+
+Note, 2026-11-17 (#414): a failed job is dismissed, never run again. Each queue has its own way in: the verbs `queue failed` and `queue dismiss` for the internal jobs in the t6 database, and `t6 admin queue` on the edge host for the VPS queue file, which has no t6 database. Neither queue gets a re-run.

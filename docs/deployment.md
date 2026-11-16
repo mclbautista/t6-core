@@ -131,6 +131,26 @@ deploy tools and monitors:
 With `T6_SERVER_MODE=edge` (the VPS server) no registry database is required. For a
 deploy check: `t6 health --local --ignore-history`.
 
+## Dismissing a failed job
+
+A failed job is never run again. When its data was fixed another way, an operator dismisses the job with a reason; it then
+stops counting in `t6 health` (`failed_jobs`, `dead_internal_jobs`) and no longer shows in the history. The job keeps its row,
+its stored failure and its dedupe key, so a redelivered event still makes no second job. There are two queues, and two ways in
+(#414):
+
+- **Internal jobs in the t6 database** (kind and queue as `t6 health` lists under `dead_internal_jobs`): the verbs
+  `queue failed` (read) and `queue dismiss` (preview, confirm, `--reason` required), for an `operator` Person. The dismissal is
+  an audit entry (`queue_dismiss`, subject `internal-job:<id>`) with the operator and the reason. A job is dismissable when it is
+  dead (it used all its attempts). A job that a verb finished as `failed` on purpose is a result, not a failure, and is not listed.
+- **Webhook jobs in the VPS edge queue file** (the `main` queue's `frameio.*` jobs, `failed_jobs`): the queue file lives on the
+  edge host and no t6 database is there (no Persons, no `audit` table), so the verbs cannot reach it. Run on the edge host:
+  `t6 admin queue failed` lists the failed jobs (`--queue-db`, default `T6_QUEUE_DB`), and
+  `t6 admin queue dismiss JOB --reason TEXT [--by NAME]` dismisses one. Being on the host is the operator check, as for
+  `t6 admin calendar resync`. The actor (`--by`, default the operating-system user), the reason and the time are kept in the
+  `dismissals` table of the queue file, in the same transaction.
+
+Neither queue gets a re-run: fix the data another way, then dismiss.
+
 ## Backup and restore
 
 ```sh

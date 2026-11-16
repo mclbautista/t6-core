@@ -2139,6 +2139,14 @@ and `package reject` refuse it. These writes use the usual
 preview, confirmation token, and idempotency key. `package get <package-id>`
 shows the snapshot, checklist, and derived `kasado` readiness.
 
+### Failed jobs
+
+`t6 queue failed` lists the dead jobs of the internal queue in the t6 database. `t6 queue dismiss --job <id> --reason <reason>`
+(an operator, preview and confirm like any write, audited) dismisses one: it is never run again and no longer counts as
+failed. The webhook jobs of the VPS edge queue live in the edge host's own queue file, outside the t6 database, so they have
+their own admin commands, `t6 admin queue failed` and `t6 admin queue dismiss JOB --reason <reason>`, run on the edge host.
+See `docs/deployment.md`.
+
 ## Concern settlement and Project flags
 
 Concerns may link to a Job Order, Approval, to a Deliverable and an

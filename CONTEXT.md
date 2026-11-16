@@ -430,6 +430,14 @@ Manifest, Ring, Munki Client Version, Last Check-in and OS Version.
   stale. Its observed facts (client version, OS version, last check-in) are
   not written.
 
+## Failed jobs
+
+A job that used all its attempts is failed (dead, in the internal queue). It is never run again. An operator
+**dismisses** it with a reason: the job keeps its row, failure and dedupe key, stops counting as failed, and the
+dismissal is audited. There are two queues (ADR 0006): the internal jobs in the t6 database (verbs `queue failed` and
+`queue dismiss`) and the webhook jobs in the VPS edge queue file (`t6 admin queue`, run on the edge host, with the
+dismissal kept in that file). Failed jobs are not re-run: the operator fixes the data another way.
+
 ## Concern
 
 A Concern is shared information. It is a waiting-on record, and it is also the
