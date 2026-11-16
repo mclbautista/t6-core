@@ -328,6 +328,21 @@ class ReadTests(unittest.TestCase):
             _, reader = Client(self.client.base_url, 'secret'), Client(self.client.base_url, 'secret').person_create(PersonCreateInput(name='Placeholder', kind='client'))
             self.assertIsInstance(reader, Refused)
 
+    def test_person_create_takes_freelancer_and_a_bad_kind_is_a_422(self) -> None:
+        from urllib.error import HTTPError
+        from urllib.request import Request, urlopen
+        import json
+        with patch.dict(os.environ, {'T6_PREVIEW_SIGNING_KEY': 'key'}):
+            _, created = self.person_create(kind='freelancer', idempotency_key='create-freelancer')
+            assert isinstance(created, Done)
+            self.assertEqual(created.result['person']['kind'], 'freelancer')
+        request = Request(f'http://127.0.0.1:{self.server.server_port}/v1/person/create', headers={'Authorization': 'Bearer operator'},
+                          data=json.dumps({'name': 'Placeholder Person', 'kind': 'contractor'}).encode())
+        with self.assertRaises(HTTPError) as error:
+            urlopen(request)
+        self.assertEqual(error.exception.code, 422)
+        error.exception.close()
+
     def test_person_create_after_an_unclear_notion_failure_is_ambiguous_and_makes_no_second_page(self) -> None:
         from t6.verbs import Ambiguous, PersonCreateInput
         before = self.contact_pages()

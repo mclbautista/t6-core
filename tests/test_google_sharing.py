@@ -282,7 +282,7 @@ class PersonChangesQueueSharingTests(SharingCase):
     def test_a_refused_classify_queues_nothing(self) -> None:
         from t6.verbs import VERBS, Refused, invoke
         entry = next(e for e in VERBS if (e.noun, e.verb) == ('person', 'classify'))
-        outcome = invoke(entry, entry.input_model.model_validate({'person_id': 'ana', 'kind': 'robot'}), actor='op', people=self.people, open_notion=lambda _: None)
+        outcome = invoke(entry, entry.input_model.model_construct(None, person_id='ana', kind='robot'), actor='op', people=self.people, open_notion=lambda _: None)
         self.assertIsInstance(outcome, Refused)
         self.assertEqual(self.jobs(SHARING_KIND), 0)
 
