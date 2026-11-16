@@ -11,6 +11,7 @@ from pathlib import Path
 import signal
 import sys
 import threading
+import time
 from urllib.error import URLError
 
 from t6.domain.events import JobKind, JsonValue
@@ -520,12 +521,44 @@ def read_api_server(environ: Mapping[str, str], frameio: FrameioWorker) -> Threa
 
 
 MAX_RETRY_SECONDS = 60.0
+INTERNAL_POLL_SECONDS = 0.25
+"""How often a worker with an internal client looks at the internal job table while it waits (#402)."""
+
+
+def _wait_with_internal_checks(
+    worker: Worker, stop: threading.Event, poll_seconds: float, clock: Callable[[], float]
+) -> None:
+    """Wait `poll_seconds`, running the internal jobs that fall due meanwhile; `stop` ends the wait at once."""
+    from t6.registry.core import RegistryUnavailable  # what the job table raises when the database is locked or gone
+
+    deadline = clock() + poll_seconds
+    while not stop.is_set():
+        remaining = deadline - clock()
+        if remaining <= 0:
+            return
+        if stop.wait(min(INTERNAL_POLL_SECONDS, remaining)):
+            return
+        try:
+            while not stop.is_set() and worker.run_internal_once():
+                pass
+        except (OSError, URLError, RegistryUnavailable) as error:
+            print(f"t6.worker: internal job table unreachable ({error}); waiting without checking it", file=sys.stderr, flush=True)
+            stop.wait(max(0.0, deadline - clock()))
+            return
 
 
 def serve(
-    worker: Worker, stop: threading.Event, poll_seconds: float, tick: Callable[[], None] | None = None
+    worker: Worker,
+    stop: threading.Event,
+    poll_seconds: float,
+    tick: Callable[[], None] | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> None:
-    """Run jobs until `stop` is set; sleep `poll_seconds` after an empty poll.
+    """Run jobs until `stop` is set; wait `poll_seconds` after an empty poll.
+
+    A worker with an internal client looks at its job table every `INTERNAL_POLL_SECONDS`
+    during that wait and runs what is due; the remote queue is still asked once per
+    `poll_seconds` (#402).
 
     `tick` runs before every poll, so it runs at least once every `poll_seconds`
     plus the length of one job.
@@ -548,7 +581,10 @@ def serve(
             continue
         retry = 0.0
         if not busy:
-            stop.wait(poll_seconds)
+            if getattr(worker, "has_internal_client", False):
+                _wait_with_internal_checks(worker, stop, poll_seconds, clock)
+            else:
+                stop.wait(poll_seconds)
 
 
 def main(
