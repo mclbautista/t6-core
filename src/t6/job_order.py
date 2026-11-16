@@ -4,8 +4,9 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+from dataclasses import replace
 from datetime import date
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from t6.ids import EntityKind, T6Id
@@ -28,6 +29,119 @@ TRANSITIONS = {
 def _state(db: Any, jo_id: str, fields: dict[str, Any]) -> dict[str, Any]:
     row = db.execute('SELECT status, blocked, block_reason, delayed_until, delay_reason FROM jo_state WHERE job_order_id = ?', (jo_id,)).fetchone()
     return dict(zip(('status', 'blocked', 'block_reason', 'delayed_until', 'delay_reason'), row)) if row else {'status': fields.get('status') or 'Needs Intake Review', 'blocked': False, 'block_reason': None, 'delayed_until': None, 'delay_reason': None}
+
+
+RULE_FIELDS = frozenset({'name', 'number', 'department', 'deadline', 'telegram_key'})
+"""Job Order fields the API builds from a message; a caller sends none of them with one."""
+
+
+def department_aliases(setting: str) -> Mapping[str, str] | Refused:
+    """The default Department aliases with the JSON object of `T6_DEPARTMENT_ALIASES` merged over them."""
+    from t6.domain.job_order_rules import DEPARTMENT_ALIASES
+    if not setting.strip():
+        return DEPARTMENT_ALIASES
+    try:
+        extra = json.loads(setting)
+    except ValueError:
+        extra = None
+    if not isinstance(extra, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in extra.items()):
+        return Refused(rule='config', reason='T6_DEPARTMENT_ALIASES must be a JSON object of text to text')
+    return {**DEPARTMENT_ALIASES, **{k.strip().upper(): v for k, v in extra.items()}}
+
+
+def project_page_id(registry: SqliteProjectRegistry, ref: str) -> str | None:
+    """The Notion page ID a Project reference (T6 ID or page ID) stands for, in one spelling, or None when it has none."""
+    with registry._transaction() as db:
+        if db.execute('SELECT 1 FROM projects WHERE id = ?', (ref,)).fetchone():
+            row = db.execute("SELECT page_id FROM bindings WHERE system = 'notion' AND project_id = ? ORDER BY active DESC, bound_at LIMIT 1", (ref,)).fetchone()
+            return normalize_page_id(row[0]) if row else None
+    return normalize_page_id(ref)
+
+
+def apply_message(client: Any, data_source: str, people: Any, message: Any, given: Mapping[str, Any], *, no_project: bool,
+                  aliases: str) -> tuple[dict[str, Any], dict[str, Any]] | Refused:
+    """The fields and the reply values for a Job Order raised from a message.
+
+    Applies the header, Name, number, Department, deadline and key rules, so the
+    caller sends only what the message says. Returns `(fields, derived)`: the
+    fields to write and the values the preview returns.
+    """
+    from t6.cli_jo import check_fields
+    from t6.domain import Contact
+    from t6.domain.deadlines import deadline
+    from t6.domain.job_order_rules import canonical_name, jo_key, normalize_department, parse_header, parse_number, telegram_key
+    from t6.notion.departments import get_departments
+    from t6.notion.reads import ContactReader
+
+    clash = sorted(RULE_FIELDS & set(given))
+    if clash:
+        return Refused(rule='input', reason=f"The API builds these from the message: {', '.join(clash)}")
+    if given.get('project_id') and message.project:
+        return Refused(rule='input', reason='Give the Project in message or in fields, not both')
+    if any(value is None or not str(value).strip() for value in (message.chat_id, message.message_id)):
+        return Refused(rule='input', reason='chat_id and message_id are required')
+    alias_map = department_aliases(aliases)
+    if isinstance(alias_map, Refused):
+        return alias_map
+    fields = check_fields(client, data_source, given)
+    if message.project:
+        fields['project_id'] = message.project
+
+    header = parse_header(message.header_text, alias_map)
+    token = header.department if header else normalize_department(message.department_text, alias_map) if (message.department_text or '').strip() else None
+    options = [d.name for d in get_departments(client, data_source)]
+    chosen = next((o for o in options if token and ' '.join(o.split()).casefold() == ' '.join(token.split()).casefold()), None)
+    department_findings = [{'code': 'unknown_department', 'params': {'token': token}}] if token and chosen is None else []
+    digits = header.number if header else parse_number(message.number_text)
+    name = canonical_name(header if chosen else None, message.header_text.strip(), chosen)
+
+    contacts = []
+    for person_id in message.assignees:
+        person = people.get(person_id)
+        if person is None:
+            return Refused(rule='person', reason='Person not found')
+        page = next((b['page_id'] for b in person['bindings'] if b['active']), None)
+        # The Person ID stands for the name, so a finding never carries a person's name.
+        contacts.append(replace(ContactReader(client, '').get(page), name=person_id) if page else Contact(page_id=person_id, name=person_id))
+    result = deadline(message.deadline_text, message.posted_at, contacts)
+
+    page = None if no_project or not message.project else project_page_id(people.registry, message.project)
+    derived: dict[str, Any] = {
+        'name': name or None, 'jo_number': f'#{digits}' if digits else None, 'department': chosen,
+        'deadline': result.deadline.isoformat() if result.deadline else None, 'deadline_source': result.source,
+        'deadline_findings': [{'code': f.code, 'params': f.params} for f in result.findings],
+        'department_findings': department_findings,
+        'telegram_key': telegram_key(message.chat_id, message.message_id),
+        'duplicate_key': jo_key(page, int(digits)) if digits else None,
+        'jo_id': None,
+    }
+    for field, key in (('name', 'name'), ('number', 'jo_number'), ('department', 'department'), ('deadline', 'deadline'), ('telegram_key', 'telegram_key')):
+        if derived[key]:
+            fields[field] = derived[key]
+    return fields, derived
+
+
+def find_forms(reader: Any, registry: SqliteProjectRegistry, inputs: Any) -> tuple[Any, ...] | Refused:
+    """The Job Orders `jo find` names: by Telegram Key, by chat and message ID, or by duplicate key (Project and number)."""
+    from t6.domain.job_order_rules import jo_key, parse_number, telegram_key
+    chat_form = inputs.chat_id is not None or inputs.message_id is not None
+    duplicate_form = inputs.project is not None or inputs.number is not None
+    if (inputs.telegram_key is not None) + chat_form + duplicate_form != 1:
+        return Refused(rule='input', reason='Give exactly one of telegram_key, chat_id with message_id, or project with number')
+    if inputs.telegram_key is not None:
+        return tuple(reader.find_all_by_telegram_key(inputs.telegram_key))
+    if chat_form:
+        if inputs.chat_id is None or inputs.message_id is None or not str(inputs.chat_id).strip() or not str(inputs.message_id).strip():
+            return Refused(rule='input', reason='chat_id and message_id go together')
+        return tuple(reader.find_all_by_telegram_key(telegram_key(inputs.chat_id, inputs.message_id)))
+    digits = parse_number(str(inputs.number)) if inputs.number is not None else None
+    if not inputs.project or digits is None:
+        return Refused(rule='input', reason='project and a JO number go together')
+    wanted = jo_key(project_page_id(registry, inputs.project), int(digits))
+    if wanted is None:
+        return ()
+    return tuple(o for o in reader.list(oldest_first=True)
+                 if o.project_id and (found := parse_number(o.number)) is not None and jo_key(normalize_page_id(o.project_id), int(found)) == wanted)
 
 
 class JobOrderStore:
@@ -124,7 +238,7 @@ class JobOrderStore:
 
     def write(self, verb: str, values: dict[str, Any], *, actor: str,
               idempotency_key: str | None = None, confirm: str | None = None,
-              notion_editor: str | None = None) -> Outcome:
+              notion_editor: str | None = None, derived: dict[str, Any] | None = None) -> Outcome:
         if verb not in ('raise', 'assign', 'reassign', 'note', *TRANSITIONS) or not actor.strip():
             return Refused(rule='input', reason='A valid verb and actor are required')
         if (idempotency_key is not None and not idempotency_key.strip()) or (confirm and not idempotency_key):
@@ -226,7 +340,7 @@ class JobOrderStore:
                         return Refused(rule='reason', reason='A reason is required')
                 if verb == 'note' and not str(values.get('text') or '').strip():
                     return Refused(rule='note', reason='A note is required')
-            plan = {'action': verb, **values, 'project_id': project[0], 'idempotency_key': key}
+            plan = {'action': verb, **values, **(derived or {}), 'project_id': project[0], 'idempotency_key': key}
             if verb in TRANSITIONS:
                 plan.update(before=state, after=new_state)
             if verb in ('assign', 'reassign'):

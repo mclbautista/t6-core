@@ -780,7 +780,8 @@ class VerbAPI:
         from t6.notion.reads import ProjectReader, DeliverableReader, is_live
         from t6.notion.job_orders import JobOrders
         from t6.notion.meeting_notes import note_from_page
-        from t6.domain.job_order_rules import status_group, is_active
+        from t6.domain.job_order_rules import status_group, is_active, health_flags
+        from t6.domain import project_rules
         from t6.registry import ProjectRefs
         from t6.registry.core import normalize_page_id
         from t6.cli import TOKEN_VARIABLE
@@ -837,8 +838,19 @@ class VerbAPI:
                            sound_tech_ids=ids(project.sound_tech_ids), post_coordinator_ids=ids(project.post_coordinator_ids),
                            director_ids=ids(project.director_ids), cinematographer_ids=ids(project.cinematographer_ids),
                            prod_coor_supe_ids=ids(project.prod_coor_supe_ids))
+        def read_project(project: Any) -> Any:
+            from dataclasses import fields
+            from t6.verbs import ReadProject
+            group = project_rules.status_gate(project.status)
+            return ReadProject(**{f.name: getattr(project, f.name) for f in fields(project)},
+                               status_key=project_rules.status_key(project.status), status_group=group.value if group else None,
+                               snapshotted=project_rules.is_snapshotted(project.status), missing_roles=project_rules.missing_roles(project),
+                               relevant_dates=project_rules.relevant_dates(project.status), health_missing=project_rules.health_missing(project),
+                               health_rank=project_rules.health_rank(project.health))
         def order_result(order: Any) -> dict[str, Any]:
             item = asdict(order)
+            group = status_group(order.status)
+            item.update(status_group=group.value if group else None, active=is_active(order.status), health_flags=list(health_flags(order.health)))
             item['t6_id'] = self.people.registry.bound_entity('notion', order.page_id)
             item['project_id'] = refs.identity(order.project_id) or order.project_id
             item['project_ids'] = [refs.identity(page) or page for page in order.project_ids]
@@ -858,7 +870,12 @@ class VerbAPI:
                         return item
                     if verb == 'list':
                         people = [contact(c) for c in contact_reader.list()]
-                        return Done(result={'people': [c for c in people if inputs.registered is None or (c['t6_id'] is not None) == inputs.registered]})
+                        kinds: dict[str, str] = {}
+                        if inputs.kind:
+                            with self.people.registry._transaction() as db:
+                                kinds = dict(db.execute('SELECT id, kind FROM persons').fetchall())
+                        return Done(result={'people': [c for c in people if (inputs.registered is None or (c['t6_id'] is not None) == inputs.registered)
+                                                       and (inputs.kind is None or kinds.get(c['t6_id']) == inputs.kind)]})
                     if verb == 'find':
                         try:
                             return Done(result=_find_contacts(contact_reader.list(), contact, inputs.mention, inputs.mentions, inputs.suggest, inputs.prefer_telegram))
@@ -900,14 +917,21 @@ class VerbAPI:
                             from t6.domain.studio_time import MANILA
                             return Done(result={'lines': dated_lines(project.pm_notes, datetime.fromtimestamp(self.people.registry._clock(), MANILA).date())})
                         if verb == 'flags' and project:
-                            from t6.domain.project_rules import date_flags, health_missing
+                            from dataclasses import replace
+                            from t6.domain.project_rules import date_flags, date_sanity, health_missing, missing_roles
                             from t6.domain.studio_time import MANILA
-                            today = datetime.fromtimestamp(self.people.registry._clock(), MANILA).date()
-                            flags = [{'kind': 'data_gap' if f.kind == 'missing' else f.kind, 'field': f.field, 'detail': f.kind, **({'days': f.days} if f.days is not None else {})} for f in date_flags(project, today)]
+                            today = inputs.as_of or datetime.fromtimestamp(self.people.registry._clock(), MANILA).date()
+                            stated = {name: day for name, day in inputs.stated.items() if getattr(project, name) is None}
+                            judged = replace(project, **{name: day for name, day in stated.items() if day is not None})
+                            flags = [{'kind': 'data_gap' if f.kind == 'missing' else f.kind, 'field': f.field, 'detail': f.kind, **({'days': f.days} if f.days is not None else {})}
+                                     for f in date_flags(judged, today, inputs.lead_warning_days) if not (f.kind == 'missing' and f.field in stated)]
                             if health_missing(project):
                                 flags.append({'kind': 'data_gap', 'field': 'health', 'detail': 'missing health update'})
-                            return Done(result={'flags': flags})
-                        return Done(result={'project': project}) if project else Refused(rule='project', reason='Project not found')
+                            sanity = [{'kind': kind, 'first': first, 'second': second, 'first_date': first_date, 'second_date': second_date,
+                                       'from_notes': stated.get(first) is not None or stated.get(second) is not None}
+                                      for kind, first, second, first_date, second_date in date_sanity({name: getattr(judged, name) for name in ('playdate', 'submission_deadline', 'archival_deadline')})]
+                            return Done(result={'flags': flags, 'missing_roles': list(missing_roles(project)), 'sanity': sanity})
+                        return Done(result={'project': read_project(project)}) if project else Refused(rule='project', reason='Project not found')
                     if verb == 'resolve':
                         from t6.lookup import Index, Lookup
                         from t6.cli_studio import _resolution
@@ -919,8 +943,9 @@ class VerbAPI:
                             if found.entity is None and not found.candidates:
                                 found = lookup.project(None, name=inputs.text)
                         return Done(result=_resolution(found, asdict))
-                    return Done(result={'projects': [p for p in projects if (inputs.rotation is None or p.rotation == inputs.rotation)
-                                and (inputs.status is None or p.status == inputs.status)]})
+                    return Done(result={'projects': [read_project(p) for p in projects if (inputs.rotation is None or p.rotation == inputs.rotation)
+                                and (inputs.status is None or p.status == inputs.status)
+                                and (inputs.status_group is None or getattr(project_rules.status_gate(p.status), 'value', None) == inputs.status_group)]})
                 if noun == 'jo':
                     jo_reader = JobOrders(client, self.data_sources['job_orders'])
                     if verb == 'get':
@@ -956,7 +981,14 @@ class VerbAPI:
                                           assignee_id=record['assignee_id'], notes=record['notes'],
                                           state=record['state'], history=record['history'])
                         return Done(result={'job_order': result})
-                    orders = jo_reader.find_all_by_telegram_key(inputs.telegram_key) if verb == 'find' else jo_reader.list(oldest_first=bool(inputs.no_project))
+                    if verb == 'find':
+                        from t6.job_order import find_forms
+                        located = find_forms(jo_reader, self.people.registry, inputs)
+                        if isinstance(located, Refused):
+                            return located
+                        orders = located
+                    else:
+                        orders = jo_reader.list(oldest_first=bool(inputs.no_project))
                     if verb == 'list':
                         if inputs.no_project and inputs.project:
                             return Refused(rule='input', reason='Give project or no_project, not both')
