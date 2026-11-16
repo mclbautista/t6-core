@@ -85,6 +85,18 @@ class CardDelivery:
         return {"delivered": card["version"], "message_ref": ref}
 
 
+class ChatReply:
+    """`chat.reply`: tell a chat (and topic) why its command was refused. The idempotency key makes a rerun send nothing twice."""
+
+    def __init__(self, gateway: GatewayClient) -> None:
+        self._gateway = gateway
+
+    def deliver(self, job: WorkerJob) -> JsonValue:
+        topic = job.payload.get("topic")
+        ref = self._gateway.notify(int(str(job.payload["chat"])), str(job.payload["text"]), [], f"cmd-reply:{job.payload['key']}", int(str(topic)) if topic is not None else None)
+        return {"message_ref": ref}
+
+
 class StateEditNotification:
     """Deliver a durable flagged-edit notice to configured operators."""
 

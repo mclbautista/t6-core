@@ -10,6 +10,7 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ### Fixed
 
+- A refused `/link`, `/unlink` or `/abang` command now gets one short reply in its chat and topic (#400): the usage line, the verb's refusal reason, the coordinator-only line, or `No Person matches that mention.`. The API queues a `chat.reply` job per pushed command (a retried push queues one), and the main worker sends it when `T6_GATEWAY_URL` and `T6_GATEWAY_SECRET` are set; without them the job waits unclaimed. The answer to the gateway stays `rejected`.
 - `docs/operator-actions.md` rollout: the API listener accepts a pushed tap only from a secret bound to `gateway` in `T6_API_SECRETS` with `X-Telegram-User-Id` equal to `from.id`; the text no longer suggests `T6_TAP_SECRET` is enough (found live on 2026-11-16).
 
 ## [0.6.2] - 2026-11-16
