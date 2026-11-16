@@ -4,6 +4,29 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.6] - 2026-11-16
+
+The first stage of moving the apps onto the t6 API (#426): the gaps that stop the gateway, munki, the watchdog and reports from reading and writing through the API with no change for staff. No migration: the schema stays at 43.
+
+### Added
+
+- Permission `unmasked` (#429): a caller that holds it reads real client names in typed reads, and gets nothing else. A service gets it through `T6_API_SERVICE_PERMISSIONS`, for example `{"reports":["unmasked"]}`. The `mcp` service stays masked.
+- Verbs `machine list` and `machine sync`, and permission `fleet` (#432). `machine list` (reader) returns the Bays rows in Notion as Machines with their fleet facts. `machine sync` (fleet) previews each Machine's matched row and each fact's old and new value, then writes on confirm. `fleet` allows `machine sync` and nothing else. Typed client methods `machine_list` and `machine_sync`.
+- `t6 admin privacy-registry` (#433) builds the client-name file for masked reads from the Studios and Projects in Notion. It runs in the API container. The data-sources file needs a `studios` key.
+- `departments` takes `include_misc` (CLI `--include-misc`) and then also returns MISC (#431).
+- `project list` and `project get` return `project_health`, the `Project Health` select (#431). `health` is unchanged.
+- `studio notices` returns `runs`, the description as text runs with a bold flag (#431).
+
+### Changed
+
+- `person set-telegram` on the API writes the Telegram ID to the Person's Notion Contact first, then the registry (#430), so a read of the Contact sees the write. A rejected Notion write answers `Refused` with rule `notion`; an unconfirmed one answers `Ambiguous`. In both cases the registry is not changed.
+- `t6 admin consumer-check` also flags the credential names `NOTION_API_KEY` and `NOTION_TOKEN` (#427).
+- `t6 departments` and `t6 person get` accept `--data-sources` and ignore it; the flag will be removed in a later release (#428).
+
+### Removed
+
+- The handlers of `person get` and `departments` that read Notion from the CLI process (#428). Both verbs are answered by the API only, as they already were in production.
+
 ## [0.6.5] - 2026-11-16
 
 The MCP server gets a start command and a timeout setting, from the live MCP check on 0.6.4. No migration: the schema stays at 43.
