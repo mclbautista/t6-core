@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import date
+import hashlib
 from collections.abc import Callable, Sequence
 import json
 import os
@@ -345,6 +346,15 @@ def _classify_projects(args: argparse.Namespace) -> int:
     return 0 if report.ok else 1
 
 
+def _import_digest(args: argparse.Namespace) -> str:
+    """SHA-256 over the bytes of each file given, each under its role, so adding or dropping a file changes it."""
+    digest = hashlib.sha256()
+    for role, path in (("workbook", args.workbook), ("log-sheet", args.log_sheet), ("projects", args.projects)):
+        if path is not None:
+            digest.update(f"{role}:{hashlib.sha256(path.read_bytes()).hexdigest()}\n".encode())
+    return digest.hexdigest()
+
+
 def _drives_import_dry_run(args: argparse.Namespace) -> int:
     try:
         from t6.drives.importer import import_log_sheet_workbook, import_per_project_workbook
@@ -354,28 +364,54 @@ def _drives_import_dry_run(args: argparse.Namespace) -> int:
 
     from t6.domain import Project
     from t6.drives import Ref
+    from t6.drives.sqlite import SqliteDriveStore
     from t6.drives.testing import InMemoryDriveStore
     from t6.ids import EntityKind, T6Id
     from t6.lookup import Index, Lookup
+    from t6.registry import SqliteProjectRegistry
 
+    if args.apply and not args.preview:
+        return _fail("--apply needs --preview FILE")
+    if args.apply and not args.actor:
+        return _fail("--apply needs --actor NAME")
     try:
+        digest = _import_digest(args)
+        if args.apply and json.loads(args.preview.read_text(encoding="utf-8"))["digest"] != digest:
+            return _fail("the files changed since the preview, or the preview covers other files; preview again")
         listed: Any = json.loads(args.projects.read_text(encoding="utf-8")) if args.projects else []
         projects = tuple(Project(page_id=p["page_id"], name=p["name"]) for p in listed)
-        # A dry run has no registry: a Project the list names counts as resolved, with a throwaway T6 ID.
-        bindings = {p.page_id: str(T6Id.mint(EntityKind.PROJECT)) for p in projects}
-        store = InMemoryDriveStore(project_bindings=bindings)
-        lookup, logged_by = Lookup(Index(projects=projects)), Ref(text="dry run")
+        if args.apply:
+            # An apply resolves a Project only through the registry: a page it does not know stays an unresolved name.
+            store: Any = SqliteDriveStore(SqliteProjectRegistry(args.registry_db))
+            before = _drive_counts(store)
+        else:
+            # A dry run has no registry: a Project the list names counts as resolved, with a throwaway T6 ID.
+            store = InMemoryDriveStore(project_bindings={p.page_id: str(T6Id.mint(EntityKind.PROJECT)) for p in projects})
+        lookup, logged_by = Lookup(Index(projects=projects)), Ref(text=args.actor if args.apply else "dry run")
         results = [import_per_project_workbook(args.workbook, store, lookup=lookup, logged_by=logged_by)]
         if args.log_sheet:
             results.append(import_log_sheet_workbook(args.log_sheet, store, lookup=lookup, logged_by=logged_by))
     except (OSError, ValueError, KeyError, TypeError) as error:
         return _fail(str(error))
-    report = {
+    report: dict[str, Any] = {
+        "digest": digest,
         "imported": sum(result.imported for result in results),
         "review": [asdict(item) for result in results for item in result.review],
     }
+    if args.apply:
+        report["written"] = {name: count - before[name] for name, count in _drive_counts(store).items()}
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
+
+
+def _drive_counts(store: Any) -> dict[str, int]:
+    drives = store.list_drives()
+    return {
+        "drives": len(drives),
+        "assignments": sum(len(store.list_assignments(drive.id)) for drive in drives),
+        "events": sum(len(store.list_events(drive.id)) for drive in drives),
+        "exceptions": len(store.exceptions()),
+    }
 
 
 def _import_swing(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
@@ -594,7 +630,8 @@ def main(
     dry_run = commands.add_parser(
         "drives-import-dry-run",
         help="Import the legacy drive workbooks into memory and print the review report",
-        description="With a workbook, nothing is written anywhere: the import runs into an in-memory store that is thrown away. "
+        description="With a workbook, the preview writes nothing anywhere: the import runs into an in-memory store that is thrown away, and the report has a digest of the files. "
+        "With a workbook and --apply --preview FILE --actor NAME it runs the same import into the t6 database, only if the files still have the previewed digest. "
         "With --swing it reads the Notion Swing Drives database: it prints a preview and writes nothing; "
         "--swing --apply writes into the t6 database the Drives (one per Notion row), the open swing Assignments of the rows "
         "that name one registered Person as holder, and the exceptions (the rows that need a person's answer), "
@@ -605,9 +642,10 @@ def main(
     dry_run.add_argument("--projects", type=Path, metavar="FILE", help="JSON list of {\"page_id\", \"name\"} to resolve Project names against; without it every Project is unresolved")
     dry_run.add_argument("--swing", action="store_true", help="read the Notion Swing Drives database: print a preview, and write nothing unless --apply")
     dry_run.add_argument("--data-sources", type=Path, metavar="FILE", help="with --swing: JSON of database key to data source ID, with a swing_drives entry")
-    dry_run.add_argument("--registry-db", type=Path, default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)), help="with --swing: the t6 database")
-    dry_run.add_argument("--apply", action="store_true", help="with --swing: write the previewed Drives, swing Assignments and exceptions into the t6 database; needs --preview FILE")
-    dry_run.add_argument("--preview", type=Path, metavar="FILE", help="with --swing --apply: the JSON a preview printed")
+    dry_run.add_argument("--registry-db", type=Path, default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)), help="with --apply: the t6 database")
+    dry_run.add_argument("--apply", action="store_true", help="write the previewed import into the t6 database: with --swing the Drives, swing Assignments and exceptions; with a workbook the Drives, Assignments, custody events and exceptions; needs --preview FILE, and --actor NAME with a workbook")
+    dry_run.add_argument("--preview", type=Path, metavar="FILE", help="with --apply: the JSON a preview printed; a workbook apply is refused when its digest is not that of the files now")
+    dry_run.add_argument("--actor", metavar="NAME", help="with a workbook --apply: who applies; recorded as the one who logged the custody events")
     consumer = commands.add_parser(
         "check-consumer",
         help="Check app imports, credentials and direct calls against ADR 0002",
