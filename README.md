@@ -1837,7 +1837,9 @@ to that ID. Named services have the `reader` role by default. To grant additiona
 set `T6_API_SERVICE_PERMISSIONS` to a JSON object mapping service names to role
 lists, for example `{"worker":["operator"],"reports":["coordinator"]}`.
 Valid additional roles are `operator`, `coordinator`, `bookings`, `drives`,
-and `admin`; admin includes operator. Grants apply to every secret bound to
+`llm`, `unmasked` and `admin`; admin includes operator. `unmasked` lets a
+caller read real client names (read replies are otherwise masked) and grants
+nothing else; the `mcp` service stays masked. Grants apply to every secret bound to
 that service. Gateway requests carrying `X-Telegram-User-Id` use the resolved
 Person's permissions instead of the gateway's grants. The legacy `camera enrich`
 endpoint returns `refused` because it does not yet support signed preview and

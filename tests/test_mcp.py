@@ -110,6 +110,11 @@ class MCPTests(unittest.TestCase):
                 self.assertNotIn('Client Corp', call('staff-secret', True))
                 self.assertIn('Client Corp', call('staff-secret', False))
                 self.assertIn('Client Corp', call('operator-secret', True))
+                with registry._transaction() as db:
+                    db.execute("INSERT OR IGNORE INTO person_permissions VALUES (?, 'unmasked')", (staff,))
+                self.assertIn('Client Corp', call('staff-secret', True))
+                with registry._transaction() as db:
+                    db.execute("DELETE FROM person_permissions WHERE person_id = ?", (staff,))
 
     def test_every_reader_verb_is_read_only_except_the_written_exception(self) -> None:
         from t6.verbs import VERBS
