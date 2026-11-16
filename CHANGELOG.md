@@ -33,6 +33,7 @@ One round of fixes for what the live checks and the reviews of 0.6.5 to 0.6.7 fo
 - `project hold` and `project resume` write the team's own Status option and never make a new one (#452). No match, or two, writes nothing and fails the job with the reason. `schema-check` reports `status_duplicates`.
 - `llm run` with `masking_preset: strict` gives the withheld IDs back in the reply (#475).
 - A Frame.io link made another way closes the pending "needs a show" operator card (#419).
+- The abang relay asks a Person of kind `freelancer` as well as `vendor`. Since 0.6.7 a Contact can be made as a freelancer (#463), and `/abang` and `abang request` refused that Person.
 
 ## [0.6.7] - 2026-11-17
 
