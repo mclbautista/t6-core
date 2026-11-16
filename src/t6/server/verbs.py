@@ -718,7 +718,8 @@ class VerbAPI:
                         item['t6_id'] = self.people.registry.bound_entity('notion', c.page_id)
                         return item
                     if verb == 'list':
-                        return Done(result={'people': [contact(c) for c in contact_reader.list()]})
+                        people = [contact(c) for c in contact_reader.list()]
+                        return Done(result={'people': [c for c in people if inputs.registered is None or (c['t6_id'] is not None) == inputs.registered]})
                     if verb == 'find':
                         try:
                             return Done(result=_find_contacts(contact_reader.list(), contact, inputs.mention, inputs.mentions, inputs.suggest, inputs.prefer_telegram))

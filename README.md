@@ -1487,6 +1487,13 @@ through to all Contacts here, while reports stopped at the tie. The normalizer h
 folds accents and punctuation and drops 16 leading honorifics, while the apps
 dropped 3 anywhere in the name.
 
+`person list` takes an optional `registered` filter (API field; there is no CLI
+flag). `true` returns only the Contacts that have a T6 ID, `false` only those that
+do not, and unset returns all. The items do not change. Nothing registers a
+Contact made in Notion after the first import, so a Contact with no T6 ID has to be
+registered: on the registry host run `t6 admin person migrate --data-sources FILE`
+without `--apply` to preview, then apply the preview with `--apply --preview FILE`.
+
 `t6 project resolve <code|name> --data-sources FILE [--registry-db FILE]` (the
 `projects` source) resolves a Project Code. A reused code is settled by rotation
 when the registry file knows the Projects (`--registry-db`, default

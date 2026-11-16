@@ -922,7 +922,7 @@ class PersonFindInput(ReadInput):
 
 
 class PersonListInput(ReadInput):
-    pass
+    registered: bool | None = None
 
 
 class ProjectGetInput(ReadInput):

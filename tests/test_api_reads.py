@@ -542,6 +542,19 @@ class ReadTests(unittest.TestCase):
                 self.assertEqual(result.rule, 'input')
         self.assertEqual(len(self.find(mentions=['Ana Cruz'] * 50)['results']), 50)
 
+    def test_person_list_registered_filters_on_the_t6_id(self) -> None:
+        from t6.verbs import PersonListInput
+        ids = self.add_contacts(('Registered One', None), ('Registered Two', None), ('Unregistered Three', None))
+        for n, name in enumerate(('Registered One0', 'Registered Two1'), start=1):
+            self.bound_person({'id': ids[name]}, n)
+        def names(**fields: Any) -> set[str]:
+            result = self.client.person_list(PersonListInput(**fields))
+            assert isinstance(result, Done)
+            return {p['name'] for p in result.result['people'] if p['name'] != 'Ana Cruz'}
+        self.assertEqual(names(registered=True), {'Registered One', 'Registered Two'})
+        self.assertEqual(names(registered=False), {'Unregistered Three'})
+        self.assertEqual(names(), {'Registered One', 'Registered Two', 'Unregistered Three'})
+
     def test_get_find_and_studio_reads(self) -> None:
         from t6.verbs import (ProjectGetInput, ProjectResolveInput, JoGetInput,
                               PersonFindInput, PersonGetInput, PersonListInput,
