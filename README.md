@@ -1534,7 +1534,10 @@ dropped 3 anywhere in the name.
 
 `person list` takes an optional `registered` filter (API field; there is no CLI
 flag). `true` returns only the Contacts that have a T6 ID, `false` only those that
-do not, and unset returns all. The items do not change. Nothing registers a
+do not, and unset returns all. It also takes an optional `kind` (`staff`,
+`freelancer`, `client` or `vendor`): only the Contacts whose registered Person
+has that kind, so a Contact with no T6 ID never matches. An unknown kind is an
+input error (HTTP 422). The two filters combine with AND. The items do not change. Nothing registers a
 Contact made in Notion after the first import, so a Contact with no T6 ID has to be
 registered: on the registry host run `t6 admin person migrate --data-sources FILE`
 without `--apply` to preview, then apply the preview with `--apply --preview FILE`.
@@ -2186,7 +2189,14 @@ last 12 run dates. A reply holds counts only: no text, names or Project names.
 reports store is not imported, so earlier listings are unknown.
 
 `project flags` recomputes date warnings and missing health from the current
-Project data, without Concern IDs or ages. Health-vs-evidence and source
+Project data, without Concern IDs or ages. It takes `as_of`, `lead_warning_days`
+and `stated` (dates the PM Notes give for blank date properties; `null` is a
+fuzzy value), and also returns `missing_roles` and `sanity` (the date problems,
+as kinds and dates, with `from_notes`). `project list` and `project get` return
+`status_key`, `status_group`, `snapshotted`, `missing_roles`, `relevant_dates`,
+`health_missing` and `health_rank`, and `project list` filters on `status_group`;
+`jo list`, `jo get` and `jo find` return `status_group`, `active` and
+`health_flags`. Apps do not evaluate these rules: see `docs/api-read-verbs.md`. Health-vs-evidence and source
 conflict are judgments supplied by the reports app. Its stale-milestone
 judgment also depends on dated notes and later mentions, which are not stored
 as structured milestone expectations in t6; the read cannot infer that flag

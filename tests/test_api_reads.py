@@ -6,7 +6,7 @@ import unittest
 from typing import Any
 from unittest.mock import patch
 
-from t6.client import Client
+from t6.client import APIError, Client
 from t6.notion.testing import FakeNotion, title, relation, rich_text, date, select
 from t6.notion.generated import JobOrdersRow, DeliverablesRow, MeetingNotesRow
 from t6.person import People
@@ -411,6 +411,166 @@ class ReadTests(unittest.TestCase):
         self.assertIn({'kind': 'data_gap', 'field': 'health', 'detail': 'missing health update'}, result.result['flags'])
         self.assertTrue(all('id' not in flag and 'age' not in flag for flag in result.result['flags']))
 
+    def project_with(self, name: str, status: str | None = None, **properties: Any) -> dict[str, Any]:
+        from t6.notion.generated import ProjectsRow
+        values = {ProjectsRow.notion_name('name'): title(name), **{ProjectsRow.notion_name(key): value for key, value in properties.items()}}
+        if status is not None:
+            values[ProjectsRow.notion_name('status')] = select(status)
+        return self.notion.add_page('projects', values)
+
+    def test_project_reads_return_the_results_of_the_status_rules(self) -> None:
+        from t6.verbs import ProjectGetInput, ProjectListInput
+        expected = {
+            '🚨 In-Progress': ('in-progress', 'in_progress', True, ['playdate', 'submission_deadline']),
+            'in-progress': ('in-progress', 'in_progress', True, ['playdate', 'submission_deadline']),
+            '🏎. In-Progress TVC': ('in-progress tvc', 'in_progress', True, ['playdate', 'submission_deadline']),
+            'Airing': ('airing', 'in_progress', True, ['playdate', 'submission_deadline']),
+            '🏋️ Standby': ('standby', 'on_hold', True, []),
+            '📦 Archiving': ('archiving', 'on_hold', True, ['archival_deadline']),
+            '🌱 Leads': ('leads', 'incoming', True, ['playdate']),
+            'Lead': ('lead', 'incoming', True, ['playdate']),
+            'Negotiations': ('negotiations', 'incoming', True, ['playdate']),
+            'Proposal Made': ('proposal made', 'incoming', True, ['playdate']),
+            'Archived': ('archived', None, False, []),
+            'Lost': ('lost', None, False, []),
+            'Something else': ('something else', None, True, []),
+        }
+        for status in expected:
+            self.project_with('Status ' + status, status)
+        result = self.client.project_list(ProjectListInput())
+        assert isinstance(result, Done)
+        for status, (key, group, snapshotted, dates) in expected.items():
+            with self.subTest(status=status):
+                project = next(p for p in result.result['projects'] if p['name'] == 'Status ' + status)
+                self.assertEqual((project['status_key'], project['status_group'], project['snapshotted'], project['relevant_dates']),
+                                 (key, group, snapshotted, dates))
+                got = self.client.project_get(ProjectGetInput(project=project['page_id']))
+                assert isinstance(got, Done)
+                self.assertEqual(got.result['project']['status_group'], group)
+        plain = next(p for p in result.result['projects'] if p['name'] == 'Example Show')
+        self.assertEqual((plain['status_key'], plain['status_group'], plain['snapshotted'], plain['missing_roles'], plain['relevant_dates']), ('', None, True, [], []))
+
+    def test_project_list_filters_on_status_group(self) -> None:
+        from t6.verbs import ProjectListInput
+        for status in ('In-Progress', 'Airing', 'Standby', 'Leads', 'Lost'):
+            self.project_with('Group ' + status, status)
+        for group, names in (('in_progress', {'Group In-Progress', 'Group Airing'}), ('on_hold', {'Group Standby'}), ('incoming', {'Group Leads'})):
+            result = self.client.project_list(ProjectListInput(status_group=group))  # type: ignore[arg-type]
+            assert isinstance(result, Done)
+            self.assertEqual({p['name'] for p in result.result['projects']}, names)
+        with self.assertRaises(APIError) as refused:
+            self.client.call('project', 'list', ProjectListInput.model_construct(status_group='bogus'))
+        self.assertEqual(refused.exception.status, 422)
+
+    def test_project_missing_roles_are_listed_only_for_in_progress_tvc_and_airing(self) -> None:
+        from t6.verbs import ProjectListInput
+        for status in ('In-Progress', 'In-Progress TVC', 'Airing', 'Standby', 'Archiving', 'Leads'):
+            self.project_with('Roles ' + status, status, editors=relation(self.person['id']), director=relation(self.person['id']))
+        result = self.client.project_list(ProjectListInput())
+        assert isinstance(result, Done)
+        rest = ['assistant_editor_ids', 'online_editor_ids', 'colorist_ids', 'sound_tech_ids', 'post_coordinator_ids', 'cinematographer_ids']
+        for status in ('In-Progress', 'In-Progress TVC', 'Airing', 'Standby', 'Archiving', 'Leads'):
+            with self.subTest(status=status):
+                project = next(p for p in result.result['projects'] if p['name'] == 'Roles ' + status)
+                self.assertEqual(project['missing_roles'], rest if status in ('In-Progress', 'In-Progress TVC', 'Airing') else [])
+
+    def test_project_health_rank_and_blank_health(self) -> None:
+        from t6.verbs import ProjectListInput
+        order = ['Critical', '🟡 At Risk', 'on track', 'Incoming', 'Weird', None]
+        for number, health in enumerate(order):
+            self.project_with(f'Health {number}', 'Standby', health=select(health))
+        result = self.client.project_list(ProjectListInput())
+        assert isinstance(result, Done)
+        ranked = [next(p for p in result.result['projects'] if p['name'] == f'Health {n}') for n in range(len(order))]
+        self.assertEqual([p['health_rank'] for p in ranked], [0, 1, 2, 3, 4, 5])
+        self.assertEqual([p['health_missing'] for p in ranked], [False] * 5 + [True])
+
+    def test_project_flags_judge_on_as_of_and_lead_warning_days(self) -> None:
+        from t6.verbs import ProjectFlagsInput
+        late = self.project_with('Late show', 'In-Progress', playdate=date('2026-11-10'), submission_deadline=date('2026-12-20'), health=select('On track'))
+        soon = self.project_with('Soon show', 'Leads', playdate=date('2026-12-01'), health=select('On track'))
+        def flags(page: dict[str, Any], **more: Any) -> list[dict[str, Any]]:
+            result = self.client.project_flags(ProjectFlagsInput.model_validate({'project': page['id'], **more}))
+            assert isinstance(result, Done)
+            return list(result.result['flags'])
+        self.assertEqual(flags(late, as_of='2026-11-16'), [{'kind': 'overdue', 'field': 'playdate', 'detail': 'overdue', 'days': 6}])
+        self.assertEqual(flags(late, as_of='2026-11-10'), [])
+        self.assertEqual(flags(soon, as_of='2026-11-16'), [{'kind': 'upcoming', 'field': 'playdate', 'detail': 'upcoming', 'days': 15}])
+        self.assertEqual(flags(soon, as_of='2026-11-16', lead_warning_days=10), [])
+
+    def test_project_flags_judge_a_stated_date_like_the_propertys_own(self) -> None:
+        from t6.verbs import ProjectFlagsInput
+        page = self.project_with('Notes show', 'In-Progress', playdate=date('2026-12-20'), health=select('On track'))
+        def flags(**stated: Any) -> list[tuple[str, str]]:
+            result = self.client.project_flags(ProjectFlagsInput.model_validate({'project': page['id'], 'as_of': '2026-11-16', 'stated': stated}))
+            assert isinstance(result, Done)
+            return [(f['kind'], f['field']) for f in result.result['flags']]
+        self.assertEqual(flags(), [('data_gap', 'submission_deadline')])
+        self.assertEqual(flags(submission_deadline='2026-12-25'), [])
+        self.assertEqual(flags(submission_deadline='2026-11-01'), [('overdue', 'submission_deadline')])
+        self.assertEqual(flags(submission_deadline=None), [])
+        self.assertEqual(flags(playdate='2026-11-01'), [('data_gap', 'submission_deadline')])
+
+    def test_project_flags_find_both_date_sanity_problems(self) -> None:
+        from t6.verbs import ProjectFlagsInput
+        page = self.project_with('Sanity show', 'In-Progress', playdate=date('2026-11-20'), submission_deadline=date('2026-11-10'),
+                                 archival_deadline=date('2026-11-01'), health=select('On track'))
+        result = self.client.project_flags(ProjectFlagsInput.model_validate({'project': page['id'], 'as_of': '2026-11-01'}))
+        assert isinstance(result, Done)
+        self.assertEqual(result.result['sanity'], [
+            {'kind': 'submission_before_playdate', 'first': 'submission_deadline', 'second': 'playdate', 'first_date': '2026-11-10', 'second_date': '2026-11-20', 'from_notes': False},
+            {'kind': 'archival_before_submission', 'first': 'archival_deadline', 'second': 'submission_deadline', 'first_date': '2026-11-01', 'second_date': '2026-11-10', 'from_notes': False}])
+        stated = self.project_with('Stated show', 'Standby', playdate=date('2026-11-20'), health=select('On track'))
+        result = self.client.project_flags(ProjectFlagsInput.model_validate({'project': stated['id'], 'stated': {'submission_deadline': '2026-11-10', 'archival_deadline': None}}))
+        assert isinstance(result, Done)
+        self.assertEqual([(p['kind'], p['from_notes']) for p in result.result['sanity']], [('submission_before_playdate', True)])
+        quiet = self.project_with('Quiet show', 'Standby', playdate=date('2026-11-20'), submission_deadline=date('2026-11-25'), health=select('On track'))
+        result = self.client.project_flags(ProjectFlagsInput(project=quiet['id']))
+        assert isinstance(result, Done)
+        self.assertEqual(result.result['sanity'], [])
+
+    def test_project_flags_return_the_missing_roles(self) -> None:
+        from t6.verbs import ProjectFlagsInput
+        page = self.project_with('Roles show', 'Airing', editors=relation(self.person['id']))
+        result = self.client.project_flags(ProjectFlagsInput(project=page['id']))
+        assert isinstance(result, Done)
+        self.assertNotIn('editor_ids', result.result['missing_roles'])
+        self.assertEqual(len(result.result['missing_roles']), 7)
+        standby = self.project_with('Idle show', 'Standby')
+        result = self.client.project_flags(ProjectFlagsInput(project=standby['id']))
+        assert isinstance(result, Done)
+        self.assertEqual(result.result['missing_roles'], [])
+
+    def test_jo_reads_return_the_status_group_active_and_health_flags(self) -> None:
+        from t6.verbs import JoListInput, JoGetInput
+        expected = {'Needs Intake Review': ('not_started', True), 'Pending': ('not_started', True), 'In progress': ('started', True),
+                    'Needs Completion Review': ('started', True), 'Done': ('started', False), 'Cancelled': ('cancelled', False)}
+        for status in expected:
+            self.notion.add_page('job_orders', {JobOrdersRow.notion_name('name'): title('JO ' + status),
+                                               JobOrdersRow.notion_name('status'): {'type': 'status', 'status': {'name': status}}})
+        result = self.client.jo_list(JoListInput())
+        assert isinstance(result, Done)
+        for status, (group, active) in expected.items():
+            with self.subTest(status=status):
+                order = next(o for o in result.result['job_orders'] if o['name'] == 'JO ' + status)
+                self.assertEqual((order['status_group'], order['active'], order['health_flags']), (group, active, []))
+                got = self.client.jo_get(JoGetInput(ref=order['page_id']))
+                assert isinstance(got, Done)
+                self.assertEqual((got.result['job_order']['status_group'], got.result['job_order']['active']), (group, active))
+        blank = next(o for o in result.result['job_orders'] if o['page_id'] == self.jo['id'])
+        self.assertEqual((blank['status_group'], blank['active']), (None, True))
+
+    def test_jo_health_flags_ignore_emoji(self) -> None:
+        from t6.verbs import JoListInput
+        orders = JobOrdersRow
+        for name, health in (('Both', {'type': 'formula', 'formula': {'type': 'string', 'string': '🛑 Blocked, 🕘 Delayed'}}),
+                             ('Urgent', {'type': 'formula', 'formula': {'type': 'string', 'string': '🔥 URGENT'}})):
+            self.notion.add_page('job_orders', {orders.notion_name('name'): title('Health ' + name), orders.notion_name('health'): health})
+        result = self.client.jo_list(JoListInput())
+        assert isinstance(result, Done)
+        flags = {o['name']: o['health_flags'] for o in result.result['job_orders']}
+        self.assertEqual((flags['Health Both'], flags['Health Urgent'], flags['Work']), (['Blocked', 'Delayed'], ['Urgent'], []))
+
     def test_jo_get_includes_t6_state_for_t6_reference(self) -> None:
         from t6.job_order import JobOrderStore
         from t6.notion.job_orders import JobOrders
@@ -729,6 +889,26 @@ class ReadTests(unittest.TestCase):
         self.assertEqual(names(registered=False), {'Unregistered Three'})
         self.assertEqual(names(), {'Registered One', 'Registered Two', 'Unregistered Three'})
 
+    def test_person_list_kind_filters_on_the_registered_kind(self) -> None:
+        from t6.verbs import PersonListInput
+        ids = self.add_contacts(('Staff One', None), ('Freelancer Two', None), ('Client Three', None), ('Unregistered Four', None))
+        for n, (name, kind) in enumerate((('Staff One0', 'staff'), ('Freelancer Two1', 'freelancer'), ('Client Three2', 'client')), start=1):
+            person_id = self.bound_person({'id': ids[name]}, n)
+            with self.registry._transaction() as db:
+                db.execute('UPDATE persons SET kind = ? WHERE id = ?', (kind, person_id))
+        def names(**fields: Any) -> set[str]:
+            result = self.client.person_list(PersonListInput(**fields))
+            assert isinstance(result, Done)
+            return {p['name'] for p in result.result['people'] if p['name'] != 'Ana Cruz'}
+        self.assertEqual(names(kind='freelancer'), {'Freelancer Two'})
+        self.assertEqual(names(kind='client'), {'Client Three'})
+        self.assertEqual(names(kind='vendor'), set())
+        self.assertEqual(names(kind='staff', registered=True), {'Staff One'})
+        self.assertEqual(names(), {'Staff One', 'Freelancer Two', 'Client Three', 'Unregistered Four'})
+        with self.assertRaises(APIError) as refused:
+            self.client.call('person', 'list', PersonListInput.model_construct(kind='contractor'))
+        self.assertEqual(refused.exception.status, 422)
+
     def test_get_find_and_studio_reads(self) -> None:
         from t6.verbs import (ProjectGetInput, ProjectResolveInput, JoGetInput,
                               PersonFindInput, PersonGetInput, PersonListInput,
@@ -1008,7 +1188,8 @@ class ReadTests(unittest.TestCase):
         from t6.cli import main
         env = {'T6_API_URL': f'http://127.0.0.1:{self.server.server_port}', 'T6_API_SECRET': 'secret'}
         for args in (['project', 'list'], ['person', 'get', '--person-id', self.person['id']],
-                     ['jo', 'get', self.jo['id']], ['departments']):
+                     ['jo', 'get', self.jo['id']], ['departments'], ['project', 'list', '--status-group', 'on_hold'],
+                     ['project', 'flags', '--project', self.project['id'], '--as-of', '2026-11-16', '--stated', '{"playdate": null}']):
             with self.subTest(args=args), patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(main(args), 0)
 
