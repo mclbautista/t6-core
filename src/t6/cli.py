@@ -234,6 +234,8 @@ def _migrate_bays(args: argparse.Namespace, open_notion: Callable[..., Any]) -> 
     try:
         with open_notion(token) as client:
             rows = [BaysRow.from_page(page) for page in client.query_data_source(_read_data_sources(args.data_sources)['bays']) if is_live(page)]
+        if args.type:  # the Notion database also holds machines that are not Bays
+            rows = [row for row in rows if args.type in row.type]
         digest = json.loads(args.preview.read_text(encoding='utf-8'))['digest'] if args.apply else None
         report = BayStore(SqliteProjectRegistry(args.registry_db)).migrate(rows, actor=pwd.getpwuid(os.getuid()).pw_name, apply=args.apply, digest=digest)
     except (OSError, ValueError, KeyError, NotionError) as error:
@@ -649,6 +651,7 @@ def main(
     bay_migrate = bay_commands.add_parser("migrate", help="Preview or apply Bays migration")
     bay_migrate.add_argument("--data-sources", type=Path, required=True)
     bay_migrate.add_argument("--registry-db", type=Path, default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)))
+    bay_migrate.add_argument("--type", metavar="OPTION", help="Only the rows whose Notion Type holds this option; without it every row is a Bay")
     bay_migrate.add_argument("--apply", action="store_true")
     bay_migrate.add_argument("--preview", type=Path)
     deliverable_admin = admin_commands.add_parser("deliverable", help="Deliverable administration")

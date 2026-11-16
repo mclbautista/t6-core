@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- `t6 admin bay migrate --type OPTION` registers only the Notion Bays rows whose `Type` holds that option (#386). The Notion Bays database also holds machines that are not Bays; without `--type` every row is a Bay, as before.
+
 ### Fixed
 
 - `drive exceptions` on a server without the `drives` extra (#371): the read reached the workbook importer, which imported `openpyxl` when it loaded, so the request crashed on the image. The importer now imports `openpyxl` only when it opens a workbook.
