@@ -58,7 +58,7 @@ because the old draft used a Notion client.
 | gateway #86 | `Contacts.set_telegram_user_id`, `Contacts.create` | Writes; outside this read ticket. |
 | [watchdog #140](https://github.com/mclbautista/t6-jo-watchdog/pull/140) | `ContactReader.list()` | `person list` |
 | watchdog #140 | `ProjectReader.list()` | `project list` |
-| watchdog #140 | `DeliverableReader.for_project()` | `deliverable list` |
+| watchdog #140 | `DeliverableReader.for_project()` | `deliverable candidates` (every Deliverable page of one Project, with `page_id`, `name`, `status` and `deliverable_class`; `deliverable list` stays the registry list) |
 | watchdog #140 | `get_departments()` | `departments` |
 | watchdog #140 | `JobOrders.get()` | `jo get` |
 | watchdog #140 | `JobOrders.find_all_by_telegram_key()` | `jo find` |

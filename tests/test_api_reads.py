@@ -7,7 +7,7 @@ from typing import Any
 from unittest.mock import patch
 
 from t6.client import Client
-from t6.notion.testing import FakeNotion, title, relation, rich_text, date
+from t6.notion.testing import FakeNotion, title, relation, rich_text, date, select
 from t6.notion.generated import JobOrdersRow, DeliverablesRow, MeetingNotesRow
 from t6.person import People
 from t6.preview import PreviewTokens
@@ -114,6 +114,42 @@ class ReadTests(unittest.TestCase):
         assert isinstance(result, Done)
         parsed = DeliverableListOutput.model_validate(result.result)
         self.assertEqual(set(parsed.deliverables[0].model_dump()), set(result.result['deliverables'][0]))
+
+    def test_deliverable_candidates_lists_notion_only_pages_with_name_status_and_class(self) -> None:
+        from t6.verbs import DeliverableCandidatesInput, DeliverableCandidatesOutput
+        row = DeliverablesRow
+        page = self.notion.add_page('deliverables', {row.notion_name('name'): title('Client Corp Finale'), row.notion_name('status'): select('Ready'),
+                                                     row.notion_name('deliverable_class'): select('Master'), row.notion_name('projects'): relation(self.project['id'])})
+        self.notion.add_page('deliverables', {row.notion_name('name'): title('Elsewhere'), row.notion_name('projects'): relation(self.notion.add_page('projects', {'Name': title('Other')})['id'])})
+        granted = Client(self.client.base_url, 'unmasked-secret')
+        result = granted.deliverable_candidates(DeliverableCandidatesInput(project=self.project['id']))
+        assert isinstance(result, Done)
+        DeliverableCandidatesOutput.model_validate(result.result)
+        by_page = {c['page_id']: c for c in result.result['candidates']}
+        self.assertEqual(set(by_page[page['id']]), {'page_id', 'name', 'status', 'deliverable_class'})
+        self.assertEqual((by_page[page['id']]['name'], by_page[page['id']]['status'], by_page[page['id']]['deliverable_class']), ('Client Corp Finale', 'Ready', 'Master'))
+        self.assertEqual(sorted(c['name'] for c in result.result['candidates']), ['Client Corp Finale', 'Trailer'])
+
+    def test_deliverable_candidates_names_are_masked_unless_unmasked(self) -> None:
+        from t6.verbs import DeliverableCandidatesInput
+        row = DeliverablesRow
+        self.notion.add_page('deliverables', {row.notion_name('name'): title('Client Corp Finale'), row.notion_name('projects'): relation(self.project['id'])})
+        masked = self.client.deliverable_candidates(DeliverableCandidatesInput(project=self.project['id']))
+        assert isinstance(masked, Done)
+        self.assertNotIn('Client Corp', str(masked.result))
+        self.assertEqual(len(masked.result['candidates']), 2)
+
+    def test_deliverable_candidates_includes_registered_pages_once_and_leaves_list_alone(self) -> None:
+        from t6.verbs import DeliverableCandidatesInput, DeliverableListInput
+        project = self.registry.register(actor='setup', idempotency_key='cand-project', notion_page_id=self.project['id'])
+        from t6.registry import Registered
+        assert isinstance(project, Registered)
+        result = self.client.deliverable_candidates(DeliverableCandidatesInput(project=project.project.id))
+        assert isinstance(result, Done)
+        self.assertEqual([c['name'] for c in result.result['candidates']], ['Trailer'])
+        listed = self.client.deliverable_list(DeliverableListInput(project=project.project.id))
+        assert isinstance(listed, Done)
+        self.assertEqual(listed.result, {'deliverables': []})
 
     def test_project_notes_returns_dated_lines(self) -> None:
         from t6.verbs import ProjectListInput, ProjectNotesInput
