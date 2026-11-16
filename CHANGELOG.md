@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-11-16
+
+Fixes from the live test of 2026-11-16, and the `/project` card the owner asked for: a new Project is set up on one card, a tap is answered within about a second, the Frame.io review timer works with the VPS edge, a refused chat command gets an answer, and the Resolve reader uses the real tables. No migration: the schema stays at 43.
+
 ### Added
 
 - `t6 admin drive import WORKBOOK` can apply the previewed import into the t6 database (#391): the preview report gains a `digest` (SHA-256 over the workbook, the `--log-sheet` and the `--projects` files given), and `--apply --preview FILE --actor NAME [--registry-db FILE]` writes the Drives, Assignments, custody events and exceptions only when the files still have that digest, then prints the counts written. A Project counts as resolved only when its Notion page is bound in the registry; any other name becomes an `unresolved project` exception. A second apply adds nothing. `--swing` is unchanged.
