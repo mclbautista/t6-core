@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Fixed
+
+- `drive exceptions` on a server without the `drives` extra (#371): the read reached the workbook importer, which imported `openpyxl` when it loaded, so the request crashed on the image. The importer now imports `openpyxl` only when it opens a workbook.
+
 ## [0.6.1] - 2026-11-16
 
 Drive reads and inventory verbs over the API, for the Drive web app, and one fix found in the live checks of 0.6.0. No migration: the schema stays at 41.

@@ -2,6 +2,8 @@
 
 from pathlib import Path
 import re
+import subprocess
+import sys
 import tomllib
 import unittest
 
@@ -44,6 +46,18 @@ class ImageExtrasTests(unittest.TestCase):
         for name, (distribution, extra) in RUNTIME_IMPORTS.items():
             with self.subTest(name=name):
                 self.assertIn(distribution, {requirement_name(r) for r in optional[extra]})
+
+    def test_the_drive_exceptions_read_needs_no_openpyxl(self) -> None:
+        """The image has no `drives` extra, and `drive exceptions` is an API read (#371)."""
+        code = (
+            "import os, sys, tempfile\n"
+            "sys.modules['openpyxl'] = None\n"
+            "from t6.drives.sqlite import SqliteDriveStore\n"
+            "from t6.registry.sqlite import SqliteProjectRegistry\n"
+            "print(SqliteDriveStore(SqliteProjectRegistry(os.path.join(tempfile.mkdtemp(), 'registry.sqlite'))).exceptions())\n"
+        )
+        done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, "()"), done.stderr[-400:])
 
 
 if __name__ == "__main__":

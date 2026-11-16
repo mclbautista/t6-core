@@ -27,8 +27,6 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from openpyxl import load_workbook
-
 from t6.drives import (
     Assignment,
     CustodyEvent,
@@ -253,6 +251,7 @@ def _receipt(row: _Row, problems: list[str]) -> tuple[bool, date | None]:
 def _read_per_project(path: Path) -> tuple[list[_Row], list[ReviewItem]]:
     rows = []
     review = []
+    from openpyxl import load_workbook  # the `drives` extra: only a workbook read needs it
     workbook = load_workbook(path, read_only=True, data_only=True)
     for sheet in workbook.worksheets:
         project: str | None = None
@@ -289,6 +288,7 @@ def _read_log_sheet(path: Path) -> tuple[list[_Row], list[_Row], list[ReviewItem
     """The inventory rows and the movement rows of the log sheet workbook."""
     drive_rows, movements = [], []
     unparsed: list[ReviewItem] = []
+    from openpyxl import load_workbook  # the `drives` extra: only a workbook read needs it
     workbook = load_workbook(path, read_only=True, data_only=True)
     for sheet in workbook.worksheets:
         project, project_row = sheet.title, 1
