@@ -63,6 +63,58 @@ class ReadTests(unittest.TestCase):
         assert isinstance(result, Done)
         self.assertEqual(result.result['projects'][1]['name'], 'Example Show')
 
+    def test_project_list_returns_project_health_beside_health(self) -> None:
+        from t6.verbs import ProjectListInput
+        from t6.notion.generated import ProjectsRow
+        from t6.notion.testing import select
+        self.notion.add_page('projects', {ProjectsRow.notion_name('name'): title('Health show'),
+                                          ProjectsRow.notion_name('health'): select('Fine'),
+                                          ProjectsRow.notion_name('project_health'): select('At risk')})
+        result = self.client.project_list(ProjectListInput())
+        assert isinstance(result, Done)
+        project = next(p for p in result.result['projects'] if p['name'] == 'Health show')
+        self.assertEqual((project['health'], project['project_health']), ('Fine', 'At risk'))
+        plain = next(p for p in result.result['projects'] if p['name'] == 'Example Show')
+        self.assertIsNone(plain['project_health'])
+
+    def test_departments_include_misc_only_on_request(self) -> None:
+        from t6.verbs import DepartmentsInput
+        self.notion.add_option('job_orders', 'Department', 'MISC')
+        self.notion.add_option('job_orders', 'Department', 'AE')
+        plain = self.client.departments(DepartmentsInput())
+        with_misc = self.client.departments(DepartmentsInput(include_misc=True))
+        assert isinstance(plain, Done) and isinstance(with_misc, Done)
+        self.assertNotIn('MISC', [d['name'] for d in plain.result['departments']])
+        self.assertIn('MISC', [d['name'] for d in with_misc.result['departments']])
+
+    def test_studio_notices_return_bold_runs_beside_the_plain_text(self) -> None:
+        from t6.verbs import StudioNoticesInput
+        self.notion._data_sources['projects']['description'] = [
+            {'type': 'text', 'plain_text': 'Upcoming Holidays and Leaves', 'annotations': {'bold': True}},
+            {'type': 'text', 'plain_text': '\n- Nov 20 Ana on leave', 'annotations': {'bold': False}}]
+        result = self.client.studio_notices(StudioNoticesInput())
+        assert isinstance(result, Done)
+        self.assertEqual(result.result['description'], 'Upcoming Holidays and Leaves\n- Nov 20 Ana on leave')
+        self.assertEqual(result.result['runs'], [{'text': 'Upcoming Holidays and Leaves', 'bold': True},
+                                                 {'text': '\n- Nov 20 Ana on leave', 'bold': False}])
+
+    def test_deliverable_list_declared_schema_describes_the_reply(self) -> None:
+        from t6.verbs import DeliverableListInput, DeliverableListOutput
+        from t6.deliverable import DeliverableStore
+        from t6.registry import Registered
+        from t6.verbs import Preview
+        project = self.registry.register(actor='setup', idempotency_key='schema-project', notion_page_id=self.project['id'])
+        assert isinstance(project, Registered)
+        store = DeliverableStore(self.registry, PreviewTokens('key'))
+        values = {'template': 'film', 'project': project.project.id, 'code': 'TLR', 'episode': None, 'due': None, 'air': None}
+        preview = store.define(values, actor='setup', idempotency_key='schema-deliverable')
+        assert isinstance(preview, Preview)
+        store.define(values, actor='setup', idempotency_key='schema-deliverable', confirm=preview.token)
+        result = self.client.deliverable_list(DeliverableListInput(project=project.project.id))
+        assert isinstance(result, Done)
+        parsed = DeliverableListOutput.model_validate(result.result)
+        self.assertEqual(set(parsed.deliverables[0].model_dump()), set(result.result['deliverables'][0]))
+
     def test_project_notes_returns_dated_lines(self) -> None:
         from t6.verbs import ProjectListInput, ProjectNotesInput
         from t6.notion.generated import ProjectsRow

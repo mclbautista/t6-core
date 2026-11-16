@@ -633,12 +633,13 @@ class VerbAPI:
                     return Done(result={'person': item})
                 if noun == 'studio':
                     source = client.retrieve_data_source(self.data_sources['projects'])
-                    description = ''.join(part.get('plain_text', (part.get('text') or {}).get('content', ''))
-                                          for part in source.get('description') or [])
-                    return Done(result={'description': description})
+                    runs = [{'text': part.get('plain_text', (part.get('text') or {}).get('content', '')),
+                             'bold': bool((part.get('annotations') or {}).get('bold'))}
+                            for part in source.get('description') or []]
+                    return Done(result={'description': ''.join(run['text'] for run in runs), 'runs': runs})
                 if noun == 'departments':
                     from t6.notion.departments import get_departments
-                    return Done(result={'departments': [{'id': d.option_id, 'name': d.name} for d in get_departments(client, self.data_sources['job_orders'])]})
+                    return Done(result={'departments': [{'id': d.option_id, 'name': d.name} for d in get_departments(client, self.data_sources['job_orders'], include_misc=inputs.include_misc)]})
                 if noun == 'camera':
                     from t6.notion.cameras import get_cameras
                     cameras = get_cameras(client, self.data_sources['cameras'], page_id=inputs.page_id)

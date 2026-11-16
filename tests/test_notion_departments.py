@@ -41,6 +41,11 @@ class DepartmentTests(unittest.TestCase):
         with live_job_orders(["MISC", "AE"]).client() as client:
             self.assertEqual([d.name for d in get_departments(client, SOURCE)], ["AE"])
 
+    def test_misc_comes_back_last_among_listed_when_asked_for(self) -> None:
+        with live_job_orders(["MISC", "AE", "Zebra"]).client() as client:
+            names = [d.name for d in get_departments(client, SOURCE, include_misc=True)]
+        self.assertEqual(names, ["AE", "MISC", "Zebra"])
+
     def test_a_renamed_property_or_option_is_still_read_by_id(self) -> None:
         # The committed snapshot has no real IDs yet, so give the property one.
         fake = live_job_orders(["TOC", "AE"])

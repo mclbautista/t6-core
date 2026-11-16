@@ -71,6 +71,7 @@ def outcome_json(outcome: Outcome) -> tuple[int, dict[str, Any]]:
 
 class LegacyDepartmentsInput(BaseModel):
     data_sources: Path
+    include_misc: bool = False
 
 
 class Department(BaseModel):
@@ -99,7 +100,7 @@ def departments(inputs: LegacyDepartmentsInput, open_notion: Callable[..., Any])
         from t6.notion.departments import get_departments
 
         with open_notion(token) as client:
-            result = DepartmentsOutput(departments=[Department(id=d.option_id, name=d.name) for d in get_departments(client, sources["job_orders"])])
+            result = DepartmentsOutput(departments=[Department(id=d.option_id, name=d.name) for d in get_departments(client, sources["job_orders"], include_misc=inputs.include_misc)])
         return Done(result=result)
     except (OSError, ValueError, ImportError, NotionError) as error:
         return Refused(rule="read", reason=str(error))
@@ -943,7 +944,7 @@ class ReadInput(BaseModel):
 
 
 class DepartmentsInput(ReadInput):
-    pass
+    include_misc: bool = False
 
 
 class PersonGetInput(ReadInput):
@@ -998,8 +999,14 @@ class StudioNoticesInput(ReadInput):
     pass
 
 
+class NoticeRun(BaseModel):
+    text: str
+    bold: bool = False
+
+
 class StudioNoticesOutput(BaseModel):
     description: str
+    runs: list[NoticeRun] = []
 
 
 class ExternalLinkFindInput(ReadInput):
@@ -2689,6 +2696,7 @@ def add_parsers(commands: Any) -> None:
             continue
         if entry.handler is departments:
             parser.add_argument("--data-sources", type=Path)
+            parser.add_argument("--include-misc", action="store_true")
             parser.set_defaults(registered_verb=entry)
             continue
         for name, field in entry.input_model.model_fields.items():
@@ -2709,7 +2717,7 @@ def run(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
         from pathlib import Path
         args.csv = Path(args.csv).read_text(encoding='utf-8-sig')
     inputs = (LegacyPersonGetInput(person_id=args.person_id, data_sources=args.data_sources) if entry.handler is person_get and args.data_sources else
-              LegacyDepartmentsInput(data_sources=args.data_sources) if entry.handler is departments and args.data_sources else
+              LegacyDepartmentsInput(data_sources=args.data_sources, include_misc=args.include_misc) if entry.handler is departments and args.data_sources else
               entry.input_model.model_validate({name: getattr(args, name) for name in entry.input_model.model_fields}))
     assert entry.handler is not None
     from t6.client import APIError, Client, Unavailable

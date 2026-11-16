@@ -141,6 +141,7 @@ class Project(NotionEntity):
     studio_id: str | None = field(default=None, compare=False)
     stage: str | None = field(default=None, compare=False)
     health: str | None = field(default=None, compare=False)
+    project_health: str | None = field(default=None, compare=False)
     playdate: dt.date | dt.datetime | None = field(default=None, compare=False)
     submission_deadline: dt.date | dt.datetime | None = field(default=None, compare=False)
     archival_deadline: dt.date | dt.datetime | None = field(default=None, compare=False)
