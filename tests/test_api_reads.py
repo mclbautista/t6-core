@@ -1017,6 +1017,19 @@ class ReadTests(unittest.TestCase):
         self.assertNotIn('Client Corp', str(masked.result))
         self.assertIn('Client Corp campaign', str(visible.result))
 
+    def test_a_caller_that_asks_for_real_names_is_refused_rather_than_masked(self) -> None:
+        """The shift report goes to a group: a lost `unmasked` grant must stop it, not send masked names (#488)."""
+        from t6.verbs import DepartmentsInput, ProjectListInput, Refused
+        url = f'http://127.0.0.1:{self.server.server_port}'
+        strict = Client(url, 'secret', require_unmasked=True)
+        for refused in (strict.project_list(ProjectListInput()), strict.departments(DepartmentsInput())):
+            assert isinstance(refused, Refused), refused
+            self.assertEqual(refused.rule, 'unmasked')
+        visible = Client(url, 'operator', require_unmasked=True).project_list(ProjectListInput())
+        assert isinstance(visible, Done), visible
+        self.assertIn('Client Corp campaign', str(visible.result))
+        self.assertIsInstance(self.client.project_list(ProjectListInput()), Done)  # without the flag: masked, as before
+
     def test_read_rejects_source_ids_and_filters(self) -> None:
         from urllib.error import HTTPError
         from urllib.request import Request, urlopen
