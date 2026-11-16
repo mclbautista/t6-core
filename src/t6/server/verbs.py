@@ -288,6 +288,9 @@ class VerbAPI:
         elif entry.noun == 'meeting-notes':
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._meeting_notes(entry.verb, inputs, actor)
+            # The reply holds the note's title and attendee names, so it is masked like `meeting-notes list`.
+            if isinstance(outcome, Done) and not self._reads_unmasked(actor):
+                outcome = self._masked_outcome(outcome)
         elif entry.noun == 'machine':
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._machine(entry.verb, inputs, actor)
@@ -956,7 +959,14 @@ class VerbAPI:
                         if record:
                             page = next((b['page_id'] for b in record['bindings'] if b['active']), None)
                             if page is None:
-                                return Done(result={'job_order': {**record['fields'], **record, 't6_id': record['id']}})
+                                # No Notion page yet (the poll after `jo raise`): the rule results come from the stored status.
+                                status = record['state']['status']
+                                group = status_group(status)
+                                return Done(result={'job_order': {
+                                    **record['fields'], **record, 't6_id': record['id'],
+                                    'status_group': group.value if group else None, 'active': is_active(status),
+                                    'health_flags': list(health_flags(record['fields'].get('health'))),
+                                    'project_ids': [record['project_id']] if record['project_id'] else []}})
                         else:
                             from t6.domain.job_order_rules import parse_telegram_key
                             if parse_telegram_key(inputs.ref) is not None:

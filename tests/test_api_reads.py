@@ -589,6 +589,16 @@ class ReadTests(unittest.TestCase):
         self.assertEqual(order['history'], [])
         self.assertEqual(order['notes'], [])
 
+    def test_jo_get_before_the_notion_page_exists_still_returns_the_rule_results(self) -> None:
+        from t6.verbs import JoGetInput
+        with self.registry._transaction() as db:
+            db.execute('INSERT INTO job_orders VALUES (?, ?, ?, ?, ?)', ('t6j_unbound', 't6p_one', None, None, '{"name": "Cut", "status": "Needs Intake Review"}'))
+        result = self.client.jo_get(JoGetInput(ref='t6j_unbound'))
+        assert isinstance(result, Done), result
+        order = result.result['job_order']
+        self.assertEqual((order['status_group'], order['active'], order['health_flags'], order['project_ids']),
+                         ('not_started', True, [], ['t6p_one']))
+
     def test_camera_enrich_requires_preview_and_confirm(self) -> None:
         from t6.verbs import CameraEnrichInput, Preview
         operator = Client(self.client.base_url, 'operator')

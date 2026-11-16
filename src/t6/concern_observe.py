@@ -5,6 +5,7 @@ from collections.abc import Callable, Mapping
 from datetime import date, datetime
 import hashlib
 import json
+import math
 from typing import Any
 
 from t6.concern import CHRONIC_DAYS, SOURCES, ConcernStore, _close, _insert
@@ -32,10 +33,13 @@ def _concern_id(db: Any, project: str, key: str, run_date: str) -> str:
 
 
 def _previous_start(db: Any, run_date: str) -> float:
-    """Midnight in Manila of the latest earlier run_date the audit rows know; with none, 7 days before this one."""
-    earlier = [d for (after,) in db.execute("SELECT after FROM audit WHERE action = 'concern_observe'") if (d := json.loads(after).get('run_date', '')) < run_date]
-    day = date.fromisoformat(max(earlier)) if earlier else date.fromordinal(date.fromisoformat(run_date).toordinal() - 7)
-    return datetime(day.year, day.month, day.day, tzinfo=MANILA).timestamp()
+    """The time after which a close is new to this run: when the run of the latest earlier run_date was stored
+    (that run already listed what was closed up to then); with no earlier run, just before midnight in Manila 7 days back."""
+    earlier = [(d, at) for at, after in db.execute("SELECT at, after FROM audit WHERE action = 'concern_observe'") if (d := json.loads(after).get('run_date', '')) < run_date]
+    if earlier:
+        return float(max(earlier)[1])
+    day = date.fromordinal(date.fromisoformat(run_date).toordinal() - 7)
+    return math.nextafter(datetime(day.year, day.month, day.day, tzinfo=MANILA).timestamp(), 0)
 
 
 def observe(store: ConcernStore, values: Mapping[str, Any], *, actor: str, coordinators: Callable[[str], set[str]], closes: bool = False) -> Outcome:
@@ -47,6 +51,7 @@ def observe(store: ConcernStore, values: Mapping[str, Any], *, actor: str, coord
     except ValueError:
         return Refused(rule='input', reason='run_date must be an ISO date')
     assert isinstance(run_date, str)
+    run_date = date.fromisoformat(run_date).isoformat()  # dates are compared as text, so `20261116` becomes `2026-11-16`
     if not isinstance(key, str) or not key.strip():
         return Refused(rule='idempotency_key', reason='A nonblank idempotency key is required')
     if not isinstance(findings, list) or not isinstance(unavailable, list) or len(findings) > MAX_FINDINGS or len(unavailable) > MAX_UNAVAILABLE:
@@ -146,6 +151,6 @@ def _apply(db: Any, store: ConcernStore, run_date: str, findings: list[dict[str,
         age = max(0, (today - on).days)
         projects.setdefault(project, {'project_id': project, 'open': [], 'closed_since_last_run': []})['open'].append(
             {'id': concern, 'text': text, 'source': source, 'opened_on': on.isoformat(), 'age_days': age, 'weeks': age // 7, 'chronic': age > CHRONIC_DAYS, 'state': state, 'seen_this_run': concern in seen})
-    for concern, project, text in db.execute("SELECT id, project_id, COALESCE(NULLIF(text, ''), anchor) FROM concerns WHERE state = 'closed' AND closed_at >= ? ORDER BY closed_at, id", (start,)).fetchall():
+    for concern, project, text in db.execute("SELECT id, project_id, COALESCE(NULLIF(text, ''), anchor) FROM concerns WHERE state = 'closed' AND closed_at > ? ORDER BY closed_at, id", (start,)).fetchall():
         projects.setdefault(project, {'project_id': project, 'open': [], 'closed_since_last_run': []})['closed_since_last_run'].append({'id': concern, 'text': text})
     return {'run_date': run_date, 'projects': [projects[p] for p in sorted(projects)], 'counts': counts}
