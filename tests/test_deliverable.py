@@ -48,6 +48,83 @@ class DeliverableTests(unittest.TestCase):
         assert isinstance(result, Refused)
         self.assertEqual(result.rule, 'project_archived')
 
+    def _defined(self, code: str = 'Ep01', episode: str | None = 'Episode 1') -> str:
+        done = self._confirmed(self.store.define, {'template': 'film', 'project': self.project, 'code': code, 'episode': episode}, actor='alice', idempotency_key='define-' + code)
+        return str(done.result['deliverable_id'])
+
+    def test_edit_changes_only_the_named_fields_and_records_it(self) -> None:
+        identifier = self._defined()
+        other = self._defined('Ep02')
+        values = {'deliverable': identifier, 'code': 'Ep02', 'episode': None}
+        preview = self.store.edit(values, actor='alice', idempotency_key='edit')
+        assert isinstance(preview, Preview)
+        self.assertEqual(preview.plan['before'], {'code': 'Ep01', 'episode': 'Episode 1'})
+        self.assertEqual(preview.plan['after'], {'code': 'Ep02', 'episode': 'Episode 1'})
+        done = self.store.edit(values, actor='alice', idempotency_key='edit', confirm=preview.token)
+        assert isinstance(done, Done)
+        record, untouched = self.store.get(identifier), self.store.get(other)
+        assert record is not None and untouched is not None
+        self.assertEqual((record['code'], record['episode']), ('Ep02', 'Episode 1'))
+        self.assertEqual(untouched['code'], 'Ep02')
+        self.assertEqual([r['code'] for r in self.store.list(self.project)], ['Ep02', 'Ep02'])
+        with self.registry._transaction() as db:
+            audit = db.execute("SELECT before, after FROM audit WHERE project_id=? AND action='deliverable_edit'", (identifier,)).fetchall()
+        self.assertEqual(len(audit), 1)
+        self.assertIn('Ep01', audit[0][0])
+        self.assertIn('Ep02', audit[0][1])
+        self.assertEqual(self.registry.activity(self.project)[0].subject_id, identifier)
+        self.assertEqual(len([i for i in self.registry.pending_sync() if i.project_id == identifier]), 2)
+
+    def test_edit_episode_alone_and_same_key_returns_the_first_result(self) -> None:
+        identifier = self._defined()
+        values = {'deliverable': identifier, 'code': None, 'episode': 'Episode 9'}
+        done = self._confirmed(self.store.edit, values, actor='alice', idempotency_key='edit')
+        record = self.store.get(identifier)
+        assert record is not None
+        self.assertEqual((record['code'], record['episode']), ('Ep01', 'Episode 9'))
+        replay = self.store.edit(values, actor='alice', idempotency_key='edit')
+        assert isinstance(replay, Preview)
+        self.assertEqual(done, self.store.edit(values, actor='alice', idempotency_key='edit', confirm=replay.token))
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM audit WHERE action='deliverable_edit'").fetchone()[0], 1)
+
+    def test_edit_naming_the_current_values_is_done_and_writes_nothing(self) -> None:
+        identifier = self._defined()
+        with self.registry._transaction() as db:
+            counts = [db.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0] for t in ('audit', 'activity', 'sync_intents')]
+        done = self.store.edit({'deliverable': identifier, 'code': 'Ep01', 'episode': 'Episode 1'}, actor='alice', idempotency_key='same')
+        assert isinstance(done, Done)
+        self.assertEqual(done.result['before'], done.result['after'])
+        with self.registry._transaction() as db:
+            self.assertEqual(counts, [db.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0] for t in ('audit', 'activity', 'sync_intents')])
+
+    def test_edit_refusals(self) -> None:
+        identifier = self._defined()
+        for values, rule in (({'deliverable': identifier, 'code': None, 'episode': None}, 'input'),
+                             ({'deliverable': identifier, 'code': '  ', 'episode': None}, 'input'),
+                             ({'deliverable': 't6v_missing', 'code': 'X', 'episode': None}, 'deliverable')):
+            refused = self.store.edit(values, actor='alice', idempotency_key='refuse')
+            assert isinstance(refused, Refused)
+            self.assertEqual(refused.rule, rule)
+        with self.registry._transaction() as db:
+            db.execute('INSERT INTO project_archives VALUES (?)', (self.project,))
+        refused = self.store.edit({'deliverable': identifier, 'code': 'Ep09', 'episode': None}, actor='alice', idempotency_key='archived')
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'project_archived')
+
+    def test_edit_refuses_when_the_deliverable_changed_since_preview(self) -> None:
+        identifier = self._defined()
+        values = {'deliverable': identifier, 'code': 'Ep05', 'episode': None}
+        preview = self.store.edit(values, actor='alice', idempotency_key='stale')
+        assert isinstance(preview, Preview)
+        self._confirmed(self.store.edit, {'deliverable': identifier, 'code': None, 'episode': 'Other'}, actor='alice', idempotency_key='first')
+        refused = self.store.edit(values, actor='alice', idempotency_key='stale', confirm=preview.token)
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'deliverable_changed')
+        record = self.store.get(identifier)
+        assert record is not None
+        self.assertEqual(record['code'], 'Ep01')
+
     def test_migration_never_matches_names_and_rebinds_explicit_identity(self) -> None:
         rows = [{'page_id': 'one', 'project_page': 'project-page', 'code': 'Ep01'},
                 {'page_id': 'two', 'project_page': 'project-page', 'code': 'Ep01'},

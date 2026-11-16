@@ -6,6 +6,7 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ### Added
 
+- `deliverable edit` (#383): change the code or the episode of a Deliverable after it is defined (`operator`, preview and confirm, safe to repeat with the same idempotency key). A code may repeat inside a Project. Naming the current values is Done and writes nothing; a change writes Audit and Activity and queues the Notion sync, which now also writes the Deliverable code to the page name. The Frame.io folder keeps its old name. `project start` keeps its own rule.
 - `t6 admin bay migrate --type OPTION` registers only the Notion Bays rows whose `Type` holds that option (#386). The Notion Bays database also holds machines that are not Bays; without `--type` every row is a Bay, as before.
 
 ### Fixed
