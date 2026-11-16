@@ -8,7 +8,7 @@
   project ID).
 - `map_projects(projects, links)`: match projects to Media locations (kind
   `resolve-project`, role `working`) and report the unmapped ones.
-- `schema_for(version)`: table layout per `DaVinci Resolve Version`.
+- `schema_for(version)`: verified table layout, matched on the major of a Resolve version.
 - `t6.resolve.postgres.PostgresDatabase`: the live connection.
 """
 
