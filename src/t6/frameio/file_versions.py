@@ -2,7 +2,7 @@
 
 The edge queues the raw Frame.io webhook body on the `main` queue as a `frameio.file_versioned` job.
 The main worker runs it, because it can open the t6 database; the Frame.io worker cannot, and holds
-the only Frame.io token. The webhook names the file but not its folder, so a `FileReader` finds it.
+the only Frame.io token. The webhook names the file but not its folder, so a `FileReader` finds it. For `file.versioned` it names the version stack (#410).
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ EVENT_TYPES = frozenset({'file.versioned', 'file.upload.completed'})
 
 class FileReader(Protocol):
     def file_location(self, file_id: str) -> FileLocation | Failed:
-        """Where the file is. `FileNotFound`: Frame.io does not know it (the job ends). Any other `Failed` is worth a retry."""
+        """Where the file is, or the stack's folder and files when the ID names a version stack. `FileNotFound`: Frame.io does not know it (the job ends). Any other `Failed` is worth a retry."""
         ...
 
 
@@ -56,5 +56,8 @@ class FrameioFileVersions:
             raise RuntimeError(found.reason)
         if found.folder_id is None:
             return {'outcome': 'ignored', 'reason': 'not a T6 folder'}
+        if found.file_ids is not None and found.stack_id is not None:  # the resource is a version stack (#410)
+            outcome = self._versions.record_stack_from_frameio(key, found.folder_id, found.stack_id, found.file_ids)
+            return {'outcome': 'ignored', 'reason': outcome} if outcome == 'not a T6 folder' else {'outcome': outcome}
         outcome = self._versions.record_from_frameio(key, found.folder_id, file_id, found.stack_id)
         return {'outcome': 'ignored', 'reason': outcome} if outcome == 'not a T6 folder' else {'outcome': outcome}

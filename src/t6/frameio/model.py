@@ -191,10 +191,14 @@ class FrameioFile(_Json):
 
 @dataclass(frozen=True, slots=True)
 class FileLocation:
-    """Where a Frame.io file is: the folder it sits in (a stacked file's stack's folder), and its version stack."""
+    """Where a Frame.io file is: the folder it sits in (a stacked file's stack's folder), and its version stack.
+
+    For an ID that names a version stack, `stack_id` is that ID and `file_ids` the files in it; for a file `file_ids` is None.
+    """
 
     folder_id: str | None
     stack_id: str | None = None
+    file_ids: tuple[str, ...] | None = None
 
 
 GUEST_ID = "guest"

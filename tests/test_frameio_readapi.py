@@ -97,6 +97,23 @@ class FileLocationTests(ReadApiTestCase):
             self.call("GET", "/frameio/files/f2/location"), (200, {"value": {"folder_id": "folder-7", "stack_id": "stack-1"}})
         )
 
+    def test_a_version_stack_answers_its_folder_and_its_file_ids(self) -> None:
+        self.frameio.add_file("f2", "Cut 2.mov")
+        self.frameio.add_file("f3", "Cut 3.mov")
+        self.frameio.add_version_stack("stack-1", ["f2", "f3"], parent_id="folder-7")
+        self.assertEqual(
+            self.call("GET", "/frameio/files/stack-1/location"),
+            (200, {"value": {"folder_id": "folder-7", "stack_id": "stack-1", "file_ids": ["f2", "f3"]}}),
+        )
+        self.assertEqual(
+            self.reader.file_location("stack-1"), FileLocation(folder_id="folder-7", stack_id="stack-1", file_ids=("f2", "f3"))
+        )
+
+    def test_an_id_that_is_neither_a_file_nor_a_stack_answers_404_never_502(self) -> None:
+        for status in (404, 422):
+            self.frameio.not_a_file_status = self.frameio.not_a_stack_status = status
+            self.assertEqual(self.call("GET", "/frameio/files/nope/location")[0], 404)
+
     def test_a_file_frameio_does_not_know_answers_404(self) -> None:
         self.assertEqual(self.call("GET", "/frameio/files/nope/location")[0], 404)
 

@@ -63,6 +63,42 @@ class VersionStore:
             db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, event_id, json.dumps(result)))
             return outcome
 
+    def record_stack_from_frameio(self, event_id: str, folder_id: str, stack_id: str, file_ids: tuple[str, ...]) -> str:
+        """Record what a version stack in a Deliverable's Frame.io folder makes, at most once per event (#410).
+
+        Same folder rule as `record_from_frameio`. A file with no Version gets one with the stack; a file whose Version
+        has no stack in this Deliverable gets the stack filled in, with a `version_stack` audit row. Returns `recorded`
+        (something changed), `known` (the event is seen, or every file already has its Version and stack) or `not a T6 folder`.
+        """
+        key = 'frameio-event:' + event_id
+        with self.registry._transaction() as db:
+            if db.execute('SELECT 1 FROM verb_requests WHERE idempotency_key=?', (key,)).fetchone():
+                return 'known'
+            owners = db.execute("SELECT DISTINCT owner_id, project_id FROM media_locations WHERE kind='frameio-folder' AND role='review' AND active=1 AND ref=?", (folder_id,)).fetchall()
+            if len(owners) != 1:
+                return 'not a T6 folder'
+            deliverable, project = owners[0]
+            now, changes = self.registry._clock(), []
+            for file_id in file_ids:
+                row = db.execute('SELECT id, deliverable_id, frameio_stack_id FROM versions WHERE frameio_file_id=?', (file_id,)).fetchone()
+                if row is None:
+                    version_id = str(T6Id.mint(EntityKind.VERSION))
+                    db.execute('INSERT INTO versions VALUES (?, ?, ?, ?, NULL, NULL)', (version_id, deliverable, file_id, stack_id))
+                    action, before = 'version_add', None
+                    after = {'version_id': version_id, 'deliverable_id': deliverable, 'project_id': project, 'frameio_file_id': file_id, 'frameio_stack_id': stack_id, 'recorded': True}
+                elif row[1] == deliverable and row[2] is None:
+                    version_id = row[0]
+                    db.execute('UPDATE versions SET frameio_stack_id=? WHERE id=?', (stack_id, version_id))
+                    action, before = 'version_stack', {'frameio_stack_id': None}
+                    after = {'version_id': version_id, 'deliverable_id': deliverable, 'project_id': project, 'frameio_file_id': file_id, 'frameio_stack_id': stack_id}
+                else:
+                    continue
+                audit = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)', (version_id, action, FRAMEIO_ACTOR, now, json.dumps(before), json.dumps(after)))
+                db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (project, version_id, now, FRAMEIO_ACTOR, action, action.replace('_', ' '), audit.lastrowid))
+                changes.append(after)
+            db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, event_id, json.dumps({'frameio_stack_id': stack_id, 'changes': changes})))
+            return 'recorded' if changes else 'known'
+
     def write(self, verb: str, values: dict[str, Any], *, actor: str, idempotency_key: str | None = None, confirm: str | None = None) -> Outcome:
         if not actor.strip() or any(not isinstance(v, str) or not v.strip() for v in ([values.get('deliverable'), values.get('frameio_file')] if verb == 'add' else [values.get('version')])):
             return Refused(rule='input', reason='Required values must be nonblank')

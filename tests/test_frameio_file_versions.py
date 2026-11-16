@@ -212,6 +212,49 @@ class LiveReadTests(Deliverables):
             self.handler(job('edge:/frameio:evt-4', event('file-1')))
         self.assertEqual(self.count(), 0)
 
+    def version_actions(self) -> list[str]:
+        return [e.action for e in self.registry.activity(self.project) if e.action.startswith('version_')]
+
+    def stack_of_two(self, parent_id: str = 'folder-1') -> None:
+        """`file-3` was recorded when it was uploaded; `file-4` was not. Then both are put in `stack-2`."""
+        self.frameio.add_file('file-3', 'Cut 3.mov', parent_id=parent_id)
+        self.frameio.add_file('file-4', 'Cut 4.mov', parent_id=parent_id)
+        self.handler(job('edge:/frameio:evt-3', event('file-3')))
+        self.frameio.add_version_stack('stack-2', ['file-3', 'file-4'], parent_id=parent_id)
+
+    def test_a_stack_records_its_new_file_and_fills_the_stack_of_the_recorded_one_and_the_same_job_again_nothing(self) -> None:
+        self.stack_of_two()
+        recorded = self.versions.for_file('file-3')
+        assert recorded is not None
+        self.assertEqual((recorded['frameio_stack_id'], self.count(), len(self.entries())), (None, 1, 1))
+        self.assertEqual(self.handler(job('edge:/frameio:evt-5', event('stack-2'))), {'outcome': 'recorded'})
+        new, filled = self.versions.for_file('file-4'), self.versions.for_file('file-3')
+        assert new is not None and filled is not None
+        self.assertEqual((new['frameio_stack_id'], new['deliverable_id']), ('stack-2', self.deliverable))
+        self.assertEqual((filled['id'], filled['frameio_stack_id']), (recorded['id'], 'stack-2'))
+        self.assertEqual((self.count(), len(self.entries())), (2, 2))
+        self.assertEqual(sorted(self.version_actions()), ['version_add', 'version_add', 'version_stack'])
+        asked = len(self.frameio.requests)
+        self.assertEqual(self.handler(job('edge:/frameio:evt-5', event('stack-2'))), {'outcome': 'known'})
+        self.assertEqual((self.count(), len(self.version_actions()), len(self.frameio.requests)), (2, 3, asked))
+
+    def test_another_event_for_the_same_stack_changes_nothing(self) -> None:
+        self.stack_of_two()
+        self.handler(job('edge:/frameio:evt-5', event('stack-2')))
+        self.handler(job('edge:/frameio:evt-6', event('stack-2', 'file.upload.completed')))
+        self.assertEqual((self.count(), len(self.version_actions())), (2, 3))
+
+    def test_a_stack_in_a_folder_that_is_not_a_t6_folder_is_ignored(self) -> None:
+        self.stack_of_two('folder-elsewhere')
+        self.assertEqual(self.handler(job('edge:/frameio:evt-5', event('stack-2'))), {'outcome': 'ignored', 'reason': 'not a T6 folder'})
+        self.assertEqual(self.count(), 0)
+
+    def test_an_id_that_is_neither_a_file_nor_a_stack_is_ignored(self) -> None:
+        for status in (404, 422):
+            self.frameio.not_a_file_status = self.frameio.not_a_stack_status = status
+            self.assertEqual(self.handler(job(f'edge:/frameio:evt-{status}', event('gone'))), {'outcome': 'ignored', 'reason': 'the file is gone from Frame.io'})
+        self.assertEqual(self.count(), 0)
+
 
 class WiringTests(unittest.TestCase):
     ENVIRON = {'T6_SERVER_URL': 'http://edge', 'T6_WORKER_SECRET': 's', 'T6_WORKER_QUEUE': 'main', 'T6_API_URL': 'http://api'}

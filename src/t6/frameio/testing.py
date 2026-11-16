@@ -54,6 +54,7 @@ class FakeFrameio:
         self.comments: dict[str, list[JSON]] = {}
         self.stacks: dict[str, list[str]] = {}
         self.stack_parents: dict[str, str] = {}
+        self.not_a_file_status = 404  # what Frame.io answers when an unknown ID is asked for as a file
         self.not_a_stack_status = 422  # what Frame.io answers when a folder ID is asked for as a version stack (seen live 2026-11-16)
         self.metadata: dict[str, list[JSON]] = {}
         self.requests: list[str] = []
@@ -224,12 +225,17 @@ class FakeFrameio:
         if match:
             found = [c for rows in self.comments.values() for c in rows if c["id"] == match.group(1)]
             return (200, {}, {"data": found[0]}) if found else (404, {}, {})
+        match = re.fullmatch(r"/files/([^/]+)", rest)
+        if match and match.group(1) in self.stacks:
+            return 422, {}, {}  # a version stack asked for as a file: "Entity with ID ... is not a file" (seen live 2026-11-16)
         match = re.fullmatch(r"/files/([^/]+)(/metadata)?", rest)
         if match and match.group(1) in self.files:
             file_id = match.group(1)
             if match.group(2):
                 return 200, {}, {"data": {"file_id": file_id, "metadata": self.metadata.get(file_id, [])}}
             return 200, {}, {"data": self.files[file_id]}
+        if match and not match.group(2):
+            return self.not_a_file_status, {}, {}
         return 404, {}, {}
 
     def send(self, url: str, headers: Mapping[str, str], body: JSON) -> tuple[int, Mapping[str, str], JSON]:
