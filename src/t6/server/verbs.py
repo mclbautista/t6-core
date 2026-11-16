@@ -164,10 +164,14 @@ class VerbAPI:
             return response
 
     def _masked_for(self, actor: str, mcp_header: bool) -> bool:
-        """Mask unless the secret is bound to an operator Person; the `mcp` service is always masked."""
+        """Mask unless the secret is bound to a Person who reads unmasked; the `mcp` service is always masked."""
         if actor in SERVICES:
             return actor == 'mcp' or mcp_header
-        return mcp_header and self.people.authorize(actor, 'operator') is not None
+        return mcp_header and not self._reads_unmasked(actor)
+
+    def _reads_unmasked(self, actor: str) -> bool:
+        """`operator` and the `unmasked` grant read real names; `unmasked` opens no write verb."""
+        return any(self.people.authorize(actor, role) is None for role in ('operator', 'unmasked'))
 
     def _mask_mcp(self, response: Response) -> Response:
         if self.privacy_registry is None:
@@ -206,7 +210,7 @@ class VerbAPI:
         elif (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'notes'), ('project', 'flags'), ('project', 'resolve'), ('concern', 'list'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find'), ('version', 'get')}:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._typed_read(entry.noun, entry.verb, inputs)
-            if isinstance(outcome, Done) and entry.noun in {'project', 'concern', 'jo', 'person', 'camera', 'deliverable', 'meeting-notes', 'external-link', 'studio'} and self.people.authorize(actor, 'operator'):
+            if isinstance(outcome, Done) and entry.noun in {'project', 'concern', 'jo', 'person', 'camera', 'deliverable', 'meeting-notes', 'external-link', 'studio'} and not self._reads_unmasked(actor):
                 if self.privacy_registry is None:
                     outcome = Refused(rule='masking', reason='Read privacy registry is not configured')
                 else:
