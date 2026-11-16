@@ -299,8 +299,9 @@ staff, freelancer, client or vendor.
 - **Staff**: works for the studio and has the staff role (below).
 - **Freelancer**: a person who works on Projects for the studio and is not staff.
   A freelancer does not have the staff role.
+  The abang relay asks a freelancer or a vendor.
 - **Client**: a person at the client of a Project.
-- **Vendor**: a person at an outside supplier (the abang relay asks vendors).
+- **Vendor**: a person at an outside supplier.
 
 ## Delivery links and the staff role
 

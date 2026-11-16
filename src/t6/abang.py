@@ -45,9 +45,9 @@ class Abang:
                     return Done(result=json.loads(previous[1]))
                 return self.tokens.create('abang ' + verb, actor, inputs, json.loads(previous[1]))
             if verb == 'request':
-                person = db.execute("SELECT telegram_id FROM persons WHERE id = ? AND kind = 'vendor' AND active = 1", (values['person'],)).fetchone()
+                person = db.execute("SELECT telegram_id FROM persons WHERE id = ? AND kind IN ('freelancer', 'vendor') AND active = 1", (values['person'],)).fetchone()
                 if not person or person[0] is None:
-                    return NeedsPerson(reason='An active vendor Person with a Telegram ID is required')
+                    return NeedsPerson(reason='An active freelancer or vendor Person with a Telegram ID is required')
                 source = values.get('source')
                 if source is not None:
                     try:
@@ -62,7 +62,7 @@ class Abang:
                 else:
                     chats = db.execute("SELECT DISTINCT m.chat_id, l.topic_id FROM linked_chat_members m JOIN chat_links l ON l.chat_id = m.chat_id AND l.state = 'active' WHERE m.telegram_id = ? AND m.present = 1", (person[0],)).fetchall()
                 if not chats:
-                    return NeedsPerson(reason='The vendor must be present in a linked chat')
+                    return NeedsPerson(reason='The freelancer or vendor must be present in a linked chat')
                 if len(chats) != 1:
                     return Ambiguous(candidates=[{'chat': c, 'topic': t} for c, t in chats])
                 try:
@@ -132,11 +132,11 @@ def start_draft(registry: Any, actor: str, person: str, chat: int, topic: int | 
     with registry._transaction() as db:
         if db.execute('SELECT 1 FROM abang_drafts WHERE id = ?', (draft,)).fetchone():
             return Done(result={'draft': draft})
-        row = db.execute("SELECT telegram_id FROM persons WHERE id = ? AND kind = 'vendor' AND active = 1", (person,)).fetchone()
+        row = db.execute("SELECT telegram_id FROM persons WHERE id = ? AND kind IN ('freelancer', 'vendor') AND active = 1", (person,)).fetchone()
         if not row or row[0] is None:
-            return NeedsPerson(reason='An active vendor Person with a Telegram ID is required')
+            return NeedsPerson(reason='An active freelancer or vendor Person with a Telegram ID is required')
         if not db.execute('SELECT 1 FROM linked_chat_members WHERE chat_id = ? AND telegram_id = ? AND present = 1', (chat, row[0])).fetchone():
-            return NeedsPerson(reason='The vendor must be present in this chat')
+            return NeedsPerson(reason='The freelancer or vendor must be present in this chat')
         projects = [r[0] for r in db.execute("SELECT DISTINCT project_id FROM chat_links WHERE state = 'active' AND chat_id = ? AND (topic_id IS ? OR topic_id IS NULL)", (chat, topic))]
         if not projects:
             return Refused(rule='chat', reason='This chat or topic is not linked to a Project')

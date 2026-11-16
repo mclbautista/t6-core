@@ -113,6 +113,12 @@ class AbangCommandTests(unittest.TestCase):
         self.assertEqual(self.command(42, VENDOR, 'not-a-coordinator').body['outcome'], 'rejected')
         self.assertEqual(len(self.state()), 1)
 
+    def test_the_command_accepts_a_freelancer(self) -> None:
+        with self.registry._transaction() as db:
+            db.execute("UPDATE persons SET kind = 'freelancer' WHERE id = ?", (VENDOR,))
+        self.assertEqual(self.command(7, VENDOR, 'freelancer').body['outcome'], 'accepted')
+        self.assertEqual(len(self.state()), 1)
+
     def test_a_chat_with_no_other_linked_destination_gives_no_draft(self) -> None:
         with self.registry._transaction() as db:
             db.execute("DELETE FROM chat_links WHERE id IN ('dst', 'dst2')")

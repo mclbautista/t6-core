@@ -88,6 +88,17 @@ class AbangTests(unittest.TestCase):
         self.assertTrue(any(call[1] == '/edit' and call[2]['text'] == 'Delivered' for call in self.gateway.calls))
         self.assertEqual(len([key for key in self.gateway.keys if key.startswith('abang:request:')]), 1)
 
+    def test_a_freelancer_can_be_asked_and_staff_or_a_client_cannot(self) -> None:
+        with self.db._transaction() as db:
+            db.execute("UPDATE persons SET kind = 'freelancer' WHERE id = 'vendor'")
+        self.write('request', {'person': 'vendor', 'destination': '-200', 'note': None}, 'freelancer')
+        self.assertEqual(self.db.db.execute('SELECT state FROM abang_requests').fetchone()[0], 'requested')
+        for kind in ('staff', 'client'):
+            with self.db._transaction() as db:
+                db.execute('UPDATE persons SET kind = ? WHERE id = ?', (kind, 'vendor'))
+            refused = self.store.write('request', {'person': 'vendor', 'destination': '-200', 'note': None}, actor='coordinator', idempotency_key=kind, confirm=None)
+            self.assertIsInstance(refused, NeedsPerson)
+
     def test_retry_and_link_reply(self) -> None:
         values = {'person': 'vendor', 'destination': '-200', 'note': None}
         rid = self.write('request', values, 'retry')
