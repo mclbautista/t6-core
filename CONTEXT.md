@@ -216,6 +216,15 @@ applies the **t6 steps**; a changed input is refused. Role: operator, and the
   at preview and at confirm, so a Start never gives one Frame.io folder two
   owners; the Deliverables a Start's own key made do not count. The Deliverable
   store itself does not forbid a repeated code.
+- A Deliverable code may repeat inside a Project (`deliverable define` allows it).
+  `deliverable edit` changes the code or the episode of a Deliverable after it is
+  defined (operator, preview and confirm, safe to repeat with the same key). It
+  names only the fields to change; dates stay with `deliverable delay`. A blank
+  code is refused, as is an archived Project; naming the values the Deliverable
+  already has is Done and writes nothing. A change writes Audit and Activity and
+  syncs the Notion page name. The Frame.io folder is not renamed: the Media
+  location points at it by ID, so the link stays valid and the folder keeps its
+  old name. `project start` keeps its own rule above.
 - A Project is started once: a second Start, or a Start of an archived Project,
   is refused. Frame.io Media locations are refused in the `media` input of a
   Start: they come from the Frame.io step only.

@@ -1049,6 +1049,14 @@ class DeliverableDefineInput(BaseModel):
     confirm: str | None = None
 
 
+class DeliverableEditInput(BaseModel):
+    deliverable: str
+    code: str | None = None
+    episode: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
 class DeliverableRebindInput(BaseModel):
     deliverable_id: str
     page_id: str
@@ -1062,6 +1070,25 @@ def deliverable_rebind(inputs: DeliverableRebindInput, open_notion: Callable[...
         return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
     people = _people()
     return DeliverableStore(people.registry, people.tokens).rebind(
+        inputs.model_dump(exclude={'idempotency_key', 'confirm'}), actor=_actor.get(),
+        idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
+class DeliverableEditOutput(BaseModel):
+    action: str
+    deliverable_id: str
+    project_id: str
+    before: dict[str, Any]
+    after: dict[str, Any]
+    idempotency_key: str
+
+
+def deliverable_edit(inputs: DeliverableEditInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.deliverable import DeliverableStore
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    people = _people()
+    return DeliverableStore(people.registry, people.tokens).edit(
         inputs.model_dump(exclude={'idempotency_key', 'confirm'}), actor=_actor.get(),
         idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
 
@@ -2129,6 +2156,7 @@ VERBS = (
     Verb("deliverable", "delay", "Move a Deliverable date", (), DeliverableDelayInput, DeliverableScheduleOutput, "coordinator", "Date moves require a reason.", deliverable_schedule),
     Verb("deliverable", "deliver", "Deliver to the client", (), DeliverableDeliverInput, DeliverableDeliverOutput, "coordinator", "Blocking checklist items must be checked.", deliverable_deliver),
     Verb("deliverable", "define", "Define a Deliverable", (), DeliverableDefineInput, DeliverableDefineOutput, "operator", "Preview and confirm a Deliverable.", deliverable_define),
+    Verb("deliverable", "edit", "Change a Deliverable code or episode", (), DeliverableEditInput, DeliverableEditOutput, "operator", "Names only the fields to change; dates stay with delay. A code may repeat inside a Project. The Frame.io folder keeps its old name: the Media location points at it by ID, so the link stays valid.", deliverable_edit),
     Verb("deliverable", "rebind", "Bind a replacement Deliverables page", (), DeliverableRebindInput, DeliverableDefineOutput, "operator", "Retain the old page as a legacy binding.", deliverable_rebind),
     Verb("deliverable", "get", "Get a Deliverable", (), DeliverableGetInput, DeliverableGetOutput, "reader", "Read from t6.", api_read, read_only=True),
     Verb("deliverable", "list", "List Project Deliverables", (), DeliverableListInput, DeliverableListOutput, "reader", "Read from t6.", api_read, read_only=True),
@@ -2529,6 +2557,12 @@ def add_parsers(commands: Any) -> None:
             parser.add_argument('page_id')
             parser.add_argument('--idempotency-key')
             parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.handler is deliverable_edit:
+            parser.add_argument('deliverable')
+            for name in ('code', 'episode', 'idempotency-key', 'confirm'):
+                parser.add_argument('--' + name)
             parser.set_defaults(registered_verb=entry)
             continue
         if entry.handler is deliverable_define:

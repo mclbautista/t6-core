@@ -24,7 +24,7 @@ from t6.verbs import (
     DeliverableDeliverInput, PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
     ConcernScanInput, ConcernListInput, ConcernChangesInput, ConcernForMessageInput, ConcernRecordMessageInput, ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
-    JoListInput, JoFindInput, DeliverableListInput, FloorReadInput, DeliverableGetInput, DeliverableDefineInput, DeliverableRebindInput, DeliverableMissInput, DeliverableDelayInput, MilestoneRecordInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, ProjectNotesInput, ProjectFlagsInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
+    JoListInput, JoFindInput, DeliverableListInput, FloorReadInput, DeliverableGetInput, DeliverableDefineInput, DeliverableEditInput, DeliverableRebindInput, DeliverableMissInput, DeliverableDelayInput, MilestoneRecordInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, ProjectNotesInput, ProjectFlagsInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
     JoSubmitInput, JoCloseInput, JoBlockInput, JoUnblockInput, JoDelayInput, JoCancelInput,
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
     LLMRunInput, PersonAddInput, PersonCreateInput, PersonFindInput,
@@ -340,6 +340,9 @@ class Client:
 
     def deliverable_define(self, inputs: DeliverableDefineInput) -> Result:
         return self.call('deliverable', 'define', inputs)
+
+    def deliverable_edit(self, inputs: DeliverableEditInput) -> Result:
+        return self.call('deliverable', 'edit', inputs)
 
     def deliverable_rebind(self, inputs: DeliverableRebindInput) -> Result:
         return self.call('deliverable', 'rebind', inputs)
