@@ -67,12 +67,19 @@ class ChatLinks:
                     return Preview(plan=plan, token=request['confirm'])
                 if (link and link[1] == desired) or (not link and desired == 'inactive'):
                     return Done(result=plan)
-                approval_id = str(T6Id.mint(EntityKind.APPROVAL))
+                target = f"{project_id}: chat {chat}, topic {topic if topic is not None else 'none'}" + (f" ({named[0]})" if named else '')
+                # One open Approval for one request: a new preview of the same write, by the same caller, for the same link state, reuses it.
+                open_one = db.execute("SELECT a.id FROM approvals a JOIN chat_link_previews p ON p.approval_id = a.id WHERE a.gate = 'chat link' AND a.state = 'requested' "
+                                      "AND a.requester = ? AND a.target = ? AND p.snapshot = ? AND json_extract(p.request, '$.verb') = ? ORDER BY a.rowid LIMIT 1",
+                                      (actor, target, snapshot, verb)).fetchone()
+                approval_id = open_one[0] if open_one else str(T6Id.mint(EntityKind.APPROVAL))
                 plan['approval_id'] = approval_id
                 preview = self.tokens.create('project ' + verb, actor, inputs, plan)
                 preview_nonce = self.tokens.verify(preview.token, 'project ' + verb, actor, inputs)
                 assert isinstance(preview_nonce, str)
-                target = f"{project_id}: chat {chat}, topic {topic if topic is not None else 'none'}" + (f" ({named[0]})" if named else '')
+                if open_one:
+                    db.execute('INSERT INTO chat_link_previews VALUES (?, ?, ?, ?)', (preview_nonce, approval_id, snapshot, json.dumps({'verb': verb, 'values': values, 'actor': actor, 'idempotency_key': key, 'confirm': preview.token})))
+                    return preview
                 db.execute('INSERT INTO approvals VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL)', (approval_id, 'chat link', target, actor, json.dumps('permission:operator'), 'requested'))
                 now = self.registry._clock()
                 cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, NULL, ?)', (approval_id, 'approval_request', actor, now, json.dumps({'gate': 'chat link', 'target': target})))

@@ -2151,9 +2151,19 @@ The authenticated Person is the sender. Check an item with `package check
 <package-id> <item>`, then use `package handoff <package-id>`. Missing advisory
 items remain visible in Activity and `package list --missing`; missing blocking
 items prevent handoff. The recipient uses `package accept <package-id>` or
-`package reject <package-id> --reason <reason>`. These writes use the usual
+`package reject <package-id> --reason <reason>`. A Package for the recipient
+`client` is complete at handoff: the client is not a Person, so `package accept`
+and `package reject` refuse it. These writes use the usual
 preview, confirmation token, and idempotency key. `package get <package-id>`
 shows the snapshot, checklist, and derived `kasado` readiness.
+
+### Failed jobs
+
+`t6 queue failed` lists the dead jobs of the internal queue in the t6 database. `t6 queue dismiss --job <id> --reason <reason>`
+(an operator, preview and confirm like any write, audited) dismisses one: it is never run again and no longer counts as
+failed. The webhook jobs of the VPS edge queue live in the edge host's own queue file, outside the t6 database, so they have
+their own admin commands, `t6 admin queue failed` and `t6 admin queue dismiss JOB --reason <reason>`, run on the edge host.
+See `docs/deployment.md`.
 
 ## Concern settlement and Project flags
 

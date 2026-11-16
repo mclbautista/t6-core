@@ -265,6 +265,21 @@ class ActionStore:
             )
             return Claim("ok", self._read(db, token))
 
+    def pending(self, kind: str) -> tuple[Action, ...]:
+        """The cards of one kind that wait for a tap, oldest first."""
+        with self._transaction() as db:
+            rows = db.execute(f"SELECT {_COLUMNS} FROM actions WHERE kind = ? AND state = 'pending' ORDER BY created_at, rowid", (kind,)).fetchall()
+        return tuple(_action(row) for row in rows)
+
+    def finish_pending(self, token: str, result: Mapping[str, JsonValue]) -> Action | None:
+        """Finish a card nobody is using: None when a tap claimed or used it meanwhile."""
+        with self._transaction() as db:
+            moved = db.execute(
+                "UPDATE actions SET state = 'done', stage = 'done', result = ?, version = version + 1 WHERE token = ? AND state = 'pending'",
+                (json.dumps(dict(result)), token),
+            ).rowcount
+            return self._read(db, token) if moved else None
+
     def release(self, token: str) -> None:
         """Give a claimed card back, after a failure that changed nothing."""
         with self._transaction() as db:

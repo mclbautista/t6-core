@@ -614,6 +614,31 @@ class OperatorService:
             return self._link_frameio(action, str(picked["project_id"]), frameio_project, name if isinstance(name, str) else frameio_project, operator, key)
         return None
 
+    def close_linked_frameio_cards(self) -> tuple[Action, ...]:
+        """Finish the pending "needs a show" cards of Frame.io projects that a show holds now, however they were linked.
+
+        The link data decides, as for the held review activity. The card ends as `frameio_linked_elsewhere`; the caller
+        delivers the returned cards, the way it delivers the card of a tap.
+        """
+        if self._people is None:
+            return ()
+        pending = self._store.pending("frameio_link")
+        if not pending:
+            return ()
+        holders = {link.ref: link.project_id for link in active_links(self._people.registry, "frameio-project")}
+        closed = []
+        for action in pending:
+            frameio_project = str(action.params["frameio_project_id"])
+            if frameio_project not in holders:
+                continue
+            name = action.params.get("frameio_name")
+            result: dict[str, JsonValue] = {"outcome": "frameio_linked_elsewhere", "frameio_project": frameio_project,
+                                            "frameio_name": name if isinstance(name, str) else frameio_project, "project_id": holders[frameio_project]}
+            finished = self._store.finish_pending(action.token, result)
+            if finished is not None:
+                closed.append(finished)
+        return tuple(closed)
+
     def _link_frameio(self, action: Action, project_id: str, frameio_project: str, name: str, operator: int, key: str) -> TapResult:
         """Run `frameio project link` as the tapper, who must be an active staff Person. A refusal names the holder."""
         assert self._people is not None
@@ -967,6 +992,7 @@ def _frameio_lines(result: Mapping[str, JsonValue], registry: ProjectRegistry) -
     holder = registry.get(str(result["holder"])) if result.get("holder") else None
     return {
         "frameio_linked": f"Linked Frame.io project {name} to {_identity(shown)}. Waiting review activity is on its way.",
+        "frameio_linked_elsewhere": f"Closed: Frame.io project {name} was linked to {_identity(shown)} another way. Nothing changed.",
         "frameio_held": f"Not linked: Frame.io project {name} already belongs to {_identity(holder)}. Nothing changed.",
         "frameio_refused": f"Not linked: {html.escape(str(result.get('reason', '')))}",
     }

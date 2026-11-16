@@ -31,7 +31,7 @@ import time
 
 from t6.domain.events import JsonValue
 
-__all__ = ["Claim", "JobQueue", "JobResult", "QueueError", "Submitted", "Waiting"]
+__all__ = ["Claim", "Dismissal", "FailedJob", "JobQueue", "JobResult", "QueueError", "Submitted", "Waiting"]
 
 MAIN_QUEUE = "main"
 FRAMEIO_QUEUE = "frameio"
@@ -65,6 +65,17 @@ CREATE TABLE IF NOT EXISTS timers (
     first_at REAL,
     last_at REAL,
     PRIMARY KEY (queue, key)
+);
+CREATE TABLE IF NOT EXISTS dismissals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL,
+    queue TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL,
+    failure TEXT,
+    actor TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS seen (
     queue TEXT NOT NULL,
@@ -115,6 +126,32 @@ class Waiting:
     kind: str
     dedupe_key: str
     payload: Mapping[str, JsonValue]
+
+
+@dataclass(frozen=True, slots=True)
+class FailedJob:
+    """A job that failed for good and was not dismissed."""
+
+    job_id: int
+    queue: str
+    kind: str
+    dedupe_key: str
+    reason: str | None
+    """The failure the job stored."""
+
+
+@dataclass(frozen=True, slots=True)
+class Dismissal:
+    """The record of one dismissed job: who dismissed it, when, and why."""
+
+    job_id: int
+    queue: str
+    kind: str
+    dedupe_key: str
+    failure: str | None
+    actor: str
+    reason: str
+    at: float
 
 
 class JobQueue:
@@ -320,6 +357,38 @@ class JobQueue:
                 )
             return True
 
+    # -- failed jobs ----------------------------------------------------------
+
+    def failed(self) -> list[FailedJob]:
+        """The jobs that failed for good, oldest first. A dismissed job is not listed."""
+        with self._transaction() as db:
+            rows = db.execute("SELECT id, queue, kind, dedupe_key, result FROM jobs WHERE state = 'failed' ORDER BY id").fetchall()
+        return [FailedJob(row[0], row[1], row[2], row[3], _failure(row[4])) for row in rows]
+
+    def dismiss(self, job_id: int, *, actor: str, reason: str) -> bool:
+        """Dismiss a failed job: it is never run again and no longer counts as failed.
+
+        The job keeps its row, its stored failure and its dedupe key (so a redelivered event still makes no second job);
+        its state becomes `dismissed`. Who dismissed it and why is kept in `dismissals`, in the same transaction.
+        False when the job does not exist or has not failed. `ValueError` for a blank actor or reason.
+        """
+        if not actor.strip() or not reason.strip():
+            raise ValueError("an actor and a reason are required")
+        with self._transaction() as db:
+            row = db.execute("SELECT queue, kind, dedupe_key, result FROM jobs WHERE id = ? AND state = 'failed'", (job_id,)).fetchone()
+            if row is None:
+                return False
+            db.execute("UPDATE jobs SET state = 'dismissed' WHERE id = ?", (job_id,))
+            db.execute("INSERT INTO dismissals (job_id, queue, kind, dedupe_key, failure, actor, reason, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                       (job_id, row[0], row[1], row[2], _failure(row[3]), actor.strip(), reason.strip(), self._clock()))
+            return True
+
+    def dismissals(self) -> list[Dismissal]:
+        """Every dismissal, oldest first."""
+        with self._transaction() as db:
+            rows = db.execute("SELECT job_id, queue, kind, dedupe_key, failure, actor, reason, at FROM dismissals ORDER BY id").fetchall()
+        return [Dismissal(*row) for row in rows]
+
     def _finish(self, job_id: int, token: str, result: JobResult) -> bool:
         with self._transaction() as db:
             return (
@@ -381,6 +450,11 @@ class JobQueue:
         """Turn due timers into jobs now. `claim` does this too. Returns how many fired."""
         with self._transaction() as db:
             return _promote_timers(db, self._clock())
+
+
+def _failure(stored: str | None) -> str | None:
+    value = None if stored is None else json.loads(stored).get("value")
+    return None if value is None else str(value)
 
 
 def _require_name(value: str, name: str) -> None:
