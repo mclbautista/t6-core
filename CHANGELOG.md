@@ -4,6 +4,36 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.8] - 2026-11-17
+
+One round of fixes for what the live checks and the reviews of 0.6.5 to 0.6.7 found. No migration: the schema stays at 45.
+
+### Added
+
+- Verb `text withhold` (#486, reader): up to 200 texts come back in order with labelled credential values replaced by the placeholder. An app calls it before it shows message text outside the chat it came from. Nothing is stored.
+- `Client(require_unmasked=True)` (#488): the client sends `X-T6-Require-Unmasked`, and the API refuses every call with rule `unmasked` when the caller has neither `operator` nor the `unmasked` grant. For a caller that must never pass masked names on.
+- `jo list`, `jo get` and `jo find` return `done` beside `status_group` and `active` (#477).
+- Verb `bay list` (#421, reader): each Bay ID with the page ID of its Notion row.
+- `deliverable edit` takes `--due` and `--air` and sets each when the Deliverable has none (#420). A date that is already set is moved with `deliverable delay`, as before.
+- Verbs `queue failed` and `queue dismiss` (#414, operator): a failed internal job is dismissed with a reason and is never run again. For the webhook queue file on the edge host: `t6 admin queue failed` and `t6 admin queue dismiss`.
+- One request log line for each API request (#373): time, identity, verb, outcome and duration, with no input, result, name or secret. The format is in `docs/deployment.md`.
+- Masked reads load the client-name file again when it changes, with no restart (#369). `t6 health` shows the list under `api.privacy_registry`.
+- `t6 health` shows `api.data_gaps.projects_without_name`: the count and page IDs of Projects with a blank name (#425). It does not fail the check.
+- The image installs the `drives` extra, so the workbook import runs in the image (#417).
+
+### Changed
+
+- `approval request`, `project link-chat` and `project unlink-chat` reuse the open Approval of the same caller and input (#418). A retry makes no second Approval and no second operator card.
+- A Package for the client ends at handoff (#422). `package accept` and `package reject` refuse it and say why.
+- Every Drive read runs in one database transaction (t6-drives #19). `drive list` with 2,100 Drives went from 4.7 s to 0.6 s on a local file.
+- `media migrate` with no External Links source refuses with rule `config` and says so (#424).
+
+### Fixed
+
+- `project hold` and `project resume` write the team's own Status option and never make a new one (#452). No match, or two, writes nothing and fails the job with the reason. `schema-check` reports `status_duplicates`.
+- `llm run` with `masking_preset: strict` gives the withheld IDs back in the reply (#475).
+- A Frame.io link made another way closes the pending "needs a show" operator card (#419).
+
 ## [0.6.7] - 2026-11-17
 
 The second stage of moving the apps onto the t6 API (#426): every rule an app still applied itself is now answered by a verb, so an app imports only `t6.client` and the types in `t6.verbs`. Two migrations: the schema goes from 43 to 45. Neither is forward-only, so 0.6.6 can still open the file; take a backup first.
