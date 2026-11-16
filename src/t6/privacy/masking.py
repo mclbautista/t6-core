@@ -304,7 +304,21 @@ class Session:
         token is left that this session did not issue.
         """
         unresolved: list[tuple[str, str]] = []
+        restored = self._restore_strings(output, unresolved)
+        if unresolved:
+            raise Unresolved(unresolved)
+        return cast(T, restored)
 
+    def restore_fields(self, output: T) -> tuple[T, list[str]]:
+        """Restore every string it can. Returns the output and the paths of strings that held a placeholder this session did not issue.
+
+        Those strings stay as written. A path looks like ``changes[2].text``.
+        """
+        unresolved: list[tuple[str, str]] = []
+        restored = self._restore_strings(output, unresolved)
+        return cast(T, restored), list(dict.fromkeys(path for path, _ in unresolved))
+
+    def _restore_strings(self, output: object, unresolved: list[tuple[str, str]]) -> object:
         def restore_text(text: str, path: str) -> str:
             def back(match: re.Match[str]) -> str:
                 token = f"[{match.group(1).lower()} {match.group(2)}]"
@@ -317,10 +331,7 @@ class Session:
 
             return _PLACEHOLDER.sub(back, text)
 
-        restored = _map_strings(output, "", restore_text)
-        if unresolved:
-            raise Unresolved(unresolved)
-        return cast(T, restored)
+        return _map_strings(output, "", restore_text)
 
     def leaks(self, output: object) -> list[Leak]:
         """Every raw registry name, other than allowed ones, in ``output``'s strings."""

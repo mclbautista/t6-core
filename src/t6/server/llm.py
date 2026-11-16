@@ -12,7 +12,7 @@ from referencing.exceptions import Unresolvable
 from referencing import Registry as SchemaRegistry
 
 from t6.llm.config import ConfigError, LLMConfig
-from t6.llm.jsontext import strip_fence
+from t6.llm.jsontext import repair_quotes, strip_fence
 from t6.llm.policy import RETENTIONS, DataPolicy, Retention
 from t6.llm.transport import Message, OpenAIChat, Provider, ProviderError, ProviderTimeout, RateLimited
 from t6.llm.result import Reason
@@ -47,6 +47,19 @@ class LLMService:
                         json.dumps({'outcome': outcome.outcome, **meta})))
         return outcome
 
+    def _allowed_names(self, entries: list[str]) -> list[str] | None:
+        """Every name and code of the Projects the entries name, or None when an entry is not a Project (or is also a person)."""
+        def key(text: str) -> str:
+            return ' '.join(text.lstrip('@').split()).casefold()
+        people = {key(name) for kind, name, _ in self.registry.terms() if kind == 'person'}
+        allowed: list[str] = []
+        for entry in entries:
+            found = [p for p in self.registry.projects if key(entry) in (key(p.name), key(p.code or ''))]
+            if not key(entry) or not found or key(entry) in people:
+                return None
+            allowed += [name for p in found for name in (p.name, p.code or '') if name]
+        return allowed
+
     def _run(self, inputs: LLMRunInput, meta: dict[str, Any] | None = None) -> Done | Refused:
         meta = {} if meta is None else meta
         schema_bytes = json.dumps(inputs.output_schema, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
@@ -76,9 +89,15 @@ class LLMService:
         meta['zdr'] = require_zdr
         if not DataPolicy(min_retention='zdr_enforced' if require_zdr else 'unknown').allows(provider.retention):
             return Refused(rule='policy', reason='Provider does not meet retention policy', failure='policy')
-        masked, session = pseudonymize(withhold(inputs.input_text).text, self.registry, options=inputs.masking_preset)
+        meta['allow_projects'] = len(inputs.allow_projects)
+        allow = self._allowed_names(inputs.allow_projects)
+        if allow is None:
+            return Refused(rule='allow', reason='Only registered Projects can be allowed')
+        masked, session = pseudonymize(withhold(inputs.input_text).text, self.registry, allow=allow,
+                                       options=inputs.masking_preset)
         _, name_check = pseudonymize('', self.registry, options='names')
-        if (name_check.leaks(masked.text) or name_check.leaks(inputs.prompt_template)
+        # The masked text and the reply are checked the way the caller's preset masks; the template and schema, strictly.
+        if (session.leaks(masked.text) or name_check.leaks(inputs.prompt_template)
                 or name_check.leaks(inputs.output_schema)
                 or withhold(inputs.prompt_template).text != inputs.prompt_template
                 or withhold(schema_bytes.decode()).text != schema_bytes.decode()):
@@ -105,20 +124,32 @@ class LLMService:
             return Refused(rule='provider', reason='LLM provider failed', failure='api_error')
         failure: Reason | None = None
         data: Any = None
-        content = completion.content or ''
+        repaired = False
+        unresolved: list[str] = []
+        masked_output: Any = None
+        content = strip_fence(completion.content or '')
         if not content.strip():
             failure = 'empty'
         else:
             try:
-                data = json.loads(strip_fence(content))
+                data = json.loads(content)
             except ValueError:
-                failure = 'invalid_json'
+                try:
+                    if not inputs.repair_quotes:
+                        raise
+                    data, repaired = json.loads(repair_quotes(content)), True
+                except ValueError:
+                    failure = 'invalid_json'
         if failure is None:
             try:
                 validator.validate(data)
-                if name_check.leaks(data):
+                if session.leaks(data):
                     return Refused(rule='masking', reason='Output contains unmasked registered names', failure='leak')
-                data = session.restore(data)
+                if inputs.restore == 'per_field':
+                    masked_output = data
+                    data, unresolved = session.restore_fields(data)
+                else:
+                    data = session.restore(data)
                 validator.validate(data)
             except Unresolved:
                 failure = 'unresolved_placeholder'
@@ -126,11 +157,12 @@ class LLMService:
                 failure = 'schema_violation'
         output_valid = failure is None
         if not output_valid:
-            data = None
+            data, unresolved, masked_output = None, [], None
         return Done(result=LLMRunOutput(output=data, model=completion.model, provider=name,
                     prompt_hash=_hash(prompt_bytes), schema_hash=_hash(schema_bytes),
                     tokens={'prompt': completion.tokens.prompt, 'completion': completion.tokens.completion,
-                            'total': completion.tokens.total}, zdr=require_zdr, output_valid=output_valid, failure=failure))
+                            'total': completion.tokens.total}, zdr=require_zdr, output_valid=output_valid, failure=failure,
+                    repaired=repaired, unresolved=unresolved, masked_output=masked_output))
 
 
 def service_from_env(env: Mapping[str, str]) -> LLMService | None:

@@ -26,6 +26,9 @@ class LLMRunInput(BaseModel):
     require_zdr: bool = False
     temperature_zero: bool = False
     examples: list[LLMExample] = []
+    allow_projects: list[str] = []
+    repair_quotes: bool = False
+    restore: Literal['whole', 'per_field'] = 'whole'
 
 
 class LLMRunOutput(BaseModel):
@@ -38,5 +41,8 @@ class LLMRunOutput(BaseModel):
     zdr: bool = False
     output_valid: bool = True
     failure: Reason | None = None
+    repaired: bool = False
+    unresolved: list[str] = []
+    masked_output: Any = None
 
 

@@ -1907,6 +1907,19 @@ neither key. When the reply is not usable the call is `done` with
 `output_valid: false` and `failure` set to `empty`, `invalid_json`,
 `schema_violation` or `unresolved_placeholder`. The server never retries.
 
+Four more optional inputs serve reports. The leak check on the masked input and
+on the reply follows `masking_preset`, so `strict` no longer refuses a plain-word
+Project name it leaves visible on purpose. `allow_projects` lists Projects (by
+name or code, as in the privacy registry) whose names stay readable; any other
+entry, or a person, is refused with rule `allow`, and the audit record holds
+only the count. With `repair_quotes: true`, a reply that is not valid JSON gets
+one quote repair, and `repaired` says so. `restore: "per_field"` restores every
+string it can: a string with a placeholder the call did not issue stays as
+written and its path (for example `changes[2].text`) is listed in `unresolved`,
+and `output_valid` stays true. `masked_output` then holds the reply as the model
+wrote it, placeholders only. With `restore: "whole"` (the default) one such
+placeholder makes the call `output_valid: false`.
+
 ### Calling the t6 API
 
 Install `t6[client]` and set `T6_API_URL` and `T6_API_SECRET`. The client

@@ -58,11 +58,17 @@ class LLMAPITests(unittest.TestCase):
         self.assertEqual(self.call()['rule'], 'policy')
         self.assertEqual(fake.calls, [])
 
-    def test_unresolved_name_refused(self) -> None:
-        # Strict intentionally skips short project names; the leak check catches them.
+    def test_strict_lets_plain_words_through(self) -> None:
+        # Strict leaves a plain-word Project name and a one-character alias on purpose; the leak check follows the preset.
         from t6.privacy import Project
-        self.api.llm_service = LLMService({'fake': self.fake}, 'fake', Registry(projects=[Project('Home')]))
-        self.body.update(input_text='Home', masking_preset='strict')
+        registry = Registry(people=[Person('Jane Doe', aliases=['J'])], projects=[Project('Home')])
+        self.api.llm_service = LLMService({'fake': self.fake}, 'fake', registry)
+        self.body.update(input_text='Home with J', masking_preset='strict')
+        self.assertEqual(self.call()['outcome'], 'done')
+        self.assertIn('Home with J', str(self.fake.calls[0].messages))
+
+    def test_names_preset_still_refuses_a_name_in_the_template(self) -> None:
+        self.body.update(prompt_template='Ask Jane Doe: {input}')
         self.assertEqual(self.call()['rule'], 'masking')
         self.assertEqual(self.fake.calls, [])
 
@@ -154,7 +160,7 @@ class LLMAPITests(unittest.TestCase):
     def test_audit_row_has_provider_and_zdr_and_no_text(self) -> None:
         self.call()
         audit = self.audit()
-        self.assertEqual(audit, {'outcome': 'done', 'provider': 'fake', 'zdr': True})
+        self.assertEqual(audit, {'outcome': 'done', 'provider': 'fake', 'zdr': True, 'allow_projects': 0})
 
     def test_other_refusals_have_no_failure_keys(self) -> None:
         self.api.people.service_permissions = {}
@@ -167,3 +173,74 @@ class LLMAPITests(unittest.TestCase):
         from t6.client import _outcome
         refused = _outcome.validate_python({'outcome': 'refused', 'rule': 'provider', 'reason': 'x', 'failure': 'api_error', 'retry_after': 3.5})
         self.assertEqual((refused.failure, refused.retry_after), ('api_error', 3.5))  # type: ignore[union-attr]
+
+    def reports(self, reply: str) -> None:
+        from t6.privacy import Project
+        self.fake = FakeProvider().reply(reply)
+        self.api.llm_service = LLMService({'fake': self.fake}, 'fake', Registry(
+            people=[Person('Jane Doe')], projects=[Project('Own Show', code='OWN'), Project('Other Show')]))
+
+    def test_allow_projects_lets_one_project_through_and_masks_the_others(self) -> None:
+        self.reports('{"summary": "Own Show and [project 1]"}')
+        self.body.update(input_text='Own Show, Other Show and Jane Doe', masking_preset='strict', allow_projects=['Own Show'])
+        result = self.call()['result']
+        self.assertEqual(self.fake.calls[0].messages[-1]['content'], 'Summarize: Own Show, [project 1] and [person 1]')
+        self.assertEqual(result['output'], {'summary': 'Own Show and Other Show'})
+        row = str(self.audit())
+        self.assertEqual(self.audit()['allow_projects'], 1)
+        self.assertNotIn('Own Show', row)
+
+    def test_allow_projects_accepts_a_code_and_lets_the_reply_name_it(self) -> None:
+        self.reports('{"summary": "Own Show"}')
+        self.body.update(input_text='x', allow_projects=['own'])
+        self.assertEqual(self.call()['result']['output'], {'summary': 'Own Show'})
+
+    def test_allow_does_not_let_other_names_leak_in_the_reply(self) -> None:
+        self.reports('{"summary": "Other Show"}')
+        self.body.update(allow_projects=['Own Show'])
+        self.assertEqual(self.call()['failure'], 'leak')
+
+    def test_allow_projects_refuses_a_person_or_unknown_name(self) -> None:
+        for entry in ('Jane Doe', 'Nobody'):
+            with self.subTest(entry=entry):
+                self.reports('{"summary": "x"}')
+                self.body.update(allow_projects=[entry])
+                self.assertEqual(self.call()['rule'], 'allow')
+                self.assertEqual(self.fake.calls, [])
+
+    def test_quotes_are_repaired_only_when_asked(self) -> None:
+        reply = '{"summary": "He said "hi" twice"}'
+        self.serve(FakeProvider().reply(reply))
+        result = self.call()['result']
+        self.assertEqual((result['output_valid'], result['failure'], result['repaired']), (False, 'invalid_json', False))
+        self.serve(FakeProvider().reply(reply))
+        self.body['repair_quotes'] = True
+        result = self.call()['result']
+        self.assertEqual((result['output_valid'], result['repaired']), (True, True))
+        self.assertEqual(result['output'], {'summary': 'He said "hi" twice'})
+        self.serve(FakeProvider().reply('{"summary": "fine"}'))
+        self.assertFalse(self.call()['result']['repaired'])
+
+    def per_field_body(self) -> None:
+        self.body.update(output_schema={'type': 'object', 'required': ['changes'], 'properties': {'changes': {
+            'type': 'array', 'items': {'type': 'object', 'properties': {'text': {'type': 'string'}}}}}},
+            input_text='Jane Doe asked')
+        self.serve(FakeProvider().reply('{"changes": [{"text": "[person 1] ok"}, {"text": "[person 7] ok"}]}'))
+
+    def test_per_field_restore_keeps_good_fields_and_lists_the_bad_one(self) -> None:
+        self.per_field_body()
+        self.body['restore'] = 'per_field'
+        result = self.call()['result']
+        self.assertTrue(result['output_valid'])
+        self.assertIsNone(result['failure'])
+        self.assertEqual(result['output'], {'changes': [{'text': 'Jane Doe ok'}, {'text': '[person 7] ok'}]})
+        self.assertEqual(result['unresolved'], ['changes[1].text'])
+        self.assertEqual(result['masked_output'], {'changes': [{'text': '[person 1] ok'}, {'text': '[person 7] ok'}]})
+        self.assertNotIn('Jane', str(result['masked_output']))
+
+    def test_whole_restore_is_all_or_nothing(self) -> None:
+        self.per_field_body()
+        result = self.call()['result']
+        self.assertFalse(result['output_valid'])
+        self.assertEqual(result['failure'], 'unresolved_placeholder')
+        self.assertEqual((result['unresolved'], result['masked_output']), ([], None))
