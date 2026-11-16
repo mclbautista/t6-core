@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, replace
 from datetime import date
@@ -142,6 +142,9 @@ class SqliteDriveStore:
             drive = replace(self._get(db, drive_id), **values)
             self._save(db, drive)
             return drive
+
+    def set_facts(self, drive_id: str, changes: Mapping[str, Any]) -> Drive:
+        return self._edit(drive_id, **changes)
 
     def set_serial(self, drive_id: str, serial: str | None) -> Drive:
         return self._edit(drive_id, serial=serial)

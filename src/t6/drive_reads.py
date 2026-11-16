@@ -31,7 +31,7 @@ def _item(store: DriveStore, drive: Drive) -> DriveItem:
                      needs_review=drive.needs_review, review_note=drive.review_note, brand=drive.brand, model=drive.model, capacity_tb=drive.capacity_tb,
                      format=drive.format, form_factor=drive.form_factor.value if drive.form_factor else None, ownership=drive.ownership.value,
                      owner_studio_id=drive.owner_studio_id, purchase_date=_day(drive.purchase_date), warranty=drive.warranty, remarks=drive.remarks,
-                     status=status.value if status else 'unknown')
+                     version=drive.version, status=status.value if status else 'unknown')
 
 
 def _event(event: CustodyEvent) -> DriveEventItem:

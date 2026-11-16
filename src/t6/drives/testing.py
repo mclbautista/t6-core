@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
 from datetime import date
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from t6.drives.importer import ReviewItem
@@ -83,6 +83,12 @@ class InMemoryDriveStore:
         drive = self.get_drive(drive_id)
         if drive is None:
             raise UnknownDrive(drive_id)
+        return drive
+
+    def set_facts(self, drive_id: str, changes: Mapping[str, Any]) -> Drive:
+        drive = replace(self._drive(drive_id), **changes)
+        self._check_serial(drive)
+        self._drives[drive_id] = drive
         return drive
 
     def set_serial(self, drive_id: str, serial: str | None) -> Drive:

@@ -13,11 +13,14 @@ provides an in-memory fake for tests.
 from __future__ import annotations
 
 import enum
+import hashlib
+import json
 import re
 from uuid import uuid4
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import date
-from typing import TYPE_CHECKING, Iterable, Protocol, Sequence
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, Iterable, Protocol, Sequence
 
 from t6.vocabulary import DRIVE_ROLES
 
@@ -172,6 +175,11 @@ class Drive:
     def key(self) -> str:
         """Alias for the permanent ID, never the serial."""
         return self.id
+
+    @property
+    def version(self) -> str:
+        """A short digest of every fact, so it changes whenever a fact changes. Assignments and custody are not facts."""
+        return hashlib.sha256(json.dumps(asdict(self), default=str, sort_keys=True).encode()).hexdigest()[:12]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -443,6 +451,15 @@ class DriveStore(Protocol):
 
     def set_form_factor(self, drive_id: str, form_factor: FormFactor | None) -> Drive:
         """Correct or clear the form factor."""
+        ...
+
+    def set_facts(self, drive_id: str, changes: Mapping[str, Any]) -> Drive:
+        """Change several Drive facts at once, named as the Drive fields are.
+
+        The Drive is checked as it will be after all the changes, so one fact can be
+        cleared while another is set. Raises ValueError (nothing changes) if the result is
+        not a valid Drive, and DuplicateSerial if a serial is already held.
+        """
         ...
 
     def save_preview(self, nonce: str, snapshot: str) -> None:

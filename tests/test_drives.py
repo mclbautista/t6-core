@@ -782,6 +782,20 @@ class InventoryReadSupportTests(unittest.TestCase):
         self.assertIsNone(store.set_label(drive.id, None).label)
         self.assertIsNone(store.set_form_factor(drive.id, None).form_factor)
 
+    def test_several_facts_change_in_one_step_or_not_at_all(self) -> None:
+        store = make_store()
+        drive = store.add_drive(Drive(serial="D1", label="M01"))
+        changed = store.set_facts(drive.id, {"label": None, "description": "invented case", "brand": "Invented Brand", "capacity_tb": 2.0, "purchase_date": date(2026, 1, 2)})
+        self.assertEqual((changed.label, changed.description, changed.brand, changed.capacity_tb, changed.purchase_date), (None, "invented case", "Invented Brand", 2.0, date(2026, 1, 2)))
+        self.assertEqual(store.get_drive(drive.id), changed)
+        with self.assertRaises(ValueError):
+            store.set_facts(drive.id, {"brand": "Other", "capacity_tb": -1.0})
+        with self.assertRaises(UnknownDrive):
+            store.set_facts("t6d_" + "0" * 32, {"brand": "X"})
+        found = store.get_drive(drive.id)
+        assert found is not None
+        self.assertEqual(found.brand, "Invented Brand")
+
     def test_the_only_identifying_detail_cannot_be_cleared_and_an_unknown_drive_is_refused(self) -> None:
         store = make_store()
         drive = store.add_drive(Drive(label="M01"))

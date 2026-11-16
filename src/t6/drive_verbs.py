@@ -29,7 +29,8 @@ from t6.verbs import Ambiguous, Outcome, Refused
 
 FACT_VERBS = ('add', 'edit', 'promote_serial')
 WRITE_VERBS = ('receive', 'release', 'return', 'retire', 'assign', 'unassign', 'swing_assign', 'swing_unassign', 'swing_return', *FACT_VERBS)
-_EDITABLE = ('label', 'form_factor', 'serial', 'suspected_serial', 'needs_review', 'review_note')
+_TEXT_FACTS = ('label', 'serial', 'suspected_serial', 'review_note', 'description', 'brand', 'model', 'format', 'owner_studio_id', 'warranty', 'remarks')
+_EDITABLE = (*_TEXT_FACTS, 'form_factor', 'needs_review', 'capacity_tb', 'ownership_known', 'purchase_date')
 _KINDS = {'receive': CustodyKind.RECEIVED, 'release': CustodyKind.RELEASED, 'return': CustodyKind.RETURNED, 'retire': CustodyKind.RETIRED}
 _CANNOT_FOLLOW: dict[str, set[DriveStatus | None]] = {'receive': {DriveStatus.IN_CUSTODY, DriveStatus.RETIRED}, 'release': {DriveStatus.RELEASED, DriveStatus.RETIRED},
                   'return': {None, DriveStatus.IN_CUSTODY, DriveStatus.RETIRED}, 'retire': {DriveStatus.RETIRED}}
@@ -227,12 +228,20 @@ class DriveVerbs:
                 return clash
             plan.update(drive_ids=[drive.id], facts=audit_json(replace(drive, serial=drive.suspected_serial, suspected_serial=None)))
             return Plan(plan, [audit_json(drive)], lambda store_: self._promote(store_, drive))
-        changes: dict[str, Any] = {name: values[name].strip() or None for name in ('label', 'serial', 'suspected_serial', 'review_note') if name in values}
-        if 'form_factor' in values:
-            changes['form_factor'] = FormFactor(values['form_factor']) if values['form_factor'] else None
-        if 'needs_review' in values:
-            changes['needs_review'] = values['needs_review']
+        expected = values.get('expected_version')
+        if expected is not None and expected != drive.version:
+            return Refused(rule='drive_changed', reason=f'Drive {drive.id} changed since its version {expected}; read it again')
+        changes: dict[str, Any] = {name: values[name].strip() or None for name in _TEXT_FACTS if name in values}
         try:
+            if 'form_factor' in values:
+                changes['form_factor'] = FormFactor(values['form_factor']) if values['form_factor'] else None
+            if 'capacity_tb' in values:
+                changes['capacity_tb'] = float(values['capacity_tb']) if values['capacity_tb'].strip() else None
+            if 'purchase_date' in values:
+                changes['purchase_date'] = date.fromisoformat(values['purchase_date']) if values['purchase_date'].strip() else None
+            for name in ('needs_review', 'ownership_known'):
+                if name in values:
+                    changes[name] = values[name]
             edited = replace(drive, **changes)
         except ValueError as error:
             return Refused(rule='input', reason=str(error))
@@ -253,15 +262,7 @@ class DriveVerbs:
 
     @staticmethod
     def _edit(store: DriveStore, drive: Drive, changes: dict[str, Any]) -> list[Change]:
-        setters: dict[str, Callable[[str, Any], Drive]] = {'label': store.set_label, 'form_factor': store.set_form_factor, 'serial': store.set_serial, 'suspected_serial': store.set_suspected_serial}
-        for name in sorted((name for name in changes if name in setters), key=lambda name: changes[name] is None):  # set before clearing
-            setters[name](drive.id, changes[name])
-        if 'needs_review' in changes or 'review_note' in changes:
-            store.set_review(drive.id, needs_review=changes.get('needs_review', drive.needs_review),
-                             note=changes['review_note'] if 'review_note' in changes else drive.review_note)
-        edited = store.get_drive(drive.id)
-        assert edited is not None
-        return [(drive.id, audit_json(drive), audit_json(edited))]
+        return [(drive.id, audit_json(drive), audit_json(store.set_facts(drive.id, changes)))]
 
     def _plan_swing(self, store: DriveStore, verb: str, values: dict[str, Any], key: str) -> Plan | Refused | Ambiguous:
         drive_id = values['drive']

@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, get_args, get_origin
 from types import UnionType
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from t6.domain import Project, JobOrder, Deliverable, MeetingNote, Contact, Camera, ExternalRef
 from t6.vocabulary import DRIVE_ROLES, DriveRole, MediaKind, MediaRole
 from t6.llm.api import Done as Done, LLMRunInput as LLMRunInput, LLMRunOutput as LLMRunOutput
@@ -1809,8 +1809,24 @@ class DriveEditInput(BaseModel):
     suspected_serial: str | None = None
     needs_review: bool | None = None
     review_note: str | None = None
+    description: str | None = None
+    brand: str | None = None
+    model: str | None = None
+    capacity_tb: str | None = None  # TB as a number; blank clears
+    format: str | None = None
+    owner_studio_id: str | None = None
+    ownership_known: bool | None = None
+    purchase_date: str | None = None
+    warranty: str | None = None
+    remarks: str | None = None
+    expected_version: str | None = None
     idempotency_key: str | None = None
     confirm: str | None = None
+
+    @field_validator('capacity_tb', mode='before')
+    @classmethod
+    def _capacity_number(cls, value: Any) -> Any:
+        return str(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else value
 
 
 class DrivePromoteSerialInput(BaseModel):
@@ -1895,6 +1911,7 @@ class DriveItem(BaseModel):
     purchase_date: str | None
     warranty: str | None
     remarks: str | None
+    version: str
     status: str
 
 

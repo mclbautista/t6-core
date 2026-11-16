@@ -4,6 +4,7 @@ import json
 import os
 import unittest
 from contextlib import redirect_stdout
+from dataclasses import asdict
 from datetime import date
 from typing import Any
 from unittest.mock import patch
@@ -459,6 +460,64 @@ class DriveVerbTests(unittest.TestCase):
         self.store.set_label(drive, 'Changed elsewhere')
         self.assertEqual(self.call('drive', 'edit', {**values, 'confirm': preview.token}).rule, 'drive_changed')
         self.assertEqual(self.store.get_drive(drive).label, 'Changed elsewhere')  # type: ignore[union-attr]
+
+    def test_drive_edit_changes_every_fact_with_the_rules_of_drive_add_and_a_blank_clears(self) -> None:
+        drive = self.drives[0]
+        self.write('edit', {'drive': drive, 'description': 'invented case', 'brand': 'Invented Brand', 'model': 'IB-1', 'capacity_tb': 4.0, 'format': 'exFAT',
+                            'owner_studio_id': 't6s_invented', 'purchase_date': '2026-03-04', 'warranty': 'to 2028', 'remarks': 'scuffed'})
+        found = self.store.get_drive(drive)
+        assert found is not None
+        self.assertEqual((found.description, found.brand, found.model, found.capacity_tb, found.format, found.owner_studio_id, found.purchase_date, found.warranty, found.remarks),
+                         ('invented case', 'Invented Brand', 'IB-1', 4.0, 'exFAT', 't6s_invented', date(2026, 3, 4), 'to 2028', 'scuffed'))
+        self.write('edit', {'drive': drive, 'owner_studio_id': '', 'ownership_known': False, 'capacity_tb': '', 'purchase_date': '', 'brand': '', 'remarks': ' '})
+        found = self.store.get_drive(drive)
+        assert found is not None
+        self.assertEqual((found.ownership.value, found.owner_studio_id, found.capacity_tb, found.purchase_date, found.brand, found.remarks, found.model), ('unknown', None, None, None, None, None, 'IB-1'))
+        self.assertEqual(self.registry.audit(drive)[-1].after['brand'], None)
+
+    def test_drive_edit_refuses_a_fact_that_drive_add_would_refuse_and_changes_nothing(self) -> None:
+        drive = self.drives[0]
+        before = asdict(self.store.get_drive(drive))  # type: ignore[arg-type]
+        for values in ({'capacity_tb': 0}, {'capacity_tb': -2.5}, {'purchase_date': 'next week'}, {'ownership_known': False, 'owner_studio_id': 't6s_invented'}):
+            with self.subTest(values=values):
+                self.assertEqual(self.call('drive', 'edit', {'drive': drive, **values}).rule, 'input')
+        self.assertEqual(asdict(self.store.get_drive(drive)), before)  # type: ignore[arg-type]
+
+    def test_drive_edit_can_clear_one_identifying_fact_while_setting_another_in_the_same_edit(self) -> None:
+        drive = self.drives[0]
+        self.write('edit', {'drive': drive, 'serial': '', 'label': '', 'description': 'now only described'})
+        found = self.store.get_drive(drive)
+        assert found is not None
+        self.assertEqual((found.serial, found.label, found.description), (None, None, 'now only described'))
+
+    def test_drive_get_and_list_give_a_version_that_changes_with_the_facts_and_drive_edit_checks_it(self) -> None:
+        drive = self.drives[0]
+        first = self.read('get', {'drive': drive})['drive']['version']
+        self.assertEqual({d['id']: d['version'] for d in self.read('list')['drives']}[drive], first)
+        self.assertEqual(len({d['version'] for d in self.read('list')['drives']}), 3)
+        stale = self.call('drive', 'edit', {'drive': drive, 'label': 'M01', 'expected_version': 'not-current'})
+        self.assertIsInstance(stale, Refused)
+        self.assertEqual(stale.rule, 'drive_changed')
+        self.assertEqual(self.store.get_drive(drive).label, 'Synthetic 0')  # type: ignore[union-attr]
+        self.write('edit', {'drive': drive, 'label': 'M01', 'expected_version': first})
+        second = self.read('get', {'drive': drive})['drive']['version']
+        self.assertNotEqual(second, first)
+        self.write('edit', {'drive': drive, 'label': 'Synthetic 0'})
+        self.assertEqual(self.read('get', {'drive': drive})['drive']['version'], first)  # the same facts give the same version
+        self.write('assign', {'drive': drive, 'project': self.projects[0], 'label': 'A1', 'role': 'master'})
+        self.assertEqual(self.read('get', {'drive': drive})['drive']['version'], first)  # an Assignment is not a fact
+
+    def test_drive_edit_checks_the_expected_version_again_at_confirm(self) -> None:
+        drive = self.drives[0]
+        version = self.read('get', {'drive': drive})['drive']['version']
+        values = {'drive': drive, 'label': 'M01', 'expected_version': version, 'idempotency_key': 'versioned'}
+        preview = self.call('drive', 'edit', values)
+        self.assertIsInstance(preview, Preview)
+        self.store.set_facts(drive, {'brand': 'Changed elsewhere'})
+        refused = self.call('drive', 'edit', {**values, 'confirm': preview.token})
+        self.assertIsInstance(refused, Refused)
+        self.assertEqual(refused.rule, 'drive_changed')
+        self.assertEqual(self.store.get_drive(drive).label, 'Synthetic 0')  # type: ignore[union-attr]
 
     def test_drive_promote_serial_accepts_the_suspected_serial_once_it_is_unique(self) -> None:
         a, b, c = self.drives
