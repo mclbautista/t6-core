@@ -8,6 +8,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 - `t6 admin drive import WORKBOOK` can apply the previewed import into the t6 database (#391): the preview report gains a `digest` (SHA-256 over the workbook, the `--log-sheet` and the `--projects` files given), and `--apply --preview FILE --actor NAME [--registry-db FILE]` writes the Drives, Assignments, custody events and exceptions only when the files still have that digest, then prints the counts written. A Project counts as resolved only when its Notion page is bound in the registry; any other name becomes an `unresolved project` exception. A second apply adds nothing. `--swing` is unchanged.
 
+### Changed
+
+- `/project` is quicker to use (#406): **New Project** on a New Projects page card now keeps the same card and asks for the code (`/project CODE` sets it and puts the Project in rotation; **Keep out of rotation, no code** closes it), and `/project TEXT` with no card waiting opens the Project whose code is TEXT or lists the Projects whose code contains TEXT or whose T6 ID ends with it, replacing the "No Project is waiting for a code" line.
+
 ### Fixed
 
 - The Resolve project server reader uses the real tables (#394): `SM_Project` and `SM_ProjectFolder`, a project's folder from its `Folder` column, every named folder (including top-level ones) in the folder path, and one verified layout for Resolve majors 17 to 20 that `schema_for` matches on the major of the version (so `18.1.4` works).
