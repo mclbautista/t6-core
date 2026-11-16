@@ -1683,35 +1683,29 @@ index. `lint-imports` enforces the layer contracts in `pyproject.toml` (`t6.doma
 `t6.resolve` reads the DaVinci Resolve PostgreSQL project server. Install it
 with `pip install 't6[resolve]'`.
 
-- `ProjectServer(db, database, schema_for(version))` is intended to list
-  projects with database, folder path, name and internal ID. All supplied
-  schemas are unverified and rejected by default. For controlled investigation
-  only, pass `allow_unverified_schema=True`; this does not establish correctness.
+- `ProjectServer(db, database, schema_for(version))` lists projects with
+  database, folder path, name and internal ID. The layout (`SM_Project` and
+  `SM_ProjectFolder`) was checked against the live server on 2026-11-16 and is
+  marked verified; an unverified schema is still rejected unless
+  `allow_unverified_schema=True` is passed.
   Roles detected as writable are refused (`ReadOnlyViolation`). Connect with
   `t6.resolve.postgres.PostgresDatabase(dsn)`, which also sets the session
   read-only.
 - A project's External ID is `<database>/<folder path>/<project name>`; a
-  project in the root folder has no folder segment. `ResolveProject.ref` is the
+  project outside any folder has no folder segment. `ResolveProject.ref` is the
   ExternalRef (system `resolve`, kind `project`, Internal ID the server's
   project ID).
 - `map_projects(projects, links)` matches projects to Media locations (kind
   `resolve-project`, role `working`). `unmapped` holds projects with no
   location; `orphan_links` holds locations whose project is no longer on the
   server.
-- `schema_for(version)` returns an assumed table layout per `DaVinci Resolve
-  Version`. Tests use synthetic SQLite fixtures in `tests/fixtures/resolve/`.
+- `schema_for(version)` matches on the major of a Resolve version (the text
+  before the first `.`); 17, 18, 19 and 20 give the verified layout, any other
+  major raises `KeyError`. Tests use a synthetic SQLite fixture in
+  `tests/fixtures/resolve/`.
 
-The table layout in `t6.resolve.schema` and the SQL in `t6.resolve.postgres`
-have not been run against a live server. Check them first, then correct the
-schema entries and fixtures. The versions in `SCHEMAS` (18, 19) are placeholders until
-`DaVinci Resolve Version` is filled on active shows.
-
-A read-only check of Sixto found Project Server app version 20.0.0 and
-PostgreSQL 13.4. The app version does not tell the Resolve version of each
-project library, and no Resolve 20 layout is supplied. PostgreSQL sign-in was
-not available, so the live schema, project list and role check are still
-unchecked. Mark a `SCHEMAS` entry `verified=True` only after checking it
-against the live server.
+The table layout in `t6.resolve.schema` was checked read-only against the live
+server (PostgreSQL 13.4, server app 20) on 2026-11-16.
 
 ### CLI rename table
 

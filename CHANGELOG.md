@@ -10,6 +10,7 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ### Fixed
 
+- The Resolve project server reader uses the real tables (#394): `SM_Project` and `SM_ProjectFolder`, a project's folder from its `Folder` column, every named folder (including top-level ones) in the folder path, and one verified layout for Resolve majors 17 to 20 that `schema_for` matches on the major of the version (so `18.1.4` works).
 - `docs/operator-actions.md` rollout: the API listener accepts a pushed tap only from a secret bound to `gateway` in `T6_API_SECRETS` with `X-Telegram-User-Id` equal to `from.id`; the text no longer suggests `T6_TAP_SECRET` is enough (found live on 2026-11-16).
 
 ## [0.6.2] - 2026-11-16
