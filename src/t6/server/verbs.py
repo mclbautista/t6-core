@@ -279,6 +279,9 @@ class VerbAPI:
         elif (entry.noun, entry.verb) == ('llm', 'run'):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or (self.llm_service.run(inputs, actor=actor, registry=self.people.registry) if self.llm_service else Refused(rule='config', reason='LLM service is not configured'))
+        elif (entry.noun, entry.verb) == ('llm', 'decide'):
+            refusal = self.people.authorize(actor, entry.role)
+            outcome = refusal or (self.llm_service.decide(inputs, actor=actor, registry=self.people.registry) if self.llm_service else Refused(rule='config', reason='LLM service is not configured'))
         elif entry.noun == 'meeting-notes':
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._meeting_notes(entry.verb, inputs, actor)

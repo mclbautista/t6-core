@@ -28,7 +28,7 @@ from t6.verbs import (
     JoListInput, JoFindInput, DeliverableListInput, DeliverableCandidatesInput, FloorReadInput, DeliverableGetInput, DeliverableDefineInput, DeliverableEditInput, DeliverableRebindInput, DeliverableMissInput, DeliverableDelayInput, MilestoneRecordInput, MeetingNotesListInput, MeetingNotesCreateInput, MeetingNotesAppendInput, MeetingNotesTrashInput, MeetingNotesMarkSentInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, ProjectNotesInput, ProjectFlagsInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
     JoSubmitInput, JoCloseInput, JoBlockInput, JoUnblockInput, JoDelayInput, JoCancelInput,
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
-    LLMRunInput, PersonAddInput, PersonCreateInput, PersonFindInput,
+    LLMDecideInput, LLMRunInput, PersonAddInput, PersonCreateInput, PersonFindInput,
     PersonGetInput, PersonProjectRoleInput, PersonPermissionInput, PersonRebindInput, PersonShiftInput, PersonClassifyInput,
     PersonTelegramInput, ProjectChatInput, ProjectHoldInput, ProjectResolveInput, ProjectResumeInput, ProjectStartInput,
 )
@@ -234,6 +234,9 @@ class Client:
 
     def llm_run(self, inputs: LLMRunInput) -> Result:
         return self.call('llm', 'run', inputs)
+
+    def llm_decide(self, inputs: LLMDecideInput) -> Result:
+        return self.call('llm', 'decide', inputs)
 
     def person_add(self, inputs: PersonAddInput) -> Result:
         return self.call('person', 'add', inputs)
