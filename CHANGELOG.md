@@ -10,7 +10,7 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ### Fixed
 
-- A tap on an operator card that core has not yet confirmed as sent is carried out at once when it names its chat and `message_id`, instead of waiting about 35 s for the gateway's retries after a 503 `card_not_confirmed` (#399).
+- A tap on an operator card that core has not yet confirmed as sent is carried out at once when it names its chat and `message_id`, instead of waiting about 35 s for the gateway's retries after a 503 `card_not_confirmed`, and the card is edited to its new text at once (#399).
 - `docs/operator-actions.md` rollout: the API listener accepts a pushed tap only from a secret bound to `gateway` in `T6_API_SECRETS` with `X-Telegram-User-Id` equal to `from.id`; the text no longer suggests `T6_TAP_SECRET` is enough (found live on 2026-11-16).
 
 ## [0.6.2] - 2026-11-16

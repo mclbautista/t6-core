@@ -414,6 +414,27 @@ class DeliveryTests(OperatorTestCase):
         self.assertEqual(self.gateway.sends, 1)
         self.assertEqual(self.tap(self.payload(1, "Skip")).body["outcome"], "skipped")
 
+    def test_an_early_tap_makes_the_first_delivery_edit_the_card_once(self) -> None:
+        token = self.offer(page_id=PAGE_A)
+        self.gateway.queued = True
+        worker = self.worker()
+        self.assertTrue(worker.run_once())  # version 1 is sent but not confirmed: the job fails and waits to retry
+        self.assertEqual(self.tap(f"{CALLBACK_PREFIX}op:{token}:skip", message_id=1001).body["outcome"], "skipped")  # version 2
+        self.gateway.queued = False
+        self.assertTrue(worker.run_once())  # the version 2 job: no message_ref yet, so it sends (the same message), confirms, then edits
+        self.assertEqual((self.gateway.sends, len(self.gateway.messages)), (2, 1))
+        self.assertEqual(self.card()["buttons"], [])
+        self.assertIn(f"op-edit:{token}:2", self.gateway.keys)
+        self.assertEqual(self.app._operator.card(token).message_ref, 1)  # type: ignore[union-attr]
+        self.clock.advance(60)
+        again = self.drain()  # the retry of the older job takes the edit path with the same key
+        self.assertEqual((again, self.gateway.sends), (1, 2))
+
+    def test_a_version_one_card_is_sent_without_an_edit(self) -> None:
+        token = self.offer_and_deliver()
+        self.assertEqual(self.gateway.sends, 1)
+        self.assertNotIn(f"op-edit:{token}:1", self.gateway.keys)
+
     def test_the_worker_with_a_gateway_wires_the_delivery_handler(self) -> None:
         from t6.worker.__main__ import WorkerSettings, configured_handlers
 
