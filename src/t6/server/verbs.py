@@ -950,7 +950,14 @@ class VerbAPI:
                                           assignee_id=record['assignee_id'], notes=record['notes'],
                                           state=record['state'], history=record['history'])
                         return Done(result={'job_order': result})
-                    orders = jo_reader.find_all_by_telegram_key(inputs.telegram_key) if verb == 'find' else jo_reader.list(oldest_first=bool(inputs.no_project))
+                    if verb == 'find':
+                        from t6.job_order import find_forms
+                        located = find_forms(jo_reader, self.people.registry, inputs)
+                        if isinstance(located, Refused):
+                            return located
+                        orders = located
+                    else:
+                        orders = jo_reader.list(oldest_first=bool(inputs.no_project))
                     if verb == 'list':
                         if inputs.no_project and inputs.project:
                             return Refused(rule='input', reason='Give project or no_project, not both')

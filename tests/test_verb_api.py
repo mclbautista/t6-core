@@ -366,6 +366,112 @@ class VerbAPITests(unittest.TestCase):
                                 'idempotency_key': preview['plan']['idempotency_key']})[1]
         self.assertEqual((done['outcome'], done['result']['project_id']), ('done', None))
 
+    def message_setup(self) -> tuple[Any, str, str, str]:
+        """A fake Notion with Job Orders and Contacts, a Project, and a Person whose Contact ends the shift at 10 PM."""
+        from t6.notion.generated import ContactsRow
+        from t6.notion.testing import FakeNotion, select, title
+
+        fake = FakeNotion()
+        fake.add_snapshot_data_source('jo', 'job_orders')
+        fake.add_snapshot_data_source('contacts', 'contacts')
+        contact = fake.add_page('contacts', {ContactsRow.notion_name('name'): title('Ana Example'), ContactsRow.notion_name('end_of_shift'): select('10:00 PM')})
+        project = self.registry.register(actor='setup', idempotency_key='jo-message-setup', notion_page_id='aaaa' * 8)
+        assert isinstance(project, Registered)
+        person = 't6n_' + '7' * 32
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO person_permissions VALUES (?, 'coordinator')", (self.actor,))
+            db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', NULL, 0, 1)", (person,))
+            db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, 'now', 1)", (str(contact['id']).replace('-', ''), person))
+        self.api.open_notion = lambda _: fake.client()
+        self.api.data_sources['job_orders'] = 'jo'
+        return fake, project.project.id, person, 'aaaa' * 8
+
+    def raise_from_message(self, message: dict[str, Any], fields: dict[str, Any] | None = None, **more: Any) -> tuple[Any, Any]:
+        body = {'message': message, 'fields': fields or {}, **more}
+        preview = self.request('/v1/jo/raise', body)[1]
+        if preview['outcome'] != 'preview':
+            return preview, None
+        done = self.request('/v1/jo/raise', {**body, 'confirm': preview['token'], 'idempotency_key': preview['plan']['idempotency_key']})[1]
+        return preview, done
+
+    def test_job_order_raise_from_a_message_builds_every_rule_value(self) -> None:
+        _, project, person, page = self.message_setup()
+        message = {'header_text': 'ORC - TO - JO #062', 'deadline_text': 'end of shift if kaya', 'posted_at': '2026-11-12T09:00:00+08:00',
+                   'chat_id': -100123, 'message_id': 456, 'assignees': [person], 'project': project}
+        with patch.dict(os.environ, {'T6_NOTION_TOKEN': 'secret'}):
+            preview, done = self.raise_from_message(message, {'status': 'Needs Intake Review', 'watchdog_notes': 'Deadline as posted: end of shift'})
+        plan = preview['plan']
+        expected: dict[str, Any] = {'name': 'ORC - TOC - JO #062', 'jo_number': '#062', 'department': 'TOC', 'deadline': '2026-11-12T22:00:00+08:00',
+                    'deadline_source': 'shift', 'deadline_findings': [], 'telegram_key': '-100123:456', 'duplicate_key': page + '|62', 'jo_id': None}
+        self.assertEqual({key: plan[key] for key in expected}, expected)
+        self.assertEqual(plan['fields']['name'], 'ORC - TOC - JO #062')
+        self.assertEqual(plan['fields']['watchdog_notes'], 'Deadline as posted: end of shift')
+        self.assertEqual(done['outcome'], 'done')
+        self.assertEqual({key: done['result'][key] for key in expected if key != 'jo_id'}, {key: value for key, value in expected.items() if key != 'jo_id'})
+        self.assertTrue(done['result']['jo_id'].startswith('t6j_'))
+        with self.registry._transaction() as db:
+            stored = json.loads(db.execute('SELECT fields FROM job_orders WHERE id = ?', (done['result']['jo_id'],)).fetchone()[0])
+        self.assertEqual((stored['number'], stored['department'], stored['telegram_key']), ('#062', 'TOC', '-100123:456'))
+
+    def test_job_order_raise_from_a_message_findings_fallbacks_and_refusals(self) -> None:
+        _, project, person, _ = self.message_setup()
+        base = {'posted_at': '2026-11-12T09:00:00+08:00', 'chat_id': '-100123', 'message_id': '9', 'project': project}
+        with patch.dict(os.environ, {'T6_NOTION_TOKEN': 'secret'}):
+            # No assignee: end of shift falls back to 23:59 and says so, with the Person ID and never a name.
+            preview, _ = self.raise_from_message({**base, 'header_text': 'ORC - AE - JO #7', 'deadline_text': 'end of shift', 'assignees': []})
+            self.assertEqual((preview['plan']['deadline'], preview['plan']['deadline_source']), ('2026-11-12T23:59:00+08:00', 'fallback'))
+            self.assertEqual([f['code'] for f in preview['plan']['deadline_findings']], ['shift_fallback'])
+            # A header that does not parse: the Name is the text, the number and Department come from the model's reading.
+            preview, _ = self.raise_from_message({**base, 'message_id': '10', 'header_text': 'Orchid rush job', 'number_text': 'No. 12',
+                                                   'department_text': 'to', 'deadline_text': ''})
+            plan = preview['plan']
+            self.assertEqual((plan['name'], plan['jo_number'], plan['department'], plan['deadline'], plan['deadline_source']),
+                             ('Orchid rush job', '#12', 'TOC', None, 'blank'))
+            # An unknown Department is a finding, not a refusal, and the Name falls back to the text.
+            preview, _ = self.raise_from_message({**base, 'message_id': '11', 'header_text': 'ORC - ZZZ - JO #3'})
+            self.assertEqual((preview['plan']['department'], preview['plan']['name'], preview['plan']['department_findings']),
+                             (None, 'ORC - ZZZ - JO #3', [{'code': 'unknown_department', 'params': {'token': 'ZZZ'}}]))
+            for rule_field in ('name', 'number', 'department', 'deadline', 'telegram_key'):
+                refused = self.raise_from_message({**base, 'header_text': 'ORC - AE - JO #7'}, {rule_field: 'x'})[0]
+                self.assertEqual((refused['outcome'], refused['rule']), ('refused', 'input'))
+            for gap in ({'chat_id': None}, {'message_id': ''}):
+                refused = self.raise_from_message({**base, 'header_text': 'ORC - AE - JO #7', **gap})[0]
+                self.assertEqual((refused['outcome'], refused['rule']), ('refused', 'input'))
+            refused = self.raise_from_message({**base, 'header_text': 'ORC - AE - JO #7', 'assignees': ['t6n_' + '8' * 32]})[0]
+            self.assertEqual((refused['outcome'], refused['rule']), ('refused', 'person'))
+            status, _ = self.request('/v1/jo/raise', {'message': {**base, 'posted_at': '2026-11-12T09:00:00'}, 'fields': {}})
+            self.assertEqual(status, 422)
+
+    def test_department_aliases_setting_adds_an_alias(self) -> None:
+        _, project, _, _ = self.message_setup()
+        message = {'header_text': 'ORC - ED - JO #7', 'posted_at': '2026-11-12T09:00:00+08:00', 'chat_id': 1, 'message_id': 2, 'project': project}
+        with patch.dict(os.environ, {'T6_NOTION_TOKEN': 'secret'}):
+            self.assertIsNone(self.raise_from_message(message)[0]['plan']['department'])
+            with patch.dict(os.environ, {'T6_DEPARTMENT_ALIASES': '{"ed": "AE"}'}):
+                plan = self.raise_from_message({**message, 'message_id': 3})[0]['plan']
+                self.assertEqual((plan['department'], plan['name']), ('AE', 'ORC - AE - JO #7'))
+            with patch.dict(os.environ, {'T6_DEPARTMENT_ALIASES': '[1]'}):
+                self.assertEqual(self.raise_from_message(message)[0]['rule'], 'config')
+
+    def test_jo_find_by_chat_and_message_and_by_duplicate_key(self) -> None:
+        from t6.notion.generated import JobOrdersRow
+        from t6.notion.testing import relation, rich_text, title
+
+        fake, project, _, page = self.message_setup()
+        jo = JobOrdersRow
+        fake.add_page('jo', {jo.notion_name('name'): title('Raised'), jo.notion_name('telegram_key'): rich_text('-100123:456'),
+                             jo.notion_name('jo_number'): rich_text('#062'), jo.notion_name('projects'): relation(page)})
+        fake.add_page('jo', {jo.notion_name('name'): title('Other'), jo.notion_name('jo_number'): rich_text('#63'), jo.notion_name('projects'): relation(page)})
+        with patch.dict(os.environ, {'T6_NOTION_TOKEN': 'secret'}):
+            for body in ({'chat_id': -100123, 'message_id': 456}, {'telegram_key': '-100123:456'}, {'project': project, 'number': 62},
+                         {'project': page, 'number': '#62'}):
+                found = self.request('/v1/jo/find', body)[1]
+                self.assertEqual([o['name'] for o in found['result']['job_orders']], ['Raised'], body)
+            self.assertEqual(self.request('/v1/jo/find', {'chat_id': 1, 'message_id': 2})[1]['result']['job_orders'], [])
+            for body in ({}, {'chat_id': 1}, {'telegram_key': 'a:1', 'chat_id': 1, 'message_id': 2}, {'project': project}, {'project': project, 'number': 'x'}):
+                refused = self.request('/v1/jo/find', body)[1]
+                self.assertEqual((refused['outcome'], refused['rule']), ('refused', 'input'), body)
+
     def test_service_grant_configuration_validation(self) -> None:
         self.assertEqual(service_permissions_from_env({'T6_API_SERVICE_PERMISSIONS': '{"worker": ["operator"]}'}),
                          {'worker': frozenset({'operator'})})

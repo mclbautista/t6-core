@@ -54,6 +54,10 @@ workspace time. `jo list` Health is `null` when the formula gave no value and
 `""` when it computed an empty string. `project_code` is the registry's value
 (ADR 0001); `notion_project_code` is the code as the Notion property shows it,
 and an empty registry code does not fall back to it.
+`jo find` takes exactly one of three forms (else rule `input`): `telegram_key`;
+`chat_id` with `message_id`, from which the API builds the Telegram Key; or
+`project` (T6 ID or page ID) with `number`, the duplicate key, answered with the
+Job Orders that share `<Project page ID>|<number>`. The reply is the same list.
 `jo list` supports `project`, `assignee` and `status_group` (`not_started`,
 `started`, `cancelled`, or `active`). `no_project` returns only the Job Orders
 whose Notion page has no Project, oldest first, with an empty `project_id`; it

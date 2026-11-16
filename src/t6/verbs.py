@@ -525,10 +525,33 @@ class LegacyJoGetInput(BaseModel):
     data_sources: Path
 
 
+class JoRaiseMessage(BaseModel):
+    """The message a Job Order is raised from, as posted. The API applies every rule to it.
+
+    The API builds the Name, JO Number, Department, Deadline, Telegram Key and
+    duplicate key. `assignees` are T6 Person IDs; "end of shift" reads their
+    End of Shift. `project` is a T6 Project ID or page ID (empty with `no_project`).
+    `department_text` is used only when the header has no Department, and
+    `number_text` only when the header does not parse.
+    """
+
+    model_config = ConfigDict(extra="forbid", coerce_numbers_to_str=True)
+    header_text: str = ""
+    deadline_text: str = ""
+    posted_at: AwareDatetime
+    chat_id: str | None = None
+    message_id: str | None = None
+    assignees: list[str] = []
+    project: str | None = None
+    department_text: str | None = None
+    number_text: str | None = None
+
+
 class JoRaiseInput(BaseModel):
     file: Path | None = None
     data_sources: Path | None = None
     fields: dict[str, Any] | None = None
+    message: JoRaiseMessage | None = None
     no_project: bool = False
     idempotency_key: str | None = None
     confirm: str | None = None
@@ -541,6 +564,15 @@ class JoWriteOutput(BaseModel):
     idempotency_key: str
     page_id: str | None = None
     sync_intent_id: int | None = None
+    name: str | None = None
+    jo_number: str | None = None
+    department: str | None = None
+    deadline: str | None = None
+    deadline_source: str | None = None
+    deadline_findings: list[dict[str, Any]] | None = None
+    department_findings: list[dict[str, Any]] | None = None
+    telegram_key: str | None = None
+    duplicate_key: str | None = None
 
 
 class JoAssignInput(BaseModel):
@@ -589,7 +621,9 @@ class JoDelayInput(JoBlockInput):
 
 def jo_write(inputs: JoRaiseInput | JoAssignInput | JoReassignInput | JoNoteInput | JoSubmitInput, open_notion: Callable[..., Any],
              data_source: str | None = None) -> Outcome:
-    """Write a Job Order verb. `data_source` is the server's own Job Orders data source; the CLI, which has none, reads a file."""
+    """Write a Job Order verb. `data_source` is the server's own Job Orders data source; the CLI, which has none, reads a file.
+
+    A `JoRaiseInput.message` is raw text: the rules (Name, number, Department, deadline, keys) run here, never in the caller."""
     from t6.cli import TOKEN_VARIABLE, _read_data_sources
     from t6.cli_jo import check_fields, prepare_fields
     from t6.job_order import JobOrderStore
@@ -602,13 +636,16 @@ def jo_write(inputs: JoRaiseInput | JoAssignInput | JoReassignInput | JoNoteInpu
     try:
         registry = _people().registry
         values: dict[str, Any]
+        derived = None
         state_verbs = {JoSubmitInput: 'submit', JoCloseInput: 'close', JoUnblockInput: 'unblock',
                        JoBlockInput: 'block', JoCancelInput: 'cancel', JoDelayInput: 'delay'}
         if type(inputs) in state_verbs:
             verb = state_verbs[type(inputs)]
             values = inputs.model_dump(exclude={'idempotency_key', 'confirm'})
         elif isinstance(inputs, JoRaiseInput):
-            if (inputs.file is None) == (inputs.fields is None):
+            if inputs.message is not None and inputs.file is not None:
+                return Refused(rule="input", reason="A message goes with fields, not file")
+            if inputs.message is None and (inputs.file is None) == (inputs.fields is None):
                 return Refused(rule="input", reason="Give exactly one of file and fields")
             token = os.environ.get(TOKEN_VARIABLE)
             if not token:
@@ -618,7 +655,14 @@ def jo_write(inputs: JoRaiseInput | JoAssignInput | JoReassignInput | JoNoteInpu
             if data_source is None:
                 return Refused(rule="config", reason="The job_orders data source is not configured")
             with open_notion(token) as client:
-                if inputs.fields is not None:
+                if inputs.message is not None:
+                    from t6.job_order import apply_message
+                    built = apply_message(client, data_source, _people(), inputs.message, inputs.fields or {}, no_project=inputs.no_project,
+                                          aliases=os.environ.get("T6_DEPARTMENT_ALIASES", ""))
+                    if isinstance(built, Refused):
+                        return built
+                    fields, derived = built
+                elif inputs.fields is not None:
                     fields = check_fields(client, data_source, inputs.fields)
                 else:
                     assert inputs.file is not None
@@ -633,7 +677,7 @@ def jo_write(inputs: JoRaiseInput | JoAssignInput | JoReassignInput | JoNoteInpu
         else:
             raise ValueError('Unknown Job Order input')
         return JobOrderStore(registry, PreviewTokens(key)).write(verb, values, actor=_actor.get(),
-            idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+            idempotency_key=inputs.idempotency_key, confirm=inputs.confirm, derived=derived)
     except (ValueError, OSError, KeyError, TypeError, NotionError) as error:
         return Refused(rule="input", reason=str(error))
 
@@ -1090,7 +1134,14 @@ class JoListInput(ReadInput):
 
 
 class JoFindInput(ReadInput):
-    telegram_key: str
+    """Give exactly one form: `telegram_key`, `chat_id` with `message_id`, or `project` with `number` (the duplicate key)."""
+
+    model_config = ConfigDict(extra="forbid", coerce_numbers_to_str=True)
+    telegram_key: str | None = None
+    chat_id: str | None = None
+    message_id: str | None = None
+    project: str | None = None
+    number: str | None = None
 
 
 class DeliverableDefineInput(BaseModel):
@@ -2345,7 +2396,7 @@ VERBS = (
     Verb("person", "list", "List Contacts", (), PersonListInput, PersonListOutput, "reader", "Read Contacts.", api_read, read_only=True),
     Verb("standing-cc", "", "Get standing cc", (), StandingCcInput, StandingCcOutput, "reader", "Read configured standing cc.", None, read_only=True),
     Verb("jo", "list", "List Job Orders", (), JoListInput, JoListOutput, "reader", "Filter by Project, assignee or status group.", api_read, read_only=True),
-    Verb("jo", "find", "Find Job Orders by Telegram Key", (), JoFindInput, JoListOutput, "reader", "Return all matching orders.", api_read, read_only=True),
+    Verb("jo", "find", "Find Job Orders by Telegram Key, chat and message ID, or duplicate key", (), JoFindInput, JoListOutput, "reader", "Return all matching orders.", api_read, read_only=True),
     Verb("deliverable", "milestone record", "Record a Deliverable milestone", (), MilestoneRecordInput, MilestoneRecordOutput, "coordinator", "Milestones are append-only.", milestone_record),
     Verb("deliverable", "miss", "Record a missed Deliverable", (), DeliverableMissInput, DeliverableScheduleOutput, "coordinator", "A delivered Deliverable cannot be missed.", deliverable_schedule),
     Verb("deliverable", "delay", "Move a Deliverable date", (), DeliverableDelayInput, DeliverableScheduleOutput, "coordinator", "Date moves require a reason.", deliverable_schedule),
@@ -2787,7 +2838,7 @@ def add_parsers(commands: Any) -> None:
             parser.add_argument("--no-project", type=_boolean, default=False)
             parser.add_argument("--idempotency-key")
             parser.add_argument("--confirm")
-            parser.set_defaults(registered_verb=entry, fields=None)
+            parser.set_defaults(registered_verb=entry, fields=None, message=None)
             continue
         if entry.handler is jo_write and entry.verb != "raise":
             parser.add_argument("jo")

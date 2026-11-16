@@ -1608,7 +1608,30 @@ leaves the property unset. The `--file` path still defaults it to `none`.
 The call does not wait for the worker. To get the page ID, call `jo get` with
 the returned `jo_id` until `job_order.page_id` is set (the worker makes the page
 a few seconds after the confirm). To recover after a crash with no `jo_id`,
-call `jo find` with the Telegram Key.
+call `jo find` with the Telegram Key, or with `chat_id` and `message_id`.
+
+Over the API an app sends what a message says and the API applies every rule.
+Give `message` beside `fields` (no `file`): `header_text` and `deadline_text` as
+posted (either may be empty), `posted_at` (with its time zone), `chat_id` and
+`message_id` (both required, else rule `input`), `assignees` (T6 Person IDs),
+`project` (a T6 Project ID or page ID, or empty with `no_project`), and
+optionally `department_text` (used only when the header has no Department) and
+`number_text` (used only when the header does not parse). The API builds the
+Name, the JO Number, the Department (the alias map, then the live options), the
+Deadline (with "end of shift" read from the End of Shift of each assignee's
+Contact), the Telegram Key and the duplicate key (`<Project page ID>|<number>`).
+`fields` then carries only what the caller decides (Status, relations, text
+fields, Watchdog Notes, body); Name, `number`, Department, Deadline or Telegram
+Key in `fields` with a `message` is refused (rule `input`). A header that does
+not parse is not a refusal: the Name is the header text and the number comes
+from `number_text`. An unknown Department is not a refusal either: none is
+written and the reply has a `department_findings` entry. The preview `plan` (and
+the confirm result) return `name`, `jo_number`, `department`, `deadline`,
+`deadline_source` (`stated`, `shift`, `fallback`, `blank`), `deadline_findings`
+(code and params), `department_findings`, `telegram_key` and `duplicate_key`;
+the confirm writes exactly these. `jo_id` is `null` in the preview and set at
+confirm. `T6_DEPARTMENT_ALIASES` (a JSON object) is merged over the default
+alias map `{"TO": "TOC"}`.
 
 A Job Order with no Project is raised only on purpose: send `no_project: true`
 (CLI `--no-project true`) with an empty or absent `project_id`. Nothing is
