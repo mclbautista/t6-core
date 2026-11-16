@@ -41,8 +41,8 @@ class ReadTests(unittest.TestCase):
         with registry._transaction() as db:
             db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', NULL, 0, 1)", (operator,))
             db.execute("INSERT INTO person_permissions VALUES (?, 'operator')", (operator,))
-        self.api = VerbAPI(People(registry, PreviewTokens('key')), JobQueue(self.tmp.name + '/queue'),
-                           {'secret': 'reports', 'operator': operator, 'mcp-secret': 'mcp'}, lambda _: self.notion.client(),
+        self.api = VerbAPI(People(registry, PreviewTokens('key'), {'watchdog': frozenset({'unmasked'})}), JobQueue(self.tmp.name + '/queue'),
+                           {'secret': 'reports', 'operator': operator, 'mcp-secret': 'mcp', 'unmasked-secret': 'watchdog'}, lambda _: self.notion.client(),
                            privacy_registry=Registry(people=[Person(name='Client Corp')]),
                            data_sources={name: name for name in ('projects', 'job_orders', 'deliverables', 'meeting_notes', 'contacts', 'cameras')})
         env = patch.dict(os.environ, {'T6_NOTION_TOKEN': 'fake'})
@@ -438,6 +438,24 @@ class ReadTests(unittest.TestCase):
         person = self.client.person_get(PersonGetInput(person_id=self.project['id']))
         self.assertIsInstance(jo, Refused)
         self.assertIsInstance(person, Refused)
+
+    def test_unmasked_grant_reads_real_names_and_nothing_more(self) -> None:
+        from t6.verbs import DeliverableListInput, JoGetInput, PersonListInput, ProjectListInput, DeliverableEditInput, DeliverableMissInput
+        granted = Client(self.client.base_url, 'unmasked-secret')
+        for result in (granted.project_list(ProjectListInput()), granted.jo_get(JoGetInput(ref=self.jo['id'])),
+                       granted.deliverable_list(DeliverableListInput(project=self.project['id'])),
+                       granted.person_list(PersonListInput())):
+            self.assertIsInstance(result, Done)
+        self.assertIn('Client Corp', str(granted.project_list(ProjectListInput())))
+        self.assertNotIn('Client Corp', str(self.client.project_list(ProjectListInput())))
+        for refused in (granted.call('deliverable', 'edit', DeliverableEditInput(deliverable='x', code='A')),
+                        granted.call('deliverable', 'miss', DeliverableMissInput(deliverable='x', reason='late'))):
+            self.assertIsInstance(refused, Refused)
+            assert isinstance(refused, Refused)
+            self.assertEqual(refused.rule, 'permission')
+        self.api.privacy_registry = None
+        self.assertIsInstance(granted.project_list(ProjectListInput()), Done)
+        self.assertIsInstance(self.client.project_list(ProjectListInput()), Refused)
 
     def test_missing_privacy_registry_fails_closed(self) -> None:
         from t6.verbs import ProjectListInput, Refused

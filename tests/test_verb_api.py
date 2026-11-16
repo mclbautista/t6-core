@@ -335,6 +335,8 @@ class VerbAPITests(unittest.TestCase):
     def test_service_grant_configuration_validation(self) -> None:
         self.assertEqual(service_permissions_from_env({'T6_API_SERVICE_PERMISSIONS': '{"worker": ["operator"]}'}),
                          {'worker': frozenset({'operator'})})
+        self.assertEqual(service_permissions_from_env({'T6_API_SERVICE_PERMISSIONS': '{"reports": ["unmasked"]}'}),
+                         {'reports': frozenset({'unmasked'})})
         for value in ('{"unknown": ["operator"]}', '{"worker": ["bogus"]}', '{"worker": "operator"}'):
             with self.assertRaises(ValueError):
                 service_permissions_from_env({'T6_API_SERVICE_PERMISSIONS': value})

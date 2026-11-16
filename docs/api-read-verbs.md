@@ -11,10 +11,12 @@ filters are accepted in read requests.
 
 Set `T6_READ_PRIVACY_REGISTRY` to a server-side JSON array of client names and
 aliases, for example `["Example Client", "Example Co"]`. Keep it current: the
-API can mask only names in this list. For a reader without the `operator`
-permission, the API replaces registered names consistently throughout each
-read response. Operator-bound callers see the original data. Reads containing
-names fail closed for non-operators if the registry file is not configured;
+API can mask only names in this list. For a reader with neither the `operator`
+nor the `unmasked` permission, the API replaces registered names consistently
+throughout each read response. Callers with either see the original data;
+`unmasked` grants nothing else, so a service such as `reports` can read real
+names without the write verbs `operator` opens. The MCP server stays masked.
+Reads containing names fail closed for masked callers if the registry file is not configured;
 use an explicit empty array if there are no names to mask.
 
 Build the file with `t6 admin privacy-registry`, run inside the API container

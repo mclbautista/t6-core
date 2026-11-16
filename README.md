@@ -1554,7 +1554,14 @@ $ t6 deadline "Nov 13 5pm" --posted 2026-11-12T09:00:00+08:00
 
 `t6 admin consumer-check PATH` scans Python and common configuration files for
 Notion and LLM adapter imports, credential names, and direct service hosts
-([ADR 0002](docs/adr/0002-consumer-contract.md)). The API client, pure domain
+([ADR 0002](docs/adr/0002-consumer-contract.md)). The credential names are
+`NOTION_API_KEY`, `NOTION_TOKEN`, `T6_NOTION_API_KEY` and `T6_NOTION_TOKEN`
+(not names that only start with one, such as `NOTION_TOKEN_FILE`), the LLM
+and Google keys such as `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
+`DEEPSEEK_API_KEY` and `GOOGLE_APPLICATION_CREDENTIALS`. The host rule reads
+every string constant, so a provider URL in test data (a message body that holds
+a Frame.io share link) is a finding too; record it in the allow-list as a
+`direct-http` exception for that file. The API client, pure domain
 rules, privacy helpers, and Frame.io client are allowed. Python docstrings and
 virtualenv or cache directories are skipped. The command prints JSON and exits
 1 for findings, or 2 if the path does not exist.
@@ -1837,7 +1844,9 @@ to that ID. Named services have the `reader` role by default. To grant additiona
 set `T6_API_SERVICE_PERMISSIONS` to a JSON object mapping service names to role
 lists, for example `{"worker":["operator"],"reports":["coordinator"]}`.
 Valid additional roles are `operator`, `coordinator`, `bookings`, `drives`,
-and `admin`; admin includes operator. Grants apply to every secret bound to
+`llm`, `unmasked` and `admin`; admin includes operator. `unmasked` lets a
+caller read real client names (read replies are otherwise masked) and grants
+nothing else; the `mcp` service stays masked. Grants apply to every secret bound to
 that service. Gateway requests carrying `X-Telegram-User-Id` use the resolved
 Person's permissions instead of the gateway's grants. The legacy `camera enrich`
 endpoint returns `refused` because it does not yet support signed preview and
