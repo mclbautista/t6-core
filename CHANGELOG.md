@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-16
+
+Drive reads and inventory verbs over the API, for the Drive web app, and one fix found in the live checks of 0.6.0. No migration: the schema stays at 41.
+
 ### Added
 
 - Drive reads and inventory verbs (#365): `drive list` (text, exact serial, needs review, Project with an open Assignment and status filters), `drive get`, `drive find`, `drive shipments`, `drive shipment` and `drive exceptions`, all read only and MCP tools, and `drive add`, `drive edit` and `drive promote-serial` with the `drives` permission. The `DriveStore` gains `list_drives`, `list_shipments`, `drive_deliveries`, `set_label` and `set_form_factor`.
