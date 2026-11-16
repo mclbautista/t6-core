@@ -301,7 +301,9 @@ class OperatorService:
             self._store.reject("wrong_chat", operator=operator, token=token)
             return TapResult(True, "rejected", action)
         if action.message_id is None:
-            return TapResult(False, "card_not_confirmed", action)  # the gateway retries; the send is still settling
+            if not isinstance(message_id, int) or isinstance(message_id, bool):
+                return TapResult(False, "card_not_confirmed", action)  # the gateway retries; the send is still settling
+            action = self._store.confirm_message(token, message_id) or action  # the tap proves the message: the token is only on the card core sent
         if message_id != action.message_id:
             self._store.reject("wrong_message", operator=operator, token=token)
             return TapResult(True, "rejected", action)

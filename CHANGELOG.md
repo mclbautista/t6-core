@@ -13,6 +13,7 @@ All notable changes to this project are documented here, following [Keep a Chang
 - The Resolve project server reader uses the real tables (#394): `SM_Project` and `SM_ProjectFolder`, a project's folder from its `Folder` column, every named folder (including top-level ones) in the folder path, and one verified layout for Resolve majors 17 to 20 that `schema_for` matches on the major of the version (so `18.1.4` works).
 - Review timers work with the VPS edge (#398): in edge mode the tailnet listener also serves `POST /review/timers` (same grant check, same queue file), so the Frame.io worker, which reaches only the queue server, no longer fails every `frameio.resolve_comment` job with `queue answered 404`. `/tap`, `/registry/*` and `/operator/*` still answer 404 on the edge. The `frameio.review_done` job is claimed from the queue server's `main` queue.
 - `docs/operator-actions.md` rollout: the API listener accepts a pushed tap only from a secret bound to `gateway` in `T6_API_SECRETS` with `X-Telegram-User-Id` equal to `from.id`; the text no longer suggests `T6_TAP_SECRET` is enough (found live on 2026-11-16).
+- A tap on an operator card that core has not yet confirmed as sent is carried out at once when it names its chat and `message_id`, instead of waiting about 35 s for the gateway's retries after a 503 `card_not_confirmed`, and the card is edited to its new text at once (#399).
 
 ## [0.6.2] - 2026-11-16
 
