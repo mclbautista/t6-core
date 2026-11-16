@@ -144,13 +144,19 @@ its `/project` pushes queued as empty `tap` jobs.
    `T6_TAP_SECRET`, `T6_GATEWAY_URL` and `T6_GATEWAY_SECRET` stay as they are.
 2. Deploy the gateway with pushed commands (#72), add the `project` command to
    its `config.yaml` with the same people as `T6_OPERATOR_IDS`, and restart it.
-   Set `t6core.push_url` in the gateway configuration to the API's LAN address,
-   for example `http://<t6-api-lan-address>:8081/tap`, and configure the gateway
-   to send its API secret and `X-Telegram-User-Id` for each push. The API listener
-   must be reachable on that LAN address. The gateway no longer needs a Tailscale
-   sidecar for tap delivery. The VPS `/tap` is unavailable in edge mode (#184).
+   Set `t6core.delivery: push` and `t6core.push_url` in the gateway configuration
+   to the API's LAN address, for example `http://<t6-api-lan-address>:8081/tap`.
+   The API accepts a push only when its bearer is bound to the identity `gateway`
+   in `T6_API_SECRETS` and its `X-Telegram-User-Id` header equals `from.id` in the
+   body. The gateway sends its t6core module secret as the bearer, so add that
+   secret to `T6_API_SECRETS` mapped to `gateway`; the header needs a gateway
+   that sends it (t6-sixto-gateway #105 or later). `T6_TAP_SECRET` plays no part
+   on the API listener. The API listener must be reachable on that LAN address.
+   The gateway no longer needs a Tailscale sidecar for tap delivery. The VPS
+   `/tap` is unavailable in edge mode (#184).
 3. Send `/project` as an operator: the list arrives. Send it from another
-   account: the gateway refuses it.
+   account: the gateway refuses it. Tap a button: the card changes a few seconds
+   later, when the main worker has run the delivery job.
 
 To roll back, remove the `project` command from the gateway config and restart
 it. Cards already sent stay answerable while core runs this version.
