@@ -1897,6 +1897,14 @@ Hold and resume queue Project Status projection intents. The current sync
 worker only projects identity fields, so these intents remain pending until a
 Status-capable worker is provided.
 
+The worker never creates a Status option. Before it writes Archived, Standby or
+In-Progress it reads the live Status options of the Projects data source and
+writes the one option that reads as the wanted status (emoji, case and spaces
+ignored). With no such option, or two, it writes nothing and the job fails with
+the reason (`no Status option for Standby`). The Deliverables Status is written
+the same way. `t6 admin schema-check` reports `status_duplicates` for Projects:
+Status options that differ only by emoji or case.
+
 ## Transcription
 
 Install `t6[transcribe]` for the ElevenLabs adapter. Construct an ElevenLabs
@@ -1996,6 +2004,11 @@ endpoint returns `refused` because it does not yet support signed preview and
 confirmation. `GET /health` reports the
 package version, database schema version and job counts by state.
 
+The API writes one request log line to stderr for each request (not `/health`):
+`t6.server: request time=<UTC> identity=<service or T6 Person ID> verb=<noun.verb>
+outcome=<done|preview|refused:<rule>|error:<status>> ms=<duration>`. It holds no
+input, result, secret or name. See [deployment](docs/deployment.md#request-log).
+
 For gateway tap delivery, bind its secret to `gateway` in `T6_API_SECRETS` and
 set the gateway's `t6core.push_url` to `http://<t6-api-lan-address>:8081/tap`.
 Each push must include `X-Telegram-User-Id` matching the payload's `from.id`.
@@ -2057,6 +2070,11 @@ written and its path (for example `changes[2].text`) is listed in `unresolved`,
 and `output_valid` stays true. `masked_output` then holds the reply as the model
 wrote it, placeholders only. With `restore: "whole"` (the default) one such
 placeholder makes the call `output_valid: false`.
+
+With `masking_preset: "strict"` the links, handles and long numbers of the input
+are hidden from the model, and the reply gets them back as they were written (the
+Python `strict` preset restores them as `[id]`; `llm run` does not). A quoted line
+therefore equals its source line.
 
 POST `/v1/llm/decide` (`llm decide`, role `llm`) asks the Decisions provider about
 candidates. Send `task_name`, `state` (text values), `question` (exactly one
@@ -2223,7 +2241,7 @@ fuzzy value), and also returns `missing_roles` and `sanity` (the date problems,
 as kinds and dates, with `from_notes`). `project list` and `project get` return
 `status_key`, `status_group`, `snapshotted`, `missing_roles`, `relevant_dates`,
 `health_missing` and `health_rank`, and `project list` filters on `status_group`;
-`jo list`, `jo get` and `jo find` return `status_group`, `active` and
+`jo list`, `jo get` and `jo find` return `status_group`, `active`, `done` and
 `health_flags`. Apps do not evaluate these rules: see `docs/api-read-verbs.md`. Health-vs-evidence and source
 conflict are judgments supplied by the reports app. Its stale-milestone
 judgment also depends on dated notes and later mentions, which are not stored

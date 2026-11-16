@@ -121,13 +121,46 @@ class ProjectionTests(SyncTestCase):
         project = self.new('ABC', 'in', page=page)
         self.drain()
         writes = ProjectWrites(self.registry, PreviewTokens('secret'))
-        for verb, reason, expected in [('hold', 'paused', 'Standby'), ('resume', None, 'In-Progress')]:
+        self.notion.add_option(PROJECTS, 'Status', '🟡 Standby')
+        self.notion.add_option(PROJECTS, 'Status', '🚨 In-Progress')
+        for verb, reason, expected in [('hold', 'paused', '🟡 Standby'), ('resume', None, '🚨 In-Progress')]:
             preview = writes.run(verb, project['id'], reason, actor='operator', idempotency_key=verb)
             assert isinstance(preview, Preview)
             self.assertIsInstance(writes.run(verb, project['id'], reason, actor='operator', idempotency_key=verb, confirm=preview.token), Done)
             self.start()
             self.drain()
             self.assertEqual(codec.select(self.notion.page(page)['properties'].get('Status')), expected)
+
+    def status_change(self, verb: str, reason: str | None, options: list[str]) -> tuple[str, Any]:
+        from t6.preview import PreviewTokens
+        from t6.project_writes import ProjectWrites
+        from t6.verbs import Preview
+        page = self.page()
+        project = self.new('ABC', 'in', page=page)
+        self.drain()
+        for option in options:
+            self.notion.add_option(PROJECTS, 'Status', option)
+        before = self.notion.select_options(PROJECTS, 'Status')
+        writes = ProjectWrites(self.registry, PreviewTokens('secret'))
+        preview = writes.run(verb, project['id'], reason, actor='operator', idempotency_key=verb)
+        assert isinstance(preview, Preview)
+        writes.run(verb, project['id'], reason, actor='operator', idempotency_key=verb, confirm=preview.token)
+        self.start()
+        self.drain()
+        self.assertEqual(self.notion.select_options(PROJECTS, 'Status'), before)  # no option was created
+        return page, codec.select(self.notion.page(page)['properties'].get('Status'))
+
+    def test_archive_writes_the_teams_own_option(self) -> None:
+        page, status = self.status_change('archive', 'done', ['📦 Archived'])
+        self.assertEqual(status, '📦 Archived')
+
+    def test_hold_with_no_matching_option_writes_nothing_and_creates_none(self) -> None:
+        page, status = self.status_change('hold', 'paused', ['🚨 In-Progress'])
+        self.assertIsNone(status)
+
+    def test_hold_with_two_matching_options_writes_nothing(self) -> None:
+        page, status = self.status_change('hold', 'paused', ['🟡 Standby', 'standby'])
+        self.assertIsNone(status)
 
     def test_an_accepted_change_is_pending_at_once_and_reaches_notion_through_the_worker(self) -> None:
         page = self.page()

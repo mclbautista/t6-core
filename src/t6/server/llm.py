@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from dataclasses import replace
 from typing import Any, Literal, Mapping
 
 from jsonschema import Draft202012Validator
@@ -19,7 +20,7 @@ from t6.llm.policy import RETENTIONS, DataPolicy, Retention
 from t6.llm.transport import Choice, Completion, DecisionsRequest, Message, OpenAIChat, Provider, ProviderError, ProviderTimeout, RateLimited
 from t6.llm.result import Reason
 from t6.verbs import Done, LLMDecideInput, LLMDecideOutput, LLMFilterInput, LLMFilterOutput, LLMRunInput, LLMRunOutput, Refused
-from t6.privacy import Person, Project, Registry, Unresolved, pseudonymize, withhold
+from t6.privacy import STRICT, Person, Project, Registry, Unresolved, pseudonymize, withhold
 
 
 def _hash(value: bytes) -> str:
@@ -220,8 +221,9 @@ class LLMService:
         allow = self._allowed_names(inputs.allow_projects)
         if allow is None:
             return Refused(rule='allow', reason='Only registered Projects can be allowed')
-        masked, session = pseudonymize(withhold(inputs.input_text).text, self.registry, allow=allow,
-                                       options=inputs.masking_preset)
+        # `strict` hides ids as `[id]` for apps that restore them themselves; here the same session restores them, so a quoted line equals its source.
+        options = replace(STRICT, id_restore='original') if inputs.masking_preset == 'strict' else inputs.masking_preset
+        masked, session = pseudonymize(withhold(inputs.input_text).text, self.registry, allow=allow, options=options)
         _, name_check = pseudonymize('', self.registry, options='names')
         # The masked text and the reply are checked the way the caller's preset masks; the template and schema, strictly.
         if (session.leaks(masked.text) or name_check.leaks(inputs.prompt_template)

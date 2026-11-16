@@ -119,6 +119,11 @@ An example client entry (made-up values):
   worker holds under a live lease, is not waiting. This is a problem now, not history:
   `--ignore-history` does not hide it.
 
+- `api.privacy_registry` (unless `--local`): the client-name list of masked reads, as the API
+  has it. `names` in use, `age_seconds` of the file, `reload_failed` true when a changed file
+  was refused. It is information and never fails the check. See
+  [read verbs](api-read-verbs.md).
+
 Failed jobs and syncs are also listed under `history`. Two flags narrow the check for
 deploy tools and monitors:
 
@@ -150,6 +155,29 @@ its stored failure and its dedupe key, so a redelivered event still makes no sec
   `dismissals` table of the queue file, in the same transaction.
 
 Neither queue gets a re-run: fix the data another way, then dismiss.
+
+## Request log
+
+The API writes one line to stderr for each request to a `/v1/` verb route, `/tap` and the
+transcribe routes. `/health` is not logged. The format is fixed:
+
+```
+t6.server: request time=2026-11-16T07:03:05.123Z identity=reports verb=llm.run outcome=done ms=412
+```
+
+- `time`: UTC, with milliseconds.
+- `identity`: the service name, or the T6 Person ID (`t6n_...`) of a Person-bound secret or of
+  the Telegram user the gateway acts for. `-` when the secret was not known.
+- `verb`: `noun.verb` (`project.hold`, `llm.run`; a noun without a verb is the noun alone).
+  `unknown` for a path that is no route, `tap`, `commands`, `transcribe` and `admin.media.migrate`
+  for the routes outside the verb table.
+- `outcome`: `done`, `preview`, `refused:<rule>` (the rule name of the refusal, for example
+  `permission`, `masking`, `unauthorized`) or `error:<HTTP status>` (a bad body is `error:422`).
+- `ms`: how long the API took, in milliseconds.
+
+The line holds no input, result, secret, name or path. It answers "who calls which verb" and
+"was a caller refused in this window" (`grep 'outcome=refused'`). Nothing is stored: the lines
+live as long as the container's log.
 
 ## Backup and restore
 

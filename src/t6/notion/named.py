@@ -78,6 +78,40 @@ def live_options(prop: JSON) -> list[JSON]:
     return options if isinstance(options, list) else []
 
 
+def live_option_name(source: JSON, pointer: str, wanted: str) -> str:
+    """The exact live name of the one option of `pointer` that reads as `wanted`, emoji, case and spaces ignored.
+
+    Raises ValueError when no option or several options read as `wanted`: a write
+    by a fixed name would create a new option, which the API never does.
+    """
+    from t6.domain.project_rules import status_key
+
+    from urllib.parse import unquote
+
+    props = [{**p, "name": str(p.get("name", k))} for k, p in (source.get("properties") or {}).items()]
+    prop = next((p for p in props if unquote(str(p.get("id"))) == unquote(pointer)), None) or next(
+        (p for p in props if p["name"] == pointer), None
+    )
+    names = [str(o["name"]) for o in live_options(prop or {}) if status_key(o.get("name")) == status_key(wanted)]
+    if not names:
+        raise ValueError(f"no Status option for {wanted}")
+    if len(names) > 1:
+        raise ValueError(f"more than one Status option reads as {wanted}")
+    return names[0]
+
+
+def duplicate_options(snapshot_database: JSON, properties: JSON, name: str) -> list[list[str]]:
+    """Groups of live options of the property `name` that differ only by emoji, case or spaces (stray duplicates)."""
+    from t6.domain.project_rules import status_key
+
+    pointer = next((str(p["id"]) for p in snapshot_database["properties"] if p["name"] == name and "id" in p), name)
+    prop = find_live(properties, pointer)
+    groups: dict[str, list[str]] = {}
+    for option in live_options(prop or {}):
+        groups.setdefault(status_key(option.get("name")), []).append(str(option["name"]))
+    return [names for names in groups.values() if len(names) > 1]
+
+
 def find_live(properties: JSON, pointer: str) -> JSON | None:
     """The live property whose ID, or else whose name, is `pointer`."""
     props = [{**prop, "name": str(prop.get("name", key))} for key, prop in properties.items()]

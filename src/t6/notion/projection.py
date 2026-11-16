@@ -20,6 +20,7 @@ from urllib.parse import unquote
 
 from t6.domain.events import JobKind, JsonValue
 from t6.notion import codec
+from t6.notion.named import live_option_name
 from t6.notion.errors import NotionError
 from t6.notion.editor import editor as notion_editor
 from t6.notion.models import ProjectsProperties
@@ -28,7 +29,7 @@ from t6.notion.sync import NotionClient
 from t6.registry import normalize_page_id
 from t6.worker.client import WorkerJob
 from t6.worker.registry import RegistryClient
-from t6.worker.runner import Handler
+from t6.worker.runner import Handler, Refused
 
 JSON = dict[str, Any]
 
@@ -67,7 +68,11 @@ class ProjectProjection:
             allowed = self._registry.projection(page, {'project_status': before}).get('allowed', {})
             if not allowed.get('project_status'):
                 raise ValueError('Project Status changed in Notion; reconcile before projecting')
-            status = 'Archived' if state['held'] == 2 else 'Standby' if state['held'] else 'In-Progress'
+            wanted = 'Archived' if state['held'] == 2 else 'Standby' if state['held'] else 'In-Progress'
+            try:
+                status = live_option_name(self._notion.retrieve_data_source(self._projects), ProjectsRow.notion_id('status') or 'Status', wanted)
+            except ValueError as error:
+                raise Refused(str(error)) from error
             self._notion.update_page(page, {'properties': {ProjectsRow.notion_id('status'): {'select': {'name': status}}}})
             self._registry.projection(page, {'project_status': status}, record=True)
         self._registry.report_status_sync(intent_id)

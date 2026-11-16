@@ -31,7 +31,14 @@ t6 admin privacy-registry --output /path/to/privacy-registry.json
 The array holds each Studio name, then its aliases, then every Project name,
 with spaces collapsed, blanks dropped and repeats kept once. Without `--output`
 it prints the array to stdout. Only counts go to stderr. The API reads the file
-at start, so restart it after a rebuild (reload without a restart is #369).
+at start and again when the file changes (a new modification time or size), so a
+rebuild needs no restart: rebuild the file on a schedule. A file that cannot be
+read (missing, not JSON, not an array of names) keeps the last good list in use
+and logs one line, `t6.server: read privacy registry not reloaded (<error type>)`.
+`t6 health` shows the list under `api.privacy_registry`: `names` in use,
+`age_seconds` of the file they came from, and `reload_failed` (a later file was
+refused). A Project or Studio added after the last rebuild is not masked until the
+next rebuild; a growing `age_seconds` is the sign that the rebuild has stopped.
 
 `departments` and `standing-cc` do not contain client names and do not require this file.
 
@@ -68,7 +75,8 @@ order; empty unless the Status is In-Progress, In-Progress TVC or Airing),
 `health_missing` and `health_rank` (of the `Project Health` select: Critical 0,
 At Risk 1, On Track 2, Incoming 3, any other value 4, blank 5). `project list` also filters on
 `status_group`. `jo list`, `jo get` and `jo find` add `status_group`
-(`not_started`, `started`, `cancelled` or `null`), `active` and `health_flags`
+(`not_started`, `started`, `cancelled` or `null`), `active`, `done` (true when the status is
+Done; `active` is false for Done and Cancelled, so `done` tells them apart) and `health_flags`
 (Blocked, Delayed, Urgent, ignoring emoji). `project flags` also takes `as_of`
 (an ISO date, default today in Manila), `lead_warning_days` (default 30) and
 `stated`, a map of `playdate`, `submission_deadline` or `archival_deadline` to
