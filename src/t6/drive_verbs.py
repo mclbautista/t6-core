@@ -20,7 +20,7 @@ from typing import Any, NamedTuple
 
 from t6 import verbflow
 from t6.domain.studio_time import MANILA
-from t6.drives import Assignment, CustodyEvent, CustodyKind, Drive, DriveStore, FormFactor, Party, PartyKind, Ref, Role, open_duplicate
+from t6.drives import Assignment, CustodyEvent, CustodyKind, Drive, DriveStatus, DriveStore, FormFactor, Party, PartyKind, Ref, Role, open_duplicate
 from t6.drives.sqlite import SqliteDriveStore, audit_json
 from t6.preview import PreviewTokens
 from t6.registry.core import normalize_page_id
@@ -29,8 +29,11 @@ from t6.verbs import Ambiguous, Outcome, Refused
 
 FACT_VERBS = ('add', 'edit', 'promote_serial')
 WRITE_VERBS = ('receive', 'release', 'return', 'retire', 'assign', 'unassign', 'swing_assign', 'swing_unassign', 'swing_return', *FACT_VERBS)
-_EDITABLE = ('label', 'form_factor', 'serial', 'suspected_serial', 'needs_review', 'review_note')
+_TEXT_FACTS = ('label', 'serial', 'suspected_serial', 'review_note', 'description', 'brand', 'model', 'format', 'owner_studio_id', 'warranty', 'remarks')
+_EDITABLE = (*_TEXT_FACTS, 'form_factor', 'needs_review', 'capacity_tb', 'ownership_known', 'purchase_date')
 _KINDS = {'receive': CustodyKind.RECEIVED, 'release': CustodyKind.RELEASED, 'return': CustodyKind.RETURNED, 'retire': CustodyKind.RETIRED}
+_CANNOT_FOLLOW: dict[str, set[DriveStatus | None]] = {'receive': {DriveStatus.IN_CUSTODY, DriveStatus.RETIRED}, 'release': {DriveStatus.RELEASED, DriveStatus.RETIRED},
+                  'return': {None, DriveStatus.IN_CUSTODY, DriveStatus.RETIRED}, 'retire': {DriveStatus.RETIRED}}
 _PAGE = re.compile(r'[0-9a-f]{32}')
 
 Change = tuple[str, dict[str, Any] | None, dict[str, Any] | None]
@@ -116,8 +119,8 @@ class DriveVerbs:
         drives = values.get('drives') if verb == 'release' else [values.get('drive')]
         if not isinstance(drives, list) or not drives or not all(isinstance(d, str) for d in drives):
             return Refused(rule='input', reason='At least one Drive is required')
-        if not isinstance(values.get('project'), str):
-            return Refused(rule='input', reason='A Project is required')
+        if not isinstance(values.get('project'), str) and not (verb == 'unassign' and values.get('assignment') is not None):
+            return Refused(rule='input', reason='A Project is required unless the Assignment number is given')
         for name in ('on', 'start', 'end'):
             if values.get(name) is not None:
                 try:
@@ -225,12 +228,20 @@ class DriveVerbs:
                 return clash
             plan.update(drive_ids=[drive.id], facts=audit_json(replace(drive, serial=drive.suspected_serial, suspected_serial=None)))
             return Plan(plan, [audit_json(drive)], lambda store_: self._promote(store_, drive))
-        changes: dict[str, Any] = {name: values[name].strip() or None for name in ('label', 'serial', 'suspected_serial', 'review_note') if name in values}
-        if 'form_factor' in values:
-            changes['form_factor'] = FormFactor(values['form_factor']) if values['form_factor'] else None
-        if 'needs_review' in values:
-            changes['needs_review'] = values['needs_review']
+        expected = values.get('expected_version')
+        if expected is not None and expected != drive.version:
+            return Refused(rule='drive_changed', reason=f'Drive {drive.id} changed since its version {expected}; read it again')
+        changes: dict[str, Any] = {name: values[name].strip() or None for name in _TEXT_FACTS if name in values}
         try:
+            if 'form_factor' in values:
+                changes['form_factor'] = FormFactor(values['form_factor']) if values['form_factor'] else None
+            if 'capacity_tb' in values:
+                changes['capacity_tb'] = float(values['capacity_tb']) if values['capacity_tb'].strip() else None
+            if 'purchase_date' in values:
+                changes['purchase_date'] = date.fromisoformat(values['purchase_date']) if values['purchase_date'].strip() else None
+            for name in ('needs_review', 'ownership_known'):
+                if name in values:
+                    changes[name] = values[name]
             edited = replace(drive, **changes)
         except ValueError as error:
             return Refused(rule='input', reason=str(error))
@@ -251,15 +262,7 @@ class DriveVerbs:
 
     @staticmethod
     def _edit(store: DriveStore, drive: Drive, changes: dict[str, Any]) -> list[Change]:
-        setters: dict[str, Callable[[str, Any], Drive]] = {'label': store.set_label, 'form_factor': store.set_form_factor, 'serial': store.set_serial, 'suspected_serial': store.set_suspected_serial}
-        for name in sorted((name for name in changes if name in setters), key=lambda name: changes[name] is None):  # set before clearing
-            setters[name](drive.id, changes[name])
-        if 'needs_review' in changes or 'review_note' in changes:
-            store.set_review(drive.id, needs_review=changes.get('needs_review', drive.needs_review),
-                             note=changes['review_note'] if 'review_note' in changes else drive.review_note)
-        edited = store.get_drive(drive.id)
-        assert edited is not None
-        return [(drive.id, audit_json(drive), audit_json(edited))]
+        return [(drive.id, audit_json(drive), audit_json(store.set_facts(drive.id, changes)))]
 
     def _plan_swing(self, store: DriveStore, verb: str, values: dict[str, Any], key: str) -> Plan | Refused | Ambiguous:
         drive_id = values['drive']
@@ -328,11 +331,16 @@ class DriveVerbs:
         for drive_id in ids:
             if store.get_drive(drive_id) is None:
                 return Refused(rule='drive', reason=f'Drive {drive_id} not found')
-        project = values['project']
+        project = values.get('project')
         try:
-            store.check_project(Ref(page_id=project))
+            if project is not None:
+                store.check_project(Ref(page_id=project))
         except ValueError as error:
             return Refused(rule='project', reason=str(error))
+        blocked = [f"{drive_id} ({status.value if status else 'no custody events'})" for drive_id in ids
+                   if (status := store.status(drive_id)) in _CANNOT_FOLLOW.get(verb, ())]
+        if blocked:
+            return Refused(rule='custody', reason=f"Cannot {verb} Drive {', '.join(blocked)}: the last custody step does not allow it")
         state = self._state(store, ids)
         today = self._today()
         plan: dict[str, Any] = {'action': 'drive_' + verb, 'drive_ids': ids, 'project_id': project, 'idempotency_key': key}
@@ -346,8 +354,10 @@ class DriveVerbs:
                 return Refused(rule='input', reason=str(error))
             plan['on'] = on
             delivery = None
+            recipient = None
             if verb == 'release':
                 plan['shipment_id'] = event.shipment_id
+                recipient = plan['recipient'] = (values.get('recipient') or '').strip() or None
                 if values.get('delivery'):
                     carrier = store.delivery_carrier(values['delivery'])
                     if not carrier or carrier[0] != 'drive':
@@ -355,23 +365,24 @@ class DriveVerbs:
                     if carrier[1] != project:
                         return Refused(rule='delivery', reason='Delivery belongs to a different Project')
                     delivery = plan['delivery_id'] = values['delivery']
-            return Plan(plan, state, lambda store_: self._custody(store_, verb, event, ids, delivery))
+            return Plan(plan, state, lambda store_: self._custody(store_, verb, event, ids, delivery, recipient))
         if verb == 'assign':
             start = values.get('start') or today
             try:
                 assignment = Assignment(label=values['label'], project=Ref(page_id=project), role=Role(values['role']),
-                                        start=date.fromisoformat(start), end=date.fromisoformat(values['end']) if values.get('end') else None)
+                                        start=date.fromisoformat(start), end=date.fromisoformat(values['end']) if values.get('end') else None,
+                                        remarks=values.get('remarks'))
             except ValueError as error:
                 return Refused(rule='input', reason=str(error))
             clash = open_duplicate(store.list_assignments(ids[0]), assignment)
             if clash is not None:
                 return Refused(rule='assignment', reason=f'The Drive already has an open Assignment ({clash.label}) for this Project and role; unassign it first')
-            plan.update(label=assignment.label, role=values['role'], start=start, end=values.get('end'))
+            plan.update(label=assignment.label, role=values['role'], start=start, end=values.get('end'), remarks=assignment.remarks)
             return Plan(plan, state, lambda store_: self._assign(store_, ids[0], assignment))
         end = values.get('end') or today
         label = values['label'].strip() if values.get('label') is not None else None
         found = [(number, a) for number, a in enumerate(store.list_assignments(ids[0]), 1)
-                 if a.is_open and a.project is not None and a.project.page_id == project
+                 if a.is_open and (project is None or (a.project is not None and a.project.page_id == project))
                  and (label is None or a.label == label)
                  and (values.get('role') is None or (a.role is not None and a.role.value == values['role']))
                  and (values.get('assignment') is None or number == values['assignment'])]
@@ -388,17 +399,20 @@ class DriveVerbs:
         except ValueError as error:
             return Refused(rule='input', reason=str(error))
         plan.update(label=held.label, end=end, assignment=number)
+        if project is None:
+            plan['project_id'] = held.project.page_id if held.project else None
         state.append(number)
         return Plan(plan, state, lambda store_: self._close(store_, ids[0], number, held, date.fromisoformat(end)))
 
     @staticmethod
-    def _custody(store: DriveStore, verb: str, event: CustodyEvent, ids: list[str], delivery: str | None) -> list[Change]:
+    def _custody(store: DriveStore, verb: str, event: CustodyEvent, ids: list[str], delivery: str | None, recipient: str | None) -> list[Change]:
         after = audit_json(event)
         if delivery is not None:
             after['delivery_id'] = delivery
         if verb == 'release':
             assert event.party is not None and event.on is not None
-            store.release_shipment(ids, on=event.on, party=event.party, project=event.project, logged_by=event.logged_by, shipment_id=event.shipment_id)
+            store.release_shipment(ids, on=event.on, party=event.party, project=event.project, logged_by=event.logged_by, shipment_id=event.shipment_id,
+                                   reason=event.reason, recipient=recipient)
             if delivery is not None:
                 store.link_delivery(delivery, ids)
         else:

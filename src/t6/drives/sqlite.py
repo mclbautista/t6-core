@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, replace
 from datetime import date
@@ -143,6 +143,9 @@ class SqliteDriveStore:
             self._save(db, drive)
             return drive
 
+    def set_facts(self, drive_id: str, changes: Mapping[str, Any]) -> Drive:
+        return self._edit(drive_id, **changes)
+
     def set_serial(self, drive_id: str, serial: str | None) -> Drive:
         return self._edit(drive_id, serial=serial)
 
@@ -220,18 +223,24 @@ class SqliteDriveStore:
     def status(self, drive_id: str) -> DriveStatus | None:
         return derive_status(self.list_events(drive_id))
 
-    def release_shipment(self, drive_ids: Iterable[str], *, on: date, party: Party, project: Ref, logged_by: Ref, shipment_id: str | None = None) -> str:
+    def release_shipment(self, drive_ids: Iterable[str], *, on: date, party: Party, project: Ref, logged_by: Ref, shipment_id: str | None = None,
+                         reason: str | None = None, recipient: str | None = None) -> str:
         keys = list(dict.fromkeys(drive_ids))
         if not keys:
             raise ValueError('a shipment needs at least one Drive')
         shipment = shipment_id or f'shipment-{uuid4().hex}'
-        event = CustodyEvent(kind=CustodyKind.RELEASED, on=on, party=party, project=project, logged_by=logged_by, shipment_id=shipment)
+        event = CustodyEvent(kind=CustodyKind.RELEASED, on=on, party=party, project=project, logged_by=logged_by, reason=reason, shipment_id=shipment)
         with self._tx() as db:
-            for key in keys:
-                self._get(db, key)
-            for key in keys:
-                self._append(db, key, event)
+            drives = [self._get(db, key) for key in keys]
+            for drive in drives:
+                self._append(db, drive.id, event)
+                db.execute('INSERT OR IGNORE INTO drive_shipment_facts VALUES (?, ?, ?, ?)', (shipment, drive.id, recipient, _dump(drive)))
         return shipment
+
+    def shipment_facts(self, shipment_id: str) -> tuple[str | None, dict[str, Drive]] | None:
+        with self._tx() as db:
+            rows = db.execute('SELECT drive_id, recipient, data FROM drive_shipment_facts WHERE shipment_id=? ORDER BY rowid', (shipment_id,)).fetchall()
+            return (rows[0][1], {row[0]: _drive(row[2]) for row in rows}) if rows else None
 
     def shipment_events(self, shipment_id: str) -> tuple[tuple[Drive, CustodyEvent], ...]:
         with self._tx() as db:

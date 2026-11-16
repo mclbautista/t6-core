@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
 from datetime import date
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from t6.drives.importer import ReviewItem
@@ -57,6 +57,7 @@ class InMemoryDriveStore:
         self._previews: dict[str, str] = {}
         self._shipments = 0
         self._shipped: list[tuple[str, CustodyEvent]] = []
+        self._shipment_facts: dict[str, tuple[str | None, dict[str, Drive]]] = {}
 
     def save_preview(self, nonce: str, snapshot: str) -> None:
         self._previews[nonce] = snapshot
@@ -83,6 +84,12 @@ class InMemoryDriveStore:
         drive = self.get_drive(drive_id)
         if drive is None:
             raise UnknownDrive(drive_id)
+        return drive
+
+    def set_facts(self, drive_id: str, changes: Mapping[str, Any]) -> Drive:
+        drive = replace(self._drive(drive_id), **changes)
+        self._check_serial(drive)
+        self._drives[drive_id] = drive
         return drive
 
     def set_serial(self, drive_id: str, serial: str | None) -> Drive:
@@ -179,7 +186,7 @@ class InMemoryDriveStore:
 
     def release_shipment(
         self, drive_ids: Iterable[str], *, on: date, party: Party, project: Ref, logged_by: Ref,
-        shipment_id: str | None = None
+        shipment_id: str | None = None, reason: str | None = None, recipient: str | None = None
     ) -> str:
         keys = list(dict.fromkeys(drive_id for drive_id in drive_ids))
         if not keys:
@@ -193,12 +200,19 @@ class InMemoryDriveStore:
             party=party,
             project=project,
             logged_by=logged_by,
+            reason=reason,
             shipment_id=shipment_id or f"shipment-{self._shipments}",
         )
+        assert event.shipment_id is not None
+        facts = self._shipment_facts.setdefault(event.shipment_id, (recipient, {}))[1]
         for key in keys:
             self.append_event(key, event)
-        assert event.shipment_id is not None
+            facts.setdefault(key, self._drives[key])
         return event.shipment_id
+
+    def shipment_facts(self, shipment_id: str) -> tuple[str | None, dict[str, Drive]] | None:
+        found = self._shipment_facts.get(shipment_id)
+        return (found[0], dict(found[1])) if found else None
 
     def shipment_events(self, shipment_id: str) -> tuple[tuple[Drive, CustodyEvent], ...]:
         return tuple(

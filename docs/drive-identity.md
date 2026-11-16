@@ -70,11 +70,44 @@ assert store.get_drive(drive.id) is not None
 ```
 
 Assignments, receive, release, return and retirement remain available regardless
-of serial/review state. Existing event validation (such as a retirement reason)
+of serial/review state. The custody verbs do refuse a step that cannot follow the
+Drive's derived status (rule `custody`, at preview and again at confirm): receive
+when the Drive is in custody or retired, release when released or retired, return
+unless released, and retire when already retired. A Drive with no events can be
+received, released or retired. Existing event validation (such as a retirement reason)
 still applies. A manifest carries `drive_id`, accepted `serial`, separately named
 `suspected_serial`, available label/description/capacity and review flag/note.
 Physical facts are current, while the release event and historical Assignment
 selection are unchanged. Repeated release rows yield repeated manifest lines.
+
+## Drive verbs and the API
+
+`drive edit` changes any Drive fact: label, serial, suspected serial, form factor,
+review flag and note, description, brand, model, capacity (`capacity_tb`, a number
+of TB), format, owner (`owner_studio_id`), ownership (`ownership_known`), purchase
+date, warranty and remarks. Each value follows the rules of `drive add` and the
+`Drive` record, and one edit is checked as a whole, so a fact can be cleared while
+another is set. A blank value clears a fact that may be empty. The store call is
+`set_facts(id, changes)`.
+
+`drive get`, `drive list` and `drive find` return a `version` for each Drive: a
+12-character digest of every fact (`Drive.version`). It changes whenever a fact
+changes and returns when the facts return. Custody and Assignments are not facts.
+`drive edit` takes an optional `expected_version`; if it is not the current one,
+the verb is refused with rule `drive_changed` at preview and again at confirm.
+
+`drive list` also gives each Drive's `open_assignments`, numbered as `drive get`
+numbers them. `drive assign` takes `remarks`, shown on the Assignment. `drive
+unassign` takes `assignment` (the number) without `project`, and then ends that
+open Assignment whatever its Project is, so a text-only Project from a workbook
+import can be ended; without `assignment`, `project` is required.
+
+`drive release` keeps the facts of each Drive as they are at release
+(`shipment_facts(shipment_id)`, from migration 42) and takes an optional `reason`,
+stored on every released event, and an optional free-text `recipient`, kept with
+the shipment. `drive shipment` returns the kept facts and the recipient. A shipment
+with no kept facts, released before migration 42 or made by the workbook importers,
+returns the Drives' current facts and `facts_at_release: false`.
 
 ## Import receipts
 

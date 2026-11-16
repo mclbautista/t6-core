@@ -13,11 +13,14 @@ provides an in-memory fake for tests.
 from __future__ import annotations
 
 import enum
+import hashlib
+import json
 import re
 from uuid import uuid4
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import date
-from typing import TYPE_CHECKING, Iterable, Protocol, Sequence
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, Iterable, Protocol, Sequence
 
 from t6.vocabulary import DRIVE_ROLES
 
@@ -172,6 +175,11 @@ class Drive:
     def key(self) -> str:
         """Alias for the permanent ID, never the serial."""
         return self.id
+
+    @property
+    def version(self) -> str:
+        """A short digest of every fact, so it changes whenever a fact changes. Assignments and custody are not facts."""
+        return hashlib.sha256(json.dumps(asdict(self), default=str, sort_keys=True).encode()).hexdigest()[:12]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -445,6 +453,15 @@ class DriveStore(Protocol):
         """Correct or clear the form factor."""
         ...
 
+    def set_facts(self, drive_id: str, changes: Mapping[str, Any]) -> Drive:
+        """Change several Drive facts at once, named as the Drive fields are.
+
+        The Drive is checked as it will be after all the changes, so one fact can be
+        cleared while another is set. Raises ValueError (nothing changes) if the result is
+        not a valid Drive, and DuplicateSerial if a serial is already held.
+        """
+        ...
+
     def save_preview(self, nonce: str, snapshot: str) -> None:
         """Keep what a Drive verb planned under its preview nonce, so the confirm can check nothing changed."""
         ...
@@ -518,12 +535,15 @@ class DriveStore(Protocol):
 
     def release_shipment(
         self, drive_ids: Iterable[str], *, on: date, party: Party, project: Ref, logged_by: Ref,
-        shipment_id: str | None = None
+        shipment_id: str | None = None, reason: str | None = None, recipient: str | None = None
     ) -> str:
         """Release several Drives in one handover and return the new shipment ID.
 
         A caller that must give the same shipment on a retry passes its own
-        `shipment_id`; otherwise the store makes a new one.
+        `shipment_id`; otherwise the store makes a new one. `reason` goes on
+        every released event. `recipient` is the free-text name of the person
+        who took the Drives. The store also keeps each Drive's facts as they are
+        now (see `shipment_facts`).
 
         Appends one released event per Drive, all with the same new shipment ID.
         An ID given twice is released once. Raises ValueError if no ID is
@@ -537,6 +557,14 @@ class DriveStore(Protocol):
 
         In the order they were appended. An unknown shipment ID gives an empty
         tuple.
+        """
+        ...
+
+    def shipment_facts(self, shipment_id: str) -> tuple[str | None, dict[str, Drive]] | None:
+        """The recipient of a shipment and each Drive's facts as they were at release, by Drive ID.
+
+        None for a shipment with no kept facts: an unknown ID, or one made from
+        events alone (the workbook importers, or a release before facts were kept).
         """
         ...
 

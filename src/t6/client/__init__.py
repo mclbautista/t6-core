@@ -24,7 +24,7 @@ from t6.verbs import (
     DeliverableDeliverInput, PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
     ConcernScanInput, ConcernListInput, ConcernChangesInput, ConcernForMessageInput, ConcernRecordMessageInput, ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
-    JoListInput, JoFindInput, DeliverableListInput, FloorReadInput, DeliverableGetInput, DeliverableDefineInput, DeliverableRebindInput, DeliverableMissInput, DeliverableDelayInput, MilestoneRecordInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, ProjectNotesInput, ProjectFlagsInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
+    JoListInput, JoFindInput, DeliverableListInput, FloorReadInput, DeliverableGetInput, DeliverableDefineInput, DeliverableEditInput, DeliverableRebindInput, DeliverableMissInput, DeliverableDelayInput, MilestoneRecordInput, MeetingNotesListInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, ProjectNotesInput, ProjectFlagsInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
     JoSubmitInput, JoCloseInput, JoBlockInput, JoUnblockInput, JoDelayInput, JoCancelInput,
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
     LLMRunInput, PersonAddInput, PersonCreateInput, PersonFindInput,
@@ -41,7 +41,11 @@ class Unavailable:
 
 
 class APIError(Exception):
-    """The API returned a non-success HTTP response."""
+    """The API returned a non-success HTTP response. `status` is its HTTP status, None when the request never went out."""
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 Result = Outcome | Unavailable
@@ -103,7 +107,7 @@ class Client:
             with urlopen(request, timeout=self.timeout) as response:
                 return json.load(response)
         except HTTPError as error:
-            raise APIError(f'API returned HTTP {error.code}: {error.read().decode(errors="replace")}') from error
+            raise APIError(f'API returned HTTP {error.code}: {error.read().decode(errors="replace")}', error.code) from error
         except (URLError, TimeoutError, OSError) as error:
             return Unavailable(str(error), key)
 
@@ -340,6 +344,9 @@ class Client:
 
     def deliverable_define(self, inputs: DeliverableDefineInput) -> Result:
         return self.call('deliverable', 'define', inputs)
+
+    def deliverable_edit(self, inputs: DeliverableEditInput) -> Result:
+        return self.call('deliverable', 'edit', inputs)
 
     def deliverable_rebind(self, inputs: DeliverableRebindInput) -> Result:
         return self.call('deliverable', 'rebind', inputs)
