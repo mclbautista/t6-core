@@ -3,10 +3,17 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from t6.llm.result import Reason
+
 
 class Done(BaseModel):
     outcome: Literal["done"] = "done"
     result: Any
+
+
+class LLMExample(BaseModel):
+    input_text: str
+    output: Any
 
 
 class LLMRunInput(BaseModel):
@@ -18,6 +25,7 @@ class LLMRunInput(BaseModel):
     model_hint: str | None = None
     require_zdr: bool = False
     temperature_zero: bool = False
+    examples: list[LLMExample] = []
 
 
 class LLMRunOutput(BaseModel):
@@ -29,5 +37,6 @@ class LLMRunOutput(BaseModel):
     tokens: dict[str, int | None]
     zdr: bool = False
     output_valid: bool = True
+    failure: Reason | None = None
 
 
