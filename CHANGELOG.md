@@ -13,6 +13,8 @@ All notable changes to this project are documented here, following [Keep a Chang
 - `drive assign` takes `remarks`, stored on the Assignment and shown by `drive get` (#370).
 - `drive unassign` ends an Assignment by its number alone (#370): `project` is optional when `assignment` is given, so an Assignment whose Project is text only (a workbook import) can be ended. Without `assignment`, `project` is still required.
 
+- `drive list` carries each Drive's open Assignments (#370) as `open_assignments`: number, label, Project ID or text, role, start and holder (with the end, remarks and return date `drive get` shows), so the inventory needs no `drive get` per row.
+
 ### Changed
 
 - Drive custody verbs refuse a step that cannot follow the last one (#378): `drive receive` is refused for a Drive in custody or retired, `drive release` for one released or retired (the whole release, naming every such Drive), `drive return` unless the Drive is released, and `drive retire` for one already retired. The refusal has rule `custody`, comes at preview and again at confirm in the write transaction, and names the Drive and its status. A retired Drive can no longer be received or returned through the verbs.

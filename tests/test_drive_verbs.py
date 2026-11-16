@@ -103,6 +103,21 @@ class DriveVerbTests(unittest.TestCase):
         self.assertEqual((first['label'], first['serial'], first['suspected_serial'], first['needs_review'], first['review_note']),
                          ('Synthetic 0', 'SYNTH-0', 'MAYBE-9', True, 'check serial'))
 
+    def test_drive_list_carries_each_drives_open_assignments_with_their_numbers(self) -> None:
+        self.seed_inventory()
+        a, b, c = self.drives
+        one = self.projects[0]
+        self.store.import_row('row-1', Drive(serial='SYNTH-T'), Assignment(label='T', project=Ref(text='Invented Show'), role=Role.SWING, start=date(2026, 1, 1), holder=None), [])
+        self.write('assign', {'drive': a, 'project': one, 'label': 'A2', 'role': 'backup', 'start': '2026-11-03'})
+        self.write('unassign', {'drive': a, 'project': one, 'label': 'A1', 'end': '2026-11-04'})
+        listed = {d['id']: d['open_assignments'] for d in self.read('list')['drives']}
+        text_only = self.store.find_by_serial('SYNTH-T')
+        assert text_only is not None
+        self.assertEqual([(x['number'], x['label'], x['project']['page_id'], x['role'], x['start'], x['holder']) for x in listed[a]], [(2, 'A2', one, 'backup', '2026-11-03', None)])
+        self.assertEqual([(x['number'], x['label'], x['project']['page_id'], x['role']) for x in listed[b]], [(1, 'B1', self.projects[1], 'backup')])
+        self.assertEqual(listed[c], [])
+        self.assertEqual([(x['label'], x['project']['page_id'], x['project']['text'], x['role']) for x in listed[text_only.id]], [('T', None, 'Invented Show', 'swing')])
+
     def test_drive_list_filters_are_the_inventory_screen_filters_and_combine_with_and(self) -> None:
         self.seed_inventory()
         a, b, c = self.drives

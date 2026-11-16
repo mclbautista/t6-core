@@ -9,7 +9,7 @@ from datetime import date
 
 from t6.drives import Assignment, CustodyEvent, Drive, DriveStore, Party, Ref, normalize_serial
 from t6.verbs import (DriveAssignmentItem, DriveEventItem, DriveExceptionItem, DriveExceptionsOutput, DriveFindOutput, DriveGetOutput, DriveItem,
-                      DriveListOutput, DriveMatch, DriveParty, DriveRef, DriveRelease, DriveShipmentItem, DriveShipmentOutput,
+                      DriveListItem, DriveListOutput, DriveMatch, DriveParty, DriveRef, DriveRelease, DriveShipmentItem, DriveShipmentOutput,
                       DriveShipmentsOutput, DriveSourceItem)
 
 
@@ -57,7 +57,9 @@ def list_drives(store: DriveStore, *, q: str | None = None, serial: str | None =
     kept = [d for d in drives
             if (not needle or any(needle in (value or '').casefold() for value in (d.id, d.serial, d.suspected_serial, d.label, d.description)))
             and (needs_review is None or d.needs_review == needs_review) and (out is None or d.id in out)]
-    return DriveListOutput(drives=[item for item in (_item(store, d) for d in kept) if not status or item.status == status])
+    items = [(_item(store, d), d) for d in kept]
+    return DriveListOutput(drives=[DriveListItem(**item.model_dump(), open_assignments=[_assignment(n, a) for n, a in enumerate(store.list_assignments(d.id), 1) if a.is_open])
+                                   for item, d in items if not status or item.status == status])
 
 
 def get(store: DriveStore, drive_id: str) -> DriveGetOutput | None:

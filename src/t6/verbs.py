@@ -1946,8 +1946,12 @@ class DriveSourceItem(BaseModel):
     row: int
 
 
+class DriveListItem(DriveItem):
+    open_assignments: list[DriveAssignmentItem]  # the Assignments not yet ended, numbered as `drive get` numbers them
+
+
 class DriveListOutput(BaseModel):
-    drives: list[DriveItem]
+    drives: list[DriveListItem]
 
 
 class DriveGetOutput(BaseModel):
