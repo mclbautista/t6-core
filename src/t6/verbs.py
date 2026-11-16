@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, get_args, get_origin
 from types import UnionType
 
-from pydantic import AwareDatetime, BaseModel, Field, ConfigDict, field_validator
+from pydantic import AwareDatetime, BaseModel, Field, ConfigDict, SerializerFunctionWrapHandler, field_validator, model_serializer
 from t6.domain import Project, JobOrder, Deliverable, MeetingNote, Contact, Camera, ExternalRef, Machine, Ring
 from t6.vocabulary import DRIVE_ROLES, DriveRole, MediaKind, MediaRole
 from t6.llm.api import Done as Done, LLMRunInput as LLMRunInput, LLMRunOutput as LLMRunOutput
@@ -53,6 +53,16 @@ class Refused(BaseModel):
     outcome: Literal["refused"] = "refused"
     rule: str
     reason: str
+    failure: str | None = None
+    retry_after: float | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_llm_fields(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        for key in ("failure", "retry_after"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
 
 
 class Ambiguous(BaseModel):

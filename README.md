@@ -1875,7 +1875,14 @@ optional `code`) and `ids`. Keep this registry current: masking can only
 recognize registered names. Provider keys are read from the provider's named
 environment variable, never from the file. The configured providers and their
 models are the allowlist. `require_zdr` defaults to true; `max_bytes` defaults
-to 100000 for the combined UTF-8 template, input and canonical schema.
+to 100000 for the combined UTF-8 template, input, examples and canonical schema.
+`provider_min_retention` is optional: a map from a provider name in `llm` to
+`"unknown"` or `"zdr_enforced"`. It sets the retention floor for that provider
+only; other providers keep the `require_zdr` rule, and a caller's
+`require_zdr: true` still tightens it. A provider with retention `unknown` is
+used only when listed here as `"unknown"`. A name that is not a configured
+provider, or any other value, stops the server at start-up. Each audit record
+also holds the `provider` used and whether `zdr` was required.
 Install the `server` extra for JSON Schema validation.
 
 POST `/v1/llm/run` with `task_name`, `prompt_template`, `output_schema`,
@@ -1884,8 +1891,34 @@ The template must contain exactly one literal `{input}` marker. The response
 contains the restored output, provider, model, token counts and SHA-256 hashes:
 the template's UTF-8 bytes, and the schema serialized as UTF-8 JSON with sorted
 keys, no extra whitespace and non-ASCII characters preserved. Only local JSON
-Schema references are supported. Audit records contain the actor and outcome,
-not the task text or output.
+Schema references are supported. Audit records contain the actor, outcome,
+provider and `zdr` flag, not the task text or output.
+
+`examples` is an optional list of `{input_text, output}` pairs for few-shot
+prompting. Each becomes a user turn (the template with the masked example text)
+and an assistant turn (the masked JSON output), sent before the real user turn
+and masked with the same placeholders. An example `output` that does not match
+`output_schema` is refused with rule `schema`.
+
+A refusal with rule `provider`, `policy` or `masking` carries `failure`, one of
+`timeout`, `api_error`, `leak` or `policy`; for a 429 it also carries
+`retry_after` in seconds when the provider sent one. Other verbs' refusals have
+neither key. When the reply is not usable the call is `done` with
+`output_valid: false` and `failure` set to `empty`, `invalid_json`,
+`schema_violation` or `unresolved_placeholder`. The server never retries.
+
+Four more optional inputs serve reports. The leak check on the masked input and
+on the reply follows `masking_preset`, so `strict` no longer refuses a plain-word
+Project name it leaves visible on purpose. `allow_projects` lists Projects (by
+name or code, as in the privacy registry) whose names stay readable; any other
+entry, or a person, is refused with rule `allow`, and the audit record holds
+only the count. With `repair_quotes: true`, a reply that is not valid JSON gets
+one quote repair, and `repaired` says so. `restore: "per_field"` restores every
+string it can: a string with a placeholder the call did not issue stays as
+written and its path (for example `changes[2].text`) is listed in `unresolved`,
+and `output_valid` stays true. `masked_output` then holds the reply as the model
+wrote it, placeholders only. With `restore: "whole"` (the default) one such
+placeholder makes the call `output_valid: false`.
 
 ### Calling the t6 API
 
