@@ -84,17 +84,17 @@ class JoCommandTests(unittest.TestCase):
     def test_file_path_adds_watermark_none_and_the_fields_path_does_not(self) -> None:
         from t6.cli_jo import check_fields, prepare_fields
         fields = {"project_id": "project-page", **FIELDS}
-        with mock.patch.dict(os.environ, {"T6_STANDING_CC": "standing"}):
-            from_file = prepare_fields(self.fake.client(), JOB_ORDERS, Path(self.write("jo.json", json.dumps(fields))))
-            checked = check_fields(self.fake.client(), JOB_ORDERS, fields)
-            kept = check_fields(self.fake.client(), JOB_ORDERS, {**fields, "watermark": "burn-in"})
+        with mock.patch.dict(os.environ, {"T6_STANDING_CC": "standing"}), self.fake.client() as client:
+            from_file = prepare_fields(client, JOB_ORDERS, Path(self.write("jo.json", json.dumps(fields))))
+            checked = check_fields(client, JOB_ORDERS, fields)
+            kept = check_fields(client, JOB_ORDERS, {**fields, "watermark": "burn-in"})
         self.assertEqual(from_file["watermark"], "none")
         self.assertNotIn("watermark", checked)
         self.assertEqual(kept["watermark"], "burn-in")
         self.assertEqual((checked["department"], checked["cc_ids"]), ("TOC", ["cc-1", "standing"]))
         self.assertNotIn("watermark", fields)
-        with self.assertRaises(ValueError):
-            check_fields(self.fake.client(), JOB_ORDERS, {**fields, "bogus": 1})
+        with self.assertRaises(ValueError), self.fake.client() as client:
+            check_fields(client, JOB_ORDERS, {**fields, "bogus": 1})
 
     def test_confirm_queues_a_job_order_without_writing_notion(self) -> None:
         _, out, _ = self.create(FIELDS, "--idempotency-key", "one")
