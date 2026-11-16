@@ -130,7 +130,9 @@ class VerbAPI:
                     return self.refused('idempotency_key', 'Conflicting idempotency keys')
                 token = os.environ.get('T6_NOTION_TOKEN')
                 signing = os.environ.get('T6_PREVIEW_SIGNING_KEY')
-                if not token or not signing or not self.data_sources.get('external_links'):
+                if not self.data_sources.get('external_links'):
+                    return self.refused('config', 'There is no External Links source to migrate from')
+                if not token or not signing:
                     return self.refused('config', 'Notion and preview configuration are required')
                 with self.open_notion(token) as client:
                     rows = read_external_links_once_for_migration(client, self.data_sources['external_links'])

@@ -72,6 +72,14 @@ class VerbAPITests(unittest.TestCase):
         self.assertEqual(self.request('/v1/commands', secret='gateway-secret', headers={'X-Telegram-User-Id': '42'})[1], catalogue())
         self.assertIn('schema_version', self.request('/health', secret=None)[1])
 
+    def test_media_migration_names_the_missing_external_links_source(self) -> None:
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO person_permissions VALUES (?, 'admin')", (self.actor,))
+        with patch.dict(os.environ, {'T6_NOTION_TOKEN': 'fake'}):
+            refusal = self.request('/v1/admin/media/migrate', {'idempotency_key': 'migrate'})[1]
+        self.assertEqual((refusal['outcome'], refusal['rule']), ('refused', 'config'))
+        self.assertEqual(refusal['reason'], 'There is no External Links source to migrate from')
+
     def test_media_migration_api_uses_authenticated_actor_and_fake_notion(self) -> None:
         from t6.notion.testing import FakeNotion, external_link_properties
         fake = FakeNotion()
