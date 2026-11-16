@@ -178,12 +178,12 @@ def missing_roles(project: Project) -> tuple[str, ...]:
 
 
 def health_missing(project: Project) -> bool:
-    """A blank Health is flagged, whatever the Status."""
-    return not status_key(project.health)
+    """A blank Project Health is flagged, whatever the Status."""
+    return not status_key(project.project_health)
 
 
 def health_rank(health: str | None) -> int:
-    """Sort key: Critical, At Risk, On Track, Incoming, any other value, then blank."""
+    """Sort key of a Project Health: Critical, At Risk, On Track, Incoming, any other value, then blank."""
     key = status_key(health)
     if not key:
         return len(_HEALTH_ORDER) + 1

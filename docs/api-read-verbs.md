@@ -65,8 +65,8 @@ Status without emoji and punctuation, lower case), `status_group`
 Archived and Lost), `missing_roles` (the empty role attributes, in report
 order; empty unless the Status is In-Progress, In-Progress TVC or Airing),
 `relevant_dates` (the date attributes that matter for the Status),
-`health_missing` and `health_rank` (Critical 0, At Risk 1, On Track 2,
-Incoming 3, any other value 4, blank 5). `project list` also filters on
+`health_missing` and `health_rank` (of the `Project Health` select: Critical 0,
+At Risk 1, On Track 2, Incoming 3, any other value 4, blank 5). `project list` also filters on
 `status_group`. `jo list`, `jo get` and `jo find` add `status_group`
 (`not_started`, `started`, `cancelled` or `null`), `active` and `health_flags`
 (Blocked, Delayed, Urgent, ignoring emoji). `project flags` also takes `as_of`
@@ -74,7 +74,11 @@ Incoming 3, any other value 4, blank 5). `project list` also filters on
 `stated`, a map of `playdate`, `submission_deadline` or `archival_deadline` to
 an ISO date the caller read from the PM Notes for a blank property, or `null`
 for a fuzzy value. A stated date is not missing and is judged like the
-property's own; `null` is never overdue. Its reply keeps `flags` and adds
+property's own; `null` is never overdue. In place of `project` and `stated` it
+takes `projects`, a list of up to 500 `{project, stated}`; the Projects are
+read once and the reply is `projects`, one `{project, found, flags,
+missing_roles, sanity}` for each in the same order (`found: false` with no
+other key for a Project that is not there). Its reply keeps `flags` and adds
 `missing_roles` and `sanity`: one `{kind, first, second, first_date,
 second_date, from_notes}` for each date problem (`submission_before_playdate`,
 `archival_before_submission`), where `from_notes` is true when a stated date

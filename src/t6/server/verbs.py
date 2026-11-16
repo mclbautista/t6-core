@@ -849,7 +849,7 @@ class VerbAPI:
                                status_key=project_rules.status_key(project.status), status_group=group.value if group else None,
                                snapshotted=project_rules.is_snapshotted(project.status), missing_roles=project_rules.missing_roles(project),
                                relevant_dates=project_rules.relevant_dates(project.status), health_missing=project_rules.health_missing(project),
-                               health_rank=project_rules.health_rank(project.health))
+                               health_rank=project_rules.health_rank(project.project_health))
         def order_result(order: Any) -> dict[str, Any]:
             item = asdict(order)
             group = status_group(order.status)
@@ -911,6 +911,29 @@ class VerbAPI:
                     return Done(result={'cameras': [{'page_id': c['id'], 'name': c['name'] or '', 'tags': c['tags']} for c in cameras]})
                 if noun == 'project':
                     projects = [project_result(p) for p in ProjectReader(client, self.data_sources['projects']).list()]
+                    def flags_of(project: Any, stated_dates: Mapping[str, Any]) -> dict[str, Any]:
+                        from dataclasses import replace
+                        from t6.domain.project_rules import date_flags, date_sanity, health_missing, missing_roles
+                        from t6.domain.studio_time import MANILA
+                        today = inputs.as_of or datetime.fromtimestamp(self.people.registry._clock(), MANILA).date()
+                        stated = {name: day for name, day in stated_dates.items() if getattr(project, name) is None}
+                        judged = replace(project, **{name: day for name, day in stated.items() if day is not None})
+                        flags = [{'kind': 'data_gap' if f.kind == 'missing' else f.kind, 'field': f.field, 'detail': f.kind, **({'days': f.days} if f.days is not None else {})}
+                                 for f in date_flags(judged, today, inputs.lead_warning_days) if not (f.kind == 'missing' and f.field in stated)]
+                        if health_missing(project):
+                            flags.append({'kind': 'data_gap', 'field': 'health', 'detail': 'missing health update'})
+                        sanity = [{'kind': kind, 'first': first, 'second': second, 'first_date': first_date, 'second_date': second_date,
+                                   'from_notes': stated.get(first) is not None or stated.get(second) is not None}
+                                  for kind, first, second, first_date, second_date in date_sanity({name: getattr(judged, name) for name in ('playdate', 'submission_deadline', 'archival_deadline')})]
+                        return {'flags': flags, 'missing_roles': list(missing_roles(project)), 'sanity': sanity}
+                    if verb == 'flags' and inputs.projects:
+                        by_page = {p.page_id.replace('-', '').lower(): p for p in projects}
+                        several = []
+                        for item in inputs.projects:
+                            pages = refs.pages(item.project)
+                            found = by_page.get((pages[0] if pages else item.project).replace('-', '').lower())
+                            several.append({'project': item.project, 'found': True, **flags_of(found, item.stated)} if found else {'project': item.project, 'found': False})
+                        return Done(result={'projects': several})
                     if verb in ('get', 'notes', 'flags'):
                         pages = refs.pages(inputs.project)
                         active = (pages[0] if pages else inputs.project).replace('-', '').lower()
@@ -920,20 +943,7 @@ class VerbAPI:
                             from t6.domain.studio_time import MANILA
                             return Done(result={'lines': dated_lines(project.pm_notes, datetime.fromtimestamp(self.people.registry._clock(), MANILA).date())})
                         if verb == 'flags' and project:
-                            from dataclasses import replace
-                            from t6.domain.project_rules import date_flags, date_sanity, health_missing, missing_roles
-                            from t6.domain.studio_time import MANILA
-                            today = inputs.as_of or datetime.fromtimestamp(self.people.registry._clock(), MANILA).date()
-                            stated = {name: day for name, day in inputs.stated.items() if getattr(project, name) is None}
-                            judged = replace(project, **{name: day for name, day in stated.items() if day is not None})
-                            flags = [{'kind': 'data_gap' if f.kind == 'missing' else f.kind, 'field': f.field, 'detail': f.kind, **({'days': f.days} if f.days is not None else {})}
-                                     for f in date_flags(judged, today, inputs.lead_warning_days) if not (f.kind == 'missing' and f.field in stated)]
-                            if health_missing(project):
-                                flags.append({'kind': 'data_gap', 'field': 'health', 'detail': 'missing health update'})
-                            sanity = [{'kind': kind, 'first': first, 'second': second, 'first_date': first_date, 'second_date': second_date,
-                                       'from_notes': stated.get(first) is not None or stated.get(second) is not None}
-                                      for kind, first, second, first_date, second_date in date_sanity({name: getattr(judged, name) for name in ('playdate', 'submission_deadline', 'archival_deadline')})]
-                            return Done(result={'flags': flags, 'missing_roles': list(missing_roles(project)), 'sanity': sanity})
+                            return Done(result=flags_of(project, inputs.stated))
                         return Done(result={'project': read_project(project)}) if project else Refused(rule='project', reason='Project not found')
                     if verb == 'resolve':
                         from t6.lookup import Index, Lookup

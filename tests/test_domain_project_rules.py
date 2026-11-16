@@ -128,8 +128,9 @@ class RoleAndHealthTests(unittest.TestCase):
 
     def test_blank_health_is_flagged(self) -> None:
         self.assertTrue(health_missing(project("Standby")))
-        self.assertTrue(health_missing(project("Standby", health="  ")))
-        self.assertFalse(health_missing(project("Standby", health="ON TRACK")))
+        self.assertTrue(health_missing(project("Standby", project_health="  ")))
+        self.assertTrue(health_missing(project("Standby", health="ON TRACK")))
+        self.assertFalse(health_missing(project("Standby", project_health="ON TRACK")))
 
     def test_health_order(self) -> None:
         values = ["", "Weird", "INCOMING", "ON TRACK", "AT RISK", "CRITICAL", None]

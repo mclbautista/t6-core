@@ -478,17 +478,43 @@ class ReadTests(unittest.TestCase):
         from t6.verbs import ProjectListInput
         order = ['Critical', '🟡 At Risk', 'on track', 'Incoming', 'Weird', None]
         for number, health in enumerate(order):
-            self.project_with(f'Health {number}', 'Standby', health=select(health))
+            self.project_with(f'Health {number}', 'Standby', project_health=select(health))
         result = self.client.project_list(ProjectListInput())
         assert isinstance(result, Done)
         ranked = [next(p for p in result.result['projects'] if p['name'] == f'Health {n}') for n in range(len(order))]
         self.assertEqual([p['health_rank'] for p in ranked], [0, 1, 2, 3, 4, 5])
         self.assertEqual([p['health_missing'] for p in ranked], [False] * 5 + [True])
 
+    def test_health_results_read_project_health_and_not_the_health_select(self) -> None:
+        from t6.verbs import ProjectFlagsInput, ProjectGetInput
+        page = self.project_with('Two selects', 'Standby', health=select('Critical'), playdate=date('2027-06-01'))
+        got = self.client.project_get(ProjectGetInput(project=page['id']))
+        assert isinstance(got, Done)
+        self.assertEqual((got.result['project']['health_missing'], got.result['project']['health_rank']), (True, 5))
+        flagged = self.client.project_flags(ProjectFlagsInput.model_validate({'project': page['id'], 'as_of': '2026-11-16'}))
+        assert isinstance(flagged, Done)
+        self.assertIn({'kind': 'data_gap', 'field': 'health', 'detail': 'missing health update'}, flagged.result['flags'])
+
+    def test_project_flags_take_several_projects_each_with_its_stated_dates(self) -> None:
+        from t6.verbs import ProjectFlagsInput
+        late = self.project_with('Late show', 'In-Progress', playdate=date('2026-11-10'), submission_deadline=date('2026-12-20'), project_health=select('On track'))
+        blank = self.project_with('Blank show', 'Leads', project_health=select('On track'))
+        result = self.client.project_flags(ProjectFlagsInput.model_validate({'as_of': '2026-11-16', 'projects': [
+            {'project': late['id']}, {'project': blank['id'], 'stated': {'playdate': '2026-12-01'}}, {'project': 'nobody'}]}))
+        assert isinstance(result, Done), result
+        first, second, third = result.result['projects']
+        self.assertEqual((first['project'], first['found'], first['flags']), (late['id'], True, [{'kind': 'overdue', 'field': 'playdate', 'detail': 'overdue', 'days': 6}]))
+        self.assertEqual(first['missing_roles'], self.client.project_flags(ProjectFlagsInput.model_validate({'project': late['id'], 'as_of': '2026-11-16'})).result['missing_roles'])  # type: ignore[union-attr]
+        self.assertEqual(second['flags'], [{'kind': 'upcoming', 'field': 'playdate', 'detail': 'upcoming', 'days': 15}])
+        self.assertEqual(third, {'project': 'nobody', 'found': False})
+        for bad in ({}, {'project': late['id'], 'projects': [{'project': blank['id']}]}, {'projects': [{'project': blank['id']}], 'stated': {'playdate': None}}):
+            with self.assertRaises(ValueError):
+                ProjectFlagsInput.model_validate(bad)
+
     def test_project_flags_judge_on_as_of_and_lead_warning_days(self) -> None:
         from t6.verbs import ProjectFlagsInput
-        late = self.project_with('Late show', 'In-Progress', playdate=date('2026-11-10'), submission_deadline=date('2026-12-20'), health=select('On track'))
-        soon = self.project_with('Soon show', 'Leads', playdate=date('2026-12-01'), health=select('On track'))
+        late = self.project_with('Late show', 'In-Progress', playdate=date('2026-11-10'), submission_deadline=date('2026-12-20'), project_health=select('On track'))
+        soon = self.project_with('Soon show', 'Leads', playdate=date('2026-12-01'), project_health=select('On track'))
         def flags(page: dict[str, Any], **more: Any) -> list[dict[str, Any]]:
             result = self.client.project_flags(ProjectFlagsInput.model_validate({'project': page['id'], **more}))
             assert isinstance(result, Done)
@@ -500,7 +526,7 @@ class ReadTests(unittest.TestCase):
 
     def test_project_flags_judge_a_stated_date_like_the_propertys_own(self) -> None:
         from t6.verbs import ProjectFlagsInput
-        page = self.project_with('Notes show', 'In-Progress', playdate=date('2026-12-20'), health=select('On track'))
+        page = self.project_with('Notes show', 'In-Progress', playdate=date('2026-12-20'), project_health=select('On track'))
         def flags(**stated: Any) -> list[tuple[str, str]]:
             result = self.client.project_flags(ProjectFlagsInput.model_validate({'project': page['id'], 'as_of': '2026-11-16', 'stated': stated}))
             assert isinstance(result, Done)
@@ -514,17 +540,17 @@ class ReadTests(unittest.TestCase):
     def test_project_flags_find_both_date_sanity_problems(self) -> None:
         from t6.verbs import ProjectFlagsInput
         page = self.project_with('Sanity show', 'In-Progress', playdate=date('2026-11-20'), submission_deadline=date('2026-11-10'),
-                                 archival_deadline=date('2026-11-01'), health=select('On track'))
+                                 archival_deadline=date('2026-11-01'), project_health=select('On track'))
         result = self.client.project_flags(ProjectFlagsInput.model_validate({'project': page['id'], 'as_of': '2026-11-01'}))
         assert isinstance(result, Done)
         self.assertEqual(result.result['sanity'], [
             {'kind': 'submission_before_playdate', 'first': 'submission_deadline', 'second': 'playdate', 'first_date': '2026-11-10', 'second_date': '2026-11-20', 'from_notes': False},
             {'kind': 'archival_before_submission', 'first': 'archival_deadline', 'second': 'submission_deadline', 'first_date': '2026-11-01', 'second_date': '2026-11-10', 'from_notes': False}])
-        stated = self.project_with('Stated show', 'Standby', playdate=date('2026-11-20'), health=select('On track'))
+        stated = self.project_with('Stated show', 'Standby', playdate=date('2026-11-20'), project_health=select('On track'))
         result = self.client.project_flags(ProjectFlagsInput.model_validate({'project': stated['id'], 'stated': {'submission_deadline': '2026-11-10', 'archival_deadline': None}}))
         assert isinstance(result, Done)
         self.assertEqual([(p['kind'], p['from_notes']) for p in result.result['sanity']], [('submission_before_playdate', True)])
-        quiet = self.project_with('Quiet show', 'Standby', playdate=date('2026-11-20'), submission_deadline=date('2026-11-25'), health=select('On track'))
+        quiet = self.project_with('Quiet show', 'Standby', playdate=date('2026-11-20'), submission_deadline=date('2026-11-25'), project_health=select('On track'))
         result = self.client.project_flags(ProjectFlagsInput(project=quiet['id']))
         assert isinstance(result, Done)
         self.assertEqual(result.result['sanity'], [])
