@@ -6,15 +6,12 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ### Added
 
+- `deliverable edit` (#383): change the code or the episode of a Deliverable after it is defined (`operator`, preview and confirm, safe to repeat with the same idempotency key). A code may repeat inside a Project. Naming the current values is Done and writes nothing; a change writes Audit and Activity and queues the Notion sync, which now also writes the Deliverable code to the page name. The Frame.io folder keeps its old name. `project start` keeps its own rule.
 - `t6.client.APIError` carries the HTTP status as `status` (#370), so a client can tell 5xx from 4xx without reading the message. It is None for an error raised before a request was made.
-
 - `drive edit` changes every Drive fact (#370): description, brand, model, capacity, format, owner, ownership, purchase date, warranty and remarks, with the rules of `drive add`; a blank value clears. `drive get`, `drive list` and `drive find` return a `version` (a digest of the Drive's facts), and `drive edit` takes an optional `expected_version`, refused with rule `drive_changed` at preview and at confirm when it is not current. The `DriveStore` gains `set_facts`.
-
 - `drive assign` takes `remarks`, stored on the Assignment and shown by `drive get` (#370).
 - `drive unassign` ends an Assignment by its number alone (#370): `project` is optional when `assignment` is given, so an Assignment whose Project is text only (a workbook import) can be ended. Without `assignment`, `project` is still required.
-
 - `drive list` carries each Drive's open Assignments (#370) as `open_assignments`: number, label, Project ID or text, role, start and holder (with the end, remarks and return date `drive get` shows), so the inventory needs no `drive get` per row.
-
 - A shipment keeps the Drives' facts as they were at release (#370). `drive release` stores each Drive's facts, and `drive shipment` returns those, not the current ones; for a shipment made before this change it returns the current facts and `facts_at_release` is false. `drive release` also takes an optional `reason` (stored on the released events) and an optional free-text `recipient` (the person who took the Drives, stored on the shipment and shown by `drive shipment`). Migration 42 adds the `drive_shipment_facts` table (append-only); the `DriveStore` gains `shipment_facts`, and `release_shipment` takes `reason` and `recipient`.
 
 ### Changed
