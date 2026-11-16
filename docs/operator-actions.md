@@ -183,6 +183,13 @@ and defaults to `permission:operator`. A single `person:<id>` rule sends the
 card to that active Person's Telegram ID when available; other rules use the
 configured operator chat.
 
+One open Approval stands for one request. A new preview and confirm of the same
+write by the same caller with the same input (`approval request`: the same gate,
+target and tapper rule; `project link-chat` and `unlink-chat`: the same link
+change) reuses the Approval that is still requested and makes no second card.
+This covers every Approval-gated verb, since they share the one check. A denied
+Approval does not block a new request.
+
 A request is previewed and confirmed before the card is created. The adapter
 uses one operator action per Approval and restores missing cards from requested
 Approvals when the server starts. The normal gateway delivery and single-use

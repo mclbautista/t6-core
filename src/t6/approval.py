@@ -123,6 +123,14 @@ class Approvals:
                 target = plan['target']
             now = self.registry._clock()
             if verb == 'request':
+                # One open Approval for one request: the same caller asking again for the same gate, target and tapper rule gets the open one.
+                open_one = db.execute("SELECT id FROM approvals WHERE gate = ? AND target = ? AND requester = ? AND tapper_rule = ? AND state = 'requested' ORDER BY rowid LIMIT 1",
+                                      (plan['gate'], target, actor, json.dumps(rule))).fetchone()
+                if open_one:
+                    plan['approval_id'] = open_one[0]
+                    db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
+                    db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(plan)))
+                    return Done(result=plan)
                 approval_id = str(T6Id.mint(EntityKind.APPROVAL))
                 plan['approval_id'] = approval_id
                 db.execute('INSERT INTO approvals VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL)', (approval_id, plan['gate'], target, actor, json.dumps(rule), 'requested'))
