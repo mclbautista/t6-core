@@ -135,6 +135,8 @@ class Project(NotionEntity):
     """`in`, `out` or `unclassified`, from the registry. `None` when it is not known."""
     project_roles: tuple[dict[str, str], ...] = field(default=(), compare=False)
     project_code: str | None = field(default=None, compare=False)
+    notion_project_code: str | None = field(default=None, compare=False)
+    """The Project Code as the Notion property shows it; `project_code` is the registry's once the Project is registered."""
     project_type: str | None = field(default=None, compare=False)
     eps: int | None = field(default=None, compare=False)
     status: str | None = field(default=None, compare=False)

@@ -1081,7 +1081,13 @@ role relations as page IDs (`editor_ids`, `assistant_editor_ids`,
 `director_ids`, `cinematographer_ids`). A date range keeps its end in
 `playdate_end`, `submission_deadline_end` and `archival_deadline_end` (`None`
 when the date has no end; a range end keeps its time as Notion holds it), and
-`prod_coor_supe_ids` holds the people in `Prod Coor/Supe`. `JobOrder.project_ids`
+`prod_coor_supe_ids` holds the people in `Prod Coor/Supe`. A date with a time
+and no offset takes the `time_zone` Notion holds for it and is an aware
+datetime in that zone; with no offset and no zone it stays naive and is the
+workspace time. `JobOrder.health` is `None` when the Health formula gave no
+value and `""` when it computed an empty string. `Project.notion_project_code`
+is the Project Code as Notion shows it; the API's `project_code` is the
+registry's value once the Project is registered. `JobOrder.project_ids`
 holds every related Project; `project_id` is the first. `Contact.end_of_shift` is a time of day
 parsed from "10:00 PM", "10 PM" or "22:00"; "Flexible / Variable", blank and
 any other text are `None`, meaning flexible. `Deliverable` carries

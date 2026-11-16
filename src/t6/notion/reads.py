@@ -70,6 +70,7 @@ def project_from_row(row: ProjectsRow, last_edited: dt.datetime | None = None, p
         page_id=row.page_id,
         name=row.name or "",
         project_code=row.project_code,
+        notion_project_code=row.project_code,
         project_type=row.project_type,
         eps=None if row.eps is None or row.eps != int(row.eps) else int(row.eps),
         status=row.status,

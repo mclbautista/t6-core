@@ -48,6 +48,12 @@ time when it has one) and `prod_coor_supe_ids`, the people in `Prod Coor/Supe`
 as T6 Person IDs where bound. `jo list`, `jo get` and `jo find` return
 `project_ids`, every related Project in Notion's order, beside `project_id`,
 the first.
+A date with a time and no offset is returned in the `time_zone` Notion holds
+for it (an aware time); with no offset and no zone it stays naive, the
+workspace time. `jo list` Health is `null` when the formula gave no value and
+`""` when it computed an empty string. `project_code` is the registry's value
+(ADR 0001); `notion_project_code` is the code as the Notion property shows it,
+and an empty registry code does not fall back to it.
 `jo list` supports `project`, `assignee` and `status_group` (`not_started`,
 `started`, `cancelled`, or `active`). Meeting Notes can be filtered by Project,
 inclusive `since`, exclusive `before`, exact title, title prefix and readiness;

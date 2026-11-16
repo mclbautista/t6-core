@@ -103,6 +103,23 @@ class ReadTests(unittest.TestCase):
         plain = next(p for p in result.result['projects'] if p['name'] == 'Example Show')
         self.assertEqual((plain['playdate_end'], plain['prod_coor_supe_ids']), (None, []))
 
+    def test_project_code_is_the_registrys_and_notion_project_code_is_notions(self) -> None:
+        from t6.registry import Registered, Rotation
+        from t6.verbs import ProjectGetInput, ProjectListInput
+        from t6.notion.generated import ProjectsRow
+        from t6.notion.testing import select
+        page = self.notion.add_page('projects', {ProjectsRow.notion_name('name'): title('Coded show'),
+                                                 ProjectsRow.notion_name('project_code'): select('CODE')})
+        registered = self.registry.register(actor='setup', idempotency_key='coded', notion_page_id=page['id'], code=None, rotation=Rotation.IN)
+        assert isinstance(registered, Registered)
+        result = self.client.project_list(ProjectListInput())
+        assert isinstance(result, Done)
+        project = next(p for p in result.result['projects'] if p['name'] == 'Coded show')
+        self.assertEqual((project['project_code'], project['notion_project_code']), (None, 'CODE'))
+        got = self.client.project_get(ProjectGetInput(project=registered.project.id))
+        assert isinstance(got, Done)
+        self.assertEqual((got.result['project']['project_code'], got.result['project']['notion_project_code']), (None, 'CODE'))
+
     def test_jo_reads_return_every_related_project(self) -> None:
         from t6.verbs import JoListInput
         second = self.notion.add_page('projects', {'Name': title('Second Show')})

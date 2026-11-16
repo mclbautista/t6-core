@@ -188,9 +188,9 @@ class JobOrders:
 
 
 def _health(formula: JSON | None) -> str | None:
-    """The text Notion's Health formula computes, or None."""
+    """The text Notion's Health formula computes: "" when it computed an empty string, None when it gave no string."""
     value = (formula or {}).get("formula") or {}
-    return str(value["string"]) if value.get("type") == "string" and value.get("string") else None
+    return value["string"] if value.get("type") == "string" and isinstance(value.get("string"), str) else None
 
 
 def _blocks(text: str) -> list[JSON]:
