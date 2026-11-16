@@ -67,10 +67,29 @@ class Worker:
                 break
         if job is None:
             return False
+        self._finish(client, job)
+        return True
+
+    @property
+    def has_internal_client(self) -> bool:
+        return len(self._clients) > 1
+
+    def run_internal_once(self) -> bool:
+        """Pull and finish one job from the internal client only. False when it has nothing due or there is none."""
+        if not self.has_internal_client:
+            return False
+        client = self._clients[1]
+        job = client.claim(self._queue, self._lease_seconds, self._handlers.keys())
+        if job is None:
+            return False
+        self._finish(client, job)
+        return True
+
+    def _finish(self, client: WorkerQueue, job: WorkerJob) -> None:
         handler = self._handlers.get(job.kind)
         if handler is None:
             client.fail(job, f"no handler for {job.kind}")
-            return True
+            return
         stop = Event()
         def renew() -> None:
             while not stop.wait(self._lease_seconds / 3):
@@ -94,4 +113,3 @@ class Worker:
             stop.set()
             thread.join()
             client.ack(job, result)
-        return True

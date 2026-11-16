@@ -10,6 +10,7 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ### Fixed
 
+- The main worker looks at the internal job table every 0.25 s while it waits for the next poll (#402), so an operator card changes about a quarter of a second after a tap, not 0.5 to 5 s; the remote queue is still asked once per `T6_WORKER_POLL_SECONDS`.
 - The Resolve project server reader uses the real tables (#394): `SM_Project` and `SM_ProjectFolder`, a project's folder from its `Folder` column, every named folder (including top-level ones) in the folder path, and one verified layout for Resolve majors 17 to 20 that `schema_for` matches on the major of the version (so `18.1.4` works).
 - `docs/operator-actions.md` rollout: the API listener accepts a pushed tap only from a secret bound to `gateway` in `T6_API_SECRETS` with `X-Telegram-User-Id` equal to `from.id`; the text no longer suggests `T6_TAP_SECRET` is enough (found live on 2026-11-16).
 

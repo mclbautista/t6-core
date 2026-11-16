@@ -101,7 +101,7 @@ Mac mini. Both use only the standard library.
 | `T6_SERVER_URL` | required: the server's tailnet address, for example `http://100.64.0.1:8081` |
 | `T6_WORKER_SECRET` | required: the queue bearer secret; for `diagnostic`, use the server's `T6_DIAGNOSTIC_SECRET` |
 | `T6_WORKER_QUEUE` | required: the queue to poll (`main`, `frameio`, or `diagnostic`) |
-| `T6_WORKER_POLL_SECONDS` | optional: sleep after an empty poll, default `5` |
+| `T6_WORKER_POLL_SECONDS` | optional: sleep after an empty poll, default `5` (the internal job table is looked at every 0.25 s meanwhile) |
 | `T6_NOTION_TOKEN` | main worker: Notion integration token, for the Project registry sync |
 | `T6_NOTION_PROJECTS_DATA_SOURCE` | main worker: ID of the Projects data source |
 | `T6_NOTION_JOB_ORDERS_DATA_SOURCE` | main worker: ID of the Job Orders data source |
