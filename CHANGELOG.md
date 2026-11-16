@@ -4,6 +4,38 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.7] - 2026-11-17
+
+The second stage of moving the apps onto the t6 API (#426): every rule an app still applied itself is now answered by a verb, so an app imports only `t6.client` and the types in `t6.verbs`. Two migrations: the schema goes from 43 to 45. Neither is forward-only, so 0.6.6 can still open the file; take a backup first.
+
+### Added
+
+- `jo raise` for an app (#443, #459): the fields come as JSON, with no file upload over HTTP. With `message` (the header text, deadline text, post time, chat and message IDs, assignees, Project, Department text and number text) the API applies the Job Order rules itself and the preview returns the name, number, Department, deadline with its source and findings, the Telegram Key and the duplicate key. `no_project` raises a Job Order with no Project; `jo list` takes a `no_project` filter. `jo_id` is `null` in the preview and set at confirm. `T6_DEPARTMENT_ALIASES` (a JSON object) is merged over the default Department aliases.
+- `llm run` (#444, #446): `examples` for few-shot turns, a `failure` class and `retry_after` on a refusal, the inputs the reports tasks need, and `provider_min_retention`, a map from a provider name to the lowest retention it may have. A provider with no entry keeps the zero-retention rule.
+- Verb `llm decide` (#445, role `llm`): the Decisions provider answers match, maybe or no, with probabilities, for each candidate. Config key `decisions` (url, model, retention, `api_key_env`); its retention floor is the `decisions` entry of `provider_min_retention`. Names are masked.
+- Verb `llm filter` (#474, role `llm`): one message is checked against a named filter rule and the answer is `pass`, `drop` or `unsure`. The rule text lives in t6-core; `job_order` is the first rule. Thresholds are pass at 0.5 and drop at 0.9, pass wins, and the optional config key `filters` overrides them per rule. The verdict is advice: on a refusal the caller goes on.
+- Meeting Notes write verbs `meeting-notes create`, `append`, `trash` and `mark-sent`, and permission `minutes` (#447). `meeting-notes list` takes `latest`, `before` and `include_body`. The replies are masked for a caller without `unmasked` (#477).
+- `person find` takes `mentions` (up to 50 at once), `suggest` and `prefer_telegram`; `person list` filters on T6 ID, `registered` and `kind` (#449, #450, #460).
+- Person kind `freelancer`, beside staff, client and vendor (#463).
+- `project resolve` takes `in_text` and finds a Project Code inside a text (#451).
+- Verb `deliverable candidates` (reader): every Deliverable page of a Project (#441). Real names need `unmasked`.
+- Reads return both ends of a date range, every related Project (`project_ids`), `prod_coor_supe_ids`, the time zone, `notion_project_code`, and the rule results an app needs: `status_key`, `status_group`, `active`, `health_flags`, `health_missing` and `health_rank` (#457, #458, #460). The Health results read the `Project Health` select (#479). `project flags` returns the date flags of one Project, or of several in one call with `projects` (#479). `jo get` returns the rule results before the Notion page exists (#477).
+- One Concern list (#448): a Concern holds the brief text (`text`), a `source` and a nullable owner, and `closed_at`. `concern raise` and the PM Notes scan refuse a second open Concern with the same text on a Project (rule `duplicate`).
+- Verb `concern observe` (#454, role `coordinator`): an app hands over the findings of one run and the API answers which are new, known or not seen, the open Concerns of each Project with their age, and what was closed since the last run. A run closes nothing unless the server has `T6_CONCERN_OBSERVE_CLOSES=1`.
+- Verb `concern counts` (#455, reader): for each run date, how many Concerns were listed, sent, new and closed, their ages and sources. `concern record-message` takes `brief_date`.
+- `t6 admin consumer-check` rule `t6-import` (#461): an app may import `t6.client` and `t6.verbs` and nothing else from the package.
+
+### Changed
+
+- Migration 44 rebuilds `concerns` (nullable owner, `text`, `source`, `text_key`, `closed_at`) and sets the source of old rows from how they were made. Migration 45 adds `concern_listings` and `brief_date`.
+- `concern get` is masked for a caller without `unmasked`, like `concern list`.
+- `llm run`'s `allow_projects` refuses a Project whose name or code is also a registered person (#477).
+
+### Fixed
+
+- Three read fixes (#458): a blank Health, the zone of a date, and the Project Code read from Notion.
+- `concern observe` lists a closed Concern once, and stores `run_date` in ISO form (#477).
+
 ## [0.6.6] - 2026-11-16
 
 The first stage of moving the apps onto the t6 API (#426): the gaps that stop the gateway, munki, the watchdog and reports from reading and writing through the API with no change for staff. No migration: the schema stays at 43.
