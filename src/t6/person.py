@@ -14,6 +14,7 @@ from t6.preview import PreviewTokens
 from t6.registry.core import normalize_page_id
 from t6.registry.sqlite import SqliteProjectRegistry, _audit
 from t6.verbs import Done, Outcome, Refused
+from t6.vocabulary import PERSON_KINDS
 
 
 AUTO_ACTOR = 'Sixto (auto)'
@@ -27,7 +28,7 @@ CALENDAR_ACTOR = 'google-calendar'  # inbound Google Calendar edits (#270): Goog
 FRAMEIO_ACTOR = 'frameio'  # Frame.io events (#275): a file landing in a Deliverable's folder, a client viewing a share. It writes its own rows and runs no verb
 INTERNAL_ACTORS: Mapping[str, frozenset[str]] = {CALENDAR_ACTOR: frozenset({'bookings'}), FRAMEIO_ACTOR: frozenset()}
 
-PERMISSIONS = frozenset({"operator", "coordinator", "bookings", "drives", "admin", "llm", "unmasked", "fleet"})
+PERMISSIONS = frozenset({"operator", "coordinator", "bookings", "drives", "admin", "llm", "unmasked", "fleet", "minutes"})
 STAFF_RULE = "role:staff"
 """An allowed-tapper rule: any active staff Person (a kind, not a permission, so it is not in `PERMISSIONS`)."""
 
@@ -206,7 +207,7 @@ class People:
                 return Done(result=json.loads(previous[1]))
             if verb == 'add':
                 page = normalize_page_id(values.get('page_id', ''))
-                if not page or values.get('kind') not in ('staff', 'client', 'vendor'):
+                if not page or values.get('kind') not in PERSON_KINDS:
                     return Refused(rule='input', reason='A page ID and valid kind are required')
                 if db.execute("SELECT 1 FROM bindings WHERE system = 'notion' AND page_id = ?", (page,)).fetchone():
                     return Refused(rule='binding', reason='Page is already bound')
@@ -250,7 +251,7 @@ class People:
                     return Refused(rule='shift', reason='Use day or night with valid HH:MM times')
             if verb in ('grant', 'revoke') and values.get('permission') not in PERMISSIONS:
                 return Refused(rule='permission', reason='Unknown permission')
-            if verb == 'classify' and values.get('kind') not in ('staff', 'client', 'vendor'):
+            if verb == 'classify' and values.get('kind') not in PERSON_KINDS:
                 return Refused(rule='input', reason='A valid kind is required')
             if verb == 'rebind':
                 page = normalize_page_id(values.get('page_id', ''))

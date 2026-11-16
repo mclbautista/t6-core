@@ -21,6 +21,7 @@ from t6.server.app import Request, Response, WebhookApp
 from t6.server.queue import MAIN_QUEUE
 from t6.registry.sqlite import _audit
 from t6.verbs import VERBS, Done, Preview, Refused, catalogue, invoke
+from t6.vocabulary import PERSON_KINDS
 
 
 class VerbAPI:
@@ -152,6 +153,9 @@ class VerbAPI:
                     continue
                 contents = data.pop(name + '_contents', None)
                 if not isinstance(contents, str):
+                    if not entry.input_model.model_fields[name].is_required():
+                        data.pop(name, None)  # a path sent by the caller is never opened
+                        continue
                     return Response(422, {'errors': [{'loc': [name], 'msg': 'File contents required'}]})
                 uploaded = Path(directory) / name
                 uploaded.write_text(contents, encoding='utf-8')
@@ -280,6 +284,9 @@ class VerbAPI:
         elif (entry.noun, entry.verb) == ('llm', 'run'):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or (self.llm_service.run(inputs, actor=actor, registry=self.people.registry) if self.llm_service else Refused(rule='config', reason='LLM service is not configured'))
+        elif entry.noun == 'meeting-notes':
+            refusal = self.people.authorize(actor, entry.role)
+            outcome = refusal or self._meeting_notes(entry.verb, inputs, actor)
         elif entry.noun == 'machine':
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._machine(entry.verb, inputs, actor)
@@ -289,6 +296,12 @@ class VerbAPI:
         elif (entry.noun, entry.verb) == ('person', 'create'):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._person_create(inputs, actor)
+        elif (entry.noun, entry.verb) == ('jo', 'raise'):
+            # The server knows its own Job Orders data source; a caller never uploads one.
+            from dataclasses import replace
+            from t6.verbs import jo_write
+            source = self.data_sources.get('job_orders')
+            outcome = invoke(replace(entry, handler=lambda i, o: jo_write(i, o, source)), inputs, actor=actor, people=self.people, open_notion=self.open_notion)
         elif (entry.noun, entry.verb) == ('person', 'set-telegram') and (page := self._contact_page(inputs.person_id)):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._person_set_telegram(inputs, actor, page)
@@ -435,7 +448,7 @@ class VerbAPI:
         if inputs.confirm and not inputs.idempotency_key:
             return Refused(rule='idempotency_key', reason='Supply the key from the preview')
         name, handle, note = inputs.name.strip(), (inputs.telegram_handle or '').strip().lstrip('@'), (inputs.note or '').strip()
-        if not name or inputs.kind not in ('staff', 'client', 'vendor'):
+        if not name or inputs.kind not in PERSON_KINDS:
             return Refused(rule='input', reason='A name and valid kind are required')
         values = {'name': name, 'kind': inputs.kind, 'telegram_handle': handle or None, 'telegram_id': inputs.telegram_id, 'note': note or None, 'idempotency_key': key}
         fingerprint = json.dumps({'verb': 'person create', 'actor': actor, **values}, sort_keys=True, separators=(',', ':'))
@@ -497,6 +510,97 @@ class VerbAPI:
             with registry._transaction() as db:
                 db.execute('UPDATE verb_requests SET result=? WHERE idempotency_key=?', (json.dumps(result), key))
             return Done(result=result)
+        except (ValueError, KeyError, OSError, NotionError) as error:
+            return Refused(rule='input', reason=str(error))
+
+    def _meeting_notes(self, verb: str, inputs: Any, actor: str) -> Any:
+        """The Meeting Notes write verbs. Each write adds an audit row (the page ID, never the title or text)."""
+        from dataclasses import asdict
+        from datetime import date, datetime, timedelta, timezone
+        from t6.notion import NotionError
+        from t6.notion.meeting_notes import MeetingNotes, note_from_page
+        from t6.notion.writes import Ambiguous as WriteAmbiguous, Rejected
+        from t6.registry import ProjectRefs
+        from t6.registry.core import normalize_page_id
+        from t6.verbs import Ambiguous
+        kinds = ('paragraph', 'heading_1', 'heading_2', 'heading_3', 'bulleted_list_item', 'numbered_list_item', 'to_do', 'toggle')
+        registry = self.people.registry
+        refs = ProjectRefs(registry)
+
+        def notion_blocks(blocks: list[Any]) -> list[dict[str, Any]]:
+            result = []
+            for block in blocks:
+                if block.kind not in kinds:
+                    raise ValueError(f'Unknown block kind {block.kind}; use one of {", ".join(kinds)}')
+                parts = [{'type': 'text', 'text': {'content': span.text, **({'link': {'url': span.url}} if span.url else {})},
+                          'annotations': {key: getattr(span, key) for key in ('bold', 'italic', 'underline', 'strikethrough', 'code')}} for span in block.spans]
+                content: dict[str, Any] = {'rich_text': parts or [{'type': 'text', 'text': {'content': block.text}}]}
+                if block.kind == 'to_do':
+                    content['checked'] = bool(block.checked)
+                if block.children:
+                    content['children'] = notion_blocks(block.children)
+                result.append({'type': block.kind, block.kind: content})
+            return result
+
+        def audit(action: str, page_id: str) -> None:
+            with registry._transaction() as db:
+                _audit(db, page_id, action, actor, registry._clock(), None, {})
+
+        def done(note: Any) -> Any:
+            item = asdict(note)
+            item['project_ids'] = [refs.identity(page) or page for page in note.project_ids]
+            return Done(result={'meeting_note': item})
+
+        try:
+            source = self.data_sources['meeting_notes']
+            token = os.environ['T6_NOTION_TOKEN']
+            with self.open_notion(token) as client:
+                notes = MeetingNotes(client, source)
+                if verb == 'create':
+                    day = date.fromisoformat(inputs.meeting_date)
+                    pages = []
+                    for ref in inputs.project_ids:
+                        found = refs.pages(ref)
+                        if not found:
+                            return Refused(rule='project', reason=f'Project {ref} not found')
+                        pages.append(found[0])
+                    saved = notes.create(title=inputs.title, meeting_date=day, project_ids=pages, attendee_ids=inputs.attendee_ids, blocks=notion_blocks(inputs.blocks))
+                    if isinstance(saved, Rejected):
+                        return Refused(rule='notion', reason=str(saved))
+                    if isinstance(saved, WriteAmbiguous):
+                        if saved.page_id:
+                            audit('meeting_note_create', saved.page_id)
+                        return Ambiguous(candidates=[{'pending': True, 'reason': str(saved), 'page_id': saved.page_id}])
+                    audit('meeting_note_create', saved.page_id)
+                    return done(saved)
+                page = client.retrieve_page(inputs.note)
+                if normalize_page_id((page.get('parent') or {}).get('data_source_id') or '') != normalize_page_id(source):
+                    return Refused(rule='input', reason='Not a Meeting Notes page')
+                note = note_from_page(page)
+                if verb == 'mark-sent':
+                    if note.sent_at is not None:
+                        return done(note)
+                    when = inputs.at or datetime.now(timezone(timedelta(hours=8)))
+                    saved = notes.mark_sent(note.page_id, when)
+                    if isinstance(saved, Rejected):
+                        return Refused(rule='notion', reason=str(saved))
+                    if isinstance(saved, WriteAmbiguous):
+                        return Ambiguous(candidates=[{'pending': True, 'reason': str(saved), 'page_id': note.page_id}])
+                    audit('meeting_note_sent', note.page_id)
+                    return done(saved)
+                if note.sent_at is not None:
+                    return Refused(rule='sent', reason='The note is already sent')
+                if verb == 'trash':
+                    notes.trash(note.page_id)
+                    audit('meeting_note_trash', note.page_id)
+                else:
+                    if page.get('in_trash') or page.get('archived'):
+                        return Refused(rule='sent', reason='The note is in the trash')
+                    try:
+                        notes.append(note.page_id, notion_blocks(inputs.blocks))
+                    finally:
+                        audit('meeting_note_append', note.page_id)  # a refused later chunk leaves the earlier ones written
+                return done(note_from_page(client.retrieve_page(note.page_id)))
         except (ValueError, KeyError, OSError, NotionError) as error:
             return Refused(rule='input', reason=str(error))
 
@@ -698,11 +802,13 @@ class VerbAPI:
                            assistant_editor_ids=ids(project.assistant_editor_ids),
                            online_editor_ids=ids(project.online_editor_ids), colorist_ids=ids(project.colorist_ids),
                            sound_tech_ids=ids(project.sound_tech_ids), post_coordinator_ids=ids(project.post_coordinator_ids),
-                           director_ids=ids(project.director_ids), cinematographer_ids=ids(project.cinematographer_ids))
+                           director_ids=ids(project.director_ids), cinematographer_ids=ids(project.cinematographer_ids),
+                           prod_coor_supe_ids=ids(project.prod_coor_supe_ids))
         def order_result(order: Any) -> dict[str, Any]:
             item = asdict(order)
             item['t6_id'] = self.people.registry.bound_entity('notion', order.page_id)
             item['project_id'] = refs.identity(order.project_id) or order.project_id
+            item['project_ids'] = [refs.identity(page) or page for page in order.project_ids]
             for field in ('assigned_ids', 'cc_ids', 'coordinator_ids', 'deliverable_ids'):
                 item[field] = [identity(page) for page in item[field]]
             return item
@@ -710,8 +816,7 @@ class VerbAPI:
             with self.open_notion(token) as client:
                 if noun == 'person':
                     from t6.notion.reads import ContactReader
-                    from t6.lookup import Index, Lookup
-                    from t6.cli_studio import _resolution
+                    from t6.cli_studio import _find_contacts
                     from uuid import UUID
                     contact_reader = ContactReader(client, self.data_sources['contacts'])
                     def contact(c: Any) -> dict[str, Any]:
@@ -719,9 +824,13 @@ class VerbAPI:
                         item['t6_id'] = self.people.registry.bound_entity('notion', c.page_id)
                         return item
                     if verb == 'list':
-                        return Done(result={'people': [contact(c) for c in contact_reader.list()]})
+                        people = [contact(c) for c in contact_reader.list()]
+                        return Done(result={'people': [c for c in people if inputs.registered is None or (c['t6_id'] is not None) == inputs.registered]})
                     if verb == 'find':
-                        return Done(result=_resolution(Lookup(Index(contacts=contact_reader.list())).contact(inputs.mention), contact))
+                        try:
+                            return Done(result=_find_contacts(contact_reader.list(), contact, inputs.mention, inputs.mentions, inputs.suggest, inputs.prefer_telegram))
+                        except ValueError as error:
+                            return Refused(rule='input', reason=str(error))
                     person = self.people.get(identity(inputs.person_id))
                     page = next((b['page_id'] for b in person['bindings'] if b['active']), None) if person else inputs.person_id
                     if not page:
@@ -814,9 +923,12 @@ class VerbAPI:
                                           assignee_id=record['assignee_id'], notes=record['notes'],
                                           state=record['state'], history=record['history'])
                         return Done(result={'job_order': result})
-                    orders = jo_reader.find_all_by_telegram_key(inputs.telegram_key) if verb == 'find' else jo_reader.list()
+                    orders = jo_reader.find_all_by_telegram_key(inputs.telegram_key) if verb == 'find' else jo_reader.list(oldest_first=bool(inputs.no_project))
                     if verb == 'list':
+                        if inputs.no_project and inputs.project:
+                            return Refused(rule='input', reason='Give project or no_project, not both')
                         orders = tuple(o for o in orders if (not inputs.project or same_project(o.project_id, inputs.project))
+                            and (not inputs.no_project or not o.project_id)
                             and (not inputs.assignee or any(normalize_page_id(identity(p)) == normalize_page_id(identity(inputs.assignee)) for p in o.assigned_ids))
                             and (not inputs.status_group or (is_active(o.status) if inputs.status_group == 'active' else status_group(o.status) == inputs.status_group)))
                     items = []
@@ -839,6 +951,11 @@ class VerbAPI:
                         and (inputs.title_prefix is None or n.name.startswith(inputs.title_prefix))
                         and (inputs.ready_to_send is None or (n.ready_to_send and n.sent_at is None) == inputs.ready_to_send))
                 notes = [n for n in notes if matches_note(n)]
+                if inputs.latest:
+                    def meeting_day(n: Any) -> Any:
+                        return n.meeting_date.date() if isinstance(n.meeting_date, datetime) else n.meeting_date
+                    dated = [n for n in notes if meeting_day(n) is not None]
+                    notes = [max(dated, key=lambda n: (meeting_day(n), n.last_edited.timestamp() if n.last_edited else 0))] if dated else []
                 def blocks(parent: str) -> list[dict[str, Any]]:
                     result = []
                     for block in client.list_block_children(parent):
@@ -860,7 +977,7 @@ class VerbAPI:
                 for note in notes:
                     item = asdict(note)
                     item['project_ids'] = [refs.identity(page) or page for page in note.project_ids]
-                    item['body'] = blocks(note.page_id)
+                    item['body'] = blocks(note.page_id) if inputs.include_body else []
                     items.append(item)
                 return Done(result={'meeting_notes': items})
         except (KeyError, ValueError, OSError, NotionError):
@@ -887,9 +1004,10 @@ class VerbAPI:
                 if (noun, verb) == ('jo', 'get'):
                     result = _get(client, sources['job_orders'], inputs.ref)
                 elif (noun, verb) == ('person', 'find'):
-                    result = _contacts_find(client, sources['contacts'], inputs.mention)
-                    for item in ([result['match']] if result['match'] else []) + result['candidates']:
-                        item['t6_id'] = self.people.registry.bound_entity('notion', item['id'])
+                    result = _contacts_find(client, sources['contacts'], inputs.mention, inputs.mentions, inputs.suggest, inputs.prefer_telegram)
+                    for found in result.get('results', [result]):
+                        for item in ([found['match']] if found['match'] else []) + found['candidates']:
+                            item['t6_id'] = self.people.registry.bound_entity('notion', item['id'])
                 elif (noun, verb) == ('project', 'resolve'):
                     result = _projects_resolve(client, sources['projects'], inputs.text,
                                                inputs.registry_db or Path(os.environ.get('T6_REGISTRY_DB', 't6-registry.sqlite')), inputs.in_text)

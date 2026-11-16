@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import os
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -37,7 +37,10 @@ def add_parsers(commands: Any) -> None:
             "the candidates for a person to choose. Fuzzy matching needs t6[lookup]."
         ),
     )
-    find.add_argument("mention", help="a name, @handle, alias or Telegram user ID")
+    find.add_argument("mention", nargs="?", help="a name, @handle, alias or Telegram user ID")
+    find.add_argument("--mention", dest="mentions", action="append", metavar="NAME", help="a name to find; repeat it to find several names in one call (instead of the positional mention)")
+    find.add_argument("--suggest", action="store_true", help="candidates are up to 3 suggestions, even after an exact match")
+    find.add_argument("--prefer-telegram", action="store_true", help="search the Contacts that have a Telegram ID first")
     data_sources(find)
     projects = commands.add_parser("projects", help="Project commands")
     projects_commands = projects.add_subparsers(dest="projects_command", required=True)
@@ -89,15 +92,16 @@ def run(args: argparse.Namespace, open_notion: Callable[[str], NotionClient]) ->
             return _fail(f"--data-sources has no '{source_key}' entry")
         with open_notion(token) as client:
             if args.command == "contacts":
-                result = _contacts_find(client, sources[source_key], args.mention)
+                result = _contacts_find(client, sources[source_key], args.mention, args.mentions, args.suggest, args.prefer_telegram)
                 if getattr(args, "person_lookup", False):
                     from t6.verbs import _people
                     try:
                         people = _people()
                     except ValueError:
                         people = None
-                    for item in ([result["match"]] if result["match"] else []) + result["candidates"]:
-                        item["t6_id"] = people.registry.bound_entity("notion", item["id"]) if people else None
+                    for found in result.get("results", [result]):
+                        for item in ([found["match"]] if found["match"] else []) + found["candidates"]:
+                            item["t6_id"] = people.registry.bound_entity("notion", item["id"]) if people else None
             else:
                 result = _projects_resolve(client, sources[source_key], args.text, args.registry_db, args.in_text)
     except (OSError, ValueError, ImportError, NotionError) as error:
@@ -132,7 +136,9 @@ def _project(project: Project) -> JSON:
     }
 
 
-def _resolution(found: Resolution[Any], describe: Callable[[Any], JSON]) -> JSON:
+def _resolution(
+    found: Resolution[Any], describe: Callable[[Any], JSON], candidates: Sequence[Candidate[Any]] | None = None
+) -> JSON:
     def candidate(item: Candidate[Any]) -> JSON:
         return {**describe(item.entity), "score": round(item.score, 3)}
 
@@ -142,16 +148,50 @@ def _resolution(found: Resolution[Any], describe: Callable[[Any], JSON]) -> JSON
         "score": round(found.score, 3),
         "needs_review": found.needs_review,
         "reason": found.reason,
-        "candidates": [candidate(item) for item in found.candidates],
+        "candidates": [candidate(item) for item in (found.candidates if candidates is None else candidates)],
     }
 
 
-def _contacts_find(client: NotionClient, data_source_id: str, mention: str) -> JSON:
+MAX_MENTIONS = 50
+
+
+def _find_contacts(
+    contacts: Sequence[Contact],
+    describe: Callable[[Any], JSON],
+    mention: str | None,
+    mentions: Sequence[str] | None,
+    suggest: bool,
+    prefer_telegram: bool,
+) -> JSON:
+    """One resolution for `mention`, or `{"results": [...]}`, one for each of `mentions` in order, over one `Index`."""
     from t6.lookup import Index, Lookup
+
+    if (mention is None) == (mentions is None):
+        raise ValueError("give exactly one of mention and mentions")
+    if mentions is not None and len(mentions) > MAX_MENTIONS:
+        raise ValueError(f"mentions holds at most {MAX_MENTIONS} names")
+    lookup = Lookup(Index(contacts=tuple(contacts)))
+    team = tuple(c.page_id for c in contacts if c.telegram_user_id is not None) if prefer_telegram else ()
+
+    def find(name: str) -> JSON:
+        return _resolution(lookup.contact(name, team=team), describe, lookup.suggest_contacts(name, team=team) if suggest else None)
+
+    if mention is not None:
+        return find(mention)
+    return {"results": [find(name) for name in mentions or ()]}
+
+
+def _contacts_find(
+    client: NotionClient,
+    data_source_id: str,
+    mention: str | None,
+    mentions: Sequence[str] | None = None,
+    suggest: bool = False,
+    prefer_telegram: bool = False,
+) -> JSON:
     from t6.notion.reads import ContactReader
 
-    lookup = Lookup(Index(contacts=ContactReader(client, data_source_id).list()))
-    return _resolution(lookup.contact(mention), _contact)
+    return _find_contacts(ContactReader(client, data_source_id).list(), _contact, mention, mentions, suggest, prefer_telegram)
 
 
 def _projects_resolve(client: NotionClient, data_source_id: str, text: str, registry_db: Path, in_text: bool = False) -> JSON:

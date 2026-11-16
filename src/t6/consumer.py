@@ -23,6 +23,7 @@ _HOST = re.compile(
     r"(?<![\w.-])(?:" + "|".join(f"(?P<{name.replace('.', '_')}>{pattern})" for name, pattern in _HOSTS.items()) + r")(?![\w-])",
     re.IGNORECASE,
 )
+_ALLOWED_T6 = ("t6.client", "t6.verbs")
 _ALLOWLIST = ".t6-consumer-allowlist.json"
 _CREDENTIAL = re.compile(
     r"(?<![A-Za-z0-9_])(?:(?:T6_)?NOTION_(?:API_KEY|TOKEN)|(?:OPENAI|ANTHROPIC|OPENROUTER|DEEPSEEK|GEMINI|GOOGLE|MISTRAL|GROQ|COHERE|XAI|AZURE_OPENAI)_(?:API_KEY|TOKEN|SECRET|CREDENTIALS|APPLICATION_CREDENTIALS|CLIENT_SECRET)|GOOGLE_APPLICATION_CREDENTIALS|GOOGLE_CLOUD_(?:API_KEY|CREDENTIALS))(?![A-Za-z0-9_])",
@@ -115,6 +116,13 @@ def apply_allowlist(root: Path, findings: list[Finding]) -> tuple[list[Finding],
     return findings, entries
 
 
+def _t6_refused(module: str) -> bool:
+    """True for ``t6`` or a ``t6`` submodule other than ``t6.client`` and ``t6.verbs`` (and their submodules)."""
+    if module != "t6" and not module.startswith("t6."):
+        return False
+    return not any(module == allowed or module.startswith(allowed + ".") for allowed in _ALLOWED_T6)
+
+
 def _docstring_nodes(tree: ast.AST) -> set[int]:
     found: set[int] = set()
     for node in ast.walk(tree):
@@ -133,12 +141,21 @@ def _scan(tree: ast.AST, file: str) -> list[Finding]:
             for alias in node.names:
                 if alias.name == "t6.notion" or alias.name.startswith("t6.notion.") or alias.name == "t6.llm" or alias.name.startswith("t6.llm."):
                     findings.append(Finding(file, node.lineno, "adapter-import", f"imports {alias.name}"))
+                elif _t6_refused(alias.name):
+                    findings.append(Finding(file, node.lineno, "t6-import", f"imports {alias.name}"))
         elif isinstance(node, ast.ImportFrom):
             module = node.module or ""
             if node.level == 0:
                 modules = [module] + [f"{module}.{alias.name}" for alias in node.names]
                 if any(m == "t6.notion" or m.startswith("t6.notion.") or m == "t6.llm" or m.startswith("t6.llm.") for m in modules):
                     findings.append(Finding(file, node.lineno, "adapter-import", f"imports from {module}"))
+                elif module == "t6":
+                    findings.extend(
+                        Finding(file, node.lineno, "t6-import", "imports t6" if alias.name == "*" else f"imports t6.{alias.name}")
+                        for alias in node.names if alias.name == "*" or _t6_refused(f"t6.{alias.name}")
+                    )
+                elif _t6_refused(module):
+                    findings.append(Finding(file, node.lineno, "t6-import", f"imports {module}"))
         elif isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:
             credential = _CREDENTIAL.search(node.value)
             if credential:

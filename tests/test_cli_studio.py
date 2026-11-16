@@ -114,6 +114,20 @@ class StudioCommandTests(unittest.TestCase):
         result = json.loads(out)
         self.assertEqual((result["match"], result["method"], result["candidates"]), (None, "none", []))
 
+    def test_contacts_find_takes_repeated_mention_and_the_suggest_and_telegram_flags(self) -> None:
+        status, out, _ = self.run_command(["person", "find", "--mention", "Ben Cruz", "--mention", "Ria", "--suggest", "--prefer-telegram"])
+        results = json.loads(out)["results"]
+        self.assertEqual(status, 0)
+        self.assertEqual([r["match"]["name"] for r in results], ["Ben Cruz", "Maria Santos"])
+        self.assertEqual(results[0]["candidates"][0]["name"], "Ben Cruz")
+
+    def test_contacts_find_needs_exactly_one_of_mention_and_mentions(self) -> None:
+        for argv in (["person", "find"], ["person", "find", "Ben Cruz", "--mention", "Ria"]):
+            with self.subTest(argv=argv):
+                status, _, err = self.run_command(argv)
+                self.assertEqual(status, 2)
+                self.assertIn("mention", err)
+
     def test_projects_resolve_a_code(self) -> None:
         status, out, _ = self.run_command(["project", "resolve", "ALP"])
         result = json.loads(out)

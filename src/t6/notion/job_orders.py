@@ -103,9 +103,10 @@ class JobOrders:
         )
         return tuple(self._order(JobOrdersRow.from_page(page), page) for page in rows)
 
-    def list(self) -> tuple[JobOrder, ...]:
-        """Every Job Order that is not trashed or archived, without bodies."""
-        pages = self._client.query_data_source(self._source)
+    def list(self, *, oldest_first: bool = False) -> tuple[JobOrder, ...]:
+        """Every Job Order that is not trashed or archived, without bodies; `oldest_first` sorts by creation."""
+        sorts = [{"timestamp": "created_time", "direction": "ascending"}] if oldest_first else None
+        pages = self._client.query_data_source(self._source, sorts=sorts)
         return tuple(self._order(JobOrdersRow.from_page(page), page) for page in pages if is_live(page))
 
     def create(self, fields: Mapping[str, Any], *, t6_id: str | None = None) -> JobOrder | Rejected | Ambiguous:
@@ -180,6 +181,7 @@ class JobOrders:
             **values,
             health=_health(row.health),
             project_id=row.projects[0] if row.projects else None,
+            project_ids=row.projects,
             **{name: getattr(row, attribute) for name, attribute in RELATIONS.items()},
             source_text=body,
             last_edited=page_edited(page),
@@ -187,9 +189,9 @@ class JobOrders:
 
 
 def _health(formula: JSON | None) -> str | None:
-    """The text Notion's Health formula computes, or None."""
+    """The text Notion's Health formula computes: "" when it computed an empty string, None when it gave no string."""
     value = (formula or {}).get("formula") or {}
-    return str(value["string"]) if value.get("type") == "string" and value.get("string") else None
+    return value["string"] if value.get("type") == "string" and isinstance(value.get("string"), str) else None
 
 
 def _blocks(text: str) -> list[JSON]:

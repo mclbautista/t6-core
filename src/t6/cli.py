@@ -683,7 +683,9 @@ def main(
         help="Check app imports, credentials and direct calls against ADR 0002",
         description=(
             "Scans the Python files under PATH. Prints {\"findings\": [{file, line, rule, detail}]} and exits 1 "
-            "if there are any. Run it in an app's CI (see the README)."
+            "if there are any. Rule t6-import refuses every import from the t6 package except t6.client and "
+            "t6.verbs (finding: \"imports t6.domain\"); it has no allow-list entry. "
+            "Run it in an app's CI (see the README)."
         ),
     )
     consumer.add_argument("path", type=Path, help="the app's directory (or one .py file)")

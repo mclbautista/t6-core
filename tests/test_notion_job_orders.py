@@ -93,6 +93,18 @@ class CreateAndReadTests(unittest.TestCase):
         self.assertIsInstance(order.department, Department)
         self.assertIsNone(order.health)
 
+    def test_a_blank_health_is_an_empty_string_and_a_missing_one_is_none(self) -> None:
+        def read(health: dict[str, Any] | None) -> JobOrder:
+            props: dict[str, Any] = {JobOrdersRow.notion_name("name"): {"type": "title", "title": [{"plain_text": "H"}]}}
+            if health is not None:
+                props[JobOrdersRow.notion_name("health")] = health
+            page = self.fake.add_page(JO, props)
+            return self.orders.get(page["id"])
+        self.assertEqual(read({"type": "formula", "formula": {"type": "string", "string": ""}}).health, "")
+        self.assertEqual(read({"type": "formula", "formula": {"type": "string", "string": "On track"}}).health, "On track")
+        self.assertIsNone(read({"type": "formula", "formula": {"type": "string", "string": None}}).health)
+        self.assertIsNone(read(None).health)
+
     def test_get_find_by_telegram_key_and_list(self) -> None:
         first = self.orders.create({"name": "A", "telegram_key": "k1", "source_text": "hello"})
         second = self.orders.create({"name": "B", "telegram_key": "k2"})

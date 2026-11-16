@@ -775,7 +775,7 @@ class SqliteProjectRegistry:
             current = db.execute('SELECT status FROM jo_state WHERE job_order_id = ?', (row[0],)).fetchone()
             current_status = current[0] if current else json.loads(row[7]).get('status') or 'Needs Intake Review'
             return {'current_status': current_status, 'jo_id': row[0], 'revision': row[1], 'done': row[2] is not None, 'operation': row[3],
-                    'started': bool(row[4]), 'page_id': page(row[0]), 'project_page': page(row[5]),
+                    'started': bool(row[4]), 'page_id': page(row[0]), 'project_id': row[5], 'project_page': page(row[5]),
                     'assignee_id': row[6], 'assignee_page': page(row[6]), 'fields': json.loads(row[7]), 'notes': notes, 'payload': json.loads(row[8])}
 
     def begin_jo_create(self, intent_id: int) -> bool:
