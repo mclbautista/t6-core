@@ -53,6 +53,20 @@ class VerbAPI:
                 for alias in verb.aliases:
                     self.routes['/v1/' + alias.replace(' ', '/')] = verb
 
+    def _data_gaps(self) -> dict[str, JsonValue]:
+        """Projects whose Notion row has no name: the page ids, never a name, for the operator to fix in Notion."""
+        token = os.environ.get('T6_NOTION_TOKEN')
+        if not token or not self.data_sources.get('projects'):
+            return {}
+        from t6.notion import NotionError
+        from t6.notion.reads import ProjectReader
+        try:
+            with self.open_notion(token) as client:
+                blank = sorted(p.page_id for p in ProjectReader(client, self.data_sources['projects']).list() if not p.name.strip())
+        except (NotionError, OSError) as error:
+            return {'data_gaps': {'unavailable': str(error)}}
+        return {'data_gaps': {'projects_without_name': {'count': len(blank), 'page_ids': list(blank)}}}
+
     def __call__(self, request: Request) -> Response:
         path = urlsplit(request.path).path
         if path == '/health':
@@ -62,7 +76,12 @@ class VerbAPI:
                 schema = db.execute('SELECT MAX(version) FROM schema_version').fetchone()[0]
             with self.queue._transaction() as db:
                 jobs = dict(db.execute('SELECT state, COUNT(*) FROM jobs GROUP BY state').fetchall())
-            return Response(200, {'version': version('t6'), 'schema_version': schema, 'jobs': jobs})
+            report: dict[str, JsonValue] = {'version': version('t6'), 'schema_version': schema, 'jobs': jobs}
+            auth = request.header('authorization')
+            supplied = auth[7:] if auth.lower().startswith('bearer ') else ''
+            if supplied and any(hmac.compare_digest(secret, supplied) for secret in self.secrets):
+                report.update(self._data_gaps())  # page ids are for a caller that holds a secret
+            return Response(200, report)
         auth = request.header('authorization')
         supplied = auth[7:] if auth.lower().startswith('bearer ') else ''
         actor = next((identity for secret, identity in self.secrets.items()

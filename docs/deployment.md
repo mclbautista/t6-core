@@ -119,6 +119,10 @@ An example client entry (made-up values):
   worker holds under a live lease, is not waiting. This is a problem now, not history:
   `--ignore-history` does not hide it.
 
+- `api.data_gaps.projects_without_name`: the count and the Notion page ids of Projects with
+  a blank name (a name is never shown). Fix each row in Notion. It is a data gap, not a failure:
+  it does not change the exit code. `project list` still answers such a Project, unchanged.
+
 Failed jobs and syncs are also listed under `history`. Two flags narrow the check for
 deploy tools and monitors:
 

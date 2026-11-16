@@ -63,6 +63,22 @@ class ReadTests(unittest.TestCase):
         assert isinstance(result, Done)
         self.assertEqual(result.result['projects'][1]['name'], 'Example Show')
 
+    def test_health_reports_projects_with_a_blank_name_as_a_data_gap_with_page_ids_only(self) -> None:
+        health = self.client.health()
+        assert isinstance(health, dict)
+        self.assertEqual(health['data_gaps'], {'projects_without_name': {'count': 0, 'page_ids': []}})
+        blank = self.notion.add_page('projects', {'Name': title('')})
+        spaces = self.notion.add_page('projects', {'Name': title('  ')})
+        after = self.client.health()
+        assert isinstance(after, dict)
+        gaps = after['data_gaps']['projects_without_name']
+        self.assertEqual(gaps['count'], 2)
+        self.assertEqual(sorted(gaps['page_ids']), sorted([blank['id'], spaces['id']]))
+        self.assertNotIn('Example Show', str(gaps))
+        anonymous = Client(f'http://127.0.0.1:{self.server.server_port}', '').health()
+        assert isinstance(anonymous, dict)
+        self.assertNotIn('data_gaps', anonymous)
+
     def test_project_list_returns_project_health_beside_health(self) -> None:
         from t6.verbs import ProjectListInput
         from t6.notion.generated import ProjectsRow

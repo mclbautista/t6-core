@@ -1995,6 +1995,9 @@ Person's permissions instead of the gateway's grants. The legacy `camera enrich`
 endpoint returns `refused` because it does not yet support signed preview and
 confirmation. `GET /health` reports the
 package version, database schema version and job counts by state.
+With a valid API secret it also reports `data_gaps`: `projects_without_name` has the count of
+Projects whose Notion row has no name and their page ids (never a name), so the operator can
+fix the row in Notion. `t6 health` shows it under `api`; it does not fail the check.
 
 For gateway tap delivery, bind its secret to `gateway` in `T6_API_SECRETS` and
 set the gateway's `t6core.push_url` to `http://<t6-api-lan-address>:8081/tap`.
