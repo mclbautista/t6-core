@@ -199,7 +199,7 @@ class PersonTests(unittest.TestCase):
                                   preview['plan']['idempotency_key'], '--confirm', preview['token'])
             self.assertEqual(result['outcome'], 'done')
             shown = self.command('person', 'get', '--person-id', person, '--data-sources', str(self.sources))
-            self.assertEqual('bookings' in shown['result']['permissions'], action == 'grant')
+            self.assertEqual('bookings' in shown['result']['person']['permissions'], action == 'grant')
 
     def test_cli_refuses_missing_and_unprivileged_identity(self) -> None:
         with self.registry._transaction() as db:

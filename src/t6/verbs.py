@@ -83,26 +83,7 @@ class DepartmentsOutput(BaseModel):
 
 
 def departments(inputs: LegacyDepartmentsInput, open_notion: Callable[..., Any]) -> Outcome:
-    from t6.cli import TOKEN_VARIABLE, _read_data_sources
-
-    try:
-        from t6.notion import NotionError
-    except ImportError:
-        return Refused(rule="notion", reason="departments needs the notion extra: pip install 't6[notion]'")
-    token = os.environ.get(TOKEN_VARIABLE)
-    if not token:
-        return Refused(rule="credentials", reason=f"set {TOKEN_VARIABLE} to a Notion integration token")
-    try:
-        sources = _read_data_sources(inputs.data_sources)
-        if "job_orders" not in sources:
-            return Refused(rule="data_sources", reason="--data-sources has no 'job_orders' entry")
-        from t6.notion.departments import get_departments
-
-        with open_notion(token) as client:
-            result = DepartmentsOutput(departments=[Department(id=d.option_id, name=d.name) for d in get_departments(client, sources["job_orders"])])
-        return Done(result=result)
-    except (OSError, ValueError, ImportError, NotionError) as error:
-        return Refused(rule="read", reason=str(error))
+    return Refused(rule="api", reason="Departments are read on the t6 API")
 
 
 class ActivityInput(BaseModel):
@@ -430,28 +411,7 @@ def person_permission(people: People, verb: str, inputs: PersonPermissionInput, 
 
 
 def person_get(inputs: LegacyPersonGetInput, open_notion: Callable[..., Any]) -> Outcome:
-    from t6.cli import TOKEN_VARIABLE
-    from t6.notion.contacts import Contacts
-    from uuid import UUID
-    try:
-        person = _people().get(inputs.person_id)
-        if person is None:
-            return Refused(rule="person", reason="Person not found")
-        token = os.environ.get(TOKEN_VARIABLE)
-        if not token:
-            return Refused(rule="credentials", reason=f"set {TOKEN_VARIABLE}")
-        from t6.cli import _read_data_sources
-        with open_notion(token) as client:
-            page = next(b["page_id"] for b in person["bindings"] if b["active"])
-            if len(page) == 32:
-                try:
-                    page = str(UUID(page))
-                except ValueError:
-                    pass
-            person["display_name"] = Contacts(client, _read_data_sources(inputs.data_sources)["contacts"]).get(page).name
-        return Done(result=person)
-    except (ValueError, OSError, KeyError, StopIteration) as error:
-        return Refused(rule="read", reason=str(error))
+    return Refused(rule="api", reason="Person reads run on the t6 API")
 
 
 class ApprovalRequestInput(BaseModel):
