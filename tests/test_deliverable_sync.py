@@ -37,6 +37,32 @@ class DeliverableSyncTests(SyncTestCase):
         self.assertEqual(DeliverablesRow.from_page(page).name, 'Ep01')
         self.assertEqual(len(self.client.query_data_source('deliverables')), 1)
 
+    def test_an_edited_code_reaches_the_notion_page_name(self) -> None:
+        project = self.new('SHOW', page=self.page())
+        self.drain()
+        self.notion.add_snapshot_data_source('deliverables', 'deliverables')
+        self.notion.add_property('deliverables', 'T6 ID', 'rich_text')
+        store = DeliverableStore(self.registry, PreviewTokens('secret'))
+        values = {'template': 'film', 'project': project['id'], 'code': 'Ep01', 'episode': None}
+        preview = store.define(values, actor='alice', idempotency_key='define')
+        assert isinstance(preview, Preview)
+        result = store.define(values, actor='alice', idempotency_key='define', confirm=preview.token)
+        assert isinstance(result, Done)
+        transport = InProcess(self.app)
+        projection = DeliverableProjection(self.client, RegistryClient(transport, WORKER_SECRET), 'deliverables')
+        worker = Worker(QueueClient(transport, WORKER_SECRET), 'main', {'deliverable.sync': projection.sync})
+        property_id = self.notion._data_sources['deliverables']['properties']['T6 ID']['id']
+        with patch('t6.notion.deliverable_projection.projection_id', return_value=property_id):
+            self.assertTrue(worker.run_once())
+            edit = {'deliverable': result.result['deliverable_id'], 'code': 'FTR', 'episode': None}
+            preview = store.edit(edit, actor='alice', idempotency_key='edit')
+            assert isinstance(preview, Preview)
+            assert isinstance(store.edit(edit, actor='alice', idempotency_key='edit', confirm=preview.token), Done)
+            self.assertTrue(worker.run_once())
+        record = store.get(result.result['deliverable_id'])
+        assert record is not None
+        self.assertEqual(DeliverablesRow.from_page(self.notion.page(record['bindings'][0]['page_id'])).name, 'FTR')
+
     def test_missing_snapshot_id_refuses(self) -> None:
         from t6.worker.client import WorkerJob
         from t6.worker.runner import Refused

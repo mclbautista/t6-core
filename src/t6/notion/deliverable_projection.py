@@ -88,6 +88,8 @@ class DeliverableProjection:
         current = self.notion.retrieve_page(page)
         current_status = DeliverablesRow.from_page(current).status
         properties: dict[str, Any] = {property_id: {'rich_text': [{'text': {'content': identifier}}]}}
+        if DeliverablesRow.from_page(current).name != state['code']:
+            properties[DeliverablesRow.notion_id('name') or 'title'] = {'title': [{'text': {'content': state['code']}}]}
         if current_status != state['status']:
             properties[status_id] = {'select': {'name': state['status']}}
         self.notion.update_page(page, {'properties': properties})
