@@ -23,8 +23,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, get_args, get_origin
 from types import UnionType
 
-from pydantic import BaseModel, Field, ConfigDict, field_validator
-from t6.domain import Project, JobOrder, Deliverable, MeetingNote, Contact, Camera, ExternalRef
+from pydantic import AwareDatetime, BaseModel, Field, ConfigDict, field_validator
+from t6.domain import Project, JobOrder, Deliverable, MeetingNote, Contact, Camera, ExternalRef, Machine, Ring
 from t6.vocabulary import DRIVE_ROLES, DriveRole, MediaKind, MediaRole
 from t6.llm.api import Done as Done, LLMRunInput as LLMRunInput, LLMRunOutput as LLMRunOutput
 
@@ -1425,6 +1425,64 @@ class MeetingNotesListOutput(BaseModel):
     meeting_notes: list[ReadMeetingNote]
 
 
+class MachineListInput(ReadInput):
+    pass
+
+
+class MachineListOutput(BaseModel):
+    machines: list[Machine]
+
+
+class MachineFactsInput(BaseModel):
+    """What is known about one Machine. A fact left out or blank is unknown and is never written."""
+
+    names: list[str]
+    serial_number: str | None = None
+    munki_manifest: str | None = None
+    ring: Ring | None = None
+    munki_client_version: str | None = None
+    last_check_in: AwareDatetime | None = None
+    os_version: str | None = None
+    observed_at: AwareDatetime | None = None
+
+    @field_validator("names")
+    @classmethod
+    def _named(cls, names: list[str]) -> list[str]:
+        if not any(name.strip() for name in names):
+            raise ValueError("a machine needs at least one name")
+        return names
+
+
+class MachineSyncInput(BaseModel):
+    machines: list[MachineFactsInput]
+    confirm: str | None = None
+
+
+class MachineFactChange(BaseModel):
+    fact: str
+    old: Any
+    new: Any
+
+
+class MachineFactSkipped(BaseModel):
+    fact: str
+    reason: Literal["unknown", "stale"]
+
+
+class MachineSyncResult(BaseModel):
+    name: str
+    status: Literal["matched", "unmatched", "ambiguous", "changed"]
+    page_id: str | None = None
+    changes: list[MachineFactChange] = []
+    skipped: list[MachineFactSkipped] = []
+    written: Literal["saved", "rejected", "ambiguous"] | None = None
+    detail: str | None = None
+
+
+class MachineSyncOutput(BaseModel):
+    machines: list[MachineSyncResult]
+
+
 def api_read(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
     return Refused(rule="api", reason="Reads run on the t6 API")
 
@@ -2197,6 +2255,8 @@ VERBS = (
     Verb("project", "list", "List Projects", (), ProjectListInput, ProjectListOutput, "reader", "Read Projects.", api_read, read_only=True),
     Verb("llm", "run", "Run an LLM task on the API", (), LLMRunInput, LLMRunOutput, "llm", "Server policy and masking apply.", llm_api_only),
     Verb("person", "add", "Register a Person", (), PersonAddInput, PersonWriteOutput, "operator", "A page belongs to one Person.", person_write),
+    Verb("machine", "list", "List the Machines and their fleet facts", (), MachineListInput, MachineListOutput, "reader", "Read the Bays rows as Machines.", api_read, read_only=True),
+    Verb("machine", "sync", "Write fleet facts to the Machines' Bays rows", (), MachineSyncInput, MachineSyncOutput, "fleet", "Preview each Machine's row and old and new facts, then confirm. Never creates a row.", api_write),
     Verb("person", "create", "Create a Contact and register the Person", (), PersonCreateInput, PersonCreateOutput, "operator", "For someone with no Contacts page yet; an active Person uniquely holds a Telegram ID.", api_write),
     Verb("person", "rebind", "Bind a replacement Contacts page", (), PersonRebindInput, PersonWriteOutput, "operator", "A page belongs to one Person.", person_write),
     Verb("person", "set-telegram", "Set a Person Telegram ID", (), PersonTelegramInput, PersonWriteOutput, "operator", "An active Person uniquely holds a Telegram ID.", person_write),
@@ -2664,6 +2724,12 @@ def add_parsers(commands: Any) -> None:
             for name in ('person_id', 'project', 'role'):
                 parser.add_argument(name)
             parser.add_argument('--idempotency-key')
+            parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.input_model is MachineSyncInput:
+            parser.add_argument('--machine', dest='machines', action='append', type=json.loads, required=True, metavar='JSON',
+                                help='One Machine\'s facts as a JSON object; repeat for more')
             parser.add_argument('--confirm')
             parser.set_defaults(registered_verb=entry)
             continue

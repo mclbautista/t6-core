@@ -27,7 +27,7 @@ CALENDAR_ACTOR = 'google-calendar'  # inbound Google Calendar edits (#270): Goog
 FRAMEIO_ACTOR = 'frameio'  # Frame.io events (#275): a file landing in a Deliverable's folder, a client viewing a share. It writes its own rows and runs no verb
 INTERNAL_ACTORS: Mapping[str, frozenset[str]] = {CALENDAR_ACTOR: frozenset({'bookings'}), FRAMEIO_ACTOR: frozenset()}
 
-PERMISSIONS = frozenset({"operator", "coordinator", "bookings", "drives", "admin", "llm"})
+PERMISSIONS = frozenset({"operator", "coordinator", "bookings", "drives", "admin", "llm", "fleet"})
 STAFF_RULE = "role:staff"
 """An allowed-tapper rule: any active staff Person (a kind, not a permission, so it is not in `PERMISSIONS`)."""
 
