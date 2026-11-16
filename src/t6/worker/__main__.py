@@ -15,6 +15,7 @@ from urllib.error import URLError
 
 from t6.domain.events import JobKind, JsonValue
 from t6.frameio.readapi import ReadApi
+from t6.frameio.project_folders import FrameioProjectWriter, QueueFrameioWriter
 from t6.frameio.requests import FrameioRequest, ShareLinks, ask
 from t6.media_links import MediaLinks
 from t6.frameio.worker import ArmReviewTimer, FrameioWorker, Run, Tokens
@@ -231,6 +232,7 @@ def configured_handlers(
         handlers.update(sharing_calendar_handlers(environ))
         if environ.get("T6_PREVIEW_SIGNING_KEY"):
             handlers["project_start.preview"] = project_start_handler(environ)
+            handlers["project_start.apply"] = project_start_apply_handler(environ, QueueFrameioWriter(QueueClient(transport, settings.secret)))
         else:
             print(
                 "t6.worker: `project start` plans are off: set T6_PREVIEW_SIGNING_KEY (the API's preview signing key) to turn them on",
@@ -306,6 +308,21 @@ def project_start_handler(environ: Mapping[str, str]) -> Handler:
 
     store = ProjectStartStore(SqliteProjectRegistry(environ["T6_DATABASE"]), PreviewTokens(environ["T6_PREVIEW_SIGNING_KEY"]), project_type, project_name)
     return lambda job: store.run_preview(job.payload)
+
+
+def project_start_apply_handler(environ: Mapping[str, str], frameio: FrameioProjectWriter) -> Handler:
+    """`project_start.apply` (an internal job, queued when the Approval of a waiting Start is granted): applies the Start.
+
+    It opens the t6 database, so it is the main worker's, and it asks the Frame.io worker through the `frameio` queue
+    (the main worker's own grant, as for review asks). The plan is not read again from Notion: the confirmed plan
+    carries the Project Type's template and the Project's name.
+    """
+    from t6.preview import PreviewTokens
+    from t6.project_start import ProjectStartStore
+    from t6.registry.sqlite import SqliteProjectRegistry
+
+    store = ProjectStartStore(SqliteProjectRegistry(environ["T6_DATABASE"]), PreviewTokens(environ["T6_PREVIEW_SIGNING_KEY"]))
+    return lambda job: store.run_apply(job.payload, frameio)
 
 
 def booking_calendar_handler(environ: Mapping[str, str]) -> Handler:

@@ -575,7 +575,8 @@ class UnlinkedActivityTests(MainWorkerCase):
         api = VerbAPI(self.people, self.queue, {'person': self.operator_person}, lambda _: None, self.app)
         api.frameio = Writer()  # type: ignore[assignment]  # the Frame.io worker's answer; the queue to it is not what is tested here
         store = ProjectStartStore(self.registry, self.people.tokens, lambda page: 'Feature Film', lambda page: 'Start Show')
-        planner = Worker(InternalQueueClient(self.inside), 'main', {'project_start.preview': lambda job: store.run_preview(job.payload)})
+        planner = Worker(InternalQueueClient(self.inside), 'main', {'project_start.preview': lambda job: store.run_preview(job.payload),
+                                                                    'project_start.apply': lambda job: store.run_apply(job.payload, Writer())})
         headers = {'Authorization': 'Bearer person'}
 
         def post(values: dict[str, Any]) -> dict[str, Any]:
@@ -591,7 +592,18 @@ class UnlinkedActivityTests(MainWorkerCase):
             preview = post({'project': project, 'job': started['result']['job_id']})
             self.assertEqual(preview['outcome'], 'preview', preview)
             done = post({**values, 'idempotency_key': 'start-e2e', 'confirm': preview['token']})
-        self.assertEqual(done['outcome'], 'done', done)
+            self.assertEqual(done['outcome'], 'done', done)
+            self.assertEqual(done['result']['state'], 'waiting_for_approval')
+            self.drain()
+            self.assertEqual((len(self.reviews()), bool(self.waiting_rows('fp-1'))), (0, True))  # the Frame.io step waits for the Approval
+            from t6.approval import Approvals
+            approvals = Approvals(self.registry, self.people.tokens)
+            grant = approvals.write('grant', {'approval': done['result']['approval_id']}, actor=self.operator_person, idempotency_key='grant')
+            assert isinstance(grant, Preview)
+            self.assertIsInstance(approvals.write('grant', {'approval': done['result']['approval_id']}, actor=self.operator_person, idempotency_key='grant',
+                                                  confirm=grant.token), Done)
+            while planner.run_once():
+                pass
         self.drain()
         self.assertEqual((len(self.reviews()), self.waiting_rows('fp-1')), (1, []))
 

@@ -8,6 +8,7 @@ from typing import Any
 from unittest.mock import patch
 
 from cli_api_fake import client_patch
+from t6.approval import Approvals
 from t6.bay import BayStore
 from t6.frameio import CreateProjectFolders, Failed
 from t6.frameio.api import FrameioApi
@@ -95,7 +96,8 @@ class ProjectStartTests(unittest.TestCase):
                       frameio=self.writer if frameio == 'default' else frameio)
 
     def work(self) -> None:
-        worker = Worker(InternalQueueClient(self.queue), 'main', {'project_start.preview': lambda job: self.store.run_preview(job.payload)})
+        worker = Worker(InternalQueueClient(self.queue), 'main', {'project_start.preview': lambda job: self.store.run_preview(job.payload),
+                                                                  'project_start.apply': lambda job: self.store.run_apply(job.payload, self.writer)})
         while worker.run_once():
             pass
 
@@ -104,6 +106,31 @@ class ProjectStartTests(unittest.TestCase):
         assert isinstance(started, Done), started
         self.work()
         return self.call({'project': self.project, 'job': started.result['job_id']}, actor)
+
+    def decide(self, verb: str, approval: str, actor: str = 'lead', reason: str = 'no') -> Any:
+        """Grant or deny an Approval through the `approval` verbs, as the operator card does."""
+        entry = next(e for e in VERBS if (e.noun, e.verb) == ('approval', verb))
+        values = {'approval': approval, 'idempotency_key': f'{verb}-{approval}', **({'reason': reason} if verb == 'deny' else {})}
+        preview = invoke(entry, entry.input_model.model_validate(values), actor=actor, people=self.people, open_notion=lambda _: None)
+        assert isinstance(preview, Preview), preview
+        return invoke(entry, entry.input_model.model_validate({**values, 'confirm': preview.token}), actor=actor, people=self.people, open_notion=lambda _: None)
+
+    def request(self, key: str = 'start') -> dict[str, Any]:
+        """The confirm payload of a previewed Start; confirming it requests the Approval."""
+        return {**self.values, 'idempotency_key': key, 'confirm': self.preview(key=key).token}
+
+    def granted(self, confirm: dict[str, Any]) -> Any:
+        """Confirm, grant the Approval and let the worker apply the Start; the result is what a retried confirm reads."""
+        waiting = self.call(confirm)
+        assert isinstance(waiting, Done), waiting
+        self.assertIsInstance(self.decide('grant', waiting.result['approval_id']), Done)
+        self.work()
+        return self.read(confirm['idempotency_key'])
+
+    def read(self, key: str = 'start') -> Any:
+        """The Start's state by the job result read (a retried confirm of a failed Start applies it again)."""
+        job = next(j for j in self.queue.find('project_start.preview') if j.dedupe_key == f'starter:{key}')
+        return self.call({'project': self.project, 'job': job.job_id})
 
     def count(self, table: str) -> int:
         with self.registry._transaction() as db:
@@ -139,28 +166,119 @@ class ProjectStartTests(unittest.TestCase):
         self.assertEqual(steps[7]['bookings'][0]['bay_id'], self.bays[0])
         self.assertEqual(self.count('deliverables'), 0)
 
-    def test_confirm_creates_each_t6_step_once_and_a_retry_changes_nothing(self) -> None:
-        preview = self.preview()
-        confirm = {**self.values, 'idempotency_key': 'start', 'confirm': preview.token}
+    def test_confirm_makes_the_approval_and_the_waiting_start_and_applies_nothing_else(self) -> None:
+        confirm = self.request()
+        done = self.call(confirm)
+        assert isinstance(done, Done), done
+        self.assertEqual((done.result['state'], done.result['project_id'], done.result['idempotency_key']), ('waiting_for_approval', self.project, 'start'))
+        self.assertTrue(done.result['approval_id'].startswith('t6a_'))
+        self.assertEqual((self.count('approvals'), self.count('deliverables'), self.count('media_locations'), self.count('bookings'), self.count('project_starts')), (1, 0, 0, 0, 1))
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute('SELECT gate, state, target FROM approvals').fetchone(), ('project start', 'requested', self.project))
+        self.assertEqual((self.writer.calls, self.frameio.requests, self.count('used_preview_tokens'), self.count('internal_jobs')), ([], [], 1, 1))  # the plan job only
+        self.assertIn(('project_start_requested', 'project start requested'), [(i.action, i.summary) for i in self.registry.activity(self.project)])
+        self.assertEqual(self.call(confirm), done)  # a retried confirm reads the state and makes nothing new
+        self.assertEqual((self.count('approvals'), self.count('project_starts')), (1, 1))
+
+    def test_granting_applies_the_start_once_with_the_result_confirm_gave_before(self) -> None:
+        confirm = self.request()
+        waiting = self.call(confirm)
+        assert isinstance(waiting, Done)
+        self.assertEqual(waiting.result['state'], 'waiting_for_approval')
+        self.assertIsInstance(self.decide('grant', waiting.result['approval_id']), Done)
+        self.assertEqual((self.count('deliverables'), self.writer.calls), (0, []))  # granted, not yet applied
+        self.assertEqual(self.call(confirm).result['state'], 'applying')
+        self.work()
         done = self.call(confirm)
         assert isinstance(done, Done), done
         self.assertEqual((self.count('approvals'), self.count('deliverables'), self.count('media_locations'), self.count('bookings')), (1, 2, 5, 1))
+        self.assertEqual((done.result['state'], done.result['approval_id']), ('applied', waiting.result['approval_id']))
         self.assertEqual(len(done.result['deliverable_ids']), 2)
-        self.assertTrue(done.result['approval_id'].startswith('t6a_'))
         with self.registry._transaction() as db:
-            self.assertEqual(db.execute('SELECT gate, state, target FROM approvals').fetchone(), ('project start', 'requested', self.project))
             self.assertEqual({r[0] for r in db.execute('SELECT template FROM deliverable_templates')}, {'film'})
+            self.assertEqual(db.execute("SELECT actor FROM audit WHERE action='project_start'").fetchall(), [('starter',)])  # the Person who confirmed
         used = self.count('used_preview_tokens')
         self.assertEqual(done, self.call(confirm))
-        self.assertEqual((self.count('approvals'), self.count('deliverables'), self.count('media_locations'), self.count('bookings')), (1, 2, 5, 1))
         self.assertEqual(self.count('used_preview_tokens'), used)
+        started = self.call({'project': self.project, 'job': next(j.job_id for j in self.queue.find('project_start.preview'))})  # the job result read
+        self.assertEqual(started, done)
+
+    def test_the_apply_job_run_twice_gives_one_set_of_records(self) -> None:
+        done = self.confirm()
+        counts = (self.count('deliverables'), self.count('media_locations'), self.count('bookings'), self.count('audit'), self.count('activity'))
+        again = self.store.run_apply({'key': 'start'}, self.writer)
+        self.assertEqual(again['state'], 'applied')
+        self.assertEqual((self.count('deliverables'), self.count('media_locations'), self.count('bookings'), self.count('audit'), self.count('activity')), counts)
+        self.assertEqual(len(self.writer.calls), 1)
+        self.assertEqual(done.result['state'], 'applied')
+
+    def test_denying_the_approval_applies_nothing_and_lets_a_new_start_begin(self) -> None:
+        confirm = self.request()
+        waiting = self.call(confirm)
+        assert isinstance(waiting, Done)
+        other = self.preview(key='other')
+        assert isinstance(other, Refused)
+        self.assertEqual(other.rule, 'project_started')
+        self.assertIn('waits for its Approval', other.reason)
+        self.assertIsInstance(self.decide('deny', waiting.result['approval_id'], reason='not yet'), Done)
+        self.work()
+        denied = self.call(confirm)
+        assert isinstance(denied, Done)
+        self.assertEqual((denied.result['state'], denied.result['reason']), ('denied', 'not yet'))
+        self.assertEqual((self.count('deliverables'), self.count('media_locations'), self.count('bookings'), self.writer.calls), (0, 0, 0, []))
+        self.assertIn(('project_start_denied', 'project start denied: not yet'), [(i.action, i.summary) for i in self.registry.activity(self.project)])
+        done = self.confirm('again')
+        assert isinstance(done, Done), done
+        self.assertEqual((done.result['state'], self.count('deliverables')), ('applied', 2))
+
+    def test_granting_an_approval_of_another_gate_queues_nothing(self) -> None:
+        from t6.approval import Approvals
+        approvals = Approvals(self.registry, self.people.tokens)
+        preview = approvals.write('request', {'gate': 'grade', 'target': self.project}, actor='starter', idempotency_key='grade')
+        assert isinstance(preview, Preview)
+        made = approvals.write('request', {'gate': 'grade', 'target': self.project}, actor='starter', idempotency_key='grade', confirm=preview.token)
+        assert isinstance(made, Done)
+        self.assertIsInstance(self.decide('grant', made.result['approval_id']), Done)
+        self.assertEqual(self.count('internal_jobs'), 0)
+
+    def test_a_plan_that_changed_between_confirm_and_grant_applies_nothing_and_records_the_failure(self) -> None:
+        confirm = self.request()
+        waiting = self.call(confirm)
+        assert isinstance(waiting, Done)
+        self.define('Ep01')
+        self.decide('grant', waiting.result['approval_id'])
+        self.work()
+        failed = self.read()
+        assert isinstance(failed, Done)
+        self.assertEqual(failed.result['state'], 'failed')
+        self.assertTrue(failed.result['reason'].startswith('deliverable_code:'))
+        self.assertEqual((self.count('deliverables'), self.count('media_locations'), self.count('bookings'), self.writer.calls), (1, 0, 0, []))
+        entries = [(i.action, i.summary) for i in self.registry.activity(self.project)]
+        self.assertIn(('project_start_failed', 'project start failed: ' + failed.result['reason']), entries)
+        self.assertNotIn('project_start', [action for action, _ in entries])
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute("SELECT actor FROM audit WHERE action='project_start_failed'").fetchall(), [('starter',)])
+
+    def test_a_project_archived_at_grant_time_is_refused_as_failed(self) -> None:
+        confirm = self.request()
+        waiting = self.call(confirm)
+        assert isinstance(waiting, Done)
+        with self.registry._transaction() as db:
+            db.execute('INSERT INTO project_archives VALUES (?)', (self.project,))
+        self.decide('grant', waiting.result['approval_id'])
+        self.work()
+        failed = self.read()
+        assert isinstance(failed, Done)
+        self.assertEqual(failed.result['state'], 'failed')
+        self.assertIn('project_archived', failed.result['reason'])
+        self.assertEqual((self.count('deliverables'), self.writer.calls), (0, []))
 
     def locations(self, kind: str) -> list[tuple[str, str, str]]:
         with self.registry._transaction() as db:
             return [tuple(r) for r in db.execute('SELECT owner_id, ref, role FROM media_locations WHERE kind=? AND active=1 ORDER BY ref', (kind,))]
 
     def confirm(self, key: str = 'start') -> Any:
-        return self.call({**self.values, 'idempotency_key': key, 'confirm': self.preview(key=key).token})
+        return self.granted(self.request(key))
 
     def test_confirm_makes_one_frameio_project_and_one_folder_per_deliverable_and_records_them(self) -> None:
         done = self.confirm()
@@ -180,17 +298,18 @@ class ProjectStartTests(unittest.TestCase):
         self.assertEqual(self.writer.calls, [(self.project, 'Show', ('Ep01', 'Ep02'))])
 
     def test_a_repeated_confirm_creates_nothing_new_in_frameio_or_t6(self) -> None:
-        preview = self.preview()
-        confirm = {**self.values, 'idempotency_key': 'start', 'confirm': preview.token}
-        first = self.call(confirm)
+        confirm = self.request()
+        first = self.granted(confirm)
         posts, media = len(self.frameio.posts), self.count('media_locations')
         self.assertEqual(self.call(confirm), first)
         self.assertEqual((len(self.frameio.posts), self.count('media_locations'), len(self.writer.calls)), (posts, media, 1))
 
-    def test_a_crash_between_the_frameio_call_and_the_t6_record_creates_no_duplicate_on_retry(self) -> None:
+    def test_a_crash_between_the_frameio_call_and_the_t6_record_creates_no_duplicate_when_the_job_runs_again(self) -> None:
         from t6.media import MediaStore
-        preview = self.preview()
-        confirm = {**self.values, 'idempotency_key': 'start', 'confirm': preview.token}
+        confirm = self.request()
+        waiting = self.call(confirm)
+        assert isinstance(waiting, Done)
+        self.decide('grant', waiting.result['approval_id'])
         real = MediaStore.write
 
         def crash(store: Any, verb: str, values: dict[str, Any], **kwargs: Any) -> Any:
@@ -199,13 +318,12 @@ class ProjectStartTests(unittest.TestCase):
             return real(store, verb, values, **kwargs)
 
         with patch.object(MediaStore, 'write', crash), self.assertRaises(RuntimeError):
-            self.call(confirm)
+            self.store.run_apply({'key': 'start'}, self.writer)
         project = next(iter(self.frameio.projects.values()))
         made = len(self.frameio.posts)
         self.assertEqual(made, 3)  # one project and two folders
         self.assertEqual(self.locations('frameio-folder'), [])
-        done = self.call(confirm)
-        assert isinstance(done, Done), done
+        self.assertEqual(self.store.run_apply({'key': 'start'}, self.writer)['state'], 'applied')
         self.assertEqual((len(self.frameio.projects), len(self.frameio.posts)), (1, made))
         self.assertEqual(self.locations('frameio-project')[0][1], project['id'])
         self.assertEqual(len(self.locations('frameio-folder')), 2)
@@ -238,8 +356,8 @@ class ProjectStartTests(unittest.TestCase):
         return self.count('approvals'), self.count('deliverables')
 
     def test_a_finished_confirm_retried_with_its_key_after_the_token_expired_returns_the_first_result(self) -> None:
-        confirm = {**self.values, 'idempotency_key': 'start', 'confirm': self.preview().token}
-        first = self.call(confirm)
+        confirm = self.request()
+        first = self.granted(confirm)
         assert isinstance(first, Done)
         self.later(16 * 60)
         self.assertEqual(self.call(confirm), first)
@@ -252,51 +370,53 @@ class ProjectStartTests(unittest.TestCase):
         assert isinstance(refused, Refused)
         self.assertEqual((refused.rule, self.totals()), ('token_expired', (0, 0)))
 
-    def test_a_start_that_stopped_halfway_is_finished_with_its_key_after_the_token_expired(self) -> None:
-        confirm = {**self.values, 'idempotency_key': 'start', 'confirm': self.preview().token}
+    def crashed_apply(self, confirm: dict[str, Any]) -> None:
+        """Confirm and grant, then let the apply die when it records the Frame.io folders."""
+        waiting = self.call(confirm)
+        assert isinstance(waiting, Done)
+        self.decide('grant', waiting.result['approval_id'])
         with self.crash_at_folders(), self.assertRaises(RuntimeError):
-            self.call(confirm)
+            self.store.run_apply({'key': confirm['idempotency_key']}, self.writer)
+
+    def test_a_start_that_stopped_halfway_is_finished_by_the_job_after_the_token_expired(self) -> None:
+        confirm = self.request()
+        self.crashed_apply(confirm)
         self.assertEqual(self.totals(), (1, 2))
         self.later(16 * 60)
+        self.assertEqual(self.call(confirm).result['state'], 'applying')
+        self.work()  # the job is still queued: it finishes the Start with the plan it began with
         done = self.call(confirm)
         assert isinstance(done, Done), done
         self.assertEqual((self.totals(), len(self.locations('frameio-folder')), len(self.frameio.projects)), ((1, 2), 2, 1))
         self.assertEqual(self.call(confirm), done)
         self.assertEqual(self.totals(), (1, 2))
 
-    def test_a_start_counts_as_begun_only_by_its_own_project_start_approval_made_under_its_key(self) -> None:
-        from t6.approval import Approvals
-        confirm = {**self.values, 'idempotency_key': 'start', 'confirm': self.preview().token}
-        other = Approvals(self.registry, self.people.tokens)  # an Approval for another gate, made under a key that merely looks like the Start's
-        preview = other.write('request', {'gate': 'grade', 'target': self.project}, actor='starter', idempotency_key='start:approval')
-        assert isinstance(preview, Preview)
-        self.assertIsInstance(other.write('request', {'gate': 'grade', 'target': self.project}, actor='starter',
-                                          idempotency_key='start:approval', confirm=preview.token), Done)
-        self.later(16 * 60)
-        refused = self.call(confirm)
-        assert isinstance(refused, Refused)
-        self.assertEqual(refused.rule, 'token_expired')
+    def test_a_resumed_start_is_not_refused_by_its_own_deliverables(self) -> None:
+        self.crashed_apply(self.request())
+        self.assertEqual(self.totals(), (1, 2))  # Ep01 and Ep02 now exist, made by this key
+        self.assertEqual(self.store.run_apply({'key': 'start'}, self.writer)['state'], 'applied')
+        self.assertEqual(self.totals(), (1, 2))
 
     def test_a_start_that_stopped_halfway_is_not_resumed_on_an_archived_project(self) -> None:
         from t6.project_writes import ProjectWrites
-        confirm = {**self.values, 'idempotency_key': 'start', 'confirm': self.preview().token}
-        with self.crash_at_folders(), self.assertRaises(RuntimeError):
-            self.call(confirm)
+        confirm = self.request()
+        self.crashed_apply(confirm)
         writes = ProjectWrites(self.registry, self.people.tokens)
         archive = writes.run('archive', self.project, None, actor='lead', idempotency_key='archive')
         assert isinstance(archive, Preview)
         self.assertIsInstance(writes.run('archive', self.project, None, actor='lead', idempotency_key='archive', confirm=archive.token), Done)
         self.later(16 * 60)
-        refused = self.call(confirm)
+        self.assertEqual(self.store.run_apply({'key': 'start'}, self.writer)['rule'], 'project_archived')
+        failed = self.read()
+        assert isinstance(failed, Done)
+        self.assertEqual(failed.result['state'], 'failed')
+        refused = self.call(confirm)  # a retry of an archived Project's Start is refused too
         assert isinstance(refused, Refused)
-        self.assertEqual(refused.rule, 'project_archived')
-        self.assertEqual(self.totals(), (1, 2))
+        self.assertEqual((refused.rule, self.totals()), ('project_archived', (1, 2)))
 
-    def test_a_different_key_for_a_project_whose_start_has_begun_is_refused_at_preview_and_at_confirm(self) -> None:
-        first = {**self.values, 'idempotency_key': 'start', 'confirm': self.preview().token}
-        second = {**self.values, 'idempotency_key': 'other', 'confirm': self.preview(key='other').token}  # both planned before either ran
-        with self.crash_at_folders(), self.assertRaises(RuntimeError):
-            self.call(first)
+    def test_a_second_start_is_refused_while_the_first_waits_or_has_not_finished(self) -> None:
+        first, second = self.request(), self.request('other')  # both planned before either was confirmed
+        self.crashed_apply(first)
         refused = self.call(second)
         assert isinstance(refused, Refused)
         self.assertEqual(refused.rule, 'project_started')
@@ -304,32 +424,36 @@ class ProjectStartTests(unittest.TestCase):
         assert isinstance(again, Refused)
         self.assertEqual(again.rule, 'project_started')
         self.assertEqual(self.totals(), (1, 2))
-        self.later(16 * 60)
-        self.assertIsInstance(self.call(first), Done)
-        self.assertEqual(self.totals(), (1, 2))
+        self.assertEqual(self.store.run_apply({'key': 'start'}, self.writer)['state'], 'applied')
         other = self.call(second)
         assert isinstance(other, Refused)
         self.assertEqual(self.totals(), (1, 2))
 
-    def test_a_frameio_failure_refuses_the_confirm_and_changes_nothing_in_t6_so_a_retry_works(self) -> None:
-        preview = self.preview()
-        confirm = {**self.values, 'idempotency_key': 'start', 'confirm': preview.token}
+    def test_a_frameio_failure_at_grant_fails_the_start_and_a_retried_confirm_applies_it_once(self) -> None:
+        confirm = self.request()
         self.writer.failure = Failed('no answer from the Frame.io worker within 60 seconds')
-        refused = self.call(confirm)
-        assert isinstance(refused, Refused)
-        self.assertEqual(refused.rule, 'frameio')
-        self.assertIn('no answer', refused.reason)
-        self.assertEqual((self.count('approvals'), self.count('deliverables'), self.count('media_locations'), self.count('used_preview_tokens')), (0, 0, 0, 0))
+        failed = self.granted(confirm)
+        assert isinstance(failed, Done)
+        self.assertEqual(failed.result['state'], 'failed')
+        self.assertIn('frameio', failed.result['reason'])
+        self.assertIn('no answer', failed.result['reason'])
+        self.assertEqual((self.count('approvals'), self.count('deliverables'), self.count('media_locations'), self.count('bookings')), (1, 0, 0, 0))
+        self.assertIn('project start failed', ' '.join(i.summary for i in self.registry.activity(self.project)))
+        self.assertEqual(self.read(), failed)
         self.writer.failure = None
-        self.assertIsInstance(self.call(confirm), Done)
-        self.assertEqual((len(self.frameio.projects), self.count('media_locations')), (1, 5))
+        done = self.call(confirm, frameio=self.writer)  # retry: the same key and token, no second Approval
+        assert isinstance(done, Done), done
+        self.assertEqual(done.result['state'], 'applied')
+        self.assertEqual((self.count('approvals'), self.count('deliverables'), self.count('media_locations'), self.count('bookings'), len(self.frameio.projects)), (1, 2, 5, 1, 1))
+        self.assertEqual(self.call(confirm), done)
 
-    def test_with_no_frameio_worker_configured_confirm_is_refused_and_changes_nothing(self) -> None:
-        preview = self.preview()
-        refused = self.call({**self.values, 'idempotency_key': 'start', 'confirm': preview.token}, frameio=None)
+    def test_retrying_a_failed_start_needs_the_frameio_worker_in_the_process(self) -> None:
+        confirm = self.request()
+        self.writer.failure = Failed('down')
+        self.granted(confirm)
+        refused = self.call(confirm, frameio=None)
         assert isinstance(refused, Refused)
-        self.assertEqual(refused.rule, 'config')
-        self.assertEqual((self.count('approvals'), self.count('media_locations')), (0, 0))
+        self.assertEqual((refused.rule, self.count('deliverables')), ('config', 0))
 
     def test_no_share_is_created_and_nothing_is_uploaded(self) -> None:
         self.confirm()
@@ -361,8 +485,7 @@ class ProjectStartTests(unittest.TestCase):
     def test_a_project_already_linked_by_hand_keeps_its_frameio_project_and_gets_only_folders(self) -> None:
         self.frameio.add_project('fp-hand', 'A Different Name')
         self.link_by_hand(self.project, 'fp-hand')
-        preview = self.preview()
-        done = self.call({**self.values, 'idempotency_key': 'start', 'confirm': preview.token})
+        done = self.confirm()
         assert isinstance(done, Done), done
         self.assertEqual(len(self.frameio.projects), 1)
         self.assertEqual(sorted(f['name'] for f in self.frameio.folders['root-fp-hand']), ['Ep01', 'Ep02'])
@@ -383,7 +506,7 @@ class ProjectStartTests(unittest.TestCase):
         self.assertEqual(refused.rule, 'token_mismatch')
 
     def test_activity_records_the_start_and_each_manual_step(self) -> None:
-        done = self.call({**self.values, 'idempotency_key': 'start', 'confirm': self.preview().token})
+        done = self.confirm()
         assert isinstance(done, Done)
         entries = [(i.action, i.summary) for i in self.registry.activity(self.project) if i.action.startswith('project_start')]
         self.assertIn(('project_start', 'project started'), entries)
@@ -411,7 +534,7 @@ class ProjectStartTests(unittest.TestCase):
         self.assertEqual(self.count('approvals'), 0)
 
     def test_a_started_project_is_refused_a_second_start(self) -> None:
-        self.call({**self.values, 'idempotency_key': 'start', 'confirm': self.preview().token})
+        self.confirm()
         second = self.preview(key='again')
         assert isinstance(second, Refused)
         self.assertEqual(second.rule, 'project_started')
@@ -480,16 +603,6 @@ class ProjectStartTests(unittest.TestCase):
         assert isinstance(refused, Refused)
         self.assertEqual(refused.rule, 'deliverable_code')
         self.assertEqual((self.count('approvals'), self.count('deliverables'), len(self.frameio.projects)), (0, 1, 0))
-
-    def test_a_resumed_start_is_not_refused_by_its_own_deliverables(self) -> None:
-        confirm = {**self.values, 'idempotency_key': 'start', 'confirm': self.preview().token}
-        with self.crash_at_folders(), self.assertRaises(RuntimeError):
-            self.call(confirm)
-        self.assertEqual(self.totals(), (1, 2))  # Ep01 and Ep02 now exist, made by this key
-        self.later(16 * 60)
-        done = self.call(confirm)
-        assert isinstance(done, Done), done
-        self.assertEqual(self.totals(), (1, 2))
 
     def test_a_project_type_without_a_template_is_refused(self) -> None:
         page = str(self.fake.add_page('projects', project_properties(name='Other', project_type='Music Video'))['id'])
@@ -563,9 +676,26 @@ class ProjectStartWorkerTests(unittest.TestCase):
         assert isinstance(preview, Preview)
         template = next(step for step in preview.plan['steps'] if step['step'] == 'milestone template')
         self.assertEqual(template['template'], 'tvc')
-        confirmed = store.confirm({'project': self.project, 'deliverables': [{'code': 'Spot', 'episode': None, 'due': None, 'air': None}],
-                                   'media': [], 'bookings': []}, actor='starter', idempotency_key='k', token=preview.token, frameio=FakeFrameioWriter(FakeFrameio()))
+        values = {'project': self.project, 'deliverables': [{'code': 'Spot', 'episode': None, 'due': None, 'air': None}], 'media': [], 'bookings': []}
+        waiting = store.confirm(values, actor='starter', idempotency_key='k', token=preview.token)
+        assert isinstance(waiting, Done), waiting
+        self.assertEqual(waiting.result['state'], 'waiting_for_approval')
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES ('lead', 'staff', '[]', '[]', NULL, 0, 1)")
+            db.execute("INSERT INTO person_permissions VALUES ('lead', 'operator')")
+        approvals = Approvals(self.registry, tokens)
+        grant = approvals.write('grant', {'approval': waiting.result['approval_id']}, actor='lead', idempotency_key='g')
+        assert isinstance(grant, Preview)
+        self.assertIsInstance(approvals.write('grant', {'approval': waiting.result['approval_id']}, actor='lead', idempotency_key='g', confirm=grant.token), Done)
+        writer = FakeFrameioWriter(FakeFrameio())
+        with patch('t6.worker.__main__.QueueFrameioWriter', return_value=writer):
+            apply = self.handlers(self.environ)['project_start.apply']  # built on the queue writer, which this test swaps for its own
+            worker = Worker(InternalQueueClient(InternalJobQueue(self.path)), 'main', {'project_start.apply': apply})
+            self.assertTrue(worker.run_once())
+        confirmed = store.confirm(values, actor='starter', idempotency_key='k', token=preview.token)
         assert isinstance(confirmed, Done), confirmed
+        self.assertEqual(confirmed.result['state'], 'applied')
+        self.assertEqual(len(writer.calls), 1)
         self.assertEqual(len(confirmed.result['deliverable_ids']), 1)
         self.assertEqual(next(step['project_name'] for step in preview.plan['steps'] if step['step'] == 'frameio'), 'Show')  # read from Notion by the worker
 
@@ -576,6 +706,7 @@ class ProjectStartWorkerTests(unittest.TestCase):
         with redirect_stderr(errors):
             handlers = self.handlers(environ)
         self.assertNotIn('project_start.preview', handlers)
+        self.assertNotIn('project_start.apply', handlers)
         self.assertIn('T6_PREVIEW_SIGNING_KEY', errors.getvalue())
         self.assertIn('project_start.preview', self.handlers(self.environ))
 

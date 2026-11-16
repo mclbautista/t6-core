@@ -351,6 +351,8 @@ _MIGRATIONS = (
     CREATE TABLE calendar_event_versions (calendar TEXT NOT NULL, event TEXT NOT NULL, version TEXT NOT NULL, outcome TEXT NOT NULL, PRIMARY KEY (calendar, event, version))"""),
     (41, False, """CREATE TABLE frameio_held_activity (id INTEGER PRIMARY KEY AUTOINCREMENT, frameio_project_id TEXT NOT NULL, dedupe_key TEXT NOT NULL UNIQUE, payload TEXT NOT NULL, held_at REAL NOT NULL, released_at REAL);
     CREATE INDEX frameio_held_activity_by_project ON frameio_held_activity (frameio_project_id, released_at)"""),
+    (42, False, """CREATE TABLE project_starts (idempotency_key TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), approval_id TEXT NOT NULL UNIQUE REFERENCES approvals(id),
+    actor TEXT NOT NULL, fingerprint TEXT NOT NULL, inputs TEXT NOT NULL, plan TEXT NOT NULL, nonce TEXT NOT NULL, state TEXT NOT NULL, reason TEXT)"""),
 )
 
 
