@@ -815,7 +815,7 @@ class VerbAPI:
         from t6.notion.reads import ProjectReader, DeliverableReader, is_live
         from t6.notion.job_orders import JobOrders
         from t6.notion.meeting_notes import note_from_page
-        from t6.domain.job_order_rules import status_group, is_active, health_flags
+        from t6.domain.job_order_rules import status_group, is_active, is_done, health_flags
         from t6.domain import project_rules
         from t6.registry import ProjectRefs
         from t6.registry.core import normalize_page_id
@@ -885,7 +885,7 @@ class VerbAPI:
         def order_result(order: Any) -> dict[str, Any]:
             item = asdict(order)
             group = status_group(order.status)
-            item.update(status_group=group.value if group else None, active=is_active(order.status), health_flags=list(health_flags(order.health)))
+            item.update(status_group=group.value if group else None, active=is_active(order.status), done=is_done(order.status), health_flags=list(health_flags(order.health)))
             item['t6_id'] = self.people.registry.bound_entity('notion', order.page_id)
             item['project_id'] = refs.identity(order.project_id) or order.project_id
             item['project_ids'] = [refs.identity(page) or page for page in order.project_ids]
@@ -1006,7 +1006,7 @@ class VerbAPI:
                                 group = status_group(status)
                                 return Done(result={'job_order': {
                                     **record['fields'], **record, 't6_id': record['id'],
-                                    'status_group': group.value if group else None, 'active': is_active(status),
+                                    'status_group': group.value if group else None, 'active': is_active(status), 'done': is_done(status),
                                     'health_flags': list(health_flags(record['fields'].get('health'))),
                                     'project_ids': [record['project_id']] if record['project_id'] else []}})
                         else:

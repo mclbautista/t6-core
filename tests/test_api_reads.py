@@ -580,11 +580,13 @@ class ReadTests(unittest.TestCase):
             with self.subTest(status=status):
                 order = next(o for o in result.result['job_orders'] if o['name'] == 'JO ' + status)
                 self.assertEqual((order['status_group'], order['active'], order['health_flags']), (group, active, []))
+                self.assertIs(order['done'], status == 'Done')
                 got = self.client.jo_get(JoGetInput(ref=order['page_id']))
                 assert isinstance(got, Done)
                 self.assertEqual((got.result['job_order']['status_group'], got.result['job_order']['active']), (group, active))
+                self.assertIs(got.result['job_order']['done'], status == 'Done')
         blank = next(o for o in result.result['job_orders'] if o['page_id'] == self.jo['id'])
-        self.assertEqual((blank['status_group'], blank['active']), (None, True))
+        self.assertEqual((blank['status_group'], blank['active'], blank['done']), (None, True, False))
 
     def test_jo_health_flags_ignore_emoji(self) -> None:
         from t6.verbs import JoListInput
@@ -622,8 +624,8 @@ class ReadTests(unittest.TestCase):
         result = self.client.jo_get(JoGetInput(ref='t6j_unbound'))
         assert isinstance(result, Done), result
         order = result.result['job_order']
-        self.assertEqual((order['status_group'], order['active'], order['health_flags'], order['project_ids']),
-                         ('not_started', True, [], ['t6p_one']))
+        self.assertEqual((order['status_group'], order['active'], order['done'], order['health_flags'], order['project_ids']),
+                         ('not_started', True, False, [], ['t6p_one']))
 
     def test_camera_enrich_requires_preview_and_confirm(self) -> None:
         from t6.verbs import CameraEnrichInput, Preview

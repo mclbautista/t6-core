@@ -75,7 +75,8 @@ order; empty unless the Status is In-Progress, In-Progress TVC or Airing),
 `health_missing` and `health_rank` (of the `Project Health` select: Critical 0,
 At Risk 1, On Track 2, Incoming 3, any other value 4, blank 5). `project list` also filters on
 `status_group`. `jo list`, `jo get` and `jo find` add `status_group`
-(`not_started`, `started`, `cancelled` or `null`), `active` and `health_flags`
+(`not_started`, `started`, `cancelled` or `null`), `active`, `done` (true when the status is
+Done; `active` is false for Done and Cancelled, so `done` tells them apart) and `health_flags`
 (Blocked, Delayed, Urgent, ignoring emoji). `project flags` also takes `as_of`
 (an ISO date, default today in Manila), `lead_warning_days` (default 30) and
 `stated`, a map of `playdate`, `submission_deadline` or `archival_deadline` to
