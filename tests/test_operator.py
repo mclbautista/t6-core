@@ -912,6 +912,18 @@ class NewProjectCodeTests(ManageTestCase):
         self.assertEqual(self.command("ABD").body["outcome"], "rotation_in")
         self.assertEqual((self.read(project)["code"], self.read(project)["rotation"]), ("ABD", "in"))
 
+    def test_after_a_held_code_the_code_stage_offers_cancel_and_never_says_no_code(self) -> None:
+        self.new("ABC", "in")
+        project = self.registered()
+        self.assertEqual(self.command("abc").body["outcome"], "conflict")
+        self.drain()
+        self.assertEqual(self.press(1, "Change this Project's code"), "enter_code")
+        self.assertEqual(self.texts(1), ["Cancel"])  # the Project holds the typed code now, so "no code" is not offered
+        self.assertEqual(self.press(1, "Cancel"), "skipped")
+        self.assertEqual((self.read(project)["code"], self.read(project)["rotation"]), ("abc", "out"))
+        self.assertIn("Registered as a new Project. It stays out of rotation.", self.card()["text"])
+        self.assertNotIn("no code", self.card()["text"].split("\n", 1)[1])
+
     def test_conflict_choice_take_the_holder_out_works_on_this_card(self) -> None:
         holder = self.new("ABC", "in")
         project = self.registered()

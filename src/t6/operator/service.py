@@ -395,7 +395,10 @@ class OperatorService:
         if action.kind == "classify" and choice in {"in", "out"}:
             return self._classify(action, Rotation(choice), actor, key)
         if action.kind == "unbound_page" and action.stage == "code" and choice == "keep":
-            return self._done(action, {"outcome": "registered"}, self._registry.get(str(action.project_id)))
+            kept = self._registry.get(str(action.project_id))
+            if kept is not None and kept.code:  # a held code was typed first: the Project keeps it, so "no code" would be wrong
+                return self._done(action, {"outcome": "skipped"})
+            return self._done(action, {"outcome": "registered"}, kept)
         if action.kind == "manage" or (action.kind == "unbound_page" and action.stage in {"code", "conflict"}):
             managed = self._manage(action, choice, actor, operator)
             if managed is not None:
@@ -879,7 +882,8 @@ def _render_manage(
         lines.append("Send the new code as <code>/project NEWCODE</code>.")
         if params.get("enter"):
             lines.append("The Project then enters rotation with that code.")
-        return "\n".join(lines), [[("Keep out of rotation, no code", "keep")] if action.kind == "unbound_page" else [("Cancel", "skip")]]
+        keeps = action.kind == "unbound_page" and (project is None or not project.code)
+        return "\n".join(lines), [[("Keep out of rotation, no code", "keep")] if keeps else [("Cancel", "skip")]]
     if action.stage == "conflict":
         holders = params.get("holders")
         found_holders = [
@@ -943,7 +947,7 @@ def _render_managed(
     lines.update(_frameio_lines(result, registry))
     line = lines.get(outcome, html.escape(outcome))
     if registered:
-        line = "Registered as a new Project. " + ("It stays out of rotation." if outcome == "skipped" else line)
+        line = "Registered as a new Project. " + ("It stays out of rotation." if outcome == "skipped" else line.removesuffix(" Nothing changed."))
     text = f"{head}\n<b>{line}</b>"
     if project is not None and outcome in _SHOWS_SYNC:
         text += "\n" + _SYNC_LINES[project.sync]
