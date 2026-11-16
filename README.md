@@ -1437,6 +1437,9 @@ Errors are JSON on stderr with exit status 2.
 
 `t6 departments --data-sources FILE` lists the live Departments (the
 `job_orders` source) in display order with their option IDs. MISC is left out.
+`t6 departments` and `t6 person get` still accept `--data-sources FILE`, but
+the flag is ignored: the API reads with its own data sources. It will be
+removed in a later release.
 
 ```console
 $ t6 departments --data-sources sources.json
