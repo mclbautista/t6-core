@@ -1305,6 +1305,8 @@ class MeetingNotesListInput(ReadInput):
     title: str | None = None
     title_prefix: str | None = None
     ready_to_send: bool | None = None
+    latest: bool = False
+    include_body: bool = True
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -1415,6 +1417,32 @@ class ReadMeetingNote(MeetingNote):
 
 class MeetingNotesListOutput(BaseModel):
     meeting_notes: list[ReadMeetingNote]
+
+
+class MeetingNotesCreateInput(BaseModel):
+    title: str
+    meeting_date: str
+    project_ids: list[str] = []
+    attendee_ids: list[str] = []
+    blocks: list[NoteBlock] = []
+
+
+class MeetingNotesAppendInput(BaseModel):
+    note: str
+    blocks: list[NoteBlock]
+
+
+class MeetingNotesTrashInput(BaseModel):
+    note: str
+
+
+class MeetingNotesMarkSentInput(BaseModel):
+    note: str
+    at: AwareDatetime | None = None
+
+
+class MeetingNotesWriteOutput(BaseModel):
+    meeting_note: MeetingNote
 
 
 class MachineListInput(ReadInput):
@@ -2244,6 +2272,10 @@ VERBS = (
     Verb("deliverable", "hand-to-mouth", "List Deliverables ready at the last moment", (), FloorReadInput, FloorReadOutput, "reader", "Ready within the configured days of air; optional project.", floor_hand_to_mouth, read_only=True),
     Verb("deliverable", "sabit", "List missed Deliverables", (), FloorReadInput, FloorReadOutput, "reader", "A recorded miss, not a delay; optional project.", floor_sabit, read_only=True),
     Verb("meeting-notes", "list", "List Project Meeting Notes", (), MeetingNotesListInput, MeetingNotesListOutput, "reader", "Read from Notion.", api_read, read_only=True),
+    Verb("meeting-notes", "create", "Create a Meeting Notes page", (), MeetingNotesCreateInput, MeetingNotesWriteOutput, "minutes", "Not idempotent: look for the title with list first. A failed body is ambiguous with the page ID.", api_write),
+    Verb("meeting-notes", "append", "Append blocks to a Meeting Notes page", (), MeetingNotesAppendInput, MeetingNotesWriteOutput, "minutes", "Refused when the note is sent or in the trash.", api_write),
+    Verb("meeting-notes", "trash", "Trash a Meeting Notes page", (), MeetingNotesTrashInput, MeetingNotesWriteOutput, "minutes", "Refused when the note is sent.", api_write),
+    Verb("meeting-notes", "mark-sent", "Set Sent at on a Meeting Notes page", (), MeetingNotesMarkSentInput, MeetingNotesWriteOutput, "minutes", "A note already sent keeps its first date.", api_write),
     Verb("project", "list", "List Projects", (), ProjectListInput, ProjectListOutput, "reader", "Read Projects.", api_read, read_only=True),
     Verb("llm", "run", "Run an LLM task on the API", (), LLMRunInput, LLMRunOutput, "llm", "Server policy and masking apply.", llm_api_only),
     Verb("person", "add", "Register a Person", (), PersonAddInput, PersonWriteOutput, "operator", "A page belongs to one Person.", person_write),
@@ -2725,6 +2757,23 @@ def add_parsers(commands: Any) -> None:
                 parser.add_argument(name)
             parser.add_argument('--idempotency-key')
             parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.input_model in (MeetingNotesCreateInput, MeetingNotesAppendInput):
+            if entry.input_model is MeetingNotesCreateInput:
+                parser.add_argument('--title', required=True)
+                parser.add_argument('--meeting-date', required=True, metavar='YYYY-MM-DD')
+                parser.add_argument('--project-ids', nargs='+', default=[])
+                parser.add_argument('--attendee-ids', nargs='+', default=[])
+            else:
+                parser.add_argument('--note', required=True)
+            parser.add_argument('--block', dest='blocks', action='append', type=json.loads, default=[], metavar='JSON',
+                                help='One body block as a JSON object (kind, text, spans, checked, children); repeat for more')
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.input_model is MeetingNotesMarkSentInput:
+            parser.add_argument('--note', required=True)
+            parser.add_argument('--at', type=datetime.fromisoformat, metavar='ISO', help='When it was sent, with a UTC offset (default: now, Manila)')
             parser.set_defaults(registered_verb=entry)
             continue
         if entry.input_model is MachineSyncInput:
