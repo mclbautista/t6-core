@@ -526,15 +526,17 @@ class LegacyJoGetInput(BaseModel):
 
 
 class JoRaiseInput(BaseModel):
-    file: Path
-    data_sources: Path
+    file: Path | None = None
+    data_sources: Path | None = None
+    fields: dict[str, Any] | None = None
+    no_project: bool = False
     idempotency_key: str | None = None
     confirm: str | None = None
 
 
 class JoWriteOutput(BaseModel):
     jo_id: str
-    project_id: str
+    project_id: str | None
     action: str
     idempotency_key: str
     page_id: str | None = None
@@ -585,9 +587,11 @@ class JoDelayInput(JoBlockInput):
     until: str
 
 
-def jo_write(inputs: JoRaiseInput | JoAssignInput | JoReassignInput | JoNoteInput | JoSubmitInput, open_notion: Callable[..., Any]) -> Outcome:
+def jo_write(inputs: JoRaiseInput | JoAssignInput | JoReassignInput | JoNoteInput | JoSubmitInput, open_notion: Callable[..., Any],
+             data_source: str | None = None) -> Outcome:
+    """Write a Job Order verb. `data_source` is the server's own Job Orders data source; the CLI, which has none, reads a file."""
     from t6.cli import TOKEN_VARIABLE, _read_data_sources
-    from t6.cli_jo import prepare_fields
+    from t6.cli_jo import check_fields, prepare_fields
     from t6.job_order import JobOrderStore
     from t6.notion import NotionError
     from t6.preview import PreviewTokens
@@ -604,12 +608,22 @@ def jo_write(inputs: JoRaiseInput | JoAssignInput | JoReassignInput | JoNoteInpu
             verb = state_verbs[type(inputs)]
             values = inputs.model_dump(exclude={'idempotency_key', 'confirm'})
         elif isinstance(inputs, JoRaiseInput):
+            if (inputs.file is None) == (inputs.fields is None):
+                return Refused(rule="input", reason="Give exactly one of file and fields")
             token = os.environ.get(TOKEN_VARIABLE)
             if not token:
                 return Refused(rule="credentials", reason=f"set {TOKEN_VARIABLE}")
+            if data_source is None and inputs.data_sources is not None:
+                data_source = _read_data_sources(inputs.data_sources)["job_orders"]
+            if data_source is None:
+                return Refused(rule="config", reason="The job_orders data source is not configured")
             with open_notion(token) as client:
-                fields = prepare_fields(client, _read_data_sources(inputs.data_sources)["job_orders"], inputs.file)
-            verb, values = "raise", {"fields": fields}
+                if inputs.fields is not None:
+                    fields = check_fields(client, data_source, inputs.fields)
+                else:
+                    assert inputs.file is not None
+                    fields = prepare_fields(client, data_source, inputs.file)
+            verb, values = "raise", {"fields": fields, **({"no_project": True} if inputs.no_project else {})}
         elif isinstance(inputs, JoReassignInput):
             verb, values = "reassign", {"jo": inputs.jo, "person": inputs.person, "reason": inputs.reason}
         elif isinstance(inputs, JoAssignInput):
@@ -1010,6 +1024,7 @@ class JoListInput(ReadInput):
     project: str | None = None
     assignee: str | None = None
     status_group: Literal["not_started", "started", "cancelled", "active"] | None = None
+    no_project: bool = False
 
 
 class JoFindInput(ReadInput):
@@ -2643,6 +2658,14 @@ def add_parsers(commands: Any) -> None:
             parser.add_argument('chat')
             parser.add_argument('message_id')
             parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.handler is jo_write and entry.verb == "raise":
+            parser.add_argument("--file", type=Path)
+            parser.add_argument("--data-sources", type=Path)
+            parser.add_argument("--no-project", type=_boolean, default=False)
+            parser.add_argument("--idempotency-key")
+            parser.add_argument("--confirm")
+            parser.set_defaults(registered_verb=entry, fields=None)
             continue
         if entry.handler is jo_write and entry.verb != "raise":
             parser.add_argument("jo")

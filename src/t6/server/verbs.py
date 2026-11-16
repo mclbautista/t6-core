@@ -152,6 +152,9 @@ class VerbAPI:
                     continue
                 contents = data.pop(name + '_contents', None)
                 if not isinstance(contents, str):
+                    if not entry.input_model.model_fields[name].is_required():
+                        data.pop(name, None)  # a path sent by the caller is never opened
+                        continue
                     return Response(422, {'errors': [{'loc': [name], 'msg': 'File contents required'}]})
                 uploaded = Path(directory) / name
                 uploaded.write_text(contents, encoding='utf-8')
@@ -289,6 +292,12 @@ class VerbAPI:
         elif (entry.noun, entry.verb) == ('person', 'create'):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._person_create(inputs, actor)
+        elif (entry.noun, entry.verb) == ('jo', 'raise'):
+            # The server knows its own Job Orders data source; a caller never uploads one.
+            from dataclasses import replace
+            from t6.verbs import jo_write
+            source = self.data_sources.get('job_orders')
+            outcome = invoke(replace(entry, handler=lambda i, o: jo_write(i, o, source)), inputs, actor=actor, people=self.people, open_notion=self.open_notion)
         elif (entry.noun, entry.verb) == ('person', 'set-telegram') and (page := self._contact_page(inputs.person_id)):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._person_set_telegram(inputs, actor, page)
@@ -811,9 +820,12 @@ class VerbAPI:
                                           assignee_id=record['assignee_id'], notes=record['notes'],
                                           state=record['state'], history=record['history'])
                         return Done(result={'job_order': result})
-                    orders = jo_reader.find_all_by_telegram_key(inputs.telegram_key) if verb == 'find' else jo_reader.list()
+                    orders = jo_reader.find_all_by_telegram_key(inputs.telegram_key) if verb == 'find' else jo_reader.list(oldest_first=bool(inputs.no_project))
                     if verb == 'list':
+                        if inputs.no_project and inputs.project:
+                            return Refused(rule='input', reason='Give project or no_project, not both')
                         orders = tuple(o for o in orders if (not inputs.project or same_project(o.project_id, inputs.project))
+                            and (not inputs.no_project or not o.project_id)
                             and (not inputs.assignee or any(normalize_page_id(identity(p)) == normalize_page_id(identity(inputs.assignee)) for p in o.assigned_ids))
                             and (not inputs.status_group or (is_active(o.status) if inputs.status_group == 'active' else status_group(o.status) == inputs.status_group)))
                     items = []

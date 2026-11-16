@@ -103,9 +103,10 @@ class JobOrders:
         )
         return tuple(self._order(JobOrdersRow.from_page(page), page) for page in rows)
 
-    def list(self) -> tuple[JobOrder, ...]:
-        """Every Job Order that is not trashed or archived, without bodies."""
-        pages = self._client.query_data_source(self._source)
+    def list(self, *, oldest_first: bool = False) -> tuple[JobOrder, ...]:
+        """Every Job Order that is not trashed or archived, without bodies; `oldest_first` sorts by creation."""
+        sorts = [{"timestamp": "created_time", "direction": "ascending"}] if oldest_first else None
+        pages = self._client.query_data_source(self._source, sorts=sorts)
         return tuple(self._order(JobOrdersRow.from_page(page), page) for page in pages if is_live(page))
 
     def create(self, fields: Mapping[str, Any], *, t6_id: str | None = None) -> JobOrder | Rejected | Ambiguous:
