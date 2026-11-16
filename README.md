@@ -1897,6 +1897,14 @@ Hold and resume queue Project Status projection intents. The current sync
 worker only projects identity fields, so these intents remain pending until a
 Status-capable worker is provided.
 
+The worker never creates a Status option. Before it writes Archived, Standby or
+In-Progress it reads the live Status options of the Projects data source and
+writes the one option that reads as the wanted status (emoji, case and spaces
+ignored). With no such option, or two, it writes nothing and the job fails with
+the reason (`no Status option for Standby`). The Deliverables Status is written
+the same way. `t6 admin schema-check` reports `status_duplicates` for Projects:
+Status options that differ only by emoji or case.
+
 ## Transcription
 
 Install `t6[transcribe]` for the ElevenLabs adapter. Construct an ElevenLabs

@@ -240,6 +240,16 @@ class SchemaCheckTests(unittest.TestCase):
         self.assertEqual(report["databases"]["bays"]["status"], "ok")  # type: ignore[index]
         self.assertEqual(len(report["skipped"]), 10)  # type: ignore[arg-type]
 
+    def test_a_stray_duplicate_of_a_projects_status_option_is_reported(self) -> None:
+        fake = fake_with(projects=PROJECTS)
+        fake.add_option(PROJECTS, "Status", "🟡 Standby")
+        self.assertEqual(self.check(fake, {"projects": PROJECTS})["databases"]["projects"]["status_duplicates"], [])  # type: ignore[index]
+        fake.add_option(PROJECTS, "Status", "Standby")
+        report = self.check(fake, {"projects": PROJECTS})
+        self.assertEqual(report["databases"]["projects"]["status_duplicates"], [["🟡 Standby", "Standby"]])  # type: ignore[index]
+        self.assertEqual(report["databases"]["projects"]["status"], "drift")  # type: ignore[index]
+        self.assertFalse(report["ok"])
+
     def test_it_reports_added_removed_and_changed_properties(self) -> None:
         fake = fake_with(bays=BAYS)
         fake.add_property(BAYS, "Rack Position", "rich_text")

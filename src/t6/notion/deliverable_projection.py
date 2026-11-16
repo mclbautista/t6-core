@@ -8,6 +8,7 @@ from t6.notion.editor import editor as notion_editor
 from t6.registry import normalize_page_id
 
 from t6.notion.generated import DeliverablesRow
+from t6.notion.named import live_option_name
 from t6.notion.writes import Ambiguous, Rejected, create_row
 from t6.worker.runner import Refused
 
@@ -22,6 +23,13 @@ def projection_id() -> str:
 class DeliverableProjection:
     def __init__(self, notion: Any, registry: Any, data_source: str) -> None:
         self.notion, self.registry, self.data_source = notion, registry, data_source
+
+    def _option(self, wanted: str) -> str:
+        """The team's own Status option for `wanted`; the API never creates one."""
+        try:
+            return live_option_name(self.notion.retrieve_data_source(self.data_source), DeliverablesRow.notion_id('status') or 'Status', wanted)
+        except ValueError as error:
+            raise Refused(str(error)) from error
 
     def reconcile(self, job: Any) -> dict[str, Any]:
         page_id = str(job.payload['page_id'])
@@ -43,7 +51,7 @@ class DeliverableProjection:
         if restore.get('t6_id'):
             writes[property_id] = {'rich_text': [{'text': {'content': restore['t6_id']}}]}
         if restore.get('status'):
-            writes[status_id] = {'select': {'name': restore['status']}}
+            writes[status_id] = {'select': {'name': self._option(restore['status'])}}
         if writes:
             self.notion.update_page(page_id, {'properties': writes})
             values = {}
@@ -91,7 +99,7 @@ class DeliverableProjection:
         if DeliverablesRow.from_page(current).name != state['code']:
             properties[DeliverablesRow.notion_id('name') or 'title'] = {'title': [{'text': {'content': state['code']}}]}
         if current_status != state['status']:
-            properties[status_id] = {'select': {'name': state['status']}}
+            properties[status_id] = {'select': {'name': self._option(state['status'])}}
         self.notion.update_page(page, {'properties': properties})
         self.registry.projection(page, {'deliverable_status': state['status']}, record=True)
         self.registry.report_deliverable_sync(intent, page_id=page)
