@@ -72,8 +72,9 @@ Every app follows these ten rules. Each has its reason.
   Apps keep idempotency keys and retry decisions.
 - Credential withholding applies to every free-text field and page body
   t6-core writes to Notion, and to every LLM input.
-- Apps cut over one adapter at a time: Notion, then matching in shadow mode,
-  then privacy and LLM together, then queues last (if ever).
+- Apps move onto the API one rule at a time. Once a verb answers a rule, the app
+  calls it and drops its own copy; the API holds Notion, matching, privacy and LLM
+  work (spec #426).
 - Out of scope here: the app cutovers themselves, which are tracked in each
   app's spec.
 

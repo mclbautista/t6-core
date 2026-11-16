@@ -1,7 +1,9 @@
 # Deploying the Project registry and Notion worker
 
 Runbook for t6-core#74. It says what to run, what to check and how to recover.
-**Nothing here has been run on the VPS.** The repository's tests prove the
+This runbook was written before the first deploy. The system has been deployed
+since; the deploy files and the upgrade notes for each release are in the
+t6-netops repository (`docs/t6-api.md`). The repository's tests prove the
 behavior in one process; they do not prove that your Notion subscription, Tailscale
 network or Sixto gateway are configured. Fill in the verification log at the end
 as you go.
