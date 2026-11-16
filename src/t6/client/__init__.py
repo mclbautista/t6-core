@@ -25,7 +25,7 @@ from t6.verbs import (
     DeliverableDeliverInput, PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput, QueueDismissInput, QueueFailedInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
     ConcernScanInput, ConcernObserveInput, ConcernCountsInput, ConcernListInput, ConcernChangesInput, ConcernForMessageInput, ConcernRecordMessageInput, ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
-    JoListInput, JoFindInput, DeliverableListInput, DeliverableCandidatesInput, FloorReadInput, DeliverableGetInput, DeliverableDefineInput, DeliverableEditInput, DeliverableRebindInput, DeliverableMissInput, DeliverableDelayInput, MilestoneRecordInput, MeetingNotesListInput, MeetingNotesCreateInput, MeetingNotesAppendInput, MeetingNotesTrashInput, MeetingNotesMarkSentInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, ProjectNotesInput, ProjectFlagsInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
+    JoListInput, JoFindInput, DeliverableListInput, DeliverableCandidatesInput, FloorReadInput, DeliverableGetInput, DeliverableDefineInput, DeliverableEditInput, DeliverableRebindInput, DeliverableMissInput, DeliverableDelayInput, MilestoneRecordInput, MeetingNotesListInput, MeetingNotesCreateInput, MeetingNotesAppendInput, MeetingNotesTrashInput, MeetingNotesMarkSentInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, ProjectNotesInput, ProjectFlagsInput, StandingCcInput, TextWithholdInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
     JoSubmitInput, JoCloseInput, JoBlockInput, JoUnblockInput, JoDelayInput, JoCancelInput,
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
     LLMDecideInput, LLMFilterInput, LLMRunInput, PersonAddInput, PersonCreateInput, PersonFindInput,
@@ -67,12 +67,14 @@ class Client:
         return self.call('transcript', 'get', inputs)
 
     def __init__(self, base_url: str | None = None, secret: str | None = None, *, timeout: float = 10,
-                 telegram_user_id: int | None = None, mcp: bool = False) -> None:
+                 telegram_user_id: int | None = None, mcp: bool = False, require_unmasked: bool = False) -> None:
+        """`require_unmasked`: every call is refused (rule `unmasked`) when this caller would read masked names."""
         self.base_url = (base_url or os.environ.get('T6_API_URL', '')).rstrip('/')
         self.secret = secret if secret is not None else os.environ.get('T6_API_SECRET', '')
         self.timeout = timeout
         self.telegram_user_id = telegram_user_id
         self.mcp = mcp
+        self.require_unmasked = require_unmasked
 
     def _request(self, path: str, inputs: BaseModel | dict[str, Any] | None = None,
                  *, idempotency_key: str | None = None) -> Any:
@@ -82,6 +84,8 @@ class Client:
         headers = {'Authorization': 'Bearer ' + self.secret}
         if self.mcp:
             headers['X-T6-MCP'] = '1'
+        if self.require_unmasked:
+            headers['X-T6-Require-Unmasked'] = '1'
         if self.telegram_user_id is not None:
             headers['X-Telegram-User-Id'] = str(self.telegram_user_id)
         data = None
@@ -324,6 +328,9 @@ class Client:
 
     def person_list(self, inputs: PersonListInput) -> Result:
         return self.call('person', 'list', inputs)
+
+    def text_withhold(self, inputs: TextWithholdInput) -> Result:
+        return self.call('text', 'withhold', inputs)
 
     def standing_cc(self, inputs: StandingCcInput) -> Result:
         return self.call('standing-cc', '', inputs)

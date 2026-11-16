@@ -137,6 +137,9 @@ class VerbAPI:
                 return self.refused('identity', 'No active Person for Telegram user ID')
             actor = row[0]
             seen['identity'] = actor
+        if request.header('x-t6-require-unmasked') == '1' and not self._reads_unmasked(actor):
+            # A masked answer does not say it is masked: a caller that passes names on asks to be stopped instead (#488).
+            return self.refused('unmasked', 'The caller asks for real names and has neither operator nor the unmasked grant')
         if path == '/v1/commands':
             return Response(200, cast(Mapping[str, JsonValue], catalogue())) if request.method == 'GET' else Response(405)
         if path == '/v1/admin/media/migrate':

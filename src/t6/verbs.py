@@ -1164,6 +1164,22 @@ class CameraGetInput(ReadInput):
     page_id: str | None = None
 
 
+class TextWithholdInput(BaseModel):
+    texts: list[str] = Field(max_length=200)
+
+
+class TextWithholdOutput(BaseModel):
+    texts: list[str]
+    withheld: int
+
+
+def text_withhold(inputs: TextWithholdInput, open_notion: Callable[..., Any]) -> Outcome:
+    """Message text an app is about to show, with labelled credential values replaced; the rule is `t6.privacy.withhold`."""
+    from t6.privacy.withhold import withhold
+    done = [withhold(text) for text in inputs.texts]
+    return Done(result={'texts': [w.text for w in done], 'withheld': sum(w.count for w in done)})
+
+
 class StandingCcInput(ReadInput):
     pass
 
@@ -2513,6 +2529,7 @@ VERBS = (
     Verb("project", "notes", "Read dated PM Notes", (), ProjectNotesInput, ProjectNotesOutput, "reader", "Read dated PM Notes lines.", api_read, read_only=True),
     Verb("project", "flags", "Read Project flags", (), ProjectFlagsInput, ProjectFlagsOutput, "reader", "Recompute data gaps and date warnings.", api_read, read_only=True),
     Verb("person", "list", "List Contacts", (), PersonListInput, PersonListOutput, "reader", "Read Contacts.", api_read, read_only=True),
+    Verb('text', 'withhold', 'Withhold credentials from text', (), TextWithholdInput, TextWithholdOutput, 'reader', 'Give up to 200 texts; each comes back in order with labelled credential values (password, passcode, pass, pin, pw) replaced by the placeholder. Nothing is stored. Use it before showing message text outside its chat.', text_withhold, read_only=True),
     Verb("standing-cc", "", "Get standing cc", (), StandingCcInput, StandingCcOutput, "reader", "Read configured standing cc.", None, read_only=True),
     Verb("jo", "list", "List Job Orders", (), JoListInput, JoListOutput, "reader", "Filter by Project, assignee or status group.", api_read, read_only=True),
     Verb("jo", "find", "Find Job Orders by Telegram Key, chat and message ID, or duplicate key", (), JoFindInput, JoListOutput, "reader", "Return all matching orders.", api_read, read_only=True),

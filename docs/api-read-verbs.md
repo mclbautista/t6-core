@@ -42,6 +42,16 @@ next rebuild; a growing `age_seconds` is the sign that the rebuild has stopped.
 
 `departments` and `standing-cc` do not contain client names and do not require this file.
 
+A masked answer does not say that it is masked. A caller that must not pass masked names on (the
+shift report goes to a group) makes its client with `Client(require_unmasked=True)`, which sends the
+header `X-T6-Require-Unmasked: 1`. The API then refuses every call of that client with rule `unmasked`
+when the caller has neither `operator` nor the `unmasked` grant, before it reads anything.
+
+`text withhold` takes up to 200 texts and returns each, in order, with labelled credential values
+(`password`, `passcode`, `pass`, `pin`, `pw`) replaced by the placeholder, and `withheld`, the count.
+It stores nothing and reads nothing. An app calls it before it shows message text outside the chat the
+text came from (the watchdog's ops post and dry-run plan). The rule is `t6.privacy.withhold`.
+
 Inputs and outputs are in `t6.verbs` and the `t6 commands --json` catalogue;
 call them with the matching methods on `t6.client.Client`. Each call returns a
 standard verb outcome or `Unavailable`. Related entities use T6 IDs where a

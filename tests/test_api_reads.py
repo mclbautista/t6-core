@@ -994,6 +994,20 @@ class ReadTests(unittest.TestCase):
                        self.client.person_list(PersonListInput())):
             self.assertIsInstance(result, Done, result)
 
+    def test_text_withhold_replaces_labelled_credentials_and_keeps_the_order(self) -> None:
+        """The watchdog shows message text in its ops post; the rule for a credential lives in the API (#486)."""
+        from t6.privacy.withhold import WITHHELD
+        from t6.verbs import TextWithholdInput
+        result = self.client.text_withhold(TextWithholdInput(texts=['JO 12 password: hunter2 for the drive', 'no secret here', '']))
+        assert isinstance(result, Done), result
+        self.assertEqual(result.result, {'texts': [f'JO 12 password: {WITHHELD}', 'no secret here', ''], 'withheld': 1})
+        self.assertEqual(self.client.text_withhold(TextWithholdInput(texts=[])), Done(result={'texts': [], 'withheld': 0}))
+        from t6.client import APIError
+        with self.assertRaises(APIError) as refused:
+            self.client.call('text', 'withhold', TextWithholdInput.model_construct(texts=['x'] * 201))
+        self.assertEqual(refused.exception.status, 422)
+        self.assertNotIn('hunter2', str(result.result))
+
     def test_client_names_masked_for_readers_and_visible_to_operators(self) -> None:
         from t6.verbs import ProjectListInput
         masked = self.client.project_list(ProjectListInput())
@@ -1002,6 +1016,19 @@ class ReadTests(unittest.TestCase):
         assert isinstance(masked, Done) and isinstance(visible, Done)
         self.assertNotIn('Client Corp', str(masked.result))
         self.assertIn('Client Corp campaign', str(visible.result))
+
+    def test_a_caller_that_asks_for_real_names_is_refused_rather_than_masked(self) -> None:
+        """The shift report goes to a group: a lost `unmasked` grant must stop it, not send masked names (#488)."""
+        from t6.verbs import DepartmentsInput, ProjectListInput, Refused
+        url = f'http://127.0.0.1:{self.server.server_port}'
+        strict = Client(url, 'secret', require_unmasked=True)
+        for refused in (strict.project_list(ProjectListInput()), strict.departments(DepartmentsInput())):
+            assert isinstance(refused, Refused), refused
+            self.assertEqual(refused.rule, 'unmasked')
+        visible = Client(url, 'operator', require_unmasked=True).project_list(ProjectListInput())
+        assert isinstance(visible, Done), visible
+        self.assertIn('Client Corp campaign', str(visible.result))
+        self.assertIsInstance(self.client.project_list(ProjectListInput()), Done)  # without the flag: masked, as before
 
     def test_read_rejects_source_ids_and_filters(self) -> None:
         from urllib.error import HTTPError
