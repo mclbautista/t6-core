@@ -2,7 +2,8 @@
 
 The API owns the Notion token. Set `T6_READ_DATA_SOURCES` to the path of a
 server-side JSON object whose keys are `projects`, `contacts`, `job_orders`,
-`deliverables`, `meeting_notes`, `cameras`, and `external_links` (read once by
+`deliverables`, `meeting_notes`, `cameras`, `studios` (read only by `t6 admin
+privacy-registry`; no read verb uses it), and `external_links` (read once by
 `t6 admin media migrate`; no read verb uses it); values are
 Notion data source IDs. Configure only the sources the deployment uses.
 `T6_NOTION_TOKEN` is also set on the API host. Neither source IDs nor Notion
@@ -14,8 +15,23 @@ API can mask only names in this list. For a reader without the `operator`
 permission, the API replaces registered names consistently throughout each
 read response. Operator-bound callers see the original data. Reads containing
 names fail closed for non-operators if the registry file is not configured;
-use an explicit empty array if there are no names to mask. `departments` and
-`standing-cc` do not contain client names and do not require this file.
+use an explicit empty array if there are no names to mask.
+
+Build the file with `t6 admin privacy-registry`, run inside the API container
+(it reads Notion directly, with the API's `T6_NOTION_TOKEN`, and
+`--data-sources` defaults to `T6_READ_DATA_SOURCES`, which must name `studios`
+and `projects`):
+
+```
+t6 admin privacy-registry --output /path/to/privacy-registry.json
+```
+
+The array holds each Studio name, then its aliases, then every Project name,
+with spaces collapsed, blanks dropped and repeats kept once. Without `--output`
+it prints the array to stdout. Only counts go to stderr. The API reads the file
+at start, so restart it after a rebuild (reload without a restart is #369).
+
+`departments` and `standing-cc` do not contain client names and do not require this file.
 
 Inputs and outputs are in `t6.verbs` and the `t6 commands --json` catalogue;
 call them with the matching methods on `t6.client.Client`. Each call returns a
