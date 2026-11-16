@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-16
+
+The owner's decisions of 2026-11-16: Drive custody verbs refuse a step that cannot follow the last one, the Drive verbs carry what the Drive web app needs, `project start` waits for its Approval, and a Deliverable can be edited. Two migrations: the schema goes from 41 to 43 (`drive_shipment_facts`, `project_starts`). Neither is forward-only, so 0.6.1 still opens the database.
+
 ### Added
 
 - `deliverable edit` (#383): change the code or the episode of a Deliverable after it is defined (`operator`, preview and confirm, safe to repeat with the same idempotency key). A code may repeat inside a Project. Naming the current values is Done and writes nothing; a change writes Audit and Activity and queues the Notion sync, which now also writes the Deliverable code to the page name. The Frame.io folder keeps its old name. `project start` keeps its own rule.
