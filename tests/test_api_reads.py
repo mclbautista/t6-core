@@ -971,6 +971,20 @@ class ReadTests(unittest.TestCase):
                        self.client.person_list(PersonListInput())):
             self.assertIsInstance(result, Done, result)
 
+    def test_text_withhold_replaces_labelled_credentials_and_keeps_the_order(self) -> None:
+        """The watchdog shows message text in its ops post; the rule for a credential lives in the API (#486)."""
+        from t6.privacy.withhold import WITHHELD
+        from t6.verbs import TextWithholdInput
+        result = self.client.text_withhold(TextWithholdInput(texts=['JO 12 password: hunter2 for the drive', 'no secret here', '']))
+        assert isinstance(result, Done), result
+        self.assertEqual(result.result, {'texts': [f'JO 12 password: {WITHHELD}', 'no secret here', ''], 'withheld': 1})
+        self.assertEqual(self.client.text_withhold(TextWithholdInput(texts=[])), Done(result={'texts': [], 'withheld': 0}))
+        from t6.client import APIError
+        with self.assertRaises(APIError) as refused:
+            self.client.call('text', 'withhold', TextWithholdInput.model_construct(texts=['x'] * 201))
+        self.assertEqual(refused.exception.status, 422)
+        self.assertNotIn('hunter2', str(result.result))
+
     def test_client_names_masked_for_readers_and_visible_to_operators(self) -> None:
         from t6.verbs import ProjectListInput
         masked = self.client.project_list(ProjectListInput())
