@@ -206,3 +206,114 @@ class MCPTests(unittest.TestCase):
             api = VerbAPI(People(registry, PreviewTokens('test')), None, {'secret': 'mcp'}, lambda _: None)
             response = api(Request('POST', '/v1/media/list', {'Authorization': 'Bearer secret', 'X-T6-MCP': '1'}, json.dumps({'owner': project}).encode()))
             self.assertEqual(response.body['rule'], 'masking')
+
+
+class MCPStartTests(unittest.TestCase):
+    """`t6 mcp` and `python -m t6.mcp` are one server, and its API timeout is a setting."""
+    REQUESTS = ('{"jsonrpc": "2.0", "id": 1, "method": "initialize"}\n'
+                '{"jsonrpc": "2.0", "id": 2, "method": "tools/list"}\n')
+
+    def serve(self, delay: float) -> str:
+        """A fake t6 API that answers every POST with a Refused outcome after `delay` seconds."""
+        import json
+        import threading
+        import time
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                self.rfile.read(int(self.headers.get('Content-Length', 0)))
+                time.sleep(delay)
+                body = json.dumps({'outcome': 'Refused', 'rule': 'fake', 'reason': 'fake'}).encode()
+                try:
+                    self.send_response(200)
+                    self.send_header('Content-Length', str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                except BrokenPipeError:  # the client gave up first
+                    pass
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        server = HTTPServer(('127.0.0.1', 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f'http://127.0.0.1:{server.server_port}'
+
+    def run_server(self, entry: str, env: dict[str, str]) -> str:
+        import io
+        import os
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+        from t6 import mcp
+        from t6.cli import main
+        output = io.StringIO()
+        with patch.dict(os.environ, env), patch('sys.stdin', io.StringIO(self.REQUESTS)), redirect_stdout(output):
+            if entry == 'cli':
+                self.assertEqual(main(['mcp']), 0)
+            else:
+                mcp.main()
+        return output.getvalue()
+
+    def test_t6_mcp_and_the_module_answer_initialize_and_tools_list_the_same_way(self) -> None:
+        env = {'T6_API_URL': self.serve(0), 'T6_API_SECRET': 'made-up'}
+        by_cli, by_module = self.run_server('cli', env), self.run_server('module', env)
+        self.assertEqual(by_cli, by_module)
+        replies = [__import__('json').loads(line) for line in by_cli.splitlines()]
+        self.assertEqual([r['id'] for r in replies], [1, 2])
+        self.assertEqual(replies[0]['result']['serverInfo']['name'], 't6')
+        self.assertTrue(replies[1]['result']['tools'])
+
+    def test_mcp_is_in_the_help_and_not_in_the_command_catalogue(self) -> None:
+        import io
+        import json
+        from contextlib import redirect_stdout
+        from t6.cli import main
+        output = io.StringIO()
+        with redirect_stdout(output), self.assertRaises(SystemExit):
+            main(['--help'])
+        self.assertRegex(output.getvalue(), r'\n\s+mcp\s')
+        output = io.StringIO()
+        with redirect_stdout(output):
+            main(['commands', '--json'])
+        self.assertNotIn('mcp', {v['noun'] for v in json.loads(output.getvalue())})
+
+    def started_timeout(self, env: dict[str, str]) -> float:
+        import io
+        import os
+        from unittest.mock import patch
+        from t6 import mcp
+        with patch.dict(os.environ, env), patch('sys.stdin', io.StringIO('')), patch('t6.mcp.Client') as client:
+            mcp.main()
+        return float(client.call_args.kwargs['timeout'])
+
+    def test_timeout_is_60_unset_and_5_when_set(self) -> None:
+        import os
+        from unittest.mock import patch
+        with patch.dict(os.environ):
+            os.environ.pop('T6_MCP_TIMEOUT_SECONDS', None)
+            self.assertEqual(self.started_timeout({}), 60)
+        self.assertEqual(self.started_timeout({'T6_MCP_TIMEOUT_SECONDS': '5'}), 5)
+
+    def test_a_timeout_that_is_not_a_positive_number_stops_the_start_naming_the_setting(self) -> None:
+        for value in ('abc', '0', '-3', 'nan', ''):
+            with self.subTest(value):
+                with self.assertRaises(SystemExit) as stop:
+                    self.started_timeout({'T6_MCP_TIMEOUT_SECONDS': value})
+                self.assertIn('T6_MCP_TIMEOUT_SECONDS', str(stop.exception))
+
+    def test_other_callers_of_client_keep_10_seconds(self) -> None:
+        from t6.client import Client
+        self.assertEqual(Client().timeout, 10)
+
+    def test_a_timed_out_call_is_unavailable_and_names_the_setting(self) -> None:
+        from t6.client import Client
+        client = Client(self.serve(1), 'made-up', timeout=0.2)
+        reply = MCPServer(client).handle({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                                          'params': {'name': 'project__list', 'arguments': {}}})
+        assert reply is not None
+        value = __import__('json').loads(reply['result']['content'][0]['text'])
+        self.assertEqual(value['outcome'], 'Unavailable')
+        self.assertIn('T6_MCP_TIMEOUT_SECONDS', value['reason'])

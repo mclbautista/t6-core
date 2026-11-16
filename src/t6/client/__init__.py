@@ -109,7 +109,10 @@ class Client:
         except HTTPError as error:
             raise APIError(f'API returned HTTP {error.code}: {error.read().decode(errors="replace")}', error.code) from error
         except (URLError, TimeoutError, OSError) as error:
-            return Unavailable(str(error), key)
+            reason = str(error)
+            if self.mcp and isinstance(getattr(error, 'reason', error), TimeoutError):
+                reason += f' after {self.timeout:g} s; raise T6_MCP_TIMEOUT_SECONDS'
+            return Unavailable(reason, key)
 
     def call(self, noun: str, verb: str, inputs: BaseModel) -> Result:
         if 'idempotency_key' in type(inputs).model_fields and not getattr(inputs, 'idempotency_key', None):

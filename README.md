@@ -156,6 +156,11 @@ Every app uses t6-core for Notion, LLMs, privacy, Frame.io, Resolve and the
 fleet. The rules are in
 [`docs/adr/0002-consumer-contract.md`](docs/adr/0002-consumer-contract.md).
 
+## MCP server
+
+`t6 mcp` runs the read-only MCP server (stdio, over the t6 API); see
+[MCP server](docs/deployment.md#mcp-server) for the settings and a client entry.
+
 ## Project registry
 
 `t6.registry` gives every Project a permanent T6 Project ID that does not

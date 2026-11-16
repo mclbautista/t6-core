@@ -32,6 +32,44 @@ IDs; the first receives cards), the `*_DB` paths and the two binds. Worker:
 file, never in the image or this repository. Prefer separate secrets per grant so
 one leak is one capability. An unset secret turns its route off (503).
 
+## MCP server
+
+The MCP server is a read-only tool server for an MCP client such as a chat
+assistant. It speaks stdio, calls the t6 API for every read and owns no data.
+A client starts it as a child process with `t6 mcp` (or `python -m t6.mcp`,
+the same server) and talks to it over the child's stdin and stdout.
+
+| Setting | Meaning |
+| --- | --- |
+| `T6_API_URL` | the t6 API the server calls |
+| `T6_API_SECRET` | the secret it sends; must be bound to the `mcp` service |
+| `T6_MCP_TIMEOUT_SECONDS` | seconds to wait for one API call; default 60. A value that is not a positive number stops the start |
+
+Bind the secret to `mcp` in the API's `T6_API_SECRETS`
+(`{"<secret>": "mcp"}`). The `mcp` service is always masked, so every read
+the server makes is masked. A secret bound to a Person is not. A read that
+takes longer than the timeout returns `Unavailable` and names
+`T6_MCP_TIMEOUT_SECONDS`; raise it for a large read such as an unfiltered
+Project list.
+
+An example client entry (made-up values):
+
+```json
+{
+  "mcpServers": {
+    "t6": {
+      "command": "t6",
+      "args": ["mcp"],
+      "env": {
+        "T6_API_URL": "http://api.example:8080",
+        "T6_API_SECRET": "example-mcp-secret",
+        "T6_MCP_TIMEOUT_SECONDS": "60"
+      }
+    }
+  }
+}
+```
+
 ## Order of rollout
 
 1. **Prerequisites** (record each in the log): persistent volume for `/data`;
