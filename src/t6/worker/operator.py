@@ -82,7 +82,24 @@ class CardDelivery:
             raise RuntimeError(f"gateway message {ref} is {state}")
         if first:
             self._operator.delivered(token, ref, message_id)
+            if card["version"] > 1:  # the card changed since it was first offered: the sent message may show an older version
+                edited = self._gateway.edit(ref, card["text"], buttons, f"op-edit:{token}:{card['version']}")
+                state, _ = self._gateway.state(edited)
+                if state != "sent":
+                    raise RuntimeError(f"gateway message {edited} is {state}")
         return {"delivered": card["version"], "message_ref": ref}
+
+
+class ChatReply:
+    """`chat.reply`: tell a chat (and topic) why its command was refused. The idempotency key makes a rerun send nothing twice."""
+
+    def __init__(self, gateway: GatewayClient) -> None:
+        self._gateway = gateway
+
+    def deliver(self, job: WorkerJob) -> JsonValue:
+        topic = job.payload.get("topic")
+        ref = self._gateway.notify(int(str(job.payload["chat"])), str(job.payload["text"]), [], f"cmd-reply:{job.payload['key']}", int(str(topic)) if topic is not None else None)
+        return {"message_ref": ref}
 
 
 class StateEditNotification:

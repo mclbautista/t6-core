@@ -237,6 +237,12 @@ class ActionStore:
             )
             return self._read(db, token)
 
+    def confirm_message(self, token: str, message_id: int) -> Action | None:
+        """Record the Telegram message a tap came from, when delivery has not confirmed one yet."""
+        with self._transaction() as db:
+            db.execute("UPDATE actions SET message_id = ? WHERE token = ? AND message_id IS NULL", (message_id, token))
+            return self._read(db, token)
+
     def claim(self, token: str, tap_key: str, operator: int, stage: str) -> Claim:
         """Take the card for one tap. Exactly one tap gets `ok`; the same tap again gets `replay`."""
         now = self._clock()

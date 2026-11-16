@@ -38,7 +38,7 @@ A `classify` offer for a Project that is not unclassified answers `{"offered": f
 `idempotency_key: op-card:{token}`, later `/edit` with
 `op-edit:{token}:{version}`. Once `GET /notify/{ref}` says `sent` the worker calls
 `POST /operator/actions/{token}/delivered` with `message_ref` and `message_id`.
-Until then core retries taps on the card (503) rather than deciding.
+A tap that arrives first, from the card's chat and with an integer `message_id`, records that `message_id` and is carried out at once; the confirmation then agrees with it, and a first delivery of a card past version 1 also edits it to the current text (key `op-edit:{token}:{version}`). A tap without a usable `message_id` before confirmation is answered 503 `card_not_confirmed` and the gateway retries.
 
 Text is HTML with every Notion value and Project Code escaped. A callback payload is
 `op:<token>:<choice>`: at most 53 bytes, so the gateway's `mod:t6core:` prefix

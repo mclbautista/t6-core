@@ -46,6 +46,54 @@ class AllowedTapperTests(unittest.TestCase):
         self.assertEqual(self.tap(action, 2, 'two').outcome, 'skipped')
         self.assertEqual(self.tap(action, 2, 'three').outcome, 'already_handled')
 
+    def unconfirmed(self, key: str) -> Action:
+        action, _ = self.store.create('unbound_page', {'page_id': 'unused', 'label': 'test'}, chat=99, offer_key=key, ttl=60, allowed_tapper='permission:operator')
+        return action
+
+    def test_tap_on_unconfirmed_card_records_message_and_later_confirmation_agrees(self) -> None:
+        action = self.unconfirmed('early')
+        self.assertEqual(self.tap(action, 1, 'early').outcome, 'skipped')
+        held = self.store.get(action.token)
+        assert held is not None
+        self.assertEqual((held.message_id, held.message_ref), (42, None))
+        confirmed = self.service.delivered(action.token, 7, 42)
+        assert confirmed is not None
+        self.assertEqual((confirmed.message_id, confirmed.message_ref, confirmed.state), (42, 7, held.state))
+        self.assertEqual(self.service.tap(f'op:{action.token}:skip', operator=1, chat=99, message_id=43, tap_key='again').outcome, 'rejected')
+
+    def test_second_message_id_on_unconfirmed_card_is_wrong_message(self) -> None:
+        action = self.unconfirmed('second')
+        self.assertEqual(self.tap(action, 1, 'first').outcome, 'skipped')
+        self.assertEqual(self.service.tap(f'op:{action.token}:skip', operator=1, chat=99, message_id=43, tap_key='other').outcome, 'rejected')
+        with closing(sqlite3.connect(self.store._path)) as db, db:
+            self.assertEqual(db.execute("SELECT reason FROM rejections").fetchall(), [('wrong_message',)])
+
+    def test_confirmation_with_another_message_id_overwrites_the_tap_record(self) -> None:
+        action = self.unconfirmed('differs')
+        self.tap(action, 1, 'differs')
+        confirmed = self.service.delivered(action.token, 7, 50)
+        assert confirmed is not None
+        self.assertEqual(confirmed.message_id, 50)
+
+    def test_refused_taps_on_unconfirmed_card_record_nothing(self) -> None:
+        action = self.unconfirmed('refused')
+        self.assertEqual(self.service.tap(f'op:{action.token}:skip', operator=1, chat=98, message_id=42, tap_key='chat').outcome, 'rejected')
+        self.assertEqual(self.tap(action, 2, 'person').outcome, 'rejected')
+        held = self.store.get(action.token)
+        assert held is not None
+        self.assertIsNone(held.message_id)
+        with closing(sqlite3.connect(self.store._path)) as db, db:
+            self.assertEqual(db.execute("SELECT reason FROM rejections ORDER BY rowid").fetchall(), [('wrong_chat',), ('not_allowed',)])
+
+    def test_tap_without_message_id_on_unconfirmed_card_is_not_confirmed(self) -> None:
+        action = self.unconfirmed('none')
+        for bad in (None, '42', True):
+            result = self.service.tap(f'op:{action.token}:skip', operator=1, chat=99, message_id=bad, tap_key=f'bad{bad}')
+            self.assertEqual((result.accepted, result.outcome), (False, 'card_not_confirmed'))
+        held = self.store.get(action.token)
+        assert held is not None
+        self.assertIsNone(held.message_id)
+
     def test_coordinators_and_any_of(self) -> None:
         for who in (3, 4):
             action, _ = self.store.create('unbound_page', {}, chat=99, offer_key=str(who), ttl=60, allowed_tapper='permission:coordinator')

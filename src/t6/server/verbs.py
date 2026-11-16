@@ -9,7 +9,7 @@ from pathlib import Path
 from importlib.metadata import version
 from typing import Any, Callable, Mapping, cast
 
-from t6.domain.events import JsonValue
+from t6.domain.events import JobKind, JsonValue
 from urllib.parse import urlsplit
 
 from pydantic import ValidationError
@@ -18,6 +18,7 @@ from t6.frameio.project_folders import LocalFrameioQueue, QueueFrameioWriter
 from t6.person import AUTO_ACTOR, PERMISSIONS, SERVICES, People
 from t6.privacy import Registry as PrivacyRegistry, Session, mask_reply
 from t6.server.app import Request, Response, WebhookApp
+from t6.server.queue import MAIN_QUEUE
 from t6.registry.sqlite import _audit
 from t6.verbs import VERBS, Done, Preview, Refused, catalogue, invoke
 
@@ -801,6 +802,12 @@ class VerbAPI:
     def refused(rule: str, reason: str) -> Response:
         return Response(200, Refused(rule=rule, reason=reason).model_dump())
 
+    def _refused_command(self, chat: object, topic: object, key: object, text: str) -> Response:
+        """Answer a refused command in its chat and topic with one job per pushed command; a push that a real gateway cannot send gets no reply."""
+        if self.tap_app is not None and type(chat) is int and (topic is None or type(topic) is int) and isinstance(key, str) and key:
+            self.tap_app._inside.submit(MAIN_QUEUE, JobKind.CHAT_REPLY.value, f'chat.reply:{key}', {'chat': chat, 'topic': topic, 'text': text, 'key': key})
+        return Response(200, {'outcome': 'rejected'})
+
     def _tap(self, request: Request, actor: str) -> Response:
         if actor != 'gateway':
             return Response(403, {'error': 'only the gateway may push taps'})
@@ -829,20 +836,22 @@ class VerbAPI:
             # Typed in the source chat, where the freelancer is. The coordinator then taps a destination.
             args, chat, topic = body.get('args'), body.get('chat'), body.get('topic')
             key = request.header('idempotency-key') or body.get('idempotency_key')
-            if not isinstance(args, str) or not args.strip() or type(chat) is not int or (topic is not None and type(topic) is not int) or not isinstance(key, str) or not key or self.people.authorize(person[0], 'coordinator'):
-                return Response(200, {'outcome': 'rejected'})
+            if self.people.authorize(person[0], 'coordinator'):
+                return self._refused_command(chat, topic, key, 'Only a coordinator can use /abang.')
+            if not isinstance(args, str) or not args.strip() or type(chat) is not int or (topic is not None and type(topic) is not int) or not isinstance(key, str) or not key:
+                return self._refused_command(chat, topic, key, 'Usage: /abang @person note')
             mention, _, note = args.strip().partition(' ')
             vendor = self._vendor_person(mention)
             if vendor is None:
-                return Response(200, {'outcome': 'rejected'})
+                return self._refused_command(chat, topic, key, 'No Person matches that mention.')
             from t6.abang import start_draft
             return Response(200, {'outcome': 'accepted' if isinstance(start_draft(self.people.registry, person[0], vendor, chat, topic, note.strip() or None, key), Done) else 'rejected'})
         if body.get('kind') == 'command' and body.get('command') in ('link', 'unlink'):
-            if self.people.authorize(person[0], 'coordinator'):
-                return Response(200, {'outcome': 'rejected'})
             args = body.get('args')
             chat, topic = body.get('chat'), body.get('topic')
             key = request.header('idempotency-key') or body.get('idempotency_key')
+            if self.people.authorize(person[0], 'coordinator'):
+                return self._refused_command(chat, topic, key, f"Only a coordinator can use /{body['command']}.")
             if isinstance(args, str) and not args.strip() and body['command'] == 'link' and type(chat) is int and type(topic) is int:
                 import re
                 with self.people.registry._transaction() as db:
@@ -851,10 +860,12 @@ class VerbAPI:
                 if match:
                     args = match.group(1)
             if not isinstance(args, str) or len(args.split()) != 1 or type(chat) is not int or (topic is not None and type(topic) is not int) or not isinstance(key, str) or not key:
-                return Response(200, {'outcome': 'rejected'})
+                return self._refused_command(chat, topic, key, f"Usage: /{body['command']} CODE")
             entry = self.routes['/v1/project/' + ('link-chat' if body['command'] == 'link' else 'unlink-chat')]
             response = self._dispatch(entry, {'project': args.strip(), 'chat': chat, 'topic': topic, 'idempotency_key': key}, person[0])
-            return Response(200, {'outcome': 'accepted' if response.body.get('outcome') in ('preview', 'done') else 'rejected'})
+            if response.body.get('outcome') in ('preview', 'done'):
+                return Response(200, {'outcome': 'accepted'})
+            return self._refused_command(chat, topic, key, f"/{body['command']} {args.strip()}: {response.body.get('reason') or 'refused'}")
         data = body.get('data')
         if isinstance(data, str) and data.startswith('abang-dest:'):
             parts = data.split(':')

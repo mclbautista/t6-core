@@ -47,7 +47,7 @@ class AbangCommandTests(unittest.TestCase):
             db.execute("INSERT INTO projects (id, revision, code, code_form, rotation, created_at) VALUES ('p1', 1, 'ABC123', 'abc123', 'in', 0)")
             from t6.registry.core import normalize_page_id
             db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, 0, 1)", (normalize_page_id(page['id']), VENDOR))
-        queue = JobQueue(tmp.name + '/queue')
+        self.queue = queue = JobQueue(tmp.name + '/queue')
         self.api = VerbAPI(People(self.registry, PreviewTokens('test')), queue, {'gateway': 'gateway'}, lambda _: self.notion.client(),
                            WebhookApp(queue, ServerConfig(), registry=self.registry), data_sources={'contacts': 'contacts'})
         self.gateway = Gateway()
@@ -76,6 +76,18 @@ class AbangCommandTests(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0]['to'], -100)
         self.assertEqual([row[0]['text'] for row in sent[0]['buttons']], ['ABC123 · Editorial', 'ABC123'])
+
+    def test_refused_command_gets_one_reply(self) -> None:
+        def texts() -> list[Any]:
+            return [(job.dedupe_key, job.payload['chat'], job.payload['topic'], job.payload['text']) for job in self.queue.waiting('main') if job.kind == 'chat.reply']
+        self.assertEqual(self.command(7, '', 'a1').body['outcome'], 'rejected')
+        self.assertEqual(self.command(7, '', 'a1').body['outcome'], 'rejected')
+        self.assertEqual(texts(), [('chat.reply:a1', -100, None, 'Usage: /abang @person note')])
+        self.command(7, '@nobody note', 'a2')
+        self.command(42, '@freelancer note', 'a3')
+        self.assertEqual([t[3] for t in texts()[1:]], ['No Person matches that mention.', 'Only a coordinator can use /abang.'])
+        self.command(7, '@nobody', '')
+        self.assertEqual(len(texts()), 3)
 
     def test_only_the_coordinator_who_typed_it_can_tap_and_the_tap_confirms(self) -> None:
         self.command(7, '@freelancer graded trailer', 'cmd-2')

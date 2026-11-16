@@ -32,3 +32,5 @@ The owner accepted the exception on 2026-11-16. The reason is ADR 0003: the Fram
 worker is the only holder of the Frame.io token and never opens the t6 database, so
 it cannot read a job table there. No other work that starts inside T6 may use the
 VPS queue without a new note here.
+
+Note, 2026-11-16 (#398): the Frame.io review timer (`POST /review/timers`, then the `frameio.review_done` job on `main`) is part of this exception. The timers live in the VPS queue file, so the edge also serves that one route and the worker on the VPS `main` queue runs `frameio.review_done`. The edge still answers 404 to everything else.
