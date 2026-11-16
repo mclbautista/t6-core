@@ -15,7 +15,7 @@ from t6.frameio import (
     Versions,
 )
 from t6.frameio.api import RATE_LIMIT_TRIES, FrameioApi, FrameioError
-from t6.frameio.model import Approval, BriefingShow, Comment, FrameioProject, ShareLink, Version, decode
+from t6.frameio.model import Approval, BriefingShow, Comment, FileLocation, FrameioProject, ShareLink, Version, decode
 from t6.frameio.reads import FrameioReads
 from t6.frameio.testing import FakeFrameio, StaticTokens
 from t6.media_links import MediaLink
@@ -86,6 +86,14 @@ class ReadTests(ReadsTestCase):
         self.frameio.add_file("f1", "cut-v1.mov")
         versions = decode(Versions, self.reads(Versions(file_id="f1")))
         self.assertEqual([(version.file_id, version.name) for version in versions], [("f1", "cut-v1.mov")])
+
+    def test_a_folder_asked_for_as_a_stack_may_answer_404_or_422(self) -> None:
+        self.frameio.add_file("f1", "cut-v1.mov")
+        for status in (422, 404):
+            self.frameio.not_a_stack_status = status
+            versions = decode(Versions, self.reads(Versions(file_id="f1")))
+            self.assertEqual([version.file_id for version in versions], ["f1"])
+            self.assertEqual(self.reads.file_location("f1"), FileLocation(folder_id="folder-1"))
 
     def test_approvals_are_the_files_status_field(self) -> None:
         self.frameio.add_file("f1", "cut-v1.mov")

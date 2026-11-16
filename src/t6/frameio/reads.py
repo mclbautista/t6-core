@@ -61,6 +61,8 @@ SHARE_CACHE_SECONDS = 3600.0
 SHARE_SCAN_LIMIT = 30
 """How many of a project's newest live shares have their assets read (`T6_FRAMEIO_SHARE_SCAN_LIMIT`)."""
 _OLDEST = datetime.min.replace(tzinfo=timezone.utc)
+_NOT_A_STACK = frozenset({404, 422})
+"""Statuses that mean a file's parent is a folder, not a version stack. Frame.io answers 422 for a folder ID on the version stack route."""
 DURATION_FIELD = "duration"
 """Frame.io's file metadata field for the clip length in seconds (compared case-folded)."""
 FRAME_RATE_FIELD = "frame rate"
@@ -285,7 +287,7 @@ class FrameioReads:
         try:
             stack = self._api.get(f"{self._account()}/version_stacks/{_id(parent)}").get("data")
         except FrameioError as error:
-            if error.status != 404:  # 404: the parent is a folder, not a version stack
+            if error.status not in _NOT_A_STACK:
                 raise
             return FileLocation(folder_id=parent)
         folder = _text(stack.get("parent_id")) if isinstance(stack, dict) else None
@@ -336,7 +338,7 @@ class FrameioReads:
             try:
                 stack = tuple(self._api.pages(f"{self._account()}/version_stacks/{_id(parent)}/children"))
             except FrameioError as error:
-                if error.status != 404:  # 404: the parent is a folder, not a version stack
+                if error.status not in _NOT_A_STACK:
                     raise
             else:
                 return tuple(Version.from_json({**Version.from_api(raw).to_json(), "stack_id": parent}) for raw in stack)
