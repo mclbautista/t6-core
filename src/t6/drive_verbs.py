@@ -354,8 +354,10 @@ class DriveVerbs:
                 return Refused(rule='input', reason=str(error))
             plan['on'] = on
             delivery = None
+            recipient = None
             if verb == 'release':
                 plan['shipment_id'] = event.shipment_id
+                recipient = plan['recipient'] = (values.get('recipient') or '').strip() or None
                 if values.get('delivery'):
                     carrier = store.delivery_carrier(values['delivery'])
                     if not carrier or carrier[0] != 'drive':
@@ -363,7 +365,7 @@ class DriveVerbs:
                     if carrier[1] != project:
                         return Refused(rule='delivery', reason='Delivery belongs to a different Project')
                     delivery = plan['delivery_id'] = values['delivery']
-            return Plan(plan, state, lambda store_: self._custody(store_, verb, event, ids, delivery))
+            return Plan(plan, state, lambda store_: self._custody(store_, verb, event, ids, delivery, recipient))
         if verb == 'assign':
             start = values.get('start') or today
             try:
@@ -403,13 +405,14 @@ class DriveVerbs:
         return Plan(plan, state, lambda store_: self._close(store_, ids[0], number, held, date.fromisoformat(end)))
 
     @staticmethod
-    def _custody(store: DriveStore, verb: str, event: CustodyEvent, ids: list[str], delivery: str | None) -> list[Change]:
+    def _custody(store: DriveStore, verb: str, event: CustodyEvent, ids: list[str], delivery: str | None, recipient: str | None) -> list[Change]:
         after = audit_json(event)
         if delivery is not None:
             after['delivery_id'] = delivery
         if verb == 'release':
             assert event.party is not None and event.on is not None
-            store.release_shipment(ids, on=event.on, party=event.party, project=event.project, logged_by=event.logged_by, shipment_id=event.shipment_id)
+            store.release_shipment(ids, on=event.on, party=event.party, project=event.project, logged_by=event.logged_by, shipment_id=event.shipment_id,
+                                   reason=event.reason, recipient=recipient)
             if delivery is not None:
                 store.link_delivery(delivery, ids)
         else:

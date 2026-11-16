@@ -535,12 +535,15 @@ class DriveStore(Protocol):
 
     def release_shipment(
         self, drive_ids: Iterable[str], *, on: date, party: Party, project: Ref, logged_by: Ref,
-        shipment_id: str | None = None
+        shipment_id: str | None = None, reason: str | None = None, recipient: str | None = None
     ) -> str:
         """Release several Drives in one handover and return the new shipment ID.
 
         A caller that must give the same shipment on a retry passes its own
-        `shipment_id`; otherwise the store makes a new one.
+        `shipment_id`; otherwise the store makes a new one. `reason` goes on
+        every released event. `recipient` is the free-text name of the person
+        who took the Drives. The store also keeps each Drive's facts as they are
+        now (see `shipment_facts`).
 
         Appends one released event per Drive, all with the same new shipment ID.
         An ID given twice is released once. Raises ValueError if no ID is
@@ -554,6 +557,14 @@ class DriveStore(Protocol):
 
         In the order they were appended. An unknown shipment ID gives an empty
         tuple.
+        """
+        ...
+
+    def shipment_facts(self, shipment_id: str) -> tuple[str | None, dict[str, Drive]] | None:
+        """The recipient of a shipment and each Drive's facts as they were at release, by Drive ID.
+
+        None for a shipment with no kept facts: an unknown ID, or one made from
+        events alone (the workbook importers, or a release before facts were kept).
         """
         ...
 

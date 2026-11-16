@@ -771,6 +771,22 @@ class InventoryReadSupportTests(unittest.TestCase):
         store.append_event(drive_id(store, "D1"), event(CustodyKind.RELEASED, 13, shipment_id=first))
         self.assertEqual(store.list_shipments(), (first, second))
 
+    def test_a_shipment_keeps_each_drives_facts_and_the_recipient_as_they_were_at_release(self) -> None:
+        store = store_with_drives("D1", "D2")
+        one, two = drive_id(store, "D1"), drive_id(store, "D2")
+        store.set_facts(one, {"brand": "Before"})
+        shipment = store.release_shipment([one, two], on=date(2026, 5, 10), party=CLIENT, project=SHOW_A, logged_by=CUSTODIAN, reason="handover", recipient="Invented Courier")
+        store.set_facts(one, {"brand": "After"})
+        recipient, facts = store.shipment_facts(shipment) or (None, {})
+        self.assertEqual(recipient, "Invented Courier")
+        self.assertEqual((facts[one].brand, facts[two].serial), ("Before", "D2"))
+        self.assertEqual([event.reason for _, event in store.shipment_events(shipment)], ["handover"] * 2)
+        self.assertEqual(store.get_drive(one).brand, "After")  # type: ignore[union-attr]
+        self.assertIsNone(store.shipment_facts("nope"))
+        by_hand = "shipment-by-hand"  # a shipment made from events alone, as the importers make them, has no kept facts
+        store.append_event(one, event(CustodyKind.RELEASED, 11, shipment_id=by_hand))
+        self.assertIsNone(store.shipment_facts(by_hand))
+
     def test_a_label_and_a_form_factor_can_be_corrected_and_cleared(self) -> None:
         store = make_store()
         drive = store.add_drive(Drive(serial="D1", label="M01"))

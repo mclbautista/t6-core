@@ -351,6 +351,7 @@ _MIGRATIONS = (
     CREATE TABLE calendar_event_versions (calendar TEXT NOT NULL, event TEXT NOT NULL, version TEXT NOT NULL, outcome TEXT NOT NULL, PRIMARY KEY (calendar, event, version))"""),
     (41, False, """CREATE TABLE frameio_held_activity (id INTEGER PRIMARY KEY AUTOINCREMENT, frameio_project_id TEXT NOT NULL, dedupe_key TEXT NOT NULL UNIQUE, payload TEXT NOT NULL, held_at REAL NOT NULL, released_at REAL);
     CREATE INDEX frameio_held_activity_by_project ON frameio_held_activity (frameio_project_id, released_at)"""),
+    (42, False, """CREATE TABLE drive_shipment_facts (shipment_id TEXT NOT NULL, drive_id TEXT NOT NULL REFERENCES drives(id), recipient TEXT, data TEXT NOT NULL, PRIMARY KEY (shipment_id, drive_id))"""),
 )
 
 
@@ -370,6 +371,10 @@ def _migrate(db: sqlite3.Connection) -> None:
                     for operation in ("UPDATE", "DELETE"):
                         db.execute(f"CREATE TRIGGER {table}_no_{operation.lower()} BEFORE {operation} ON {table} "
                                    f"BEGIN SELECT RAISE(ABORT, '{table} is append-only'); END")
+            if version == 42:
+                for operation in ("UPDATE", "DELETE"):
+                    db.execute(f"CREATE TRIGGER drive_shipment_facts_no_{operation.lower()} BEFORE {operation} ON drive_shipment_facts "
+                               "BEGIN SELECT RAISE(ABORT, 'drive shipment facts are append-only'); END")
             if version == 35:
                 for operation in ("UPDATE", "DELETE"):
                     db.execute(f"CREATE TRIGGER drive_events_no_{operation.lower()} BEFORE {operation} ON drive_events "

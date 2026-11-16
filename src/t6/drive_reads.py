@@ -94,7 +94,10 @@ def shipment(store: DriveStore, shipment_id: str) -> DriveShipmentOutput | None:
     releases = store.shipment_events(shipment_id)
     if not releases:
         return None
-    return DriveShipmentOutput(shipment_id=shipment_id, releases=[DriveRelease(drive=_item(store, d), event=_event(e)) for d, e in releases])
+    kept = store.shipment_facts(shipment_id)
+    facts = kept[1] if kept else {}
+    return DriveShipmentOutput(shipment_id=shipment_id, recipient=kept[0] if kept else None, facts_at_release=kept is not None,
+                               releases=[DriveRelease(drive=_item(store, facts.get(d.id, d)), event=_event(e)) for d, e in releases])
 
 
 def exceptions(store: DriveStore) -> DriveExceptionsOutput:

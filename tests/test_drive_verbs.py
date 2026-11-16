@@ -9,7 +9,7 @@ from datetime import date
 from typing import Any
 from unittest.mock import patch
 
-from t6.drives import Assignment, Drive, DriveStatus, FormFactor, Ref, Role, SourceRow
+from t6.drives import Assignment, CustodyEvent, CustodyKind, Drive, DriveStatus, FormFactor, Ref, Role, SourceRow
 from t6.drives.importer import ReviewItem
 from t6.drives.sqlite import SqliteDriveStore
 from t6.ids import EntityKind, T6Id
@@ -191,6 +191,36 @@ class DriveVerbTests(unittest.TestCase):
         unknown = self.call('drive', 'shipment', {'shipment': 'shipment-none'}, actor='reader')
         self.assertIsInstance(unknown, Refused)
         self.assertEqual(unknown.rule, 'shipment')
+
+    def test_drive_shipment_shows_the_facts_as_they_were_at_release_and_the_recipient(self) -> None:
+        one, drive = self.projects[0], self.drives[0]
+        self.write('edit', {'drive': drive, 'brand': 'Before', 'capacity_tb': 2})
+        shipment = self.write('release', {'drives': [drive], 'project': one, 'party': 'Invented Studio', 'party_kind': 'studio', 'on': '2026-11-02',
+                                          'reason': 'client pickup', 'recipient': 'Invented Courier'}).result['shipment_id']
+        self.write('edit', {'drive': drive, 'brand': 'After', 'label': 'Relabelled', 'serial': 'FIXED-1'})
+        got = self.read('shipment', {'shipment': shipment})
+        self.assertTrue(got['facts_at_release'])
+        self.assertEqual(got['recipient'], 'Invented Courier')
+        (release,) = got['releases']
+        self.assertEqual((release['drive']['brand'], release['drive']['label'], release['drive']['serial'], release['drive']['capacity_tb']), ('Before', 'Synthetic 0', 'SYNTH-0', 2.0))
+        self.assertEqual(release['event']['reason'], 'client pickup')
+        self.assertEqual(self.read('get', {'drive': drive})['drive']['brand'], 'After')
+        self.assertEqual(self.read('get', {'drive': drive})['events'][0]['reason'], 'client pickup')
+
+    def test_drive_shipment_of_an_earlier_release_gives_the_current_facts_and_says_so(self) -> None:
+        drive = self.drives[0]
+        self.store.append_event(drive, CustodyEvent(kind=CustodyKind.RELEASED, on=date(2026, 1, 2), party=None, project=Ref(text='Invented Show'),
+                                                    logged_by=Ref(text='Invented Custodian'), shipment_id='shipment-before'))
+        self.write('edit', {'drive': drive, 'brand': 'Current'})
+        got = self.read('shipment', {'shipment': 'shipment-before'})
+        self.assertFalse(got['facts_at_release'])
+        self.assertIsNone(got['recipient'])
+        self.assertEqual(got['releases'][0]['drive']['brand'], 'Current')
+
+    def test_a_release_without_a_reason_or_recipient_stays_as_it_was(self) -> None:
+        shipment = self.write('release', {'drives': [self.drives[0]], 'project': self.projects[0], 'party': 'Invented Studio', 'party_kind': 'studio'}).result['shipment_id']
+        got = self.read('shipment', {'shipment': shipment})
+        self.assertEqual((got['recipient'], got['releases'][0]['event']['reason'], got['facts_at_release']), (None, None, True))
 
     def test_drive_exceptions_lists_the_import_review_queue(self) -> None:
         self.assertEqual(self.read('exceptions'), {'exceptions': []})

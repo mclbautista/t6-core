@@ -1659,6 +1659,8 @@ class DriveReleaseInput(BaseModel):
     party_kind: Literal['contact', 'studio']
     on: str | None = None
     delivery: str | None = None
+    reason: str | None = None
+    recipient: str | None = None  # the person who took the Drives, in free text
     idempotency_key: str | None = None
     confirm: str | None = None
 
@@ -1989,7 +1991,11 @@ class DriveRelease(BaseModel):
 
 
 class DriveShipmentOutput(BaseModel):
+    """`releases` hold each Drive's facts as they were at release, unless `facts_at_release` is false: the
+    shipment was released before facts were kept, and they are the Drive's current facts."""
     shipment_id: str
+    recipient: str | None
+    facts_at_release: bool
     releases: list[DriveRelease]
 
 

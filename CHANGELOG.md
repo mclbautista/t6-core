@@ -15,6 +15,8 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 - `drive list` carries each Drive's open Assignments (#370) as `open_assignments`: number, label, Project ID or text, role, start and holder (with the end, remarks and return date `drive get` shows), so the inventory needs no `drive get` per row.
 
+- A shipment keeps the Drives' facts as they were at release (#370). `drive release` stores each Drive's facts, and `drive shipment` returns those, not the current ones; for a shipment made before this change it returns the current facts and `facts_at_release` is false. `drive release` also takes an optional `reason` (stored on the released events) and an optional free-text `recipient` (the person who took the Drives, stored on the shipment and shown by `drive shipment`). Migration 42 adds the `drive_shipment_facts` table (append-only); the `DriveStore` gains `shipment_facts`, and `release_shipment` takes `reason` and `recipient`.
+
 ### Changed
 
 - Drive custody verbs refuse a step that cannot follow the last one (#378): `drive receive` is refused for a Drive in custody or retired, `drive release` for one released or retired (the whole release, naming every such Drive), `drive return` unless the Drive is released, and `drive retire` for one already retired. The refusal has rule `custody`, comes at preview and again at confirm in the write transaction, and names the Drive and its status. A retired Drive can no longer be received or returned through the verbs.
