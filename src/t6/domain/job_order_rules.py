@@ -18,6 +18,8 @@ from t6.domain import JobOrderStatus
 __all__ = [
     "DEPARTMENT_ALIASES",
     "HEALTH_FLAGS",
+    "JOB_ORDER_FILTER_CRITERIA",
+    "JOB_ORDER_FILTER_QUESTION",
     "MFG_SHUTTLES",
     "WATERMARK_DEFAULT",
     "Header",
@@ -212,3 +214,23 @@ def health_flags(health: str | None) -> tuple[str, ...]:
     """The flags (Blocked, Delayed, Urgent) in a Job Order's Health text, ignoring emoji."""
     text = (health or "").lower()
     return tuple(flag for flag in HEALTH_FLAGS if flag.lower() in text)
+
+
+JOB_ORDER_FILTER_QUESTION = "Is this message a Job Order, a request for work to be done?"
+"""The question of the `job_order` filter rule (`t6.domain.message_filter`)."""
+
+JOB_ORDER_FILTER_CRITERIA: Mapping[str, str] = {
+    "match": (
+        "The message asks for work to be done. It usually has a header line naming the project and Department "
+        "with a number, the people assigned and a deadline."
+    ),
+    "maybe": (
+        "The message may ask for work, but it is short or incomplete: a task with no header, no assignee or no "
+        "deadline, or a change to a request made earlier."
+    ),
+    "no": (
+        "The message asks for no work: chatter, thanks, a question, a status update, or a reply that only "
+        "answers or acknowledges something."
+    ),
+}
+"""What `match`, `maybe` and `no` mean for the `job_order` filter rule."""

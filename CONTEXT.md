@@ -370,6 +370,11 @@ ADMIN, then any other Department A to Z, then none) and the alias `TO` for
   Watermark "none" by default, Status and Pending blank, free text last. What
   cannot be settled (header, Title, Task, Purpose, Assigned, deliverable code,
   Link Settings, MFG shuttle range) is a finding.
+- **Filter rule** (`t6.domain.message_filter`): a name, a question, the `match`,
+  `maybe` and `no` criteria, and the thresholds (`pass` at 0.5 for `match`, `drop`
+  at 0.9 for `no`, otherwise `unsure`). The `job_order` rule asks whether a message
+  is a request for work: chatter, questions and replies that ask for no work are
+  not Job Orders. The texts sit in `t6.domain.job_order_rules`.
 - **Status groups**: not started (Needs Intake Review, Pending), started (In
   progress, Needs Completion Review, Done), cancelled. Active means not Done
   and not Cancelled.

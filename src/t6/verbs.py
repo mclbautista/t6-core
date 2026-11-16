@@ -26,7 +26,7 @@ from types import UnionType
 from pydantic import AwareDatetime, BaseModel, Field, ConfigDict, SerializerFunctionWrapHandler, field_validator, model_serializer
 from t6.domain import Project, JobOrder, Deliverable, MeetingNote, Contact, Camera, ExternalRef, Machine, Ring
 from t6.vocabulary import DRIVE_ROLES, DriveRole, MediaKind, MediaRole, PersonKind
-from t6.llm.api import Done as Done, LLMDecideInput as LLMDecideInput, LLMDecideOutput as LLMDecideOutput, LLMRunInput as LLMRunInput, LLMRunOutput as LLMRunOutput
+from t6.llm.api import Done as Done, LLMDecideInput as LLMDecideInput, LLMDecideOutput as LLMDecideOutput, LLMFilterInput as LLMFilterInput, LLMFilterOutput as LLMFilterOutput, LLMRunInput as LLMRunInput, LLMRunOutput as LLMRunOutput
 
 if TYPE_CHECKING:
     from t6.person import People
@@ -1026,6 +1026,10 @@ def llm_api_only(inputs: LLMRunInput, open_notion: Callable[..., Any]) -> Outcom
 
 
 def llm_decide_api_only(inputs: LLMDecideInput, open_notion: Callable[..., Any]) -> Outcome:
+    return Refused(rule="api", reason="LLM tasks run on the t6 API")
+
+
+def llm_filter_api_only(inputs: LLMFilterInput, open_notion: Callable[..., Any]) -> Outcome:
     return Refused(rule="api", reason="LLM tasks run on the t6 API")
 
 
@@ -2457,6 +2461,7 @@ VERBS = (
     Verb("project", "list", "List Projects", (), ProjectListInput, ProjectListOutput, "reader", "Read Projects.", api_read, read_only=True),
     Verb("llm", "run", "Run an LLM task on the API", (), LLMRunInput, LLMRunOutput, "llm", "Server policy and masking apply.", llm_api_only),
     Verb("llm", "decide", "Ask the Decisions provider for match, maybe or no on each candidate", (), LLMDecideInput, LLMDecideOutput, "llm", "Server policy and masking apply.", llm_decide_api_only),
+    Verb("llm", "filter", "Ask the Decisions provider whether one message passes a named filter rule", (), LLMFilterInput, LLMFilterOutput, "llm", "Server policy and masking apply. The verdict is advice; a refusal means go on.", llm_filter_api_only),
     Verb("person", "add", "Register a Person", (), PersonAddInput, PersonWriteOutput, "operator", "A page belongs to one Person.", person_write),
     Verb("machine", "list", "List the Machines and their fleet facts", (), MachineListInput, MachineListOutput, "reader", "Read the Bays rows as Machines.", api_read, read_only=True),
     Verb("machine", "sync", "Write fleet facts to the Machines' Bays rows", (), MachineSyncInput, MachineSyncOutput, "fleet", "Preview each Machine's row and old and new facts, then confirm. Never creates a row.", api_write),
@@ -2900,7 +2905,7 @@ def add_parsers(commands: Any) -> None:
             parser.add_argument("--idempotency-key", required=True)
             parser.set_defaults(registered_verb=entry)
             continue
-        if entry.handler is llm_decide_api_only:
+        if entry.handler in (llm_decide_api_only, llm_filter_api_only):
             for name, field in entry.input_model.model_fields.items():
                 parser.add_argument("--" + name.replace("_", "-"), type=json.loads if name in ("state", "criteria", "candidates") else str,
                                     required=field.is_required(), default=field.get_default())
