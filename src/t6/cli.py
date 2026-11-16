@@ -499,6 +499,11 @@ def main(
     parser = argparse.ArgumentParser(prog="t6")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("version", help="Print the installed version as JSON")
+    commands.add_parser(
+        "mcp",
+        help="Run the read-only MCP server on stdio (same as python -m t6.mcp)",
+        description="Reads T6_API_URL, T6_API_SECRET and T6_MCP_TIMEOUT_SECONDS (default 60). See docs/deployment.md.",
+    )
     check = commands.add_parser(
         "schema-check",
         help="Diff live Notion against the schema snapshot; audit Projects against the registry",
@@ -760,6 +765,10 @@ def main(
     args.command = {"person": "contacts", "project": "projects", "camera": "cameras"}.get(args.command, args.command)
     if getattr(args, "cameras_command", None) == "enrich":
         args.cameras_command = "update"
+    if args.command == "mcp":
+        from t6.mcp import main as mcp_main
+        mcp_main()
+        return 0
     if args.command == "commands":
         print(json.dumps(verbs.catalogue(), ensure_ascii=False, indent=2))
         return 0

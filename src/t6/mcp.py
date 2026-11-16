@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import math
+import os
 import sys
 from importlib.metadata import version
 from typing import Any
@@ -61,8 +63,20 @@ class MCPServer:
         return response
 
 
+def _timeout() -> float:
+    """Seconds the API client waits, from T6_MCP_TIMEOUT_SECONDS (default 60); anything but a positive number stops the start."""
+    text = os.environ.get('T6_MCP_TIMEOUT_SECONDS', '60')
+    try:
+        seconds = float(text)
+    except ValueError:
+        seconds = 0.0
+    if not (math.isfinite(seconds) and seconds > 0):
+        sys.exit(f'T6_MCP_TIMEOUT_SECONDS must be a positive number of seconds, not {text!r}')
+    return seconds
+
+
 def main() -> None:
-    server = MCPServer(Client(mcp=True))
+    server = MCPServer(Client(mcp=True, timeout=_timeout()))
     for line in sys.stdin:
         try:
             request = json.loads(line)

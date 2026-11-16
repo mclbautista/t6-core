@@ -4,6 +4,14 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- `t6 mcp` runs the read-only MCP server on stdio, the same server as `python -m t6.mcp` (#413); `docs/deployment.md` has an "MCP server" section with the settings, the `mcp` service binding and an example client entry.
+
+### Fixed
+
+- The MCP server's API client waits `T6_MCP_TIMEOUT_SECONDS` (default 60, not a fixed 10 s) so a slow read such as the unfiltered Project list is no longer cut off (#413); a value that is not a positive number stops the start, and a call that still times out returns `Unavailable` naming that setting. `Client()` elsewhere keeps 10 s.
+
 ## [0.6.4] - 2026-11-16
 
 One fix from round 2 of the live test: a version stack made in Frame.io no longer leaves a failed job. No migration: the schema stays at 43.
