@@ -77,6 +77,62 @@ class ReadTests(unittest.TestCase):
         plain = next(p for p in result.result['projects'] if p['name'] == 'Example Show')
         self.assertIsNone(plain['project_health'])
 
+    def test_project_reads_return_date_ends_and_supervisors(self) -> None:
+        from t6.verbs import ProjectGetInput, ProjectListInput
+        from t6.notion.generated import ProjectsRow
+        supe = self.notion.add_page('contacts', {'Name': title('Ben Lim')})
+        bound = self.bound_person(supe)
+        unbound = self.notion.add_page('contacts', {'Name': title('Cy Tan')})
+        self.notion.add_page('projects', {
+            ProjectsRow.notion_name('name'): title('Range show'),
+            ProjectsRow.notion_name('playdate'): date('2026-11-16', '2026-11-20'),
+            ProjectsRow.notion_name('submission_deadline'): date('2026-11-10T09:00:00.000+00:00', '2026-11-10T17:30:00.000+00:00'),
+            ProjectsRow.notion_name('archival_deadline'): date('2026-12-01'),
+            ProjectsRow.notion_name('prod_coor_supe'): relation(supe['id'], unbound['id'])})
+        result = self.client.project_list(ProjectListInput())
+        assert isinstance(result, Done)
+        project = next(p for p in result.result['projects'] if p['name'] == 'Range show')
+        self.assertEqual((project['playdate'], project['playdate_end']), ('2026-11-16', '2026-11-20'))
+        self.assertEqual(project['submission_deadline_end'][:19], '2026-11-10T17:30:00')
+        self.assertEqual((project['archival_deadline'], project['archival_deadline_end']), ('2026-12-01', None))
+        self.assertEqual(project['prod_coor_supe_ids'], [bound, unbound['id']])
+        got = self.client.project_get(ProjectGetInput(project=project['page_id']))
+        assert isinstance(got, Done)
+        self.assertEqual(got.result['project']['playdate_end'], '2026-11-20')
+        self.assertEqual(got.result['project']['prod_coor_supe_ids'], [bound, unbound['id']])
+        plain = next(p for p in result.result['projects'] if p['name'] == 'Example Show')
+        self.assertEqual((plain['playdate_end'], plain['prod_coor_supe_ids']), (None, []))
+
+    def test_project_code_is_the_registrys_and_notion_project_code_is_notions(self) -> None:
+        from t6.registry import Registered, Rotation
+        from t6.verbs import ProjectGetInput, ProjectListInput
+        from t6.notion.generated import ProjectsRow
+        from t6.notion.testing import select
+        page = self.notion.add_page('projects', {ProjectsRow.notion_name('name'): title('Coded show'),
+                                                 ProjectsRow.notion_name('project_code'): select('CODE')})
+        registered = self.registry.register(actor='setup', idempotency_key='coded', notion_page_id=page['id'], code=None, rotation=Rotation.IN)
+        assert isinstance(registered, Registered)
+        result = self.client.project_list(ProjectListInput())
+        assert isinstance(result, Done)
+        project = next(p for p in result.result['projects'] if p['name'] == 'Coded show')
+        self.assertEqual((project['project_code'], project['notion_project_code']), (None, 'CODE'))
+        got = self.client.project_get(ProjectGetInput(project=registered.project.id))
+        assert isinstance(got, Done)
+        self.assertEqual((got.result['project']['project_code'], got.result['project']['notion_project_code']), (None, 'CODE'))
+
+    def test_jo_reads_return_every_related_project(self) -> None:
+        from t6.verbs import JoListInput
+        second = self.notion.add_page('projects', {'Name': title('Second Show')})
+        both = self.notion.add_page('job_orders', {JobOrdersRow.notion_name('name'): title('Two projects'),
+                                                   JobOrdersRow.notion_name('projects'): relation(self.project['id'], second['id'])})
+        result = self.client.jo_list(JoListInput())
+        assert isinstance(result, Done)
+        order = next(o for o in result.result['job_orders'] if o['page_id'] == both['id'])
+        self.assertEqual(order['project_ids'], [self.project['id'], second['id']])
+        self.assertEqual(order['project_id'], self.project['id'])
+        single = next(o for o in result.result['job_orders'] if o['page_id'] == self.jo['id'])
+        self.assertEqual(single['project_ids'], [self.project['id']])
+
     def test_departments_include_misc_only_on_request(self) -> None:
         from t6.verbs import DepartmentsInput
         self.notion.add_option('job_orders', 'Department', 'MISC')

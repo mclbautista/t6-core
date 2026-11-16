@@ -543,8 +543,8 @@ def url_value(value: str | None) -> JSON:
     return {"type": "url", "url": value}
 
 
-def date(start: str | None) -> JSON:
-    return {"type": "date", "date": {"start": start, "end": None} if start else None}
+def date(start: str | None, end: str | None = None) -> JSON:
+    return {"type": "date", "date": {"start": start, "end": end} if start else None}
 
 
 def _text(text: str) -> JSON:

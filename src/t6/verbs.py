@@ -1317,6 +1317,12 @@ class MeetingNotesListInput(ReadInput):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ReadJobOrder(JobOrder):
+    """A Job Order as the API reads it.
+
+    `health` is Notion's Health formula: `None` when it gave no value and `""`
+    when it computed an empty string.
+    """
+
     t6_id: str | None = None
 
 

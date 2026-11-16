@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 JSON = dict[str, Any]
 
@@ -88,15 +89,38 @@ def email(prop: JSON | None) -> str | None:
     return _value(prop, "email") or None
 
 
-def date_start(prop: JSON | None) -> date | datetime | None:
-    """The start of a date property: a date, or a datetime when it has a time."""
-    value = _value(prop, "date")
-    start = value.get("start") if isinstance(value, dict) else None
-    if not start:
+def _moment(text: str | None, zone: Any = None) -> date | datetime | None:
+    """A date, or a datetime when `text` has a time. A time with no offset takes `zone` (a name such as "America/New_York") when it names one."""
+    if not text:
         return None
-    if "T" in start:
-        return datetime.fromisoformat(start)
-    return date.fromisoformat(start)
+    if "T" not in text:
+        return date.fromisoformat(text)
+    moment = datetime.fromisoformat(text)
+    if moment.tzinfo is None and isinstance(zone, str) and zone:
+        try:
+            return moment.replace(tzinfo=ZoneInfo(zone))
+        except (ZoneInfoNotFoundError, ValueError):
+            return moment
+    return moment
+
+
+def date_start(prop: JSON | None) -> date | datetime | None:
+    """The start of a date property: a date, or a datetime when it has a time.
+
+    A time with no offset takes the value's `time_zone` when Notion holds one;
+    with neither it stays naive (the workspace time).
+    """
+    value = _value(prop, "date")
+    return _moment(value.get("start"), value.get("time_zone")) if isinstance(value, dict) else None
+
+
+def date_range(prop: JSON | None) -> tuple[date | datetime | None, date | datetime | None]:
+    """The start and the end of a date property. The end is None when the date has none; it keeps its time as Notion holds it."""
+    value = _value(prop, "date")
+    if not isinstance(value, dict):
+        return None, None
+    zone = value.get("time_zone")
+    return _moment(value.get("start"), zone), _moment(value.get("end"), zone)
 
 
 def phone_number(prop: JSON | None) -> str | None:

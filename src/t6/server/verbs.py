@@ -802,11 +802,13 @@ class VerbAPI:
                            assistant_editor_ids=ids(project.assistant_editor_ids),
                            online_editor_ids=ids(project.online_editor_ids), colorist_ids=ids(project.colorist_ids),
                            sound_tech_ids=ids(project.sound_tech_ids), post_coordinator_ids=ids(project.post_coordinator_ids),
-                           director_ids=ids(project.director_ids), cinematographer_ids=ids(project.cinematographer_ids))
+                           director_ids=ids(project.director_ids), cinematographer_ids=ids(project.cinematographer_ids),
+                           prod_coor_supe_ids=ids(project.prod_coor_supe_ids))
         def order_result(order: Any) -> dict[str, Any]:
             item = asdict(order)
             item['t6_id'] = self.people.registry.bound_entity('notion', order.page_id)
             item['project_id'] = refs.identity(order.project_id) or order.project_id
+            item['project_ids'] = [refs.identity(page) or page for page in order.project_ids]
             for field in ('assigned_ids', 'cc_ids', 'coordinator_ids', 'deliverable_ids'):
                 item[field] = [identity(page) for page in item[field]]
             return item
