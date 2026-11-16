@@ -420,6 +420,16 @@ Manifest, Ring, Munki Client Version, Last Check-in and OS Version.
   stale. Its observed facts (client version, OS version, last check-in) are
   not written.
 
+## Concern
+
+A Concern is shared information. It is a waiting-on record, and it is also the
+data that makes up the text of the brief (term: **Concern text**), so the
+studio can count the Concerns raised at every PSR and see how they age and
+close. An app keeps no Concern list of its own. Each Concern has a source:
+`person`, `pm_notes_scan`, `date_rule`, `flag_rule`, `pm_notes_read` or
+`leave`. A Concern may have no owner and may wait on nobody. None of these
+sources is chat text (ADR 0007).
+
 ## Consumer contract
 
 The rules every app follows to use t6-core (scope, boundary, `t6.domain`,

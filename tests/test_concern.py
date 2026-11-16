@@ -152,7 +152,7 @@ class ConcernTests(unittest.TestCase):
         self.assertEqual(self.store.raise_at_psr(), [])
 
     def test_validation_and_catalogue(self) -> None:
-        result = self.store.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': '', 'anchor': 'hello', 'as_of': '2026-01-01'}, actor='person')
+        result = self.store.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'lab', 'anchor': ' ', 'as_of': '2026-01-01'}, actor='person')
         self.assertIsInstance(result, Refused)
         elsewhere = self.store.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'lab', 'anchor': 'Client has not sent the KDM', 'as_of': '2026-01-01'}, actor='person')
         assert isinstance(elsewhere, Refused)
@@ -231,12 +231,106 @@ class ConcernTests(unittest.TestCase):
             dump = '\n'.join(db.iterdump())
             self.assertNotIn('unrelated chat text', dump)
 
+    def test_record_message_keeps_the_date_of_the_brief_when_given(self) -> None:
+        concern = self.raise_concern()
+        self.write('record-message', {'concern': concern, 'chat': '-100', 'message_id': '1', 'brief_date': '2026-11-16'}, 'dated')
+        self.write('record-message', {'concern': concern, 'chat': '-100', 'message_id': '2'}, 'undated')
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute('SELECT message_id, brief_date FROM concern_brief_messages ORDER BY message_id').fetchall(), [('1', '2026-11-16'), ('2', None)])
+        refused = self.store.write('record-message', {'concern': concern, 'chat': '-100', 'message_id': '3', 'brief_date': 'Monday'}, actor='person', idempotency_key='bad-date')
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'input')
+
     def test_brief_can_carry_multiple_concerns(self) -> None:
         first = self.raise_concern()
         second = self.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'studio', 'anchor': 'Waiting on studio', 'as_of': '2026-11-01'}, 'second')['concern_id']
         for concern in (first, second):
             self.write('record-message', {'concern': concern, 'chat': 'chat', 'message_id': '1'}, 'mapping-' + concern)
         self.assertEqual(set(self.store.for_message('chat', '1')), {first, second})
+
+    def raise_flag(self, line: str, **values: Any) -> str:
+        key = 'flag-' + line + str(values)
+        raised = {'project': self.project, 'anchor': line, 'as_of': '2026-11-16', 'source': 'flag_rule', **values}
+        done = self.store.write('raise', raised, actor='reports', idempotency_key=key)
+        assert isinstance(done, Preview)
+        done = self.store.write('raise', raised, actor='reports', idempotency_key=key, confirm=done.token)
+        assert isinstance(done, Done)
+        return str(done.result['concern_id'])
+
+    def test_a_concern_may_have_no_owner_and_no_waiting_on(self) -> None:
+        concern = self.raise_flag('No editor is named')
+        record = self._get(concern)
+        self.assertEqual((record['owner_id'], record['waiting_on'], record['text'], record['source'], record['closed_at']), (None, '', 'No editor is named', 'flag_rule', None))
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute('SELECT text_key FROM concerns WHERE id = ?', (concern,)).fetchone()[0], 'no editor is named')
+        other = self.raise_flag('Playdate is missing', text='  Playdate   IS missing ', owner='coordinator')
+        self.assertEqual((self._get(other)['text'], self._get(other)['anchor'], self._get(other)['owner_id']), ('  Playdate   IS missing ', 'Playdate is missing', 'coordinator'))
+        self.assertEqual(self._get(self.raise_concern())['source'], 'person')
+
+    def test_person_raise_needs_an_owner_a_named_party_and_a_known_source(self) -> None:
+        base = {'project': self.project, 'waiting_on': 'client', 'anchor': 'Waiting on client', 'as_of': '2026-11-01'}
+        refused = self.store.write('raise', base, actor='person')
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'input')
+        refused = self.store.write('raise', {**base, 'owner': 'coordinator', 'waiting_on': 'lab'}, actor='person')
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'waiting_on')
+        refused = self.store.write('raise', {**base, 'owner': 'coordinator', 'source': 'chat'}, actor='person')
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'source')
+        refused = self.store.write('raise', {**base, 'owner': 'nobody'}, actor='person')
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'owner')
+        self.assertIsInstance(self.store.write('raise', {**base, 'owner': 'coordinator', 'waiting_on': None}, actor='person'), Preview)
+
+    def test_a_concern_that_is_not_closed_is_unique_by_project_and_text(self) -> None:
+        first = self.raise_flag('Missing role')
+        refused = self.store.write('raise', {'project': self.project, 'anchor': 'x', 'text': 'MISSING   role', 'as_of': '2026-11-16', 'source': 'leave'}, actor='reports')
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'duplicate')
+        self.write('resolve', {'concern': first}, 'close-first')
+        second = self.raise_flag('Missing role', as_of='2026-11-20')
+        self.assertNotEqual(first, second)
+        refused = self.store.write('reopen', {'concern': first}, actor='person')
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'duplicate')
+
+    def test_closed_at_is_written_by_every_path_that_closes_and_cleared_by_reopen(self) -> None:
+        resolved = self.raise_concern()
+        self.now += 10
+        self.write('resolve', {'concern': resolved}, 'resolve-it')
+        self.assertEqual(self._get(resolved)['closed_at'], self.now)
+        self.now += 10
+        self.write('reopen', {'concern': resolved}, 'reopen-it')
+        self.assertIsNone(self._get(resolved)['closed_at'])
+        ids = self.store.reconcile_dates(self.project, 'coordinator', {'playdate': '2026-12-10', 'submission_deadline': '2026-12-01', 'archival_deadline': None})
+        self.now += 10
+        self.store.reconcile_dates(self.project, 'coordinator', {'playdate': '2026-12-10', 'submission_deadline': '2026-12-11', 'archival_deadline': None})
+        settled = self._get(ids['submission_before_playdate'])
+        self.assertEqual((settled['state'], settled['closed_at'], settled['source']), ('closed', self.now, 'date_rule'))
+        self.now += 10
+        self.store.reconcile_dates(self.project, 'coordinator', {'playdate': '2026-12-10', 'submission_deadline': '2026-12-01', 'archival_deadline': None})
+        self.assertIsNone(self._get(ids['submission_before_playdate'])['closed_at'])
+        pending = self.raise_flag('Line to close')
+        with self.registry._transaction() as db:
+            db.execute('INSERT INTO concern_pm_pending VALUES (?, ?, ?, ?, ?)', (pending, '2026-11-17', 'quote', self.now, 1))
+        self.now += 10
+        self.store.apply_pending(self.project)
+        self.assertEqual((self._get(pending)['state'], self._get(pending)['closed_at']), ('closed', self.now))
+
+    def test_open_concerns_are_every_state_but_closed_oldest_first_with_the_chronic_mark(self) -> None:
+        rows = (('t6c_a', 'open', 30.0), ('t6c_b', 'closed', 10.0), ('t6c_c', 'expired', 20.0), ('t6c_d', 'quiet', 40.0))
+        self.now = 100 * 86400.0
+        with self.registry._transaction() as db:
+            for concern, state, days in rows:
+                db.execute("INSERT INTO concerns (id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state) VALUES (?, ?, 'coordinator', 'client', ?, '2026-11-01', ?, 0, ?)", (concern, self.project, 'Waiting on client ' + concern, self.now - days * 86400, state))
+        listed = self.store.open_concerns(self.project)
+        self.assertEqual([(c['id'], c['state'], c['chronic']) for c in listed], [('t6c_d', 'quiet', True), ('t6c_a', 'open', True), ('t6c_c', 'expired', False)])
+        self.assertEqual(listed[2]['text'], 'Waiting on client t6c_c')
+        self.assertEqual(set(listed[0]) - {'owner_id', 'waiting_on'}, {'id', 'project_id', 'text', 'source', 'anchor', 'as_of', 'opened_at', 'evidence_at', 'state', 'settles_id', 'age_seconds', 'chronic'})
+        self.assertEqual(self.store.open_concerns('elsewhere'), [])
+        self.assertEqual(len(self.store.open_concerns()), 3)
+
 
 class ConcernQueueTests(unittest.TestCase):
     def test_scheduled_jobs_are_claimed_and_applied_once(self) -> None:

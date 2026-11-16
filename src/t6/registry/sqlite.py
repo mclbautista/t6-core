@@ -354,7 +354,32 @@ _MIGRATIONS = (
     (42, False, """CREATE TABLE drive_shipment_facts (shipment_id TEXT NOT NULL, drive_id TEXT NOT NULL REFERENCES drives(id), recipient TEXT, data TEXT NOT NULL, PRIMARY KEY (shipment_id, drive_id))"""),
     (43, False, """CREATE TABLE project_starts (idempotency_key TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), approval_id TEXT NOT NULL UNIQUE REFERENCES approvals(id),
     actor TEXT NOT NULL, fingerprint TEXT NOT NULL, inputs TEXT NOT NULL, plan TEXT NOT NULL, nonce TEXT NOT NULL, state TEXT NOT NULL, reason TEXT)"""),
+    # The Concern carries the text of the brief. The table is rebuilt so that `owner_id` may be NULL; every old column is kept and the
+    # new ones have defaults, so the previous release still reads and writes the file. `text_key` and its unique index follow in Python.
+    (44, False, """CREATE TABLE concerns_new (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+        owner_id TEXT REFERENCES persons(id), waiting_on TEXT NOT NULL,
+        anchor TEXT NOT NULL, as_of TEXT NOT NULL, opened_at REAL NOT NULL,
+        evidence_at REAL NOT NULL, state TEXT NOT NULL, manual_override INTEGER NOT NULL DEFAULT 0,
+        settles_id TEXT, revision INTEGER NOT NULL DEFAULT 1,
+        text TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT 'person', text_key TEXT, closed_at REAL
+    );
+    INSERT INTO concerns_new (id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state, manual_override, settles_id, revision, text, source, closed_at)
+        SELECT id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state, manual_override, settles_id, revision, anchor,
+            CASE WHEN id IN (SELECT concern_id FROM concern_date_rules) THEN 'date_rule'
+                 WHEN id IN (SELECT concern_id FROM concern_pm_changes WHERE action = 'concern_auto_raise') THEN 'pm_notes_scan' ELSE 'person' END,
+            CASE WHEN state = 'closed' THEN (SELECT MAX(at) FROM audit WHERE audit.project_id = concerns.id AND action IN ('concern_resolve', 'concern_auto_resolve')) END
+        FROM concerns;
+    DROP TABLE concerns;
+    ALTER TABLE concerns_new RENAME TO concerns"""),
+    (45, False, """CREATE TABLE concern_listings (run_date TEXT NOT NULL, concern_id TEXT NOT NULL REFERENCES concerns(id), PRIMARY KEY (run_date, concern_id));
+    ALTER TABLE concern_brief_messages ADD COLUMN brief_date TEXT"""),
 )
+
+
+def concern_key(text: str) -> str:
+    """The key a Concern's text is known by: whitespace collapsed, case folded."""
+    return " ".join(text.split()).casefold()
 
 
 def _migrate(db: sqlite3.Connection) -> None:
@@ -373,6 +398,17 @@ def _migrate(db: sqlite3.Connection) -> None:
                     for operation in ("UPDATE", "DELETE"):
                         db.execute(f"CREATE TRIGGER {table}_no_{operation.lower()} BEFORE {operation} ON {table} "
                                    f"BEGIN SELECT RAISE(ABORT, '{table} is append-only'); END")
+            if version == 44:
+                seen: set[tuple[str, str]] = set()
+                for concern, project, anchor, state in db.execute("SELECT id, project_id, anchor, state FROM concerns ORDER BY opened_at, id").fetchall():
+                    key = concern_key(anchor)
+                    # Two Concerns that are not closed may already share a line: the older keeps the key, so every row survives the unique index.
+                    if state != "closed":
+                        if (project, key) in seen:
+                            continue
+                        seen.add((project, key))
+                    db.execute("UPDATE concerns SET text_key = ? WHERE id = ?", (key, concern))
+                db.execute("CREATE UNIQUE INDEX concerns_open_text ON concerns (project_id, text_key) WHERE state != 'closed' AND text_key IS NOT NULL")
             if version == 42:
                 for operation in ("UPDATE", "DELETE"):
                     db.execute(f"CREATE TRIGGER drive_shipment_facts_no_{operation.lower()} BEFORE {operation} ON drive_shipment_facts "

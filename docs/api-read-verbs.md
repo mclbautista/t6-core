@@ -128,6 +128,49 @@ of the replier. The write uses preview and confirmation; an unmapped reference
 is ignored without storing the text. A message carrying several Concerns has a
 separate mapping for each, and the relay must select the intended Concern.
 
+### Concern text and the open list
+
+A Concern holds `text` (the line the brief shows), `source` (`person`,
+`pm_notes_scan`, `date_rule`, `flag_rule`, `pm_notes_read` or `leave`) and
+`closed_at` (empty while open). `owner_id` may be null and `waiting_on` may be
+empty. `concern list` with `open: true` returns every Concern that is not
+closed, oldest first, optionally for one `project`. Each item holds `id`,
+`project_id`, `owner_id`, `waiting_on`, `text`, `source`, `anchor`, `as_of`,
+`opened_at`, `evidence_at`, `state`, `settles_id`, `age_seconds` and `chronic`
+(open longer than 28 days). Exactly one of `raise_at_psr` and `open` must be
+true, else rule `input`; the `raise_at_psr` reply is unchanged. `text`, like
+`waiting_on` and `anchor`, is masked for a caller without real-name access, so a
+caller that renders names needs the `unmasked` permission and the `reader` role.
+
+### Concern observe
+
+`concern observe` is a write that a scheduled app calls once for each run:
+`run_date` (the brief's date in Asia/Manila), `findings` (`project`, `text`,
+`source` of `flag_rule`, `pm_notes_read` or `leave`, optional `owner` and
+`waiting_on`), `unavailable` (`project` and `source` pairs that could not be read),
+`dry_run` and a required `idempotency_key`. `project` is a T6 Project ID or a
+Notion page ID the registry knows. The reply has, for each Project, `open` (every
+Concern that is not closed, oldest first: `id`, `text`, `source`, `opened_on`,
+`age_days`, `weeks`, `chronic`, `state`, `seen_this_run`) and
+`closed_since_last_run` (`id`, `text`: closed by any path since the previous
+`run_date` the audit rows know, else the 7 days before), and `counts`: `new`,
+`known`, `not_seen`, `unavailable`, `skipped`, `projects_with_both` and `closed`.
+The run closes nothing unless the server has `T6_CONCERN_OBSERVE_CLOSES` on. The
+reply names Concern text, so it is masked for a caller without real-name access.
+
+### Concern counts
+
+`concern counts` is read only (role `reader`) and returns counts, never text,
+names or Project names. Input: optional `since` and `until` (ISO dates; the default
+is the last 12 run dates) and optional `project` (a T6 Project ID or a Notion page
+ID), which limits every count. The reply has `runs`, one for each `run_date`
+oldest first, each with `listed`, `sent`, `new`, `closed`, `age_buckets` and
+`by_source`, and for the range `closed_in_range`, `median_days_open` (days between
+`opened_at` and `closed_at`) and `still_open`. A Concern is `listed` on a date when
+a real `concern observe` run for it returned the Concern in `open`; it is `sent`
+when `concern record-message` recorded a message for it with that `brief_date`.
+`listed` starts at the first real run after the switch.
+
 ### Drive reads
 
 `drive list`, `drive get`, `drive find`, `drive shipments`, `drive shipment` and

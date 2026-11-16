@@ -4,6 +4,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 from importlib.metadata import version
@@ -30,7 +31,7 @@ class VerbAPI:
                  *, llm_service: Any = None, data_sources: Mapping[str, str] | None = None,
                  privacy_registry: PrivacyRegistry | None = None, transcribe_rate: float = 0.4,
                  translate_enabled: bool = False, frameio_timeout: float = 60.0,
-                 frameio_queue: Any = None) -> None:
+                 frameio_queue: Any = None, concern_observe_closes: bool = False) -> None:
         import math
         if not math.isfinite(transcribe_rate) or transcribe_rate < 0:
             raise ValueError('Transcription rate must be finite and non-negative')
@@ -44,6 +45,7 @@ class VerbAPI:
         self.privacy_registry = privacy_registry
         self.transcribe_rate = transcribe_rate
         self.translate_enabled = translate_enabled
+        self.concern_observe_closes = concern_observe_closes
         self.frameio = QueueFrameioWriter(frameio_queue or LocalFrameioQueue(queue), timeout=frameio_timeout)  # asks the Frame.io worker; holds no token
         self.routes = {f'/v1/{v.noun}' + ('/' + v.verb.replace(' ', '/') if v.verb else ''): v for v in VERBS}
         for verb in VERBS:
@@ -211,18 +213,11 @@ class VerbAPI:
         if (entry.noun, entry.verb) in {('transcript', 'create'), ('transcript', 'speakers'), ('transcript', 'translate')}:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._transcripts().request(entry.verb, inputs, actor, translate_enabled=self.translate_enabled)
-        elif (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'notes'), ('project', 'flags'), ('project', 'resolve'), ('concern', 'list'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'candidates'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find'), ('version', 'get')}:
+        elif (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'notes'), ('project', 'flags'), ('project', 'resolve'), ('concern', 'list'), ('concern', 'get'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'candidates'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find'), ('version', 'get')}:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._typed_read(entry.noun, entry.verb, inputs)
             if isinstance(outcome, Done) and entry.noun in {'project', 'concern', 'jo', 'person', 'camera', 'deliverable', 'meeting-notes', 'external-link', 'studio'} and not self._reads_unmasked(actor):
-                if self.privacy_registry is None:
-                    outcome = Refused(rule='masking', reason='Read privacy registry is not configured')
-                else:
-                    session = Session(self.privacy_registry)
-                    try:
-                        outcome = Done(result=mask_reply(session, outcome.model_dump(mode='json')['result']))
-                    except ValueError:
-                        outcome = Refused(rule='masking', reason='A client name occurs in an identifier')
+                outcome = self._masked_outcome(outcome)
         elif entry.noun == 'approval':
             if self.tap_app is None or self.tap_app._operator is None:
                 outcome = Refused(rule='config', reason='Operator cards are not configured')
@@ -305,7 +300,10 @@ class VerbAPI:
         elif (entry.noun, entry.verb) == ('person', 'set-telegram') and (page := self._contact_page(inputs.person_id)):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._person_set_telegram(inputs, actor, page)
-        elif (entry.noun, entry.verb) == ('concern', 'raise') and inputs.owner not in self._coordinators(inputs.project):
+        elif (entry.noun, entry.verb) == ('concern', 'observe'):
+            refusal = self.people.authorize(actor, entry.role)
+            outcome = refusal or self._concern_observe(inputs, actor)
+        elif (entry.noun, entry.verb) == ('concern', 'raise') and inputs.owner is not None and inputs.owner not in self._coordinators(inputs.project):
             outcome = self.people.authorize(actor, entry.role) or Refused(rule='owner', reason='Owner must be a Project coordinator')
         elif entry.handler is None:
             refusal = self.people.authorize(actor, entry.role)
@@ -322,6 +320,26 @@ class VerbAPI:
         if self.tap_app:
             self.tap_app.after_verb(entry.noun, entry.verb, outcome)
         return Response(200, outcome.model_dump(mode='json'))
+
+    def _masked_outcome(self, outcome: Done) -> Any:
+        if self.privacy_registry is None:
+            return Refused(rule='masking', reason='Read privacy registry is not configured')
+        try:
+            return Done(result=mask_reply(Session(self.privacy_registry), outcome.model_dump(mode='json')['result']))
+        except ValueError:
+            return Refused(rule='masking', reason='A client name occurs in an identifier')
+
+    def _concern_observe(self, inputs: Any, actor: str) -> Any:
+        """Hand the findings of one run to the Concern list; the reply names Concern text, so a caller without real-name access gets it masked."""
+        from t6.concern import ConcernStore
+        from t6.concern_observe import observe
+        outcome = observe(ConcernStore(self.people.registry, self.people.tokens), inputs.model_dump(), actor=actor, coordinators=self._coordinators, closes=self.concern_observe_closes)
+        if isinstance(outcome, Done):
+            if not inputs.dry_run:  # counts only: no text, name or ID
+                print('t6.server: concern observe run_date=' + inputs.run_date + ' ' + ' '.join(f'{name}={count}' for name, count in outcome.result['counts'].items()), file=sys.stderr, flush=True)
+            if not self._reads_unmasked(actor):
+                return self._masked_outcome(outcome)
+        return outcome
 
     def _transcripts(self) -> Any:
         from t6.transcript import TranscriptStore
@@ -724,7 +742,7 @@ class VerbAPI:
         from t6.verbs import ProjectNotesInput
         if self.llm_service is None:
             return 0
-        scanned = 0
+        scanned, changes = 0, {'raised': 0, 'continued': 0, 'announced': 0}
         for project in self.people.registry.list_projects(Rotation.IN):
             owners = sorted(self._coordinators(project.id))
             notes = self._typed_read('project', 'notes', ProjectNotesInput(project=project.id)) if owners else None
@@ -732,10 +750,12 @@ class VerbAPI:
                 continue
             owner = owners[0]
             try:
-                ConcernStore(self.people.registry, self.people.tokens).process_notes(project.id, owner, notes.result['lines'], lambda payload: classify(self.llm_service, payload, actor=owner, registry=self.people.registry))
+                done = ConcernStore(self.people.registry, self.people.tokens).process_notes(project.id, owner, notes.result['lines'], lambda payload: classify(self.llm_service, payload, actor=owner, registry=self.people.registry))
                 scanned += 1
+                changes = {name: count + done[name] for name, count in changes.items()}
             except ValueError:
                 continue
+        print(f't6.server: concern scan projects={scanned} ' + ' '.join(f'{name}={count}' for name, count in changes.items()), file=sys.stderr, flush=True)  # counts only: no text
         return scanned
 
     def _coordinators(self, project_id: str) -> set[str]:
@@ -760,7 +780,14 @@ class VerbAPI:
         from t6.cli import TOKEN_VARIABLE
         if (noun, verb) == ('concern', 'list'):
             from t6.concern import ConcernStore
-            return Done(result={'concerns': ConcernStore(self.people.registry, self.people.tokens).raise_at_psr(inputs.project)}) if inputs.raise_at_psr else Refused(rule='raise_at_psr', reason='Only the Raise at PSR list is available: pass raise_at_psr')
+            if inputs.raise_at_psr == inputs.open:
+                return Refused(rule='input', reason='Pass exactly one of raise_at_psr and open')
+            concerns = ConcernStore(self.people.registry, self.people.tokens)
+            return Done(result={'concerns': concerns.open_concerns(inputs.project) if inputs.open else concerns.raise_at_psr(inputs.project)})
+        if (noun, verb) == ('concern', 'get'):
+            from t6.concern import ConcernStore
+            record = ConcernStore(self.people.registry, self.people.tokens).get(inputs.concern)
+            return Done(result={'concern': record}) if record else Refused(rule='concern', reason='Concern not found')
         if noun == 'standing-cc':
             from t6.domain.studio_people import standing_cc
             page = standing_cc()

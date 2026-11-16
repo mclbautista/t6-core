@@ -38,7 +38,7 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(project.id, 't6p_0123456789abcdef01234567')
             self.assertEqual(registry.activity('t6p_0123456789abcdef01234567')[0].actor, 'legacy')
             with closing(sqlite3.connect(path)) as db, db:
-                self.assertEqual(db.execute('SELECT version, forward_only FROM schema_version ORDER BY version').fetchall(), [(1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (6, 0), (7, 0), (8, 0), (9, 0), (10, 0), (11, 0), (12, 0), (13, 0), (14, 0), (15, 0), (16, 0), (17, 0), (18, 0), (19, 0), (20, 0), (21, 0), (22, 1), (23, 0), (24, 0), (25, 0), (26, 0), (27, 1), (28, 0), (29, 0), (30, 0), (31, 0), (32, 0), (33, 0), (34, 0), (35, 0), (36, 0), (37, 0), (38, 0), (39, 0), (40, 0), (41, 0), (42, 0), (43, 0)])
+                self.assertEqual(db.execute('SELECT version, forward_only FROM schema_version ORDER BY version').fetchall(), [(1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (6, 0), (7, 0), (8, 0), (9, 0), (10, 0), (11, 0), (12, 0), (13, 0), (14, 0), (15, 0), (16, 0), (17, 0), (18, 0), (19, 0), (20, 0), (21, 0), (22, 1), (23, 0), (24, 0), (25, 0), (26, 0), (27, 1), (28, 0), (29, 0), (30, 0), (31, 0), (32, 0), (33, 0), (34, 0), (35, 0), (36, 0), (37, 0), (38, 0), (39, 0), (40, 0), (41, 0), (42, 0), (43, 0), (44, 0), (45, 0)])
             SqliteProjectRegistry(path)
 
     def test_previous_release_write_is_reconciled_on_reopen(self) -> None:
@@ -65,7 +65,7 @@ class MigrationTests(unittest.TestCase):
                 db.execute('INSERT INTO schema_version VALUES (1, 0)')
             SqliteProjectRegistry(path)
             with closing(sqlite3.connect(path)) as db, db:
-                self.assertEqual(db.execute('SELECT version FROM schema_version ORDER BY version').fetchall(), [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,), (10,), (11,), (12,), (13,), (14,), (15,), (16,), (17,), (18,), (19,), (20,), (21,), (22,), (23,), (24,), (25,), (26,), (27,), (28,), (29,), (30,), (31,), (32,), (33,), (34,), (35,), (36,), (37,), (38,), (39,), (40,), (41,), (42,), (43,)])
+                self.assertEqual(db.execute('SELECT version FROM schema_version ORDER BY version').fetchall(), [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,), (10,), (11,), (12,), (13,), (14,), (15,), (16,), (17,), (18,), (19,), (20,), (21,), (22,), (23,), (24,), (25,), (26,), (27,), (28,), (29,), (30,), (31,), (32,), (33,), (34,), (35,), (36,), (37,), (38,), (39,), (40,), (41,), (42,), (43,), (44,), (45,)])
                 self.assertIn('project_id', [row[1] for row in db.execute('PRAGMA table_info(bindings)')])
 
     def test_version_sixteen_upgrades_with_all_features(self) -> None:
@@ -76,7 +76,7 @@ class MigrationTests(unittest.TestCase):
                 SqliteProjectRegistry(path)
             SqliteProjectRegistry(path)
             with closing(sqlite3.connect(path)) as db, db:
-                self.assertEqual(db.execute('SELECT MAX(version) FROM schema_version').fetchone(), (43,))
+                self.assertEqual(db.execute('SELECT MAX(version) FROM schema_version').fetchone(), (45,))
                 self.assertIsNotNone(db.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'milestones'").fetchone())
 
     def test_version_nineteen_upgrades_packages(self) -> None:
@@ -89,7 +89,7 @@ class MigrationTests(unittest.TestCase):
             with closing(sqlite3.connect(path)) as db, db:
                 tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
                 self.assertTrue({'concerns', 'concern_notes', 'project_archives', 'project_person_roles', 'approvals', 'deliverables', 'deliverable_sync_intents', 'deliverable_migration_receipts', 'milestones', 'packages', 'concern_brief_messages', 'chat_links', 'chat_link_history', 'chat_link_previews'} <= tables)
-                self.assertEqual(db.execute('SELECT MAX(version) FROM schema_version').fetchone(), (43,))
+                self.assertEqual(db.execute('SELECT MAX(version) FROM schema_version').fetchone(), (45,))
 
     def test_database_at_main_schema_upgrades_through_the_phase_3_migrations(self) -> None:
         from t6.registry import sqlite as migrations
@@ -104,7 +104,7 @@ class MigrationTests(unittest.TestCase):
                 self.assertIsNotNone(db.execute("SELECT name FROM sqlite_master WHERE name = 'abang_requests'").fetchone())
             SqliteProjectRegistry(path)
             with closing(sqlite3.connect(path)) as db, db:
-                self.assertEqual([row[0] for row in db.execute('SELECT version FROM schema_version ORDER BY version')], list(range(1, 44)))
+                self.assertEqual([row[0] for row in db.execute('SELECT version FROM schema_version ORDER BY version')], list(range(1, 46)))
                 tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
                 self.assertTrue({'abang_requests', 'concern_pm_attempts', 'bays', 'media_locations', 'drives', 'transcripts', 'transcript_speaker_maps',
                                  'timelines', 'calendar_channels', 'frameio_held_activity', 'drive_shipment_facts'} <= tables)
@@ -156,10 +156,10 @@ class MigrationTests(unittest.TestCase):
             path = Path(directory) / 'db'
             SqliteProjectRegistry(path)
             with closing(sqlite3.connect(path)) as db, db:
-                db.execute('INSERT INTO schema_version VALUES (44, 0)')
+                db.execute('INSERT INTO schema_version VALUES (46, 0)')
             SqliteProjectRegistry(path)
             with closing(sqlite3.connect(path)) as db, db:
-                db.execute('INSERT INTO schema_version VALUES (45, 1)')
+                db.execute('INSERT INTO schema_version VALUES (47, 1)')
             with self.assertRaises(RegistryError):
                 SqliteProjectRegistry(path)
 
@@ -169,7 +169,7 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'db'
             SqliteProjectRegistry(path)
-            with patch.object(migrations, '_MIGRATIONS', migrations._MIGRATIONS + ((44, True, "CREATE TABLE incompatible (id INTEGER)"),)):
+            with patch.object(migrations, '_MIGRATIONS', migrations._MIGRATIONS + ((46, True, "CREATE TABLE incompatible (id INTEGER)"),)):
                 SqliteProjectRegistry(path)
             with self.assertRaises(RegistryError):
                 SqliteProjectRegistry(path)
@@ -182,3 +182,90 @@ class MigrationTests(unittest.TestCase):
             registry.bind_entity('notion', page, T6Id.mint(EntityKind.PERSON), actor='editor')
             result = registry.register(actor='editor', idempotency_key='one', notion_page_id=page.replace('-', ''))
             self.assertIsInstance(result, PageAlreadyBound)
+
+
+class ConcernMigrationTests(unittest.TestCase):
+    """Migration 44: the Concern carries its text and source, and may have no owner."""
+
+    def seeded(self, path: Path) -> str:
+        from t6.registry import sqlite as migrations
+        with patch.object(migrations, '_MIGRATIONS', migrations._MIGRATIONS[:-2]):
+            registry = SqliteProjectRegistry(path)
+            project = registry.register(actor='setup', idempotency_key='setup')
+            assert isinstance(project, Registered)
+            project_id = project.project.id
+            with registry._transaction() as db:
+                db.execute("INSERT INTO persons VALUES ('coordinator', 'staff', '[]', '[]', NULL, 0, 1)")
+                for concern, state, anchor, opened in (('t6c_open', 'open', 'Waiting on  Client', 1.0), ('t6c_quiet', 'quiet', 'Waiting on lab', 2.0), ('t6c_expired', 'expired', 'Waiting on Editor', 3.0),
+                                                       ('t6c_closed', 'closed', 'Waiting on Client', 4.0), ('t6c_rule', 'open', 'submission is before playdate', 5.0), ('t6c_twin', 'open', 'waiting on client', 6.0),
+                                                       ('t6c_scan', 'open', 'Waiting on grader', 7.0), ('t6c_unclosed', 'closed', 'Waiting on nobody', 8.0)):
+                    db.execute("INSERT INTO concerns (id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state, manual_override, revision) VALUES (?, ?, 'coordinator', 'x', ?, '2026-11-01', ?, ?, ?, 1, 3)", (concern, project_id, anchor, opened, opened, state))
+                db.execute("INSERT INTO concern_notes (concern_id, text, actor, at, message_id) VALUES ('t6c_open', 'a note', 'person', 9.0, '7')")
+                db.execute("INSERT INTO concern_brief_messages VALUES ('chat', '1', 't6c_open')")
+                db.execute("INSERT INTO concern_date_rules VALUES (?, 'submission_before_playdate', 't6c_rule')", (project_id,))
+                db.execute("INSERT INTO concern_pm_changes (project_id, concern_id, action, quote, at) VALUES (?, 't6c_scan', 'concern_auto_raise', 'q', 1.0)", (project_id,))
+                for at, action in ((50.0, 'concern_resolve'), (60.0, 'concern_auto_resolve'), (55.0, 'concern_note')):
+                    db.execute("INSERT INTO audit (project_id, action, actor, at, before, after) VALUES ('t6c_closed', ?, 'person', ?, NULL, '{}')", (action, at))
+        return project_id
+
+    def test_every_row_note_and_message_link_survives_and_is_backfilled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'db'
+            self.seeded(path)
+            with closing(sqlite3.connect(path)) as db:
+                before = db.execute('SELECT id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state, manual_override, settles_id, revision FROM concerns ORDER BY id').fetchall()
+            SqliteProjectRegistry(path)
+            with closing(sqlite3.connect(path)) as db:
+                after = db.execute('SELECT id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state, manual_override, settles_id, revision FROM concerns ORDER BY id').fetchall()
+                self.assertEqual(before, after)
+                self.assertEqual(len(after), 8)
+                rows = {r[0]: r[1:] for r in db.execute('SELECT id, text, source, text_key, closed_at FROM concerns')}
+                self.assertEqual(rows['t6c_open'], ('Waiting on  Client', 'person', 'waiting on client', None))
+                self.assertEqual(rows['t6c_rule'][1], 'date_rule')
+                self.assertEqual(rows['t6c_scan'][1], 'pm_notes_scan')
+                self.assertEqual(rows['t6c_closed'][2:], ('waiting on client', 60.0))
+                self.assertEqual(rows['t6c_unclosed'][3], None)
+                # The newer of two open twins gives up the key so the unique index can exist; the closed one keeps its own.
+                self.assertEqual((rows['t6c_open'][2], rows['t6c_twin'][2]), ('waiting on client', None))
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM concern_notes').fetchone(), (1,))
+                self.assertEqual(db.execute('SELECT concern_id FROM concern_brief_messages').fetchall(), [('t6c_open',)])
+                self.assertEqual(db.execute('SELECT concern_id FROM concern_date_rules').fetchall(), [('t6c_rule',)])
+                with self.assertRaises(sqlite3.IntegrityError):
+                    db.execute("INSERT INTO concerns (id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state, text_key) SELECT 'dup', project_id, NULL, '', 'x', 'y', 0, 0, 'open', text_key FROM concerns WHERE id = 't6c_open'")
+                db.execute("INSERT INTO concerns (id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state) SELECT 'noowner', project_id, NULL, '', 'x', 'y', 0, 0, 'open' FROM concerns WHERE id = 't6c_open'")
+                with self.assertRaises(sqlite3.IntegrityError):
+                    db.execute('DELETE FROM concern_notes')
+
+    def test_the_previous_release_opens_and_writes_the_migrated_file(self) -> None:
+        from t6.registry import sqlite as migrations
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'db'
+            project = self.seeded(path)
+            SqliteProjectRegistry(path)
+            with patch.object(migrations, '_MIGRATIONS', migrations._MIGRATIONS[:-2]):
+                previous = SqliteProjectRegistry(path)
+                with previous._transaction() as db:
+                    db.execute("INSERT INTO concerns (id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state) VALUES ('t6c_old', ?, 'coordinator', 'lab', 'Waiting on lab', '2026-11-01', 1, 1, 'open')", (project,))
+                    self.assertEqual(db.execute("SELECT owner_id, waiting_on, anchor, state, manual_override, revision FROM concerns WHERE id = 't6c_old'").fetchone(), ('coordinator', 'lab', 'Waiting on lab', 'open', 0, 1))
+                    self.assertEqual(db.execute("SELECT COUNT(*) FROM concerns").fetchone(), (9,))
+            from t6.concern import ConcernStore
+            from t6.preview import PreviewTokens
+            record = ConcernStore(SqliteProjectRegistry(path), PreviewTokens('k')).get('t6c_old')
+            assert record is not None
+            self.assertEqual((record['text'], record['source']), ('Waiting on lab', 'person'))
+
+    def test_the_release_before_the_listings_table_opens_the_migrated_file(self) -> None:
+        from t6.registry import sqlite as migrations
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'db'
+            project = self.seeded(path)
+            SqliteProjectRegistry(path)
+            with closing(sqlite3.connect(path)) as db, db:
+                db.execute("INSERT INTO concern_listings VALUES ('2026-11-16', 't6c_open')")
+                db.execute("INSERT INTO concern_brief_messages (chat, message_id, concern_id, brief_date) VALUES ('chat', '9', 't6c_open', '2026-11-16')")
+            with patch.object(migrations, '_MIGRATIONS', migrations._MIGRATIONS[:-1]):
+                previous = SqliteProjectRegistry(path)
+                with previous._transaction() as db:
+                    db.execute("INSERT INTO concern_brief_messages (chat, message_id, concern_id) VALUES ('chat', '10', 't6c_open')")
+                    self.assertEqual(db.execute('SELECT chat, message_id, concern_id FROM concern_brief_messages ORDER BY message_id').fetchall(), [('chat', '1', 't6c_open'), ('chat', '10', 't6c_open'), ('chat', '9', 't6c_open')])
+                    self.assertEqual(db.execute('SELECT COUNT(*) FROM concerns WHERE project_id = ?', (project,)).fetchone(), (8,))

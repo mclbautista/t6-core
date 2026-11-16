@@ -640,10 +640,12 @@ def jo_write(inputs: JoRaiseInput | JoAssignInput | JoReassignInput | JoNoteInpu
 
 class ConcernRaiseInput(BaseModel):
     project: str
-    owner: str
-    waiting_on: str
+    owner: str | None = None
+    waiting_on: str | None = None
     anchor: str
     as_of: str
+    text: str | None = None
+    source: Literal['person', 'pm_notes_scan', 'date_rule', 'flag_rule', 'pm_notes_read', 'leave'] = 'person'
     settles_id: str | None = None
     settles_deliverable: str | None = None
     settles_milestone: str | None = None
@@ -665,6 +667,7 @@ class ConcernRecordMessageInput(BaseModel):
     concern: str
     chat: str
     message_id: str
+    brief_date: str | None = None
     idempotency_key: str | None = None
     confirm: str | None = None
 
@@ -711,11 +714,52 @@ class ConcernScanOutput(BaseModel):
 
 class ConcernListInput(BaseModel):
     raise_at_psr: bool = False
+    open: bool = False
     project: str | None = None
 
 
 class ConcernListOutput(BaseModel):
     concerns: list[dict[str, Any]]
+
+
+class ConcernFinding(BaseModel):
+    project: str
+    text: str
+    source: Literal['flag_rule', 'pm_notes_read', 'leave']
+    owner: str | None = None
+    waiting_on: str | None = None
+
+
+class ConcernUnavailable(BaseModel):
+    project: str
+    source: Literal['flag_rule', 'pm_notes_read', 'leave']
+
+
+class ConcernObserveInput(BaseModel):
+    run_date: str
+    findings: list[ConcernFinding]
+    unavailable: list[ConcernUnavailable] = []
+    dry_run: bool = False
+    idempotency_key: str
+
+
+class ConcernObserveOutput(BaseModel):
+    run_date: str
+    projects: list[dict[str, Any]]
+    counts: dict[str, int]
+
+
+class ConcernCountsInput(BaseModel):
+    since: str | None = None
+    until: str | None = None
+    project: str | None = None
+
+
+class ConcernCountsOutput(BaseModel):
+    runs: list[dict[str, Any]]
+    closed_in_range: int
+    median_days_open: float | None
+    still_open: int
 
 
 class ConcernGetInput(BaseModel):
@@ -759,13 +803,23 @@ def concern_changes(inputs: ConcernChangesInput, open_notion: Callable[..., Any]
 
 def concern_list(inputs: ConcernListInput, open_notion: Callable[..., Any]) -> Outcome:
     from t6.concern import ConcernStore
-    if not inputs.raise_at_psr:
-        return Refused(rule='raise_at_psr', reason='Only the Raise at PSR list is available: pass raise_at_psr')
-    return Done(result={'concerns': ConcernStore(_people().registry, _people().tokens).raise_at_psr(inputs.project)})
+    if inputs.raise_at_psr == inputs.open:
+        return Refused(rule='input', reason='Pass exactly one of raise_at_psr and open')
+    store = ConcernStore(_people().registry, _people().tokens)
+    return Done(result={'concerns': store.open_concerns(inputs.project) if inputs.open else store.raise_at_psr(inputs.project)})
 
 
 def concern_scan(inputs: ConcernScanInput, open_notion: Callable[..., Any]) -> Outcome:
     return Refused(rule='api', reason='Concern scanning runs on the t6 API')
+
+
+def concern_observe(inputs: ConcernObserveInput, open_notion: Callable[..., Any]) -> Outcome:
+    return Refused(rule='api', reason='Concern observe runs on the t6 API')
+
+
+def concern_counts(inputs: ConcernCountsInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.concern import ConcernStore
+    return ConcernStore(_people().registry, _people().tokens).counts(inputs.since, inputs.until, inputs.project)
 
 
 def concern_get(inputs: ConcernGetInput, open_notion: Callable[..., Any]) -> Outcome:
@@ -2345,6 +2399,8 @@ VERBS = (
     Verb("concern", "for-message", "Find Concerns carried by a brief", (), ConcernForMessageInput, ConcernForMessageOutput, "reader", "Return Concern IDs for a brief message.", concern_for_message, read_only=True),
     Verb("concern", "record-message", "Record a Concern carried by a brief", (), ConcernRecordMessageInput, ConcernOutput, "coordinator", "Record a brief message reference without chat text.", concern_write),
     Verb("concern", "scan", "Scan PM Notes for Concerns", (), ConcernScanInput, ConcernScanOutput, "coordinator", "Match new dated lines through llm run.", concern_scan),
+    Verb("concern", "observe", "Hand over the findings of one brief run", (), ConcernObserveInput, ConcernObserveOutput, "coordinator", "The API decides which findings are new, known or not seen; it closes nothing unless T6_CONCERN_OBSERVE_CLOSES is on.", concern_observe),
+    Verb("concern", "counts", "Count the Concerns each PSR listed", (), ConcernCountsInput, ConcernCountsOutput, "reader", "Counts only: listed, sent, new, closed, ages and sources for each run date.", concern_counts, read_only=True),
     Verb("concern", "list", "List Concerns to raise at PSR", (), ConcernListInput, ConcernListOutput, "reader", "Quiet Concerns only (no news for 2 weeks); age alone never lists one.", concern_list, read_only=True),
     Verb("concern", "changes", "Read automatic Concern changes", (), ConcernChangesInput, ConcernChangesOutput, "reader", "Read receipts since a date.", concern_changes, read_only=True),
     Verb("concern", "get", "Get a Concern", (), ConcernGetInput, ConcernGetOutput, "reader", "Read a Concern and its age.", concern_get, read_only=True),
@@ -2747,6 +2803,12 @@ def add_parsers(commands: Any) -> None:
             parser.add_argument("--confirm")
             parser.set_defaults(registered_verb=entry)
             continue
+        if entry.handler is concern_observe:
+            parser.add_argument("--file", type=Path, required=True, help="JSON object with run_date, findings and optionally unavailable")
+            parser.add_argument("--dry-run", action="store_true")
+            parser.add_argument("--idempotency-key", required=True)
+            parser.set_defaults(registered_verb=entry)
+            continue
         if entry.handler is llm_api_only:
             for name, field in entry.input_model.model_fields.items():
                 parser.add_argument("--" + name.replace("_", "-"), type=json.loads if name == "output_schema" else str,
@@ -2858,7 +2920,8 @@ def run(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
     if entry.noun == 'transcript' and entry.verb == 'speakers':
         from pathlib import Path
         args.csv = Path(args.csv).read_text(encoding='utf-8-sig')
-    inputs = (LegacyPersonGetInput(person_id=args.person_id, data_sources=args.data_sources) if entry.handler is person_get and args.data_sources else
+    inputs = (ConcernObserveInput.model_validate({**json.loads(args.file.read_text(encoding='utf-8')), 'dry_run': args.dry_run, 'idempotency_key': args.idempotency_key}) if entry.handler is concern_observe else
+              LegacyPersonGetInput(person_id=args.person_id, data_sources=args.data_sources) if entry.handler is person_get and args.data_sources else
               LegacyDepartmentsInput(data_sources=args.data_sources, include_misc=args.include_misc) if entry.handler is departments and args.data_sources else
               entry.input_model.model_validate({name: getattr(args, name) for name in entry.input_model.model_fields}))
     assert entry.handler is not None
