@@ -234,7 +234,10 @@ for Bookings.
 - A Deliverable code may repeat inside a Project (`deliverable define` allows it).
   `deliverable edit` changes the code or the episode of a Deliverable after it is
   defined (operator, preview and confirm, safe to repeat with the same key). It
-  names only the fields to change; dates stay with `deliverable delay`. A blank
+  names only the fields to change. It also gives a Deliverable its first due or air
+  date (`--due`, `--air`), each only when the Deliverable has none; if it already has
+  that date the verb refuses (rule `date`) and names `deliverable delay`, which keeps
+  its rule for moving an existing date. A blank
   code is refused, as is an archived Project; naming the values the Deliverable
   already has is Done and writes nothing. A change writes Audit and Activity and
   syncs the Notion page name. The Frame.io folder is not renamed: the Media

@@ -148,8 +148,14 @@ class DeliverableStore:
 
     def edit(self, values: dict[str, Any], *, actor: str, idempotency_key: str | None = None, confirm: str | None = None) -> Outcome:
         code, episode = values.get('code'), values.get('episode')
-        if not actor.strip() or not values.get('deliverable') or (code is None and episode is None) or (code is not None and not str(code).strip()):
-            return Refused(rule='input', reason='Deliverable, actor and a code or episode are required; a code cannot be blank')
+        dates = {name: values[name] for name in ('due', 'air') if values.get(name) is not None}
+        if not actor.strip() or not values.get('deliverable') or (code is None and episode is None and not dates) or (code is not None and not str(code).strip()):
+            return Refused(rule='input', reason='Deliverable, actor and a code, episode, due or air date are required; a code cannot be blank')
+        for name, day in dates.items():
+            try:
+                date.fromisoformat(day)
+            except (TypeError, ValueError):
+                return Refused(rule='date', reason=f'The {name} date must be an ISO date')
         if (idempotency_key is not None and not idempotency_key.strip()) or (confirm and not idempotency_key):
             return Refused(rule='idempotency_key', reason='A nonblank idempotency key is required')
         key = idempotency_key or secrets.token_hex(16)
@@ -171,17 +177,21 @@ class DeliverableStore:
                     return Done(result=json.loads(previous[1]))
                 return self.tokens.create(verb, actor, inputs, json.loads(previous[1]))
             ref = values['deliverable']
-            row = db.execute("SELECT id, project_id, code, episode FROM deliverables WHERE id=? OR id=(SELECT project_id FROM bindings WHERE system='notion' AND page_id=?)", (ref, normalize_page_id(ref))).fetchone()
+            row = db.execute("SELECT id, project_id, code, episode, due, air FROM deliverables WHERE id=? OR id=(SELECT project_id FROM bindings WHERE system='notion' AND page_id=?)", (ref, normalize_page_id(ref))).fetchone()
             if not row:
                 return Refused(rule='deliverable', reason='Deliverable not found')
             if db.execute('SELECT 1 FROM project_archives WHERE project_id=?', (row[1],)).fetchone():
                 return Refused(rule='project_archived', reason='Project is archived')
-            before = {'code': row[2], 'episode': row[3]}
-            after = {'code': row[2] if code is None else code, 'episode': row[3] if episode is None else episode.strip() or None}
+            held = {'due': row[4], 'air': row[5]}
+            for name in dates:
+                if held[name]:
+                    return Refused(rule='date', reason=f'The Deliverable already has a {name} date; use deliverable delay to move it')
+            before = {'code': row[2], 'episode': row[3], **{name: None for name in dates}}
+            after = {'code': row[2] if code is None else code, 'episode': row[3] if episode is None else episode.strip() or None, **dates}
             plan = {'action': 'edit', 'deliverable_id': row[0], 'project_id': row[1], 'before': before, 'after': after, 'idempotency_key': key}
             if before == after:
                 return Done(result=plan)
-            snapshot = json.dumps([row[0], row[2], row[3]])
+            snapshot = json.dumps([row[0], row[2], row[3], row[4], row[5]])
             if nonce is None:
                 preview = self.tokens.create(verb, actor, inputs, plan)
                 preview_nonce = self.tokens.verify(preview.token, verb, actor, inputs)
@@ -192,7 +202,7 @@ class DeliverableStore:
             if not observed or observed[0] != snapshot:
                 return Refused(rule='deliverable_changed', reason='Deliverable changed since preview; preview again')
             now = self.registry._clock()
-            db.execute('UPDATE deliverables SET code=?, episode=? WHERE id=?', (after['code'], after['episode'], row[0]))
+            db.execute('UPDATE deliverables SET code=?, episode=?, due=COALESCE(?, due), air=COALESCE(?, air) WHERE id=?', (after['code'], after['episode'], dates.get('due'), dates.get('air'), row[0]))
             cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)', (row[0], 'deliverable_edit', actor, now, json.dumps(before), json.dumps(after)))
             db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (row[1], row[0], now, actor, 'deliverable_edit', 'deliverable edited', cursor.lastrowid))
             revision = db.execute('SELECT COALESCE(MAX(revision), 0) + 1 FROM sync_intents WHERE project_id=?', (row[0],)).fetchone()[0]

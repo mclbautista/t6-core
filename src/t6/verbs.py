@@ -1219,6 +1219,8 @@ class DeliverableEditInput(BaseModel):
     deliverable: str
     code: str | None = None
     episode: str | None = None
+    due: str | None = None
+    air: str | None = None
     idempotency_key: str | None = None
     confirm: str | None = None
 
@@ -2476,7 +2478,7 @@ VERBS = (
     Verb("deliverable", "delay", "Move a Deliverable date", (), DeliverableDelayInput, DeliverableScheduleOutput, "coordinator", "Date moves require a reason.", deliverable_schedule),
     Verb("deliverable", "deliver", "Deliver to the client", (), DeliverableDeliverInput, DeliverableDeliverOutput, "coordinator", "Blocking checklist items must be checked.", deliverable_deliver),
     Verb("deliverable", "define", "Define a Deliverable", (), DeliverableDefineInput, DeliverableDefineOutput, "operator", "Preview and confirm a Deliverable.", deliverable_define),
-    Verb("deliverable", "edit", "Change a Deliverable code or episode", (), DeliverableEditInput, DeliverableEditOutput, "operator", "Names only the fields to change; dates stay with delay. A code may repeat inside a Project. The Frame.io folder keeps its old name: the Media location points at it by ID, so the link stays valid.", deliverable_edit),
+    Verb("deliverable", "edit", "Change a Deliverable code or episode, or give it its first dates", (), DeliverableEditInput, DeliverableEditOutput, "operator", "Names only the fields to change. A due or air date is set only when the Deliverable has none; moving an existing date is deliverable delay. A code may repeat inside a Project. The Frame.io folder keeps its old name: the Media location points at it by ID, so the link stays valid.", deliverable_edit),
     Verb("deliverable", "rebind", "Bind a replacement Deliverables page", (), DeliverableRebindInput, DeliverableDefineOutput, "operator", "Retain the old page as a legacy binding.", deliverable_rebind),
     Verb("deliverable", "get", "Get a Deliverable", (), DeliverableGetInput, DeliverableGetOutput, "reader", "Read from t6.", api_read, read_only=True),
     Verb("deliverable", "list", "List Project Deliverables", (), DeliverableListInput, DeliverableListOutput, "reader", "Read from t6.", api_read, read_only=True),
@@ -2892,7 +2894,7 @@ def add_parsers(commands: Any) -> None:
             continue
         if entry.handler is deliverable_edit:
             parser.add_argument('deliverable')
-            for name in ('code', 'episode', 'idempotency-key', 'confirm'):
+            for name in ('code', 'episode', 'due', 'air', 'idempotency-key', 'confirm'):
                 parser.add_argument('--' + name)
             parser.set_defaults(registered_verb=entry)
             continue
