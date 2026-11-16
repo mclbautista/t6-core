@@ -11,7 +11,7 @@ token, and only GET is accepted.
 | `GET /frameio/projects/<id>/share-links` | the project's share links |
 | `GET /frameio/files/<id>/comments` | the file's comments |
 | `GET /frameio/files/<id>/approvals` | the file's approvals |
-| `GET /frameio/files/<id>/location` | `{"folder_id", "stack_id"}`: the file's folder (a stacked file's stack's folder) and its version stack, or null; 404 for a file Frame.io does not know |
+| `GET /frameio/files/<id>/location` | `{"folder_id", "stack_id"}`: the file's folder (a stacked file's stack's folder) and its version stack, or null; for a version stack's ID the stack's folder, the stack and `"file_ids"`, its files; 404 for an ID Frame.io knows as neither |
 | `GET /frameio/briefing?since=<ISO 8601 time with zone>` | the briefing feed |
 
 Answers are `{"value": ...}`, the same JSON as `t6.frameio.ask`, or

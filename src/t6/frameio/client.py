@@ -64,16 +64,21 @@ class FrameioReader:
         return cast("tuple[Version, ...] | Failed", self._decoded(Versions, self._get(f"/frameio/files/{_id(file_id)}/versions")))
 
     def file_location(self, file_id: str) -> FileLocation | Failed:
-        """The folder and version stack of a file. `FileNotFound` when Frame.io does not know the file."""
+        """The folder and version stack of a file, or of a version stack (with `file_ids`). `FileNotFound` when Frame.io knows it as neither."""
         path = f"/frameio/files/{_id(file_id)}/location"
         value = self._get(path)
         if isinstance(value, Failed):
             return value
         folder = value.get("folder_id") if isinstance(value, dict) else None
         stack = value.get("stack_id") if isinstance(value, dict) else None
+        ids = value.get("file_ids") if isinstance(value, dict) else None
         if not isinstance(value, dict) or not isinstance(folder, (str, type(None))) or not isinstance(stack, (str, type(None))):
             return Failed("malformed file location answer")
-        return FileLocation(folder_id=folder, stack_id=stack)
+        if ids is None:
+            return FileLocation(folder_id=folder, stack_id=stack)
+        if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+            return Failed("malformed file location answer")
+        return FileLocation(folder_id=folder, stack_id=stack, file_ids=tuple(i for i in ids if isinstance(i, str)))
 
     def approvals(self, file_id: str) -> tuple[Approval, ...] | Failed:
         return cast('tuple[Approval, ...] | Failed', self._decoded(Approvals, self._get(f"/frameio/files/{_id(file_id)}/approvals")))

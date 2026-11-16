@@ -119,7 +119,10 @@ class FrameioReads:
             return self.file_info(request.file_id).to_json()
         if isinstance(request, FileLocate):
             location = self.file_location(request.file_id)
-            return {"folder_id": location.folder_id, "stack_id": location.stack_id}
+            answer: dict[str, JsonValue] = {"folder_id": location.folder_id, "stack_id": location.stack_id}
+            if location.file_ids is not None:
+                answer["file_ids"] = list(location.file_ids)
+            return answer
         if isinstance(request, ResolveComment):
             return self.resolve_comment(request).to_json()
         if isinstance(request, Versions):
@@ -278,9 +281,15 @@ class FrameioReads:
     def file_location(self, file_id: str) -> FileLocation:
         """The folder the file is in and its version stack. A stacked file's folder is its stack's own parent.
 
-        Raises FrameioError (status 404) when Frame.io does not know the file.
+        An ID that names a version stack (Frame.io answers 422 "not a file" on the file route) answers the stack's own
+        parent folder and the IDs of its files. Raises FrameioError (status 404) when Frame.io knows it as neither.
         """
-        data = self._api.get(f"{self._account()}/files/{_id(file_id)}").get("data")
+        try:
+            data = self._api.get(f"{self._account()}/files/{_id(file_id)}").get("data")
+        except FrameioError as error:
+            if error.status != 422:
+                raise
+            return self._stack_location(file_id)
         parent = _text(data.get("parent_id")) if isinstance(data, dict) else None
         if parent is None:
             raise ValueError(f"Frame.io gave no folder for file {file_id}")
@@ -294,6 +303,20 @@ class FrameioReads:
         if folder is None:
             raise ValueError(f"Frame.io gave no folder for version stack {parent}")
         return FileLocation(folder_id=folder, stack_id=parent)
+
+    def _stack_location(self, stack_id: str) -> FileLocation:
+        path = f"{self._account()}/version_stacks/{_id(stack_id)}"
+        try:
+            stack = self._api.get(path).get("data")
+            children = tuple(self._api.pages(f"{path}/children"))
+        except FrameioError as error:
+            if error.status not in _NOT_A_STACK:
+                raise
+            raise FrameioError(404, path, "neither a file nor a version stack") from error
+        folder = _text(stack.get("parent_id")) if isinstance(stack, dict) else None
+        if folder is None:
+            raise ValueError(f"Frame.io gave no folder for version stack {stack_id}")
+        return FileLocation(folder_id=folder, stack_id=stack_id, file_ids=tuple(found for found in (_text(c.get("id")) for c in children) if found))
 
     def resolve_comment(self, request: ResolveComment) -> ResolvedComment:
         """One comment by ID, in the account the webhook named."""
