@@ -41,7 +41,11 @@ Every app follows these ten rules. Each has its reason.
    *Why:* app retry and retention choices stay local, while t6 tracks its jobs.
 6. **Enforced in CI.** `t6 admin consumer-check` runs in every app and fails on
    direct calls to Notion, LLM providers or Frame.io and follows the API
-   boundary; a bare mention of Frame.io in a string is not a call. *Why:*
+   boundary; a bare mention of Frame.io in a string is not a call. The check
+   cannot tell a request target from a host in test data: it flags every string
+   constant that holds a provider host, because narrowing to assignments or
+   non-test files would miss real calls such as a literal URL passed to a
+   client. A false positive gets a `direct-http` allow-list entry. *Why:*
    the contract must hold without relying on review.
 7. **Versions.** Every app pins a t6 release tag, never a commit or branch.
    Dependabot proposes bumps. The changelog flags breaking changes. A Notion
