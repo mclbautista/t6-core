@@ -305,6 +305,90 @@ class ReadTests(unittest.TestCase):
             self.assertIsInstance(created, Done)
             self.assertEqual(self.contact_pages(), before + 1)
 
+    def bound_person(self, page: dict[str, Any], telegram_id: int | None = None) -> str:
+        person_id = 't6n_' + ('%032x' % (len(page['id']) * 7 + (telegram_id or 0) + 1))
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', ?, 0, 1)", (person_id, telegram_id))
+            db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, 'now', 1)", (page['id'].replace('-', ''), person_id))
+        return person_id
+
+    def set_telegram(self, person_id: str, telegram_id: int, key: str, *, fail: bool = False) -> object:
+        from t6.verbs import PersonTelegramInput
+        operator = Client(self.client.base_url, 'operator')
+        inputs = PersonTelegramInput(person_id=person_id, telegram_id=telegram_id, idempotency_key=key)
+        preview = operator.person_set_telegram(inputs)
+        if not isinstance(preview, Preview):
+            return preview
+        inputs.confirm = preview.token
+        if fail:
+            self.notion.fail_next(500, code='internal_server_error')
+        return operator.person_set_telegram(inputs)
+
+    def registry_telegram(self, person_id: str) -> int | None:
+        with self.registry._transaction() as db:
+            telegram_id: int | None = db.execute('SELECT telegram_id FROM persons WHERE id = ?', (person_id,)).fetchone()[0]
+            return telegram_id
+
+    def audits(self, person_id: str) -> int:
+        with self.registry._transaction() as db:
+            count: int = db.execute("SELECT COUNT(*) FROM audit WHERE action = 'person_set_telegram' AND project_id = ?", (person_id,)).fetchone()[0]
+            return count
+
+    def test_person_set_telegram_writes_the_contact_and_reads_back(self) -> None:
+        from t6.verbs import PersonGetInput, PersonListInput
+        person_id = self.bound_person(self.person)
+        with patch.dict(os.environ, {'T6_PREVIEW_SIGNING_KEY': 'key'}):
+            done = self.set_telegram(person_id, 4242, 'tg-1')
+            assert isinstance(done, Done)
+            self.assertEqual(self.registry_telegram(person_id), 4242)
+            got = self.client.person_get(PersonGetInput(person_id=person_id))
+            assert isinstance(got, Done)
+            self.assertEqual(got.result['person']['telegram_user_id'], 4242)
+            listed = self.client.person_list(PersonListInput())
+            assert isinstance(listed, Done)
+            self.assertEqual({p['page_id']: p['telegram_user_id'] for p in listed.result['people']}[self.person['id']], 4242)
+            self.assertIn('4242', str(self.notion.page(self.person['id'])['properties']))
+
+    def test_person_set_telegram_replaces_an_id_the_same_person_holds(self) -> None:
+        person_id = self.bound_person(self.person, 4242)
+        with patch.dict(os.environ, {'T6_PREVIEW_SIGNING_KEY': 'key'}):
+            self.assertIsInstance(self.set_telegram(person_id, 4242, 'tg-same'), Done)
+            self.assertIsInstance(self.set_telegram(person_id, 4343, 'tg-new'), Done)
+        self.assertEqual(self.registry_telegram(person_id), 4343)
+
+    def test_person_set_telegram_refused_when_another_person_holds_the_id_and_writes_no_page(self) -> None:
+        other = self.notion.add_page('contacts', {'Name': title('Ben Reyes')})
+        self.bound_person(other, 5151)
+        person_id = self.bound_person(self.person)
+        with patch.dict(os.environ, {'T6_PREVIEW_SIGNING_KEY': 'key'}):
+            refused = self.set_telegram(person_id, 5151, 'tg-held')
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'telegram_id')
+        self.assertNotIn('5151', str(self.notion.page(self.person['id'])['properties']))
+
+    def test_person_set_telegram_notion_failure_is_ambiguous_and_a_retry_completes_once(self) -> None:
+        from t6.verbs import Ambiguous
+        person_id = self.bound_person(self.person)
+        with patch.dict(os.environ, {'T6_PREVIEW_SIGNING_KEY': 'key'}):
+            self.assertIsInstance(self.set_telegram(person_id, 4242, 'tg-2', fail=True), Ambiguous)
+            self.assertIsNone(self.registry_telegram(person_id))
+            self.assertEqual(self.audits(person_id), 0)
+            done = self.set_telegram(person_id, 4242, 'tg-2')
+            self.assertIsInstance(done, Done)
+            self.assertEqual(self.registry_telegram(person_id), 4242)
+            self.assertEqual(self.audits(person_id), 1)
+            again = self.set_telegram(person_id, 4242, 'tg-2')
+            self.assertIsInstance(again, Done)
+            self.assertEqual(self.audits(person_id), 1)
+
+    def test_person_set_telegram_without_a_contact_stays_registry_only(self) -> None:
+        person_id = 't6n_' + '2' * 32
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', NULL, 0, 1)", (person_id,))
+        with patch.dict(os.environ, {'T6_PREVIEW_SIGNING_KEY': 'key'}):
+            self.assertIsInstance(self.set_telegram(person_id, 4242, 'tg-3'), Done)
+        self.assertEqual(self.registry_telegram(person_id), 4242)
+
     def test_project_related_reads_and_telegram_key(self) -> None:
         from t6.verbs import DeliverableListInput, JoFindInput, JoListInput, MeetingNotesListInput
         project = self.project['id']
