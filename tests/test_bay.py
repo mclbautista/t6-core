@@ -88,6 +88,14 @@ class BookingTests(unittest.TestCase):
         self.assertEqual(sum(item.action.startswith("booking_") for item in self.registry.activity(self.project)), 2)
         self.assertEqual(len(self.registry.audit(first.result['booking_id'])), 1)
 
+    def test_bay_list_answers_each_registered_bay_with_its_notion_page_for_a_reader(self) -> None:
+        listed = self.call('bay', 'list', {}, actor='reader')
+        self.assertEqual([bay['bay_id'] for bay in listed.result['bays']], sorted(self.bays))
+        with self.registry._transaction() as db:
+            pages = dict(db.execute("SELECT project_id, page_id FROM bindings WHERE system='notion' AND active=1").fetchall())
+        self.assertEqual({bay['bay_id']: bay['page_id'] for bay in listed.result['bays']}, {bay: pages[bay] for bay in self.bays})
+        self.assertEqual(set(listed.result['bays'][0]), {'bay_id', 'page_id'})
+
     def book(self, key: str, start: str, end: str, bay: int = 0) -> str:
         done = self.write('bay', 'book', {'bay': self.bays[bay], 'person': 'editor', 'project': self.project, 'start': start, 'end': end, 'idempotency_key': key})
         return str(done.result['booking_id'])

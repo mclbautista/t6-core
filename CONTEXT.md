@@ -87,6 +87,8 @@ A **Bay** (`t6b_`) is a bookable place, today a row of the Notion Bays
 database. t6 owns its identity only: the Notion Bays row, bound by page ID, keeps the typed fields.
 Migration registers a Bay per unbound row, never matches by name, and is safe to
 run twice.
+`bay list` (reader, also an MCP read tool) answers each registered Bay's `t6b_` ID with the page
+ID of its Notion row; the name stays in Notion.
 A Machine's record is the same kind of row (see Fleet).
 
 A **Booking** (`t6g_`) is one Person in one Bay on one Project from a start to
@@ -232,7 +234,10 @@ for Bookings.
 - A Deliverable code may repeat inside a Project (`deliverable define` allows it).
   `deliverable edit` changes the code or the episode of a Deliverable after it is
   defined (operator, preview and confirm, safe to repeat with the same key). It
-  names only the fields to change; dates stay with `deliverable delay`. A blank
+  names only the fields to change. It also gives a Deliverable its first due or air
+  date (`--due`, `--air`), each only when the Deliverable has none; if it already has
+  that date the verb refuses (rule `date`) and names `deliverable delay`, which keeps
+  its rule for moving an existing date. A blank
   code is refused, as is an archived Project; naming the values the Deliverable
   already has is Done and writes nothing. A change writes Audit and Activity and
   syncs the Notion page name. The Frame.io folder is not renamed: the Media
