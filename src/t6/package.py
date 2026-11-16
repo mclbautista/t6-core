@@ -130,6 +130,8 @@ class PackageStore:
                 record = self._record(row)
                 project = db.execute('SELECT project_id FROM deliverables WHERE id = ?', (record['deliverable_id'],)).fetchone()[0]
                 snapshot = json.dumps([package, record['revision']])
+                if verb in ('accept', 'reject') and record['recipient'] == 'client':
+                    return Refused(rule='recipient', reason='The recipient is the client, who is not a Person: a Package for the client is complete at handoff and is not accepted or rejected')
                 if verb in ('accept', 'reject') and actor != record['recipient']:
                     return Refused(rule='recipient', reason='Only the recipient may accept or reject')
                 if verb == 'reject' and (not isinstance(values.get('reason'), str) or not values['reason'].strip()):

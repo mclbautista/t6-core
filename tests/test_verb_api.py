@@ -278,6 +278,24 @@ class VerbAPITests(unittest.TestCase):
         self.assertEqual(result['outcome'], 'done')
         self.assertEqual(result['result']['project_id'], project_id)
 
+    def test_queue_failed_and_dismiss_are_operator_only_over_the_api(self) -> None:
+        from t6.worker.internal_queue import InternalJobQueue
+        inside = InternalJobQueue(self.registry, max_attempts=1)
+        job = inside.submit('main', 'sample.kind', 'k1').job_id
+        claim = inside.claim('main', 60)
+        assert claim is not None
+        inside.fail(job, claim.token, 'boom', retry_in=1)
+        self.assertEqual(self.request('/v1/queue/failed', {}, secret='staff-secret')[1]['outcome'], 'refused')
+        listed = self.request('/v1/queue/failed', {})[1]
+        self.assertEqual([item['job'] for item in listed['result']['jobs']], [job])
+        data = {'job': job, 'reason': 'data fixed by hand'}
+        self.assertEqual(self.request('/v1/queue/dismiss', data, secret='staff-secret')[1]['outcome'], 'refused')
+        preview = self.request('/v1/queue/dismiss', data)[1]
+        self.assertEqual(preview['outcome'], 'preview')
+        done = self.request('/v1/queue/dismiss', {**data, 'confirm': preview['token'], 'idempotency_key': preview['plan']['idempotency_key']})[1]
+        self.assertEqual((done['outcome'], done['result']['state']), ('done', 'dismissed'))
+        self.assertEqual(self.request('/v1/queue/failed', {})[1]['result']['jobs'], [])
+
     def test_service_permissions_and_gateway_delegation(self) -> None:
         project = self.registry.register(code='SERVICE', actor='setup', idempotency_key='service-setup')
         assert isinstance(project, Registered)

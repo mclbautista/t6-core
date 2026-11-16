@@ -119,7 +119,10 @@ show holds, the main worker holds it and asks (`POST /operator/offers`,
 `{"kind": "frameio_link", "frameio_project_id": ...}`) for one card per Frame.io project, with
 rule `permission:coordinator`. The card lists shows (in rotation first, five to a page);
 tapping one runs `frameio project link`, and the held activity is then delivered once. **Not
-now** leaves it held.
+now** leaves it held. When the Frame.io project is linked another way (`frameio project
+link`, `media link`, or a link made while the API was down), the pending card is finished as
+`frameio_linked_elsewhere` and edited in Telegram the way a tap edits it ("linked another
+way"); a later tap on it is `already_handled`. A card a tap has claimed is left to that tap.
 
 **A held code.** When a Project cannot enter rotation because its code is held,
 nothing changes and the card asks how to resolve it:
@@ -182,6 +185,13 @@ supply the gate. The target can be a T6 ID or a free reference. The optional
 and defaults to `permission:operator`. A single `person:<id>` rule sends the
 card to that active Person's Telegram ID when available; other rules use the
 configured operator chat.
+
+One open Approval stands for one request. A new preview and confirm of the same
+write by the same caller with the same input (`approval request`: the same gate,
+target and tapper rule; `project link-chat` and `unlink-chat`: the same link
+change) reuses the Approval that is still requested and makes no second card.
+This covers every Approval-gated verb, since they share the one check. A denied
+Approval does not block a new request.
 
 A request is previewed and confirmed before the card is created. The adapter
 uses one operator action per Approval and restores missing cards from requested

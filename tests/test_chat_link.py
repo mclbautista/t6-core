@@ -79,6 +79,35 @@ class ChatLinkTests(unittest.TestCase):
         self.assertTrue(worker.replace_subscriptions(job))
         self.assertEqual(gateway.calls[-1], ('PUT', '/subscriptions', []))
 
+    def test_a_new_preview_of_the_same_link_reuses_the_open_approval(self) -> None:
+        values = {'project': self.project, 'chat': -100, 'topic': 12}
+        first = self.links.write('link-chat', values, actor=self.actor, idempotency_key='a')
+        second = self.links.write('link-chat', values, actor=self.actor, idempotency_key='b')
+        unlink_values = {'project': self.project, 'chat': -100, 'topic': 13}
+        other = self.links.write('link-chat', unlink_values, actor=self.actor, idempotency_key='c')
+        assert isinstance(first, Preview) and isinstance(second, Preview) and isinstance(other, Preview)
+        self.assertEqual(first.plan['approval_id'], second.plan['approval_id'])
+        self.assertNotEqual(first.plan['approval_id'], other.plan['approval_id'])
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM approvals WHERE state = 'requested'").fetchone()[0], 2)
+        decision = {'approval': first.plan['approval_id']}
+        grant = self.approvals.write('grant', decision, actor=self.actor, idempotency_key='g')
+        assert isinstance(grant, Preview)
+        self.assertIsInstance(self.approvals.write('grant', decision, actor=self.actor, idempotency_key='g', confirm=grant.token), Done)
+        self.assertIsInstance(self.links.write('link-chat', values, actor=self.actor, idempotency_key='b', confirm=second.token), Done)
+
+    def test_a_denied_approval_does_not_block_a_new_link_preview(self) -> None:
+        values = {'project': self.project, 'chat': -100, 'topic': 12}
+        first = self.links.write('link-chat', values, actor=self.actor, idempotency_key='a')
+        assert isinstance(first, Preview)
+        deny = {'approval': first.plan['approval_id'], 'reason': 'no'}
+        decision = self.approvals.write('deny', deny, actor=self.actor, idempotency_key='d')
+        assert isinstance(decision, Preview)
+        self.assertIsInstance(self.approvals.write('deny', deny, actor=self.actor, idempotency_key='d', confirm=decision.token), Done)
+        again = self.links.write('link-chat', values, actor=self.actor, idempotency_key='b')
+        assert isinstance(again, Preview)
+        self.assertNotEqual(again.plan['approval_id'], first.plan['approval_id'])
+
     def test_catalogue(self) -> None:
         self.assertTrue({'link-chat', 'unlink-chat'} <= {v['verb'] for v in catalogue() if v['noun'] == 'project'})
 

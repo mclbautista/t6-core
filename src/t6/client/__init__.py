@@ -22,7 +22,7 @@ from t6.verbs import (
     MachineListInput, MachineSyncInput,
     SwingAssignInput, SwingUnassignInput, SwingReturnInput, SwingOverdueInput,
     BayBookInput, BookingMoveInput, BookingExtendInput, BookingCancelInput, BookingGetInput, BookingListInput,
-    DeliverableDeliverInput, PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput,
+    DeliverableDeliverInput, PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput, QueueDismissInput, QueueFailedInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
     ConcernScanInput, ConcernObserveInput, ConcernCountsInput, ConcernListInput, ConcernChangesInput, ConcernForMessageInput, ConcernRecordMessageInput, ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
     JoListInput, JoFindInput, DeliverableListInput, DeliverableCandidatesInput, FloorReadInput, DeliverableGetInput, DeliverableDefineInput, DeliverableEditInput, DeliverableRebindInput, DeliverableMissInput, DeliverableDelayInput, MilestoneRecordInput, MeetingNotesListInput, MeetingNotesCreateInput, MeetingNotesAppendInput, MeetingNotesTrashInput, MeetingNotesMarkSentInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, ProjectNotesInput, ProjectFlagsInput, StandingCcInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
@@ -435,6 +435,12 @@ class Client:
 
     def package_check(self, inputs: PackageCheckInput) -> Result:
         return self.call("package", "check", inputs)
+
+    def queue_failed(self, inputs: QueueFailedInput) -> Result:
+        return self.call('queue', 'failed', inputs)
+
+    def queue_dismiss(self, inputs: QueueDismissInput) -> Result:
+        return self.call('queue', 'dismiss', inputs)
 
     def package_handoff(self, inputs: PackageHandoffInput) -> Result:
         return self.call("package", "handoff", inputs)

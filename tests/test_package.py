@@ -70,6 +70,22 @@ class PackageTests(unittest.TestCase):
         self.write('accept', {'package': package}, 'accept', actor='recipient')
         self.assertEqual(self.store.list(missing=True), [])
 
+    def test_a_package_for_the_client_ends_at_handoff_and_accept_and_reject_say_so(self) -> None:
+        self.fake.add_page('specs', package_spec_properties(package_kind='delivery', version='1', blocking_items=('EDL',)))
+        values = {'deliverable': 'delivery', 'kind': 'delivery', 'to': 'Client', 'recipient': 'client'}
+        package = self.write('prepare', values, 'prepare')['package_id']
+        self.write('check', {'package': package, 'item': 'EDL'}, 'check')
+        self.write('handoff', {'package': package}, 'handoff')
+        for actor in ('sender', 'recipient'):
+            for verb, extra in (('accept', {}), ('reject', {'reason': 'Wrong cut'})):
+                with self.subTest(actor=actor, verb=verb):
+                    refused = self.store.write(verb, {'package': package, **extra}, actor=actor, idempotency_key=f'{actor}-{verb}')
+                    assert isinstance(refused, Refused)
+                    self.assertEqual(refused.rule, 'recipient')
+                    self.assertIn('not a Person', refused.reason)
+                    self.assertIn('complete at handoff', refused.reason)
+        self.assertEqual(self._get(package)['state'], 'handed_off')
+
     def test_registered_list_and_check_use_authenticated_person(self) -> None:
         from t6.person import People
         from t6.verbs import PackageCheckInput, PackageListInput, VERBS, invoke
