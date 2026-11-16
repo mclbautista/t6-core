@@ -16,7 +16,7 @@ import re
 from typing import Any
 
 from t6.domain import Contact, Deliverable, Project
-from t6.notion.generated import ContactsRow, DeliverablesRow, ProjectsRow
+from t6.notion.generated import ContactsRow, DeliverablesRow, ProjectsRow, StudiosRow
 from t6.notion.model import NotionModel
 from t6.notion.sync import NotionClient
 
@@ -140,6 +140,19 @@ class ContactReader:
     def list(self) -> tuple[Contact, ...]:
         pages = self._client.query_data_source(self._source)
         return tuple(contact_from_row(ContactsRow.from_page(page), page_edited(page)) for page in pages if is_live(page))
+
+
+class StudioReader:
+    def __init__(self, client: NotionClient, data_source_id: str) -> None:
+        self._client, self._source = client, data_source_id
+
+    def names(self) -> tuple[str, ...]:
+        """Each Studio's name, then its aliases, in the data source's order. Pages in the trash are not skipped."""
+        names: list[str] = []
+        for page in self._client.query_data_source(self._source):
+            row = StudiosRow.from_page(page)
+            names += [row.name or "", *row.aliases]
+        return tuple(names)
 
 
 class DeliverableReader:

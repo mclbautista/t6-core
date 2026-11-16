@@ -286,6 +286,9 @@ class VerbAPI:
         elif (entry.noun, entry.verb) == ('person', 'create'):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._person_create(inputs, actor)
+        elif (entry.noun, entry.verb) == ('person', 'set-telegram') and (page := self._contact_page(inputs.person_id)):
+            refusal = self.people.authorize(actor, entry.role)
+            outcome = refusal or self._person_set_telegram(inputs, actor, page)
         elif (entry.noun, entry.verb) == ('concern', 'raise') and inputs.owner not in self._coordinators(inputs.project):
             outcome = self.people.authorize(actor, entry.role) or Refused(rule='owner', reason='Owner must be a Project coordinator')
         elif entry.handler is None:
@@ -355,6 +358,58 @@ class VerbAPI:
                 return Response(400, {'error': error.error}) if error.error else Response(400)
         except (ValueError, KeyError, TypeError):
             return Response(400, {'error': 'invalid request'})
+
+    def _contact_page(self, person_id: str) -> str | None:
+        """The Person's active Contacts page, or None for a registry-only Person."""
+        person = self.people.get(person_id)
+        return next((b['page_id'] for b in person['bindings'] if b['active']), None) if person else None
+
+    def _person_set_telegram(self, inputs: Any, actor: str, page: str) -> Any:
+        """Set a Person's Telegram ID on the Contact first, then in the registry.
+
+        Setting the same value twice is harmless, so Notion goes first and the
+        registry change (with its audit entry and key) is the commit point.
+        Until then a retry with the same key writes the Contact again and
+        then commits once. A confirm answers `Ambiguous` when the Contact
+        could not be confirmed, and nothing is committed.
+        """
+        from t6.notion import NotionError
+        from t6.notion.contacts import Contacts
+        from t6.notion.writes import Rejected, Ambiguous as WriteAmbiguous
+        from t6.verbs import Ambiguous
+        from uuid import UUID
+        values = {'person_id': inputs.person_id, 'telegram_id': inputs.telegram_id}
+        key = inputs.idempotency_key
+
+        def write(confirm: str | None) -> Any:
+            return self.people.write('set-telegram', values, actor=actor, idempotency_key=key, confirm=confirm)
+
+        if not inputs.confirm or not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+            return write(inputs.confirm)  # the preview, and the refusals, are the registry verb's
+        nonce = self.people.tokens.verify(inputs.confirm, 'person set-telegram', actor, {**values, 'idempotency_key': key})
+        if isinstance(nonce, Refused):
+            return nonce
+        registry = self.people.registry
+        with registry._transaction() as db:
+            committed = db.execute('SELECT 1 FROM verb_requests WHERE idempotency_key = ?', (key,)).fetchone() or db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce = ?', (nonce,)).fetchone()
+            holder = None if committed else db.execute('SELECT id FROM persons WHERE active = 1 AND telegram_id = ? AND id != ?', (inputs.telegram_id, inputs.person_id)).fetchone()
+        if committed:
+            return write(inputs.confirm)  # already committed: replay or refuse as the registry verb does
+        if holder:
+            return Refused(rule='telegram_id', reason=f'Telegram ID is held by {holder[0]}')
+        try:
+            with self.open_notion(os.environ['T6_NOTION_TOKEN']) as client:
+                saved = Contacts(client, self.data_sources['contacts']).set_telegram_user_id(str(UUID(page)) if len(page) == 32 else page, inputs.telegram_id)
+        except (ValueError, KeyError, OSError, NotionError) as error:
+            return Refused(rule='input', reason=str(error))
+        if isinstance(saved, Rejected):
+            return Refused(rule='notion', reason=str(saved))
+        if isinstance(saved, WriteAmbiguous):
+            return Ambiguous(candidates=[{'pending': True, 'reason': str(saved), 'page_id': saved.page_id}])
+        outcome = write(inputs.confirm)
+        if isinstance(outcome, Refused):  # the ID was taken between the check and the commit
+            return Ambiguous(candidates=[{'pending': True, 'reason': f'The Contact was updated but the registry refused: {outcome.reason}', 'page_id': page}])
+        return outcome
 
     def _person_create(self, inputs: Any, actor: str) -> Any:
         """Create a Contacts page and register the Person bound to it.

@@ -245,6 +245,33 @@ def _migrate_bays(args: argparse.Namespace, open_notion: Callable[..., Any]) -> 
     return 0
 
 
+def _privacy_registry(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
+    import re
+    from t6.notion import NotionError
+    from t6.notion.reads import ProjectReader, StudioReader
+    token = os.environ.get(TOKEN_VARIABLE)
+    if not token:
+        return _fail(f"set {TOKEN_VARIABLE} to a Notion integration token")
+    try:
+        sources = _read_data_sources(args.data_sources)
+        if not sources.get("studios") or not sources.get("projects"):
+            return _fail("--data-sources needs 'studios' and 'projects' entries")
+        with open_notion(token) as client:
+            studios = StudioReader(client, sources["studios"]).names()
+            projects = tuple(project.name for project in ProjectReader(client, sources["projects"]).list())
+        names = list(dict.fromkeys(" ".join(name.split()) for name in (*studios, *projects) if name.strip()))
+        text = json.dumps(names, ensure_ascii=False)
+        if args.output:
+            args.output.write_text(text + "\n", encoding="utf-8")
+        else:
+            print(text)
+    except (OSError, ValueError, NotionError) as error:
+        return _fail(str(error))
+    print(f"{len(names)} names; {sum(len(name) < 4 for name in names)} shorter than 4 characters; "
+          f"{sum(bool(re.fullmatch(r'[A-Za-z]{4,6}', name)) for name in names)} plain words of 4 to 6 letters", file=sys.stderr)
+    return 0
+
+
 def _calendar_resync(args: argparse.Namespace) -> int:
     from t6.bay import BookingStore
     from t6.preview import PreviewTokens
@@ -711,6 +738,14 @@ def main(
         description="Run on the database host. Queues one booking.calendar_sync job per Booking and prints how many. "
         "Safe to run twice: a Booking whose sync is still queued is not queued again.")
     calendar_resync.add_argument("--registry-db", type=Path, default=Path(os.environ.get(REGISTRY_DB_VARIABLE, DEFAULT_REGISTRY_DB)), metavar="FILE", help="the t6 database")
+    privacy_registry = admin_commands.add_parser(
+        "privacy-registry", help="Build the client-name file that masked reads use (T6_READ_PRIVACY_REGISTRY)",
+        description="Run in the API container. Reads every Studio name and alias, then every Project name, and writes them as a "
+        "JSON array (to --output, or to stdout). Prints only counts to stderr.")
+    privacy_registry.add_argument("--data-sources", type=Path, default=os.environ.get("T6_READ_DATA_SOURCES"),
+                                  required="T6_READ_DATA_SOURCES" not in os.environ,
+                                  help="JSON object of database key to data source ID, with 'studios' and 'projects'; default T6_READ_DATA_SOURCES")
+    privacy_registry.add_argument("--output", type=Path, help="write the array to this file instead of stdout")
     drive = admin_commands.add_parser("drive", help="Drive administration")
     drive_commands = drive.add_subparsers(dest="drive_command", required=True)
 
@@ -755,6 +790,8 @@ def main(
         return _migrate_media(args)
     if getattr(args, "admin_command", None) == "calendar":
         return _calendar_resync(args)
+    if getattr(args, "admin_command", None) == "privacy-registry":
+        return _privacy_registry(args, open_notion)
     if getattr(args, "admin_command", None) == "bay":
         return _migrate_bays(args, open_notion)
     if getattr(args, "admin_command", None) == "deliverable":
