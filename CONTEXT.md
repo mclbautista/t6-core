@@ -520,6 +520,7 @@ fields, read from Notion) and `t6.registry` (identity).
   held activity is then **released**, each event once, whatever linked the project
   (the card, the verb, or anything else). It is never dropped and no comment text is
   stored with it. Skipping the card leaves it held and the next event posts a new card.
+  When the Frame.io project is linked another way, the pending card is closed as linked elsewhere and edited in Telegram.
 - **Link Frame.io project**: a button on the `/project` card, for any active staff
   Person (a staff Person who is not an operator gets the card with only this
   button). It lists the Frame.io projects of the configured T6 Frame.io account that

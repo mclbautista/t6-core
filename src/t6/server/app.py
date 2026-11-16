@@ -252,6 +252,7 @@ class WebhookApp:
         self._dispatch_sync()  # jobs for changes accepted before a restart
         self._redeliver_cards()
         self.release_held_activity()  # Frame.io activity whose project was linked before a restart
+        self.close_linked_frameio_cards()
 
     # -- public listener --------------------------------------------------------
 
@@ -514,6 +515,16 @@ class WebhookApp:
         except RegistryUnavailable:
             return 0
 
+    def close_linked_frameio_cards(self) -> None:
+        """Close the "needs a show" cards of Frame.io projects that are linked now, and update them in Telegram like a tap does (#419)."""
+        if self._operator is None:
+            return
+        try:
+            for action in self._operator.close_linked_frameio_cards():
+                self._deliver(action.token, action.version)
+        except RegistryUnavailable:
+            return
+
     def after_verb(self, noun: str, verb: str, outcome: Outcome) -> None:
         """The effects a verb has outside the t6 database, once it has committed: they follow the verb, not the API that ran it.
 
@@ -532,6 +543,7 @@ class WebhookApp:
             if not isinstance(outcome, Done):
                 return
             self.release_held_activity()
+            self.close_linked_frameio_cards()
             if (noun, verb) == ("project", "start") and outcome.result.get("approval_id"):
                 self._redeliver_cards()
         except Exception:

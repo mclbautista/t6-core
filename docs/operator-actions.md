@@ -119,7 +119,10 @@ show holds, the main worker holds it and asks (`POST /operator/offers`,
 `{"kind": "frameio_link", "frameio_project_id": ...}`) for one card per Frame.io project, with
 rule `permission:coordinator`. The card lists shows (in rotation first, five to a page);
 tapping one runs `frameio project link`, and the held activity is then delivered once. **Not
-now** leaves it held.
+now** leaves it held. When the Frame.io project is linked another way (`frameio project
+link`, `media link`, or a link made while the API was down), the pending card is finished as
+`frameio_linked_elsewhere` and edited in Telegram the way a tap edits it ("linked another
+way"); a later tap on it is `already_handled`. A card a tap has claimed is left to that tap.
 
 **A held code.** When a Project cannot enter rotation because its code is held,
 nothing changes and the card asks how to resolve it:
