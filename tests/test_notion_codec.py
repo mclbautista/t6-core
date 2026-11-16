@@ -36,6 +36,21 @@ class CodecTests(unittest.TestCase):
         self.assertEqual(codec.date_start(moment), datetime(2026, 11, 16, 9, 30, tzinfo=timezone.utc))
         self.assertIsNone(codec.date_start({"type": "date", "date": None}))
 
+    def test_date_range_returns_start_and_end(self) -> None:
+        span = {"type": "date", "date": {"start": "2026-11-16", "end": "2026-11-20"}}
+        self.assertEqual(codec.date_range(span), (date(2026, 11, 16), date(2026, 11, 20)))
+        self.assertEqual(codec.date_start(span), date(2026, 11, 16))
+
+    def test_date_range_without_an_end_gives_none(self) -> None:
+        self.assertEqual(codec.date_range({"type": "date", "date": {"start": "2026-11-16", "end": None}}), (date(2026, 11, 16), None))
+        self.assertEqual(codec.date_range({"type": "date", "date": None}), (None, None))
+        self.assertEqual(codec.date_range(None), (None, None))
+
+    def test_date_range_end_keeps_its_time(self) -> None:
+        span = {"type": "date", "date": {"start": "2026-11-16T09:00:00.000+08:00", "end": "2026-11-16T17:30:00.000+08:00"}}
+        _, end = codec.date_range(span)
+        self.assertEqual(end, datetime.fromisoformat("2026-11-16T17:30:00+08:00"))
+
 
 if __name__ == "__main__":
     unittest.main()

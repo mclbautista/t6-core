@@ -145,6 +145,9 @@ class Project(NotionEntity):
     playdate: dt.date | dt.datetime | None = field(default=None, compare=False)
     submission_deadline: dt.date | dt.datetime | None = field(default=None, compare=False)
     archival_deadline: dt.date | dt.datetime | None = field(default=None, compare=False)
+    playdate_end: dt.date | dt.datetime | None = field(default=None, compare=False)
+    submission_deadline_end: dt.date | dt.datetime | None = field(default=None, compare=False)
+    archival_deadline_end: dt.date | dt.datetime | None = field(default=None, compare=False)
     pm_notes: str | None = field(default=None, compare=False)
     tech_notes: str | None = field(default=None, compare=False)
     has_post_supe: str | None = field(default=None, compare=False)
@@ -156,6 +159,7 @@ class Project(NotionEntity):
     post_coordinator_ids: tuple[str, ...] = field(default=(), compare=False)
     director_ids: tuple[str, ...] = field(default=(), compare=False)
     cinematographer_ids: tuple[str, ...] = field(default=(), compare=False)
+    prod_coor_supe_ids: tuple[str, ...] = field(default=(), compare=False)
     last_edited: dt.datetime | None = field(default=None, compare=False)
     """When Notion last saved the page, as Notion reports it."""
 
@@ -271,6 +275,7 @@ class JobOrder(NotionEntity):
     status: str | None = field(default=None, compare=False)
     health: str | None = field(default=None, compare=False)
     project_id: str | None = field(default=None, compare=False)
+    project_ids: tuple[str, ...] = field(default=(), compare=False)
     assigned_ids: tuple[str, ...] = field(default=(), compare=False)
     cc_ids: tuple[str, ...] = field(default=(), compare=False)
     coordinator_ids: tuple[str, ...] = field(default=(), compare=False)

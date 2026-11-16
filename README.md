@@ -1078,7 +1078,11 @@ last-edited time. `Project` carries status, stage, health, playdate,
 submission and archival deadlines, PM and tech notes, `has_post_supe`, and the
 role relations as page IDs (`editor_ids`, `assistant_editor_ids`,
 `online_editor_ids`, `colorist_ids`, `sound_tech_ids`, `post_coordinator_ids`,
-`director_ids`, `cinematographer_ids`). `Contact.end_of_shift` is a time of day
+`director_ids`, `cinematographer_ids`). A date range keeps its end in
+`playdate_end`, `submission_deadline_end` and `archival_deadline_end` (`None`
+when the date has no end; a range end keeps its time as Notion holds it), and
+`prod_coor_supe_ids` holds the people in `Prod Coor/Supe`. `JobOrder.project_ids`
+holds every related Project; `project_id` is the first. `Contact.end_of_shift` is a time of day
 parsed from "10:00 PM", "10 PM" or "22:00"; "Flexible / Variable", blank and
 any other text are `None`, meaning flexible. `Deliverable` carries
 `deliverable_class` and `playdate`.

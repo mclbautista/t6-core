@@ -41,6 +41,13 @@ standard verb outcome or `Unavailable`. Related entities use T6 IDs where a
 binding exists and Notion page IDs otherwise; `page_id` always remains the
 Notion page ID. A Project reference may be its T6 ID or an active or legacy
 page ID. Project rotation is registry-owned and is never inferred from status.
+`project list` and `project get` return the end of each date range in
+`playdate_end`, `submission_deadline_end` and `archival_deadline_end` (`None`
+when the date has no end; a range end is returned as Notion holds it, with its
+time when it has one) and `prod_coor_supe_ids`, the people in `Prod Coor/Supe`
+as T6 Person IDs where bound. `jo list`, `jo get` and `jo find` return
+`project_ids`, every related Project in Notion's order, beside `project_id`,
+the first.
 `jo list` supports `project`, `assignee` and `status_group` (`not_started`,
 `started`, `cancelled`, or `active`). Meeting Notes can be filtered by Project,
 inclusive `since`, exclusive `before`, exact title, title prefix and readiness;

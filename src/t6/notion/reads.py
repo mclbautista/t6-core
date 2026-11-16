@@ -15,6 +15,7 @@ import datetime as dt
 import re
 from typing import Any
 
+from t6.notion import codec
 from t6.domain import Contact, Deliverable, Project
 from t6.notion.generated import ContactsRow, DeliverablesRow, ProjectsRow, StudiosRow
 from t6.notion.model import NotionModel
@@ -59,7 +60,12 @@ def _key(model: type[NotionModel], attribute: str) -> str:
     return model.notion_id(attribute) or model.notion_name(attribute)
 
 
-def project_from_row(row: ProjectsRow, last_edited: dt.datetime | None = None) -> Project:
+def _end(page: JSON | None, attribute: str) -> dt.date | dt.datetime | None:
+    return codec.date_range(ProjectsRow.raw_property(page, attribute))[1] if page else None
+
+
+def project_from_row(row: ProjectsRow, last_edited: dt.datetime | None = None, page: JSON | None = None) -> Project:
+    """`page` is the Notion page the row came from; it gives the end of a date range."""
     return Project(
         page_id=row.page_id,
         name=row.name or "",
@@ -74,6 +80,9 @@ def project_from_row(row: ProjectsRow, last_edited: dt.datetime | None = None) -
         playdate=row.playdate,
         submission_deadline=row.submission_deadline,
         archival_deadline=row.archival_deadline,
+        playdate_end=_end(page, "playdate"),
+        submission_deadline_end=_end(page, "submission_deadline"),
+        archival_deadline_end=_end(page, "archival_deadline"),
         pm_notes=row.pm_notes,
         tech_notes=row.tech_notes,
         has_post_supe=row.has_post_supe,
@@ -85,6 +94,7 @@ def project_from_row(row: ProjectsRow, last_edited: dt.datetime | None = None) -
         post_coordinator_ids=row.t6_post_coordinator,
         director_ids=row.director,
         cinematographer_ids=row.cinematographer,
+        prod_coor_supe_ids=row.prod_coor_supe,
         last_edited=last_edited,
     )
 
@@ -122,11 +132,11 @@ class ProjectReader:
 
     def get(self, page_id: str) -> Project:
         page = self._client.retrieve_page(page_id)
-        return project_from_row(ProjectsRow.from_page(page), page_edited(page))
+        return project_from_row(ProjectsRow.from_page(page), page_edited(page), page)
 
     def list(self) -> tuple[Project, ...]:
         pages = self._client.query_data_source(self._source)
-        return tuple(project_from_row(ProjectsRow.from_page(page), page_edited(page)) for page in pages if is_live(page))
+        return tuple(project_from_row(ProjectsRow.from_page(page), page_edited(page), page) for page in pages if is_live(page))
 
 
 class ContactReader:

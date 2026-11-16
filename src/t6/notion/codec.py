@@ -88,15 +88,26 @@ def email(prop: JSON | None) -> str | None:
     return _value(prop, "email") or None
 
 
+def _moment(text: str | None) -> date | datetime | None:
+    if not text:
+        return None
+    if "T" in text:
+        return datetime.fromisoformat(text)
+    return date.fromisoformat(text)
+
+
 def date_start(prop: JSON | None) -> date | datetime | None:
     """The start of a date property: a date, or a datetime when it has a time."""
     value = _value(prop, "date")
-    start = value.get("start") if isinstance(value, dict) else None
-    if not start:
-        return None
-    if "T" in start:
-        return datetime.fromisoformat(start)
-    return date.fromisoformat(start)
+    return _moment(value.get("start") if isinstance(value, dict) else None)
+
+
+def date_range(prop: JSON | None) -> tuple[date | datetime | None, date | datetime | None]:
+    """The start and the end of a date property. The end is None when the date has none; it keeps its time as Notion holds it."""
+    value = _value(prop, "date")
+    if not isinstance(value, dict):
+        return None, None
+    return _moment(value.get("start")), _moment(value.get("end"))
 
 
 def phone_number(prop: JSON | None) -> str | None:

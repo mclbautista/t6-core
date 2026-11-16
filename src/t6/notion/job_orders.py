@@ -180,6 +180,7 @@ class JobOrders:
             **values,
             health=_health(row.health),
             project_id=row.projects[0] if row.projects else None,
+            project_ids=row.projects,
             **{name: getattr(row, attribute) for name, attribute in RELATIONS.items()},
             source_text=body,
             last_edited=page_edited(page),
