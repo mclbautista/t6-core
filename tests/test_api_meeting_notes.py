@@ -189,6 +189,17 @@ class MeetingNotesVerbTests(unittest.TestCase):
         self.assertEqual(result.rule, "input")
         self.assertFalse(self.notion.page(self.project["id"])["in_trash"])
 
+    def test_write_replies_are_masked_like_the_list(self) -> None:
+        page = self.note("Client Corp kickoff", "2026-11-16")
+        [listed] = self.listed()
+        for result in (self.reports.meeting_notes_append(MeetingNotesAppendInput(note=page["id"], blocks=[block("Agenda")])),
+                       self.reports.meeting_notes_mark_sent(MeetingNotesMarkSentInput(note=page["id"])),
+                       self.reports.meeting_notes_create(MeetingNotesCreateInput(title="Client Corp review", meeting_date="2026-11-17", project_ids=[], attendee_ids=[], blocks=[]))):
+            assert isinstance(result, Done), result
+            self.assertNotIn("Client Corp", json.dumps(result.result))
+        self.assertNotIn("Client Corp", listed["name"])
+        self.assertEqual(self.notion.page(page["id"])["properties"]["Name"]["title"][0]["plain_text"], "Client Corp kickoff")
+
     def test_mark_sent_twice_keeps_the_first_date(self) -> None:
         saved = self.create()
         first = self.reports.meeting_notes_mark_sent(MeetingNotesMarkSentInput(note=saved["page_id"], at=datetime(2026, 11, 16, 10, tzinfo=MANILA)))

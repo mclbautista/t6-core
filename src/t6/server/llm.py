@@ -174,7 +174,7 @@ class LLMService:
         return CandidateDecisions.model_validate_json(completion.content or ''), completion
 
     def _allowed_names(self, entries: list[str]) -> list[str] | None:
-        """Every name and code of the Projects the entries name, or None when an entry is not a Project (or is also a person)."""
+        """Every name and code of the Projects the entries name, or None when an entry is not a Project or one of those names is also a person."""
         def key(text: str) -> str:
             return ' '.join(text.lstrip('@').split()).casefold()
         people = {key(name) for kind, name, _ in self.registry.terms() if kind == 'person'}
@@ -184,7 +184,8 @@ class LLMService:
             if not key(entry) or not found or key(entry) in people:
                 return None
             allowed += [name for p in found for name in (p.name, p.code or '') if name]
-        return allowed
+        # A Project found by its name can bring a code that is also a person's name; that would unmask the person.
+        return None if any(key(name) in people for name in allowed) else allowed
 
     def _run(self, inputs: LLMRunInput, meta: dict[str, Any] | None = None) -> Done | Refused:
         meta = {} if meta is None else meta

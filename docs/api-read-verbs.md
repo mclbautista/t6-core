@@ -180,8 +180,8 @@ caller that renders names needs the `unmasked` permission and the `reader` role.
 Notion page ID the registry knows. The reply has, for each Project, `open` (every
 Concern that is not closed, oldest first: `id`, `text`, `source`, `opened_on`,
 `age_days`, `weeks`, `chronic`, `state`, `seen_this_run`) and
-`closed_since_last_run` (`id`, `text`: closed by any path since the previous
-`run_date` the audit rows know, else the 7 days before), and `counts`: `new`,
+`closed_since_last_run` (`id`, `text`: closed by any path after the run of the
+previous `run_date` was stored, else in the 7 days before), and `counts`: `new`,
 `known`, `not_seen`, `unavailable`, `skipped`, `projects_with_both` and `closed`.
 The run closes nothing unless the server has `T6_CONCERN_OBSERVE_CLOSES` on. The
 reply names Concern text, so it is masked for a caller without real-name access.

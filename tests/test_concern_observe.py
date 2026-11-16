@@ -62,6 +62,10 @@ class ObserveTests(unittest.TestCase):
         assert isinstance(outcome, Done), outcome
         return outcome.result
 
+    def close(self, concern: str) -> None:
+        preview = self.store.write('resolve', {'concern': concern}, actor='person', idempotency_key='close-' + concern)
+        self.store.write('resolve', {'concern': concern}, actor='person', idempotency_key='close-' + concern, confirm=preview.token)  # type: ignore[union-attr]
+
     def finding(self, text: str, source: str = 'flag_rule', **more: Any) -> dict[str, Any]:
         return {'project': self.project, 'text': text, 'source': source, **more}
 
@@ -243,6 +247,21 @@ class ObserveTests(unittest.TestCase):
         self.assertNotIn('Client Corp', str(rows))
         with self.registry._transaction() as db:
             self.assertNotIn('Client Corp', str(db.execute("SELECT * FROM activity WHERE action IN ('concern_observe', 'concern_auto_raise')").fetchall()))
+
+    def test_a_close_the_previous_run_already_listed_is_not_listed_again(self) -> None:
+        ids = {i['text']: i['id'] for i in self.open_of(self.go('2026-11-09', [self.finding('Early'), self.finding('Late')]))}
+        self.now += 7 * DAY - 3600  # the morning of the next run day, before that run
+        self.close(ids['Early'])
+        self.now += 3600
+        self.assertEqual([i['text'] for i in self.go('2026-11-16', [])['projects'][0]['closed_since_last_run']], ['Early'])
+        self.now += 3600  # the same day, after the run
+        self.close(ids['Late'])
+        self.now += 7 * DAY
+        self.assertEqual([i['text'] for i in self.go('20261123', [])['projects'][0]['closed_since_last_run']], ['Late'])
+
+    def test_a_compact_run_date_is_stored_as_an_iso_date(self) -> None:
+        result = self.go('20261116', [self.finding('One')])
+        self.assertEqual((result['run_date'], self.open_of(result)[0]['opened_on']), ('2026-11-16', '2026-11-16'))
 
     def test_closed_since_last_run_starts_at_the_previous_run_date_and_with_none_seven_days_back(self) -> None:
         item = self.open_of(self.go('2026-11-16', [self.finding('One')]))[0]

@@ -208,6 +208,14 @@ class LLMAPITests(unittest.TestCase):
                 self.assertEqual(self.call()['rule'], 'allow')
                 self.assertEqual(self.fake.calls, [])
 
+    def test_allow_projects_refuses_a_project_whose_code_is_also_a_person(self) -> None:
+        from t6.privacy import Project
+        self.fake = FakeProvider().reply('{"summary": "x"}')
+        self.api.llm_service = LLMService({'fake': self.fake}, 'fake', Registry(people=[Person('Sam')], projects=[Project('Atlas', code='Sam')]))
+        self.body.update(input_text='Sam met Atlas', allow_projects=['Atlas'])
+        self.assertEqual(self.call()['rule'], 'allow')
+        self.assertEqual(self.fake.calls, [])
+
     def test_quotes_are_repaired_only_when_asked(self) -> None:
         reply = '{"summary": "He said "hi" twice"}'
         self.serve(FakeProvider().reply(reply))
