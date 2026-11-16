@@ -47,7 +47,7 @@ class ResolveProject:
 
     @property
     def external_id(self) -> str:
-        """`<database>/<folder path>/<project name>`. A project in the root folder has no folder segment."""
+        """`<database>/<folder path>/<project name>`. A project outside any folder has no folder segment."""
         return "/".join((self.database, *self.folder_path, self.name))
 
     @property
@@ -111,8 +111,7 @@ class ProjectServer:
         while folder_id is not None and folder_id in folders and folder_id not in seen:
             seen.add(folder_id)
             name, parent = folders[folder_id]
-            if parent is not None:  # the root folder has no parent and no name in the path
-                names.append(name)
+            names.append(name)
             folder_id = parent
         return tuple(reversed(names))
 
