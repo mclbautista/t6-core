@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-11-16
+
+One fix from round 2 of the live test: a version stack made in Frame.io no longer leaves a failed job. No migration: the schema stays at 43.
+
 ### Fixed
 
 - A `file.versioned` event that names a version stack no longer ends the `frameio.file_versioned` job failed with a 502 (#410): the Frame.io worker's `GET /frameio/files/<id>/location` answers a stack ID with the stack's folder, the stack and its `file_ids`, and the main worker records a Version with the stack for each file in a Deliverable's T6 folder that has none, and fills the stack on a Version that has none. An ID that is neither a file nor a stack ends the job as ignored.
