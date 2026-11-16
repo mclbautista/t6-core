@@ -2318,24 +2318,26 @@ class DriveExceptionsOutput(BaseModel):
 def drive_read(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
     from t6 import drive_reads
     from t6.drives.sqlite import SqliteDriveStore
-    store = SqliteDriveStore(_people().registry)
+    registry = _people().registry
     result: BaseModel | None
-    if isinstance(inputs, DriveListInput):
-        result = drive_reads.list_drives(store, **inputs.model_dump())
-    elif isinstance(inputs, DriveGetInput):
-        result = drive_reads.get(store, inputs.drive)
-        if result is None:
-            return Refused(rule='drive', reason=f'Drive {inputs.drive} not found')
-    elif isinstance(inputs, DriveFindInput):
-        result = drive_reads.find(store, inputs.serial)
-    elif isinstance(inputs, DriveShipmentInput):
-        result = drive_reads.shipment(store, inputs.shipment)
-        if result is None:
-            return Refused(rule='shipment', reason=f'Shipment {inputs.shipment} not found')
-    elif isinstance(inputs, DriveShipmentsInput):
-        result = drive_reads.shipments(store)
-    else:
-        result = drive_reads.exceptions(store)
+    with registry._transaction() as db:  # one transaction for the whole read: the store would open one for each Drive's status and Assignments
+        store = SqliteDriveStore(registry, within=db)
+        if isinstance(inputs, DriveListInput):
+            result = drive_reads.list_drives(store, **inputs.model_dump())
+        elif isinstance(inputs, DriveGetInput):
+            result = drive_reads.get(store, inputs.drive)
+            if result is None:
+                return Refused(rule='drive', reason=f'Drive {inputs.drive} not found')
+        elif isinstance(inputs, DriveFindInput):
+            result = drive_reads.find(store, inputs.serial)
+        elif isinstance(inputs, DriveShipmentInput):
+            result = drive_reads.shipment(store, inputs.shipment)
+            if result is None:
+                return Refused(rule='shipment', reason=f'Shipment {inputs.shipment} not found')
+        elif isinstance(inputs, DriveShipmentsInput):
+            result = drive_reads.shipments(store)
+        else:
+            result = drive_reads.exceptions(store)
     return Done(result=result.model_dump(mode='json'))
 
 

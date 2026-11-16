@@ -103,6 +103,20 @@ class DriveVerbTests(unittest.TestCase):
         self.assertEqual((first['label'], first['serial'], first['suspected_serial'], first['needs_review'], first['review_note']),
                          ('Synthetic 0', 'SYNTH-0', 'MAYBE-9', True, 'check serial'))
 
+    def test_drive_list_reads_the_inventory_in_one_transaction_however_many_drives_there_are(self) -> None:
+        """Each Drive's status and Assignments were one transaction each: 2,100 Drives took seconds (t6-drives #19)."""
+        self.seed_inventory()
+        real = self.registry._transaction
+        with patch.object(self.registry, '_transaction', side_effect=real) as opened:
+            from t6 import drive_reads
+            from t6.verbs import DriveListInput, drive_read
+            with patch('t6.verbs._people', return_value=self.people):
+                done = drive_read(DriveListInput(), lambda *a, **k: None)
+        assert isinstance(done, Done)
+        self.assertEqual(len(done.result['drives']), 3)
+        self.assertEqual(opened.call_count, 1)
+        self.assertEqual(done.result, drive_reads.list_drives(self.store).model_dump(mode='json'))
+
     def test_drive_list_carries_each_drives_open_assignments_with_their_numbers(self) -> None:
         self.seed_inventory()
         a, b, c = self.drives
