@@ -622,6 +622,25 @@ class ReadTests(unittest.TestCase):
         assert isinstance(result, Done)
         self.assertEqual(result.result['person']['t6_id'], person_id)
 
+    def test_jo_list_no_project_returns_only_job_orders_with_no_project_oldest_first(self) -> None:
+        import json
+        from t6.verbs import JoListInput
+        names = ('Orphan A', 'Orphan B')
+        for name in names:
+            self.notion.add_page('job_orders', {JobOrdersRow.notion_name('name'): title(name)})
+        result = self.client.jo_list(JoListInput(no_project=True))
+        assert isinstance(result, Done)
+        self.assertEqual([o['name'] for o in result.result['job_orders']], list(names))
+        self.assertEqual([o['project_id'] for o in result.result['job_orders']], [None, None])
+        queries = [json.loads(r.content) for r in self.notion.requests if r.url.path.endswith('/query')]
+        self.assertEqual(queries[-1]['sorts'], [{'timestamp': 'created_time', 'direction': 'ascending'}])
+        everything = self.client.jo_list(JoListInput())
+        assert isinstance(everything, Done)
+        self.assertEqual(len(everything.result['job_orders']), 3)
+        both = self.client.jo_list(JoListInput(project=self.project['id'], no_project=True))
+        assert isinstance(both, Refused)
+        self.assertEqual(both.rule, 'input')
+
     def test_external_link_find_for_reports_instagantt_reads_media_locations(self) -> None:
         from t6.ids import EntityKind, T6Id
         from t6.media import MediaStore

@@ -153,6 +153,50 @@ class JoSyncTests(SyncTestCase):
         self.assertEqual(found['id'], identifier)
         self.assertEqual(project['id'], found['project_id'])
 
+    def test_job_order_with_no_project_gets_a_page_without_projects_and_jo_get_returns_its_id(self) -> None:
+        import os
+        from contextlib import nullcontext
+        from unittest.mock import patch
+        from t6.notion.generated import JobOrdersRow
+        from t6.notion.jo_projection import JobOrderProjection
+        from t6.person import People
+        from t6.server.verbs import VerbAPI
+        from t6.verbs import JoGetInput
+        source = 'job-orders'
+        self.notion.add_snapshot_data_source(source, 'job_orders')
+        self.notion.add_property(source, 'T6 ID', 'rich_text')
+        self.notion.add_property(source, 'T6 Notes', 'rich_text')
+        store = JobOrderStore(self.registry, PreviewTokens('secret'))
+        values = {'fields': {'name': 'SHOW - AE - JO #2', 'status': 'Needs Intake Review'}, 'no_project': True}
+        preview = store.write('raise', values, actor='alice', idempotency_key='raise')
+        assert isinstance(preview, Preview)
+        result = store.write('raise', values, actor='alice', idempotency_key='raise', confirm=preview.token)
+        assert isinstance(result, Done)
+        jo_id = result.result['jo_id']
+        api = object.__new__(VerbAPI)
+        api.people = People(self.registry, PreviewTokens('secret'))
+        api.open_notion = lambda _: nullcontext(self.client)
+        api.data_sources = {'job_orders': source}
+
+        def polled() -> dict[str, object]:
+            with patch.dict(os.environ, {'T6_NOTION_TOKEN': 'fake'}):
+                found = api._typed_read('jo', 'get', JoGetInput(ref=jo_id))
+            assert isinstance(found, Done)
+            return found.result['job_order']  # type: ignore[no-any-return]
+
+        self.assertIsNone(polled().get('page_id'))
+        transport = InProcess(self.app)
+        projection = JobOrderProjection(self.client, RegistryClient(transport, WORKER_SECRET), source)
+        worker = Worker(QueueClient(transport, WORKER_SECRET), 'main', projection.handlers())
+        self.start()
+        self.assertTrue(worker.run_once())
+        order = polled()
+        page = order['page_id']
+        self.assertIsInstance(page, str)
+        self.assertEqual(order['id'], jo_id)
+        self.assertEqual(JobOrdersRow.from_page(self.notion.page(str(page))).projects, ())
+        self.assertEqual(codec.rich_text(self.notion.page(str(page))['properties']['T6 ID']), jo_id)
+
     def test_assignment_and_notes_are_projected_to_the_existing_page(self) -> None:
         from t6.notion.jo_projection import JobOrderProjection
         from t6.person import People

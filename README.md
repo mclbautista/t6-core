@@ -1516,6 +1516,31 @@ Watermark defaults to `none`. Confirm with `--confirm TOKEN` and the preview's
 `page_id` while Notion creation is pending; use `jo get` or replay the same
 confirmed request with a fresh preview after sync to obtain the page ID.
 
+Over the API, `jo raise` takes the fields as a JSON object in `fields` instead
+of a file; give exactly one of `file` and `fields` (rule `input` otherwise). A
+`fields` call uploads nothing and sends no data sources: the server checks the
+fields against its own `job_orders` data source. The two paths share the same
+checks, but the `fields` path adds no Watermark, so a caller that sends none
+leaves the property unset. The `--file` path still defaults it to `none`.
+
+The call does not wait for the worker. To get the page ID, call `jo get` with
+the returned `jo_id` until `job_order.page_id` is set (the worker makes the page
+a few seconds after the confirm). To recover after a crash with no `jo_id`,
+call `jo find` with the Telegram Key.
+
+A Job Order with no Project is raised only on purpose: send `no_project: true`
+(CLI `--no-project true`) with an empty or absent `project_id`. Nothing is
+guessed, the page is made with the Projects relation empty, and it keeps the
+Status the caller sends. It stays listed as an exception until a coordinator
+attaches the Project on the Notion page. `no_project` with a `project_id` is
+refused (rule `input`), and an empty `project_id` without the flag is refused
+(rule `project`). `assign`, `note`, `submit` and the other Job Order verbs
+refuse a Job Order with no Project (rule `project`) until one is attached.
+`jo list --no-project true` returns only those Job Orders, oldest first, with an
+empty `project_id`. It reads Notion, so a Job Order shows only after the worker
+has made its page and leaves the list when the Project is attached. It cannot
+be combined with `project` (rule `input`).
+
 `t6 jo assign JO PERSON`, `t6 jo reassign JO PERSON --reason TEXT`, and
 `t6 jo note JO TEXT` follow the same preview/confirm flow. PERSON is a `t6n_`
 ID. The local account is the actor. Notes and audit are append-only and each

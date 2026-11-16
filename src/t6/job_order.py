@@ -156,13 +156,18 @@ class JobOrderStore:
                 if not isinstance(fields, dict):
                     return Refused(rule='input', reason='Job Order fields are required')
                 project_ref = fields.get('project_id')
-                project = db.execute('SELECT id FROM projects WHERE id = ?', (project_ref,)).fetchone()
-                if not project and isinstance(project_ref, str):
-                    project = db.execute("SELECT p.id FROM projects p JOIN bindings b ON b.project_id = p.id WHERE b.system = 'notion' AND b.page_id = ?", (normalize_page_id(project_ref),)).fetchone()
-                if not project:
-                    return Refused(rule='project', reason='Project not found')
-                if db.execute('SELECT 1 FROM project_archives WHERE project_id = ?', (project[0],)).fetchone():
-                    return Refused(rule='project_archived', reason='Project is archived')
+                if values.get('no_project'):
+                    if project_ref:
+                        return Refused(rule='input', reason='no_project cannot be combined with a Project')
+                    project: Any = (None,)
+                else:
+                    project = db.execute('SELECT id FROM projects WHERE id = ?', (project_ref,)).fetchone()
+                    if not project and isinstance(project_ref, str):
+                        project = db.execute("SELECT p.id FROM projects p JOIN bindings b ON b.project_id = p.id WHERE b.system = 'notion' AND b.page_id = ?", (normalize_page_id(project_ref),)).fetchone()
+                    if not project:
+                        return Refused(rule='project', reason='Project not found')
+                    if db.execute('SELECT 1 FROM project_archives WHERE project_id = ?', (project[0],)).fetchone():
+                        return Refused(rule='project_archived', reason='Project is archived')
                 telegram_key = fields.get('telegram_key') or None
                 if not previous and telegram_key and db.execute('SELECT 1 FROM job_orders WHERE telegram_key = ?', (telegram_key,)).fetchone():
                     return Refused(rule='telegram_key', reason='Telegram Key is already held')
@@ -265,7 +270,7 @@ class JobOrderStore:
                        'note': f"JO note: {values.get('text')}", **{name: f"JO {name}: {values.get('reason') or ''}" for name in TRANSITIONS}}[verb]
             if notion_editor is not None:
                 summary = f'JO Status set in Notion by {notion_editor}'
-            db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (project[0], jo_id, now, actor, 'jo_' + verb, summary, cursor.lastrowid))
+            db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (project[0] or jo_id, jo_id, now, actor, 'jo_' + verb, summary, cursor.lastrowid))
             result = {**plan, 'jo_id': jo_id}
             if verb == 'raise':
                 result['page_id'] = None

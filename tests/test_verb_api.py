@@ -332,6 +332,36 @@ class VerbAPITests(unittest.TestCase):
         self.assertEqual(result['outcome'], 'done')
         self.assertEqual(self.registry.audit(result['result']['jo_id'])[0].actor, self.actor)
 
+    def test_job_order_raise_with_fields_needs_no_uploads_and_uses_the_server_data_source(self) -> None:
+        from contextlib import nullcontext
+
+        project = self.registry.register(actor='setup', idempotency_key='jo-fields-setup')
+        assert isinstance(project, Registered)
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO person_permissions VALUES (?, 'coordinator')", (self.actor,))
+        self.api.open_notion = lambda _: nullcontext(None)
+        self.api.data_sources['job_orders'] = 'jo'
+        fields = {'project_id': project.project.id, 'name': 'SHOW - AE - JO #1', 'telegram_key': '-100:1'}
+        with patch.dict(os.environ, {'T6_NOTION_TOKEN': 'secret'}):
+            preview = self.request('/v1/jo/raise', {'fields': fields})[1]
+            self.assertEqual(preview['outcome'], 'preview')
+            self.assertNotIn('watermark', preview['plan']['fields'])
+            result = self.request('/v1/jo/raise', {'fields': fields, 'confirm': preview['token'],
+                                  'idempotency_key': preview['plan']['idempotency_key']})[1]
+            self.assertEqual((result['outcome'], result['result']['page_id']), ('done', None))
+            self.assertEqual(result['result']['project_id'], project.project.id)
+            self.assertIsInstance(result['result']['sync_intent_id'], int)
+            for body in ({}, {'fields': fields, 'file_contents': '{}'}, {'fields': {**fields, 'bogus': 1}}):
+                refused = self.request('/v1/jo/raise', body)[1]
+                self.assertEqual((refused['outcome'], refused['rule']), ('refused', 'input'))
+            nobody = self.request('/v1/jo/raise', {'fields': {'name': 'No Project'}, 'idempotency_key': 'np'})[1]
+            self.assertEqual((nobody['outcome'], nobody['rule']), ('refused', 'project'))
+            flagged = {'fields': {'name': 'No Project', 'status': 'Needs Intake Review'}, 'no_project': True}
+            preview = self.request('/v1/jo/raise', flagged)[1]
+            done = self.request('/v1/jo/raise', {**flagged, 'confirm': preview['token'],
+                                'idempotency_key': preview['plan']['idempotency_key']})[1]
+        self.assertEqual((done['outcome'], done['result']['project_id']), ('done', None))
+
     def test_service_grant_configuration_validation(self) -> None:
         self.assertEqual(service_permissions_from_env({'T6_API_SERVICE_PERMISSIONS': '{"worker": ["operator"]}'}),
                          {'worker': frozenset({'operator'})})

@@ -10,7 +10,7 @@ import argparse
 import dataclasses
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
@@ -187,16 +187,26 @@ def _get(client: NotionClient, data_source_id: str, ref: str) -> JSON:
     return _order(orders.get(ref))
 
 
-def prepare_fields(client: NotionClient, data_source_id: str, path: Path) -> JSON:
-    """Validate and normalize the same fields accepted by the original create command."""
+def read_fields_file(path: Path) -> JSON:
+    """The JSON object of Job Order fields in a file."""
+    fields: Any = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(fields, dict):
+        raise ValueError("the Job Order file must be a JSON object of fields")
+    return fields
+
+
+def check_fields(client: NotionClient, data_source_id: str, given: Mapping[str, Any]) -> JSON:
+    """Validate and normalize Job Order fields from a mapping, without adding a Watermark.
+
+    A caller that sends no Watermark leaves the property unset. Only `prepare_fields`,
+    which serves the `--file` path, defaults the Watermark to "none".
+    """
     from t6.domain.studio_people import with_standing_cc
     from t6.domain.studio_time import END_OF_DAY, MANILA
     from t6.notion.departments import UnknownDepartment, get_departments, resolve_department
     from t6.notion.job_orders import FIELDS, RELATIONS
 
-    fields: Any = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(fields, dict):
-        raise ValueError("the Job Order file must be a JSON object of fields")
+    fields: JSON = dict(given)
     unknown = sorted(set(fields) - {*FIELDS, *RELATIONS, "project_id", "source_text"})
     if unknown:
         raise ValueError(f"not Job Order fields that can be written: {', '.join(unknown)}")
@@ -215,5 +225,14 @@ def prepare_fields(client: NotionClient, data_source_id: str, path: Path) -> JSO
             raise ValueError(f"unknown Department {department.token!r}; run `t6 departments` for the live ones")
         fields["department"] = department.name
     fields["cc_ids"] = list(with_standing_cc(fields.get("cc_ids") or ()))
+    return fields
+
+
+def prepare_fields(client: NotionClient, data_source_id: str, path: Path) -> JSON:
+    """Validate and normalize the same fields accepted by the original create command.
+
+    The file path keeps the old default: no Watermark in the file means "none".
+    """
+    fields = check_fields(client, data_source_id, read_fields_file(path))
     fields.setdefault("watermark", "none")
     return fields

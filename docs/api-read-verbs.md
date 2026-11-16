@@ -42,7 +42,10 @@ binding exists and Notion page IDs otherwise; `page_id` always remains the
 Notion page ID. A Project reference may be its T6 ID or an active or legacy
 page ID. Project rotation is registry-owned and is never inferred from status.
 `jo list` supports `project`, `assignee` and `status_group` (`not_started`,
-`started`, `cancelled`, or `active`). Meeting Notes can be filtered by Project,
+`started`, `cancelled`, or `active`). `no_project` returns only the Job Orders
+whose Notion page has no Project, oldest first, with an empty `project_id`; it
+is the list of Job Orders raised with no Project that wait for a coordinator.
+It cannot be combined with `project` (rule `input`). Meeting Notes can be filtered by Project,
 inclusive `since`, exclusive `before`, exact title, title prefix and readiness;
 their body is a tree of typed blocks. `external-link find` takes a typed
 external reference, not a Notion filter.
