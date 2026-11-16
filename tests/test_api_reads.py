@@ -889,6 +889,26 @@ class ReadTests(unittest.TestCase):
         self.assertEqual(names(registered=False), {'Unregistered Three'})
         self.assertEqual(names(), {'Registered One', 'Registered Two', 'Unregistered Three'})
 
+    def test_person_list_kind_filters_on_the_registered_kind(self) -> None:
+        from t6.verbs import PersonListInput
+        ids = self.add_contacts(('Staff One', None), ('Freelancer Two', None), ('Client Three', None), ('Unregistered Four', None))
+        for n, (name, kind) in enumerate((('Staff One0', 'staff'), ('Freelancer Two1', 'freelancer'), ('Client Three2', 'client')), start=1):
+            person_id = self.bound_person({'id': ids[name]}, n)
+            with self.registry._transaction() as db:
+                db.execute('UPDATE persons SET kind = ? WHERE id = ?', (kind, person_id))
+        def names(**fields: Any) -> set[str]:
+            result = self.client.person_list(PersonListInput(**fields))
+            assert isinstance(result, Done)
+            return {p['name'] for p in result.result['people'] if p['name'] != 'Ana Cruz'}
+        self.assertEqual(names(kind='freelancer'), {'Freelancer Two'})
+        self.assertEqual(names(kind='client'), {'Client Three'})
+        self.assertEqual(names(kind='vendor'), set())
+        self.assertEqual(names(kind='staff', registered=True), {'Staff One'})
+        self.assertEqual(names(), {'Staff One', 'Freelancer Two', 'Client Three', 'Unregistered Four'})
+        with self.assertRaises(APIError) as refused:
+            self.client.call('person', 'list', PersonListInput.model_construct(kind='contractor'))
+        self.assertEqual(refused.exception.status, 422)
+
     def test_get_find_and_studio_reads(self) -> None:
         from t6.verbs import (ProjectGetInput, ProjectResolveInput, JoGetInput,
                               PersonFindInput, PersonGetInput, PersonListInput,

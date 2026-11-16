@@ -864,7 +864,12 @@ class VerbAPI:
                         return item
                     if verb == 'list':
                         people = [contact(c) for c in contact_reader.list()]
-                        return Done(result={'people': [c for c in people if inputs.registered is None or (c['t6_id'] is not None) == inputs.registered]})
+                        kinds: dict[str, str] = {}
+                        if inputs.kind:
+                            with self.people.registry._transaction() as db:
+                                kinds = dict(db.execute('SELECT id, kind FROM persons').fetchall())
+                        return Done(result={'people': [c for c in people if (inputs.registered is None or (c['t6_id'] is not None) == inputs.registered)
+                                                       and (inputs.kind is None or kinds.get(c['t6_id']) == inputs.kind)]})
                     if verb == 'find':
                         try:
                             return Done(result=_find_contacts(contact_reader.list(), contact, inputs.mention, inputs.mentions, inputs.suggest, inputs.prefer_telegram))

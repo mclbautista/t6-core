@@ -75,6 +75,9 @@ property's own; `null` is never overdue. Its reply keeps `flags` and adds
 second_date, from_notes}` for each date problem (`submission_before_playdate`,
 `archival_before_submission`), where `from_notes` is true when a stated date
 causes it. No sentence is returned; the wording stays in the app.
+`person list` filters on `registered` (has a T6 ID or not) and on `kind`
+(`staff`, `freelancer`, `client` or `vendor`, the registered Person's kind; an
+unknown kind is an input error, and a Contact with no T6 ID never matches).
 `jo list` supports `project`, `assignee` and `status_group` (`not_started`,
 `started`, `cancelled`, or `active`). `no_project` returns only the Job Orders
 whose Notion page has no Project, oldest first, with an empty `project_id`; it

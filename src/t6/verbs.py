@@ -1002,6 +1002,7 @@ class PersonFindInput(ReadInput):
 
 class PersonListInput(ReadInput):
     registered: bool | None = None
+    kind: PersonKind | None = None
 
 
 class ProjectGetInput(ReadInput):
