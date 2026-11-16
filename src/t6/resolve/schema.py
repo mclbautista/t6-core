@@ -1,13 +1,13 @@
-"""The project server tables the reader needs, per DaVinci Resolve version.
+"""The project server tables the reader needs.
 
 A `ProjectServerSchema` names the tables and columns the reader selects from.
 It is the only place that knows Resolve's table layout, so a version that
 renames a column needs one new entry here and one new fixture, not a code change.
 
-The layouts below are assumptions and have not been checked against a live
-server. Their synthetic SQLite fixtures test the reader, not real schema
-compatibility. Validate the schema and inventory against the server before
-marking an entry verified.
+The layout below was checked against the live server on 2026-11-16
+(PostgreSQL 13.4, server app 20). One server holds projects of every Resolve
+version, so the layout is the server's, not one Project's. The synthetic SQLite
+fixture tests the reader, not real schema compatibility.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ProjectServerSchema:
-    """Table and column names for one Resolve version. Names are identifiers, never user input.
+    """Table and column names of the project server. Names are identifiers, never user input.
 
     `verified` is an explicit claim by the schema author, not a runtime check.
     """
@@ -34,27 +34,29 @@ class ProjectServerSchema:
     verified: bool = False
 
 
-# Keys match the Notion Projects property `DaVinci Resolve Version`.
+# Keys are the major Resolve versions that share the verified layout.
 SCHEMAS: dict[str, ProjectServerSchema] = {
     version: ProjectServerSchema(
         version=version,
-        project_table="Sm2Project",
-        project_id="SM_ProjectID",
+        project_table="SM_Project",
+        project_id="SM_Project_id",
         project_name="ProjectName",
-        project_folder_id="FolderId",
-        folder_table="Sm2Folder",
-        folder_id="SM_FolderID",
-        folder_name="FolderName",
-        folder_parent_id="ParentFolderId",
+        project_folder_id="Folder",
+        folder_table="SM_ProjectFolder",
+        folder_id="SM_ProjectFolder_id",
+        folder_name="Name",
+        folder_parent_id="ParentFolder",
+        verified=True,
     )
-    for version in ("18", "19")
+    for version in ("17", "18", "19", "20")
 }
 
 
 def schema_for(version: str) -> ProjectServerSchema:
-    """The schema for a Resolve version, or KeyError naming the versions that exist."""
+    """The schema for a Resolve version, matched on its major, or KeyError naming the majors that exist."""
+    major = version.split(".")[0]
     try:
-        return SCHEMAS[version]
+        return SCHEMAS[major]
     except KeyError:
         known = ", ".join(sorted(SCHEMAS))
         raise KeyError(f"no project server schema for Resolve {version!r} (known: {known})") from None
