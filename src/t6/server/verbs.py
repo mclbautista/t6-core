@@ -59,6 +59,20 @@ class VerbAPI:
                 for alias in verb.aliases:
                     self.routes['/v1/' + alias.replace(' ', '/')] = verb
 
+    def _data_gaps(self) -> dict[str, JsonValue]:
+        """Projects whose Notion row has no name: the page ids, never a name, for the operator to fix in Notion."""
+        token = os.environ.get('T6_NOTION_TOKEN')
+        if not token or not self.data_sources.get('projects'):
+            return {}
+        from t6.notion import NotionError
+        from t6.notion.reads import ProjectReader
+        try:
+            with self.open_notion(token) as client:
+                blank = sorted(p.page_id for p in ProjectReader(client, self.data_sources['projects']).list() if not p.name.strip())
+        except (NotionError, OSError) as error:
+            return {'data_gaps': {'unavailable': str(error)}}
+        return {'data_gaps': {'projects_without_name': {'count': len(blank), 'page_ids': list(blank)}}}
+
     @property
     def privacy_registry(self) -> PrivacyRegistry | None:
         return self.privacy_list.current() if self.privacy_list else self._privacy_registry
@@ -91,8 +105,13 @@ class VerbAPI:
                 schema = db.execute('SELECT MAX(version) FROM schema_version').fetchone()[0]
             with self.queue._transaction() as db:
                 jobs = dict(db.execute('SELECT state, COUNT(*) FROM jobs GROUP BY state').fetchall())
-            return Response(200, {'version': version('t6'), 'schema_version': schema, 'jobs': jobs,
-                                  'privacy_registry': self.privacy_list.status() if self.privacy_list else None})
+            report: dict[str, JsonValue] = {'version': version('t6'), 'schema_version': schema, 'jobs': jobs,
+                                            'privacy_registry': self.privacy_list.status() if self.privacy_list else None}
+            auth = request.header('authorization')
+            supplied = auth[7:] if auth.lower().startswith('bearer ') else ''
+            if supplied and any(hmac.compare_digest(secret, supplied) for secret in self.secrets):
+                report.update(self._data_gaps())  # page ids are for a caller that holds a secret
+            return Response(200, report)
         auth = request.header('authorization')
         supplied = auth[7:] if auth.lower().startswith('bearer ') else ''
         actor = next((identity for secret, identity in self.secrets.items()
@@ -143,7 +162,9 @@ class VerbAPI:
                     return self.refused('idempotency_key', 'Conflicting idempotency keys')
                 token = os.environ.get('T6_NOTION_TOKEN')
                 signing = os.environ.get('T6_PREVIEW_SIGNING_KEY')
-                if not token or not signing or not self.data_sources.get('external_links'):
+                if not self.data_sources.get('external_links'):
+                    return self.refused('config', 'There is no External Links source to migrate from')
+                if not token or not signing:
                     return self.refused('config', 'Notion and preview configuration are required')
                 with self.open_notion(token) as client:
                     rows = read_external_links_once_for_migration(client, self.data_sources['external_links'])

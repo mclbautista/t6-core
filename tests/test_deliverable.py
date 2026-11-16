@@ -112,6 +112,43 @@ class DeliverableTests(unittest.TestCase):
         assert isinstance(refused, Refused)
         self.assertEqual(refused.rule, 'project_archived')
 
+    def test_edit_gives_a_deliverable_with_no_date_its_first_due_and_air_date(self) -> None:
+        identifier = self._defined()
+        before = self.store.get(identifier)
+        assert before is not None
+        self.assertEqual((before['due'], before['air']), (None, None))
+        values = {'deliverable': identifier, 'due': '2027-01-10', 'air': '2027-02-01'}
+        preview = self.store.edit(values, actor='alice', idempotency_key='first-dates')
+        assert isinstance(preview, Preview)
+        self.assertEqual(preview.plan['after'], {'code': 'Ep01', 'episode': 'Episode 1', 'due': '2027-01-10', 'air': '2027-02-01'})
+        done = self.store.edit(values, actor='alice', idempotency_key='first-dates', confirm=preview.token)
+        assert isinstance(done, Done)
+        record = self.store.get(identifier)
+        assert record is not None
+        self.assertEqual((record['code'], record['due'], record['air']), ('Ep01', '2027-01-10', '2027-02-01'))
+        self.assertEqual(len([i for i in self.registry.pending_sync() if i.project_id == identifier]), 2)
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM audit WHERE action='deliverable_edit'").fetchone()[0], 1)
+
+    def test_edit_sets_only_the_date_that_is_missing_and_names_delay_for_one_that_exists(self) -> None:
+        identifier = self._defined()
+        self._confirmed(self.store.edit, {'deliverable': identifier, 'due': '2027-01-10'}, actor='alice', idempotency_key='due')
+        for date_values in ({'due': '2027-03-01'}, {'due': '2027-01-10'}, {'due': '2027-03-01', 'air': '2027-02-01'}):
+            refused = self.store.edit({'deliverable': identifier, **date_values}, actor='alice', idempotency_key='again')
+            assert isinstance(refused, Refused)
+            self.assertEqual(refused.rule, 'date')
+            self.assertIn('deliverable delay', refused.reason)
+        self._confirmed(self.store.edit, {'deliverable': identifier, 'air': '2027-02-01'}, actor='alice', idempotency_key='air')
+        record = self.store.get(identifier)
+        assert record is not None
+        self.assertEqual((record['due'], record['air']), ('2027-01-10', '2027-02-01'))
+
+    def test_edit_refuses_a_date_that_is_not_an_iso_date(self) -> None:
+        identifier = self._defined()
+        refused = self.store.edit({'deliverable': identifier, 'air': 'soon'}, actor='alice', idempotency_key='bad-date')
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'date')
+
     def test_edit_refuses_when_the_deliverable_changed_since_preview(self) -> None:
         identifier = self._defined()
         values = {'deliverable': identifier, 'code': 'Ep05', 'episode': None}
