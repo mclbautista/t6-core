@@ -397,6 +397,10 @@ Manifest, Ring, Munki Client Version, Last Check-in and OS Version.
   warroom, coordination-admin, client-facing, interns-temporary). A machine
   manifest includes exactly one. The manifest chain of a machine is itself,
   its role group, `all` and `site_default`.
+- **`machine list`** reads every Bays row as a Machine with its fleet facts (role `reader`). It is
+  not the Bays of the registry that Bookings use (`t6b_`, #421). **`machine sync`** is the Bays
+  write-back as a verb: it previews each Machine's matched row and each fact's old and new value,
+  then on confirm writes them. It needs the `fleet` permission, which grants nothing else.
 - **Bays write-back**: a machine matches a row by its names against the row's
   Hostname and Name, ignoring case, spaces and ARD's `-NNN` suffix. It writes
   only to one unique row, never creates a row, never clears a fact, and is a

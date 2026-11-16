@@ -19,6 +19,7 @@ from t6.verbs import (
     TranscriptCreateInput, TranscriptGetInput, TranscriptSpeakersInput, TranscriptTranslateInput,
     DriveReceiveInput, DriveReleaseInput, DriveReturnInput, DriveRetireInput, DriveAssignInput, DriveUnassignInput,
     DriveAddInput, DriveEditInput, DrivePromoteSerialInput, DriveListInput, DriveGetInput, DriveFindInput, DriveShipmentsInput, DriveShipmentInput, DriveExceptionsInput,
+    MachineListInput, MachineSyncInput,
     SwingAssignInput, SwingUnassignInput, SwingReturnInput, SwingOverdueInput,
     BayBookInput, BookingMoveInput, BookingExtendInput, BookingCancelInput, BookingGetInput, BookingListInput,
     DeliverableDeliverInput, PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput,
@@ -239,6 +240,12 @@ class Client:
 
     def person_create(self, inputs: PersonCreateInput) -> Result:
         return self.call('person', 'create', inputs)
+
+    def machine_list(self, inputs: MachineListInput) -> Result:
+        return self.call('machine', 'list', inputs)
+
+    def machine_sync(self, inputs: MachineSyncInput) -> Result:
+        return self.call('machine', 'sync', inputs)
 
     def person_rebind(self, inputs: PersonRebindInput) -> Result:
         return self.call('person', 'rebind', inputs)

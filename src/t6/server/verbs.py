@@ -280,6 +280,9 @@ class VerbAPI:
         elif (entry.noun, entry.verb) == ('llm', 'run'):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or (self.llm_service.run(inputs, actor=actor, registry=self.people.registry) if self.llm_service else Refused(rule='config', reason='LLM service is not configured'))
+        elif entry.noun == 'machine':
+            refusal = self.people.authorize(actor, entry.role)
+            outcome = refusal or self._machine(entry.verb, inputs, actor)
         elif (entry.noun, entry.verb) == ('camera', 'enrich'):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._camera_enrich(inputs, actor)
@@ -495,6 +498,47 @@ class VerbAPI:
                 db.execute('UPDATE verb_requests SET result=? WHERE idempotency_key=?', (json.dumps(result), key))
             return Done(result=result)
         except (ValueError, KeyError, OSError, NotionError) as error:
+            return Refused(rule='input', reason=str(error))
+
+    def _machine(self, verb: str, inputs: Any, actor: str) -> Any:
+        """`machine list` reads the Bays rows; `machine sync` previews, then on confirm writes the fleet facts (`t6.fleet`)."""
+        from dataclasses import asdict
+        from t6.fleet import Fleet, FleetSafetyError, MachineFacts
+        from t6.notion import NotionError
+        from t6.notion.writes import Ambiguous as WriteAmbiguous, Rejected
+        from t6.verbs import MachineFactChange, MachineFactSkipped, MachineSyncResult
+        if not os.environ.get('T6_PREVIEW_SIGNING_KEY') and verb == 'sync':
+            return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+        try:
+            source = self.data_sources['bays']
+            token = os.environ['T6_NOTION_TOKEN']
+            if verb == 'sync':
+                values = inputs.model_dump(mode='json', exclude={'confirm'})
+                nonce = self.people.tokens.verify(inputs.confirm, 'machine sync', actor, values) if inputs.confirm else None
+                if isinstance(nonce, Refused):
+                    return nonce
+                facts = [MachineFacts(**{**machine.model_dump(exclude={'names'}), 'names': tuple(machine.names)}) for machine in inputs.machines]
+                with self.people.registry._transaction() as db:
+                    if nonce and db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce=?', (nonce,)).fetchone():
+                        return Refused(rule='token_used', reason='Preview token has already been used')
+                    if nonce:
+                        db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
+            with self.open_notion(token) as client:
+                fleet = Fleet(client, source)
+                if verb == 'list':
+                    return Done(result={'machines': [asdict(machine) for machine in fleet.machines()]})
+                results = []
+                for facts_item, found in zip(facts, fleet.sync(facts, apply=nonce is not None), strict=True):
+                    written = found.written
+                    results.append(MachineSyncResult(
+                        name=found.name, status=found.status, page_id=found.page_id,
+                        changes=[MachineFactChange(fact=change.fact, old=change.old, new=change.new) for change in found.changes],
+                        skipped=[MachineFactSkipped(fact=fact, reason='unknown' if getattr(facts_item, fact) in (None, '') else 'stale') for fact in found.skipped],
+                        written=None if written is None else 'rejected' if isinstance(written, Rejected) else 'ambiguous' if isinstance(written, WriteAmbiguous) else 'saved',
+                        detail=str(written) if isinstance(written, (Rejected, WriteAmbiguous)) else None))
+                plan = {'machines': [result.model_dump(mode='json') for result in results]}
+                return self.people.tokens.create('machine sync', actor, values, plan) if nonce is None else Done(result=plan)
+        except (ValueError, KeyError, OSError, NotionError, FleetSafetyError) as error:
             return Refused(rule='input', reason=str(error))
 
     def _camera_enrich(self, inputs: Any, actor: str) -> Any:
