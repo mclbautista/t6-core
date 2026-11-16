@@ -199,8 +199,14 @@ repository. Resolved Assignment Projects use registered `t6p_` IDs; a source
 Project without a registry binding remains unresolved text. `Ref.page_id` holds
 the t6 Project ID in these Assignments, despite its historical name.
 
-The CLI dry-run continues to use the fake. No production workbook import or
-cutover is performed by this implementation.
+`t6 admin drive import WORKBOOK [--log-sheet FILE] [--projects FILE]` previews with
+the fake: nothing is written, and the report has a `digest` of the files given.
+Adding `--apply --preview FILE --actor NAME [--registry-db FILE]` runs the same
+importer into `SqliteDriveStore`, only when the digest of the files now equals
+the one in the preview file. There a Project is resolved only when its Notion
+page is bound in the registry; any other name ends as an `unresolved project`
+exception. The first real import is run by a person from the preview; the real
+workbooks, the projects file, previews and database never go into a repository.
 
 This is a documented breaking API change: remove `provisional_id`; replace
 `get_drive(serial)` with `find_by_serial(serial)` followed by `.id` for subsequent

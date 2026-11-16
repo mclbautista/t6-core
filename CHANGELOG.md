@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- `t6 admin drive import WORKBOOK` can apply the previewed import into the t6 database (#391): the preview report gains a `digest` (SHA-256 over the workbook, the `--log-sheet` and the `--projects` files given), and `--apply --preview FILE --actor NAME [--registry-db FILE]` writes the Drives, Assignments, custody events and exceptions only when the files still have that digest, then prints the counts written. A Project counts as resolved only when its Notion page is bound in the registry; any other name becomes an `unresolved project` exception. A second apply adds nothing. `--swing` is unchanged.
+
 ## [0.6.2] - 2026-11-16
 
 The owner's decisions of 2026-11-16: Drive custody verbs refuse a step that cannot follow the last one, the Drive verbs carry what the Drive web app needs, `project start` waits for its Approval, and a Deliverable can be edited. Two migrations: the schema goes from 41 to 43 (`drive_shipment_facts`, `project_starts`). Neither is forward-only, so 0.6.1 still opens the database.

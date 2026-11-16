@@ -625,12 +625,31 @@ result = import_per_project_workbook(path, store, lookup=lookup, logged_by=Ref(t
     imported, because a label alone does not identify a Drive.
   - A Drive already in the store, for example from the per-project workbook,
     keeps its record and gains the new Assignment and events.
-- `t6 admin drive import WORKBOOK [--log-sheet FILE] [--projects FILE]` runs
-  the import into an in-memory store that is thrown away and prints
-  `{"imported": n, "review": [...]}`. `WORKBOOK` is the per-project workbook.
-  Nothing is written anywhere. `--projects` is a JSON list of
-  `{"page_id", "name"}` to resolve Project names against; without it every
-  Project is reported as unresolved.
+- `t6 admin drive import WORKBOOK [--log-sheet FILE] [--projects FILE]` is the
+  preview: it runs the import into an in-memory store that is thrown away and
+  prints `{"digest": ..., "imported": n, "review": [...]}`. `WORKBOOK` is the
+  per-project workbook. Nothing is written anywhere. The `digest` is a SHA-256
+  over the bytes of the files given, each under its role, so the same files give
+  the same digest, and a changed, added or dropped file gives another.
+  `--projects` is a JSON list of `{"page_id", "name"}` to resolve Project names
+  against; without it every Project is reported as unresolved. The preview has no
+  registry and treats every listed Project as resolved.
+- `t6 admin drive import WORKBOOK [--log-sheet FILE] [--projects FILE] --apply
+  --preview FILE --actor NAME [--registry-db FILE]` carries it out. Save the
+  preview's output to a file and pass it as `--preview`; the apply is refused,
+  and writes nothing, when the digest of the files as they are now is not the one
+  in that file. It runs the same import into the t6 database at `--registry-db`
+  (default `$T6_REGISTRY_DB`) and writes the Drives, Assignments, custody events
+  and exceptions. `--actor` is recorded as the one who logged the custody events.
+  In an apply a Project is resolved only when its Notion page is bound to a
+  Project in the registry; a name that is not, even one listed in `--projects`,
+  is kept as text and becomes an `unresolved project` exception. The apply
+  prints the report with a `written` object (`drives`, `assignments`, `events`,
+  `exceptions`: the rows it added). Applying the same files again adds nothing.
+  Receipts are keyed by the workbook's absolute path, so keep the files where
+  they were. `drive list` and `drive exceptions` show the result. The real
+  workbooks, the projects file, the previews and the database never go into a
+  repository.
 
 ## Lookup
 
