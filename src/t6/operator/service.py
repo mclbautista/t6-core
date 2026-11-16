@@ -70,6 +70,8 @@ MAX_PAYLOAD = 53
 MAX_CANDIDATES = 5
 MAX_CODE_LENGTH = 40
 MAX_QUERY_LENGTH = 40
+MIN_ID_ENDING = 4
+"""A search matches the end of a T6 ID only from this many characters, so a short code search lists no chance matches."""
 FRAMEIO_COORDINATOR_RULE = "permission:coordinator"
 """Who may pick a show on the card that waits for a Frame.io project's link."""
 _OPERATOR_ONLY = frozenset({"in", "out", "clr", "chg", "cclr", "bout"})
@@ -282,14 +284,16 @@ class OperatorService:
     def _listing(self, which: str, page: int, query: str | None = None) -> dict[str, JsonValue]:
         """One page of Projects to pick from: those in rotation, or the historical and unclassified ones.
 
-        `which` "find" with a `query` lists the Projects of either rotation whose code contains it or whose T6 ID ends with it.
+        `which` "find" with a `query` lists the Projects of either rotation whose code contains it or, from
+        `MIN_ID_ENDING` characters, whose T6 ID ends with it.
         """
         if query is None:
             chosen = [p for p in self._registry.list_projects() if (p.rotation is Rotation.IN) == (which == "in")]
         else:
             wanted = query.casefold()
             chosen = [p for p in self._registry.list_projects()
-                      if wanted in (p.code or "").casefold() or p.id.casefold().endswith(wanted)]
+                      if wanted in (p.code or "").casefold()
+                      or (len(wanted) >= MIN_ID_ENDING and p.id.casefold().endswith(wanted))]
         projects = sorted(chosen, key=lambda p: ((p.code or "\uffff").casefold(), p.created_at))
         start = page * MAX_CANDIDATES
         shown: list[JsonValue] = [

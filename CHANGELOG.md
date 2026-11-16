@@ -10,7 +10,7 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ### Changed
 
-- `/project` is quicker to use (#406): **New Project** on a New Projects page card now keeps the same card and asks for the code (`/project CODE` sets it and puts the Project in rotation; **Keep out of rotation, no code** closes it), and `/project TEXT` with no card waiting opens the Project whose code is TEXT or lists the Projects whose code contains TEXT or whose T6 ID ends with it, replacing the "No Project is waiting for a code" line.
+- `/project` is quicker to use (#406): **New Project** on a New Projects page card now keeps the same card and asks for the code (`/project CODE` sets it and puts the Project in rotation; **Keep out of rotation, no code** closes it), and `/project TEXT` with no card waiting opens the Project whose code is TEXT or lists the Projects whose code contains TEXT or (from four characters) whose T6 ID ends with it, replacing the "No Project is waiting for a code" line.
 
 ### Fixed
 

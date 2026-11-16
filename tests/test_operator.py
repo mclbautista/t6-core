@@ -1009,6 +1009,12 @@ class FindProjectTests(ManageTestCase):
         self.assertEqual(self.texts(1)[0], self.label(project))
         self.assertNotIn("XYZ", self.card(1)["text"])
 
+    def test_a_short_text_never_matches_the_end_of_a_t6_id(self) -> None:
+        project = self.new("1-2", "out")  # a T6 ID holds no "-", so its ending is never part of this code
+        self.assertEqual(self.command(project["id"][-3:]).body["outcome"], "opened")
+        self.drain()
+        self.assertIn("No Project matches that.", self.card(1)["text"])
+
     def test_a_code_held_by_two_projects_lists_both_instead_of_opening_one(self) -> None:
         first, second = self.new("ABC", "out"), self.new("abc", "in")
         self.command("ABC")
