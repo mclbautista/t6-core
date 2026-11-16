@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- `t6.client.APIError` carries the HTTP status as `status` (#370), so a client can tell 5xx from 4xx without reading the message. It is None for an error raised before a request was made.
+
 ### Changed
 
 - Drive custody verbs refuse a step that cannot follow the last one (#378): `drive receive` is refused for a Drive in custody or retired, `drive release` for one released or retired (the whole release, naming every such Drive), `drive return` unless the Drive is released, and `drive retire` for one already retired. The refusal has rule `custody`, comes at preview and again at confirm in the write transaction, and names the Drive and its status. A retired Drive can no longer be received or returned through the verbs.

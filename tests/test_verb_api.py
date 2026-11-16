@@ -404,6 +404,15 @@ class ClientTests(VerbAPITests):
         self.assertIsInstance(client.project_hold(inputs), Done)
         self.assertEqual(len([a for a in self.registry.activity(project.project.id) if a.action == 'project_hold']), 1)
 
+    def test_api_error_carries_the_http_status(self) -> None:
+        from t6.client import APIError, Client
+        from t6.verbs import DriveListInput
+        client = Client('http://127.0.0.1:%s' % self.server.server_port, 'wrong-secret')
+        with self.assertRaises(APIError) as refused:
+            client.drive_list(DriveListInput())
+        self.assertEqual(refused.exception.status, 401)
+        self.assertIn('401', str(refused.exception))
+
     def test_client_job_order_raise_preview_confirm(self) -> None:
         from contextlib import nullcontext
         from pathlib import Path
