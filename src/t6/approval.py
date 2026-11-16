@@ -39,11 +39,6 @@ class Approvals:
                 return False
             return db.execute('SELECT 1 FROM approvals WHERE id = ? AND gate = ? AND target = ?', (row[0], gate, target)).fetchone() is not None
 
-    def made_for(self, gate: str, target: str) -> bool:
-        """Whether an Approval with this gate that was not denied exists for this target."""
-        with self.registry._transaction() as db:
-            return db.execute("SELECT 1 FROM approvals WHERE gate = ? AND target = ? AND state != 'denied'", (gate, target)).fetchone() is not None
-
     def write(self, verb: str, values: dict[str, Any], *, actor: str, idempotency_key: str | None = None, confirm: str | None = None) -> Outcome:
         if verb not in ('request', 'grant', 'deny'):
             return Refused(rule='verb', reason='Unknown Approval verb')

@@ -259,6 +259,25 @@ class ProjectStartTests(unittest.TestCase):
         with self.registry._transaction() as db:
             self.assertEqual(db.execute("SELECT actor FROM audit WHERE action='project_start_failed'").fetchall(), [('starter',)])
 
+    def test_a_failed_start_that_applied_nothing_does_not_block_a_new_start(self) -> None:
+        """Its granted Approval cannot be denied, and its plan cannot be applied once the Project changed."""
+        first = self.request()
+        waiting = self.call(first)
+        assert isinstance(waiting, Done)
+        self.define('Ep01')
+        self.decide('grant', waiting.result['approval_id'])
+        self.work()
+        self.values = {**self.values, 'deliverables': EPISODES[1:]}
+        done = self.granted(self.request('second'))
+        assert isinstance(done, Done), done
+        self.assertEqual(done.result['state'], 'applied')
+        self.assertEqual(self.totals(), (2, 2))
+        self.values = {**self.values, 'deliverables': EPISODES}
+        retried = self.call(first)  # the failed Start, tried again after the other one finished
+        assert isinstance(retried, Refused)
+        self.assertEqual(retried.rule, 'project_started')
+        self.assertEqual(self.totals(), (2, 2))
+
     def test_a_project_archived_at_grant_time_is_refused_as_failed(self) -> None:
         confirm = self.request()
         waiting = self.call(confirm)

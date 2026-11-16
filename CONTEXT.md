@@ -189,9 +189,10 @@ confirmed, after building the plan again. A denied Approval ends the Start and
 applies nothing; a new Start (new key) may begin. A changed plan, a refused
 step or a Frame.io failure makes the Start `failed` with the reason (Audit and
 Activity); confirming again with the same key and token applies it again with
-no second Approval. The job result read and a retried confirm return the state
-(`waiting_for_approval`, `applied`, `denied`, `failed`). One Start of a Project
-at a time. Role: operator, and the `bookings` permission when the Start asks
+no second Approval. A failed Start that applied no step does not block a new
+Start (new key). The job result read and a retried confirm return the state
+(`waiting_for_approval`, `applying`, `applied`, `denied`, `failed`). One Start
+of a Project at a time. Role: operator, and the `bookings` permission when the Start asks
 for Bookings.
 
 - **t6 steps**, each created once under a key derived from the Start's key (the

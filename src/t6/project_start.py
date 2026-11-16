@@ -15,7 +15,7 @@ refused or Frame.io fails, nothing more is applied and the Start is `failed` wit
 confirming again with the same key and token applies it again, with no second Approval. The same key (the job
 result read, or a retried confirm) returns the state: `waiting_for_approval`, `applying`, `applied`, `denied` or
 `failed`. One Start of a Project at a time: another one is refused while a Start waits; a denied Start does not
-block.
+block, and neither does a failed Start that applied no step.
 
 The Frame.io step (#275) asks the Frame.io worker, the only holder of the Frame.io token, for the Frame.io
 project and one folder per Deliverable code. The apply asks first, before any t6 step, so a Frame.io failure
@@ -182,15 +182,19 @@ class ProjectStartStore:
             started = db.execute("SELECT 1 FROM activity WHERE project_id=? AND action='project_start'", (project,)).fetchone()
             waiting = db.execute("SELECT 1 FROM project_starts s JOIN approvals a ON a.id = s.approval_id "
                                  "WHERE s.project_id=? AND s.state='waiting' AND a.state='requested' AND s.idempotency_key != ?", (project, key)).fetchone()
-        approvals = Approvals(self.registry, self.tokens)
-        begun_by_other = approvals.made_for(GATE, project) and not approvals.requested_under(f'{key}:approval', GATE, project)
+            # A failed Start that applied no step holds nothing: its granted Approval cannot be denied, so it must not block another Start.
+            held = db.execute("SELECT 1 FROM approvals a WHERE a.gate=? AND a.target=? AND a.state != 'denied' AND a.id NOT IN ("
+                              "SELECT s.approval_id FROM project_starts s WHERE s.state='failed' AND NOT EXISTS (SELECT 1 FROM verb_requests v "
+                              "WHERE instr(v.idempotency_key, s.idempotency_key || ':') = 1 AND v.idempotency_key != s.idempotency_key || ':approval'))",
+                              (GATE, project)).fetchone()
+        begun_by_other = held and not Approvals(self.registry, self.tokens).requested_under(f'{key}:approval', GATE, project)
         if not found:
             return Refused(rule='project', reason='Project not found')
         if archived:
             return Refused(rule='project_archived', reason='Project is archived')
         if waiting:
             return Refused(rule='project_started', reason='A Start of this Project waits for its Approval')
-        if started or begun_by_other:  # a Start under another key has finished, or has its Approval (not denied) and has not finished
+        if started or begun_by_other:  # a Start under another key has finished, or has its Approval (not denied) and waits, is being applied or stopped halfway
             return Refused(rule='project_started', reason='Project has already been started')
         if any(item['kind'] in FRAMEIO_KINDS for item in values['media']):
             return Refused(rule='frameio', reason='Frame.io Media locations come from the Frame.io step of the Start, not from `media`')
