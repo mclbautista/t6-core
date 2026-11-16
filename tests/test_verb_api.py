@@ -355,8 +355,8 @@ class VerbAPITests(unittest.TestCase):
                 refused = self.request('/v1/jo/raise', body)[1]
                 self.assertEqual((refused['outcome'], refused['rule']), ('refused', 'input'))
             # A path sent with no uploaded contents is dropped, never opened.
-            for body in ({'file': '/etc/hosts'}, {'file': '/etc/hosts', 'data_sources': '/etc/hosts'}):
-                refused = self.request('/v1/jo/raise', body)[1]
+            for paths in ({'file': '/etc/hosts'}, {'file': '/etc/hosts', 'data_sources': '/etc/hosts'}):
+                refused = self.request('/v1/jo/raise', paths)[1]
                 self.assertEqual((refused['outcome'], refused['rule']), ('refused', 'input'))
             nobody = self.request('/v1/jo/raise', {'fields': {'name': 'No Project'}, 'idempotency_key': 'np'})[1]
             self.assertEqual((nobody['outcome'], nobody['rule']), ('refused', 'project'))
