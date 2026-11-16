@@ -710,8 +710,7 @@ class VerbAPI:
             with self.open_notion(token) as client:
                 if noun == 'person':
                     from t6.notion.reads import ContactReader
-                    from t6.lookup import Index, Lookup
-                    from t6.cli_studio import _resolution
+                    from t6.cli_studio import _find_contacts
                     from uuid import UUID
                     contact_reader = ContactReader(client, self.data_sources['contacts'])
                     def contact(c: Any) -> dict[str, Any]:
@@ -721,7 +720,10 @@ class VerbAPI:
                     if verb == 'list':
                         return Done(result={'people': [contact(c) for c in contact_reader.list()]})
                     if verb == 'find':
-                        return Done(result=_resolution(Lookup(Index(contacts=contact_reader.list())).contact(inputs.mention), contact))
+                        try:
+                            return Done(result=_find_contacts(contact_reader.list(), contact, inputs.mention, inputs.mentions, inputs.suggest, inputs.prefer_telegram))
+                        except ValueError as error:
+                            return Refused(rule='input', reason=str(error))
                     person = self.people.get(identity(inputs.person_id))
                     page = next((b['page_id'] for b in person['bindings'] if b['active']), None) if person else inputs.person_id
                     if not page:
@@ -887,9 +889,10 @@ class VerbAPI:
                 if (noun, verb) == ('jo', 'get'):
                     result = _get(client, sources['job_orders'], inputs.ref)
                 elif (noun, verb) == ('person', 'find'):
-                    result = _contacts_find(client, sources['contacts'], inputs.mention)
-                    for item in ([result['match']] if result['match'] else []) + result['candidates']:
-                        item['t6_id'] = self.people.registry.bound_entity('notion', item['id'])
+                    result = _contacts_find(client, sources['contacts'], inputs.mention, inputs.mentions, inputs.suggest, inputs.prefer_telegram)
+                    for found in result.get('results', [result]):
+                        for item in ([found['match']] if found['match'] else []) + found['candidates']:
+                            item['t6_id'] = self.people.registry.bound_entity('notion', item['id'])
                 elif (noun, verb) == ('project', 'resolve'):
                     result = _projects_resolve(client, sources['projects'], inputs.text,
                                                inputs.registry_db or Path(os.environ.get('T6_REGISTRY_DB', 't6-registry.sqlite')))

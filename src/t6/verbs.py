@@ -873,7 +873,10 @@ class JoFormatInput(BaseModel):
 
 
 class LegacyPersonFindInput(BaseModel):
-    mention: str
+    mention: str | None = None
+    mentions: list[str] | None = None
+    suggest: bool = False
+    prefer_telegram: bool = False
     data_sources: Path
 
 
@@ -912,7 +915,10 @@ class PersonGetInput(ReadInput):
 
 
 class PersonFindInput(ReadInput):
-    mention: str
+    mention: str | None = None
+    mentions: list[str] | None = None
+    suggest: bool = False
+    prefer_telegram: bool = False
 
 
 class PersonListInput(ReadInput):
@@ -1343,6 +1349,10 @@ class PersonFindOutput(BaseModel):
     needs_review: bool
     reason: str | None
     candidates: list[ContactCandidate]
+
+
+class PersonFindManyOutput(BaseModel):
+    results: list[PersonFindOutput]
 
 
 class JoGetOutput(BaseModel):

@@ -74,7 +74,15 @@ because the old draft used a Notion client.
 | [munki #17](https://github.com/mclbautista/t6-munki-repo/pull/17) | Imports `t6.notion.writes` result types; its `Fleet.sync()` performs Bays matching and writes internally | No direct `t6.notion` read call in the draft. Fleet sync is a write, outside this read ticket. |
 
 The registry also exposes `project get`, `project resolve`, `person find` and
-`camera get` for the requested cutovers and other clients. The table documents
+`camera get` for the requested cutovers and other clients.
+
+`person find` answers one `mention`, or a list of up to 50 `mentions` in one call
+(one read of the Contacts, one result for each name in order). `suggest: true`
+makes `candidates` up to 3 suggestions at 0.60 or more, even after an exact match.
+`prefer_telegram: true` searches the Contacts that have a Telegram user ID first.
+A request with both `mention` and `mentions`, with neither, or with more than 50
+names is refused with rule `input`. See the README for the rule differences from
+the apps' old matching. The table documents
 what the referenced drafts actually call, including their local wrappers; it
 is not a claim that their separate write cutovers have already been built.
 

@@ -1463,6 +1463,30 @@ $ t6 person find @msantos --data-sources sources.json
 }
 ```
 
+`person find` takes three more inputs (CLI flag, API field). All three are off by
+default, and then the reply is the one above.
+
+- `--suggest` (`suggest`): `candidates` are up to 3 Contacts that score 0.60 or
+  more, best first, even when `match` is set by an exact match. `match`, `method`,
+  `score`, `needs_review` and `reason` do not change.
+- `--prefer-telegram` (`prefer_telegram`): the Contacts that have a Telegram user
+  ID are searched first and win equal scores. A match found among them is returned
+  without searching the rest. It is a hint only: it sets no threshold and no
+  honorific list.
+- `--mention NAME`, repeated (`mentions`, at most 50 names): instead of the one
+  `mention`. The Contacts are read once and the reply is `{"results": [...]}`, one
+  reply of the shape above for each name in input order. A blank name gets its own
+  result with no match. Giving both `mention` and `mentions`, neither, or more than
+  50 names is refused with rule `input`. `suggest` and `prefer_telegram` apply to
+  each name.
+
+Name matching is this one call. Apps do not keep matching code of their own, so a
+change to the matching rule happens only here. It differs from the rules the apps
+used to keep, and these differences are not bugs. In the preferred set, a tie falls
+through to all Contacts here, while reports stopped at the tie. The normalizer here
+folds accents and punctuation and drops 16 leading honorifics, while the apps
+dropped 3 anywhere in the name.
+
 `t6 project resolve <code|name> --data-sources FILE [--registry-db FILE]` (the
 `projects` source) resolves a Project Code. A reused code is settled by rotation
 when the registry file knows the Projects (`--registry-db`, default
