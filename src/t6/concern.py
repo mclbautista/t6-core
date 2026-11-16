@@ -125,7 +125,9 @@ class ConcernStore:
         if db.execute('SELECT attempts FROM concern_pm_attempts WHERE project_id = ? AND as_of = ? AND line = ?', (project, as_of, text)).fetchone()[0] >= MAX_ATTEMPTS:
             db.execute('INSERT OR IGNORE INTO concern_pm_lines VALUES (?, ?, ?)', (project, as_of, text))
 
-    def process_notes(self, project: str, owner: str, lines: list[dict[str, str]], classify: Callable[[dict[str, Any]], Any]) -> None:
+    def process_notes(self, project: str, owner: str, lines: list[dict[str, str]], classify: Callable[[dict[str, Any]], Any]) -> dict[str, int]:
+        """Match the dated lines to Concerns; returns how many Concerns were raised, continued and announced."""
+        done = {'raised': 0, 'continued': 0, 'announced': 0}
         for line in sorted(lines, key=lambda item: item['as_of']):
             text, as_of = line['text'], line['as_of']
             try:
@@ -185,6 +187,7 @@ class ConcernStore:
                     assert isinstance(concern, str)
                     self._schedule(db, concern, now, 1)
                     self._pm_log(db, project, concern, 'concern_auto_raise', quote, now, None)
+                    done['raised'] += 1
                 elif choice == 'continues':
                     assert isinstance(concern, str)
                     state, revision = row[0], row[1]
@@ -192,14 +195,17 @@ class ConcernStore:
                     db.execute('DELETE FROM concern_pm_pending WHERE concern_id = ?', (concern,))
                     self._schedule(db, concern, now, revision + 1)
                     self._pm_log(db, project, concern, 'concern_auto_continue', quote, now, state)
+                    done['continued'] += 1
                 elif choice == 'settles' and row[0] != 'closed':
                     assert isinstance(concern, str)
                     db.execute('UPDATE concerns SET as_of = ?, revision = revision + 1 WHERE id = ?', (as_of, concern))
                     db.execute('INSERT OR REPLACE INTO concern_pm_pending VALUES (?, ?, ?, ?, ?)', (concern, as_of, quote, now + WEEK, row[1] + 1))
                     self._pm_log(db, project, concern, 'concern_auto_announce', quote, now, row[0])
+                    done['announced'] += 1
                     from t6.worker.internal_queue import InternalJobQueue
                     InternalJobQueue(self.registry, clock=lambda: now).submit('main', 'concern_pm_close', f'{concern}:{row[1] + 1}', {'project': project}, run_at=now + WEEK, db=db)
                 db.execute('INSERT INTO concern_pm_lines VALUES (?, ?, ?)', (project, as_of, text))
+        return done
 
     def for_message(self, chat: str, message_id: str) -> list[str]:
         with self.registry._transaction() as db:

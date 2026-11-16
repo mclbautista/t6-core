@@ -186,6 +186,10 @@ class ConcernAutoScanTests(ConcernNotesTests):
         with patch.object(api, '_coordinators', return_value=set()), patch.object(api, '_typed_read', return_value=notes):
             self.assertEqual(api.scan_concerns(), 0)
         answer = {'choice': 'new', 'quote': 'Waiting on client', 'waiting_on': 'client'}
-        with patch.object(api, '_coordinators', return_value={'coordinator'}), patch.object(api, '_typed_read', return_value=notes), patch('t6.concern_task.classify', return_value=answer):
+        import contextlib
+        import io
+        err = io.StringIO()
+        with patch.object(api, '_coordinators', return_value={'coordinator'}), patch.object(api, '_typed_read', return_value=notes), patch('t6.concern_task.classify', return_value=answer), contextlib.redirect_stderr(err):
             self.assertEqual(api.scan_concerns(), 1)
         self.assertEqual(len(self.store.changes(self.project, '2026-01-01')), 1)
+        self.assertEqual(err.getvalue(), 't6.server: concern scan projects=1 raised=1 continued=0 announced=0\n')

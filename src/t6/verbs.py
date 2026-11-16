@@ -697,6 +697,33 @@ class ConcernListOutput(BaseModel):
     concerns: list[dict[str, Any]]
 
 
+class ConcernFinding(BaseModel):
+    project: str
+    text: str
+    source: Literal['flag_rule', 'pm_notes_read', 'leave']
+    owner: str | None = None
+    waiting_on: str | None = None
+
+
+class ConcernUnavailable(BaseModel):
+    project: str
+    source: Literal['flag_rule', 'pm_notes_read', 'leave']
+
+
+class ConcernObserveInput(BaseModel):
+    run_date: str
+    findings: list[ConcernFinding]
+    unavailable: list[ConcernUnavailable] = []
+    dry_run: bool = False
+    idempotency_key: str
+
+
+class ConcernObserveOutput(BaseModel):
+    run_date: str
+    projects: list[dict[str, Any]]
+    counts: dict[str, int]
+
+
 class ConcernGetInput(BaseModel):
     concern: str
 
@@ -746,6 +773,10 @@ def concern_list(inputs: ConcernListInput, open_notion: Callable[..., Any]) -> O
 
 def concern_scan(inputs: ConcernScanInput, open_notion: Callable[..., Any]) -> Outcome:
     return Refused(rule='api', reason='Concern scanning runs on the t6 API')
+
+
+def concern_observe(inputs: ConcernObserveInput, open_notion: Callable[..., Any]) -> Outcome:
+    return Refused(rule='api', reason='Concern observe runs on the t6 API')
 
 
 def concern_get(inputs: ConcernGetInput, open_notion: Callable[..., Any]) -> Outcome:
@@ -2258,6 +2289,7 @@ VERBS = (
     Verb("concern", "for-message", "Find Concerns carried by a brief", (), ConcernForMessageInput, ConcernForMessageOutput, "reader", "Return Concern IDs for a brief message.", concern_for_message, read_only=True),
     Verb("concern", "record-message", "Record a Concern carried by a brief", (), ConcernRecordMessageInput, ConcernOutput, "coordinator", "Record a brief message reference without chat text.", concern_write),
     Verb("concern", "scan", "Scan PM Notes for Concerns", (), ConcernScanInput, ConcernScanOutput, "coordinator", "Match new dated lines through llm run.", concern_scan),
+    Verb("concern", "observe", "Hand over the findings of one brief run", (), ConcernObserveInput, ConcernObserveOutput, "coordinator", "The API decides which findings are new, known or not seen; it closes nothing unless T6_CONCERN_OBSERVE_CLOSES is on.", concern_observe),
     Verb("concern", "list", "List Concerns to raise at PSR", (), ConcernListInput, ConcernListOutput, "reader", "Quiet Concerns only (no news for 2 weeks); age alone never lists one.", concern_list, read_only=True),
     Verb("concern", "changes", "Read automatic Concern changes", (), ConcernChangesInput, ConcernChangesOutput, "reader", "Read receipts since a date.", concern_changes, read_only=True),
     Verb("concern", "get", "Get a Concern", (), ConcernGetInput, ConcernGetOutput, "reader", "Read a Concern and its age.", concern_get, read_only=True),
@@ -2652,6 +2684,12 @@ def add_parsers(commands: Any) -> None:
             parser.add_argument("--confirm")
             parser.set_defaults(registered_verb=entry)
             continue
+        if entry.handler is concern_observe:
+            parser.add_argument("--file", type=Path, required=True, help="JSON object with run_date, findings and optionally unavailable")
+            parser.add_argument("--dry-run", action="store_true")
+            parser.add_argument("--idempotency-key", required=True)
+            parser.set_defaults(registered_verb=entry)
+            continue
         if entry.handler is llm_api_only:
             for name, field in entry.input_model.model_fields.items():
                 parser.add_argument("--" + name.replace("_", "-"), type=json.loads if name == "output_schema" else str,
@@ -2746,7 +2784,8 @@ def run(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
     if entry.noun == 'transcript' and entry.verb == 'speakers':
         from pathlib import Path
         args.csv = Path(args.csv).read_text(encoding='utf-8-sig')
-    inputs = (LegacyPersonGetInput(person_id=args.person_id, data_sources=args.data_sources) if entry.handler is person_get and args.data_sources else
+    inputs = (ConcernObserveInput.model_validate({**json.loads(args.file.read_text(encoding='utf-8')), 'dry_run': args.dry_run, 'idempotency_key': args.idempotency_key}) if entry.handler is concern_observe else
+              LegacyPersonGetInput(person_id=args.person_id, data_sources=args.data_sources) if entry.handler is person_get and args.data_sources else
               LegacyDepartmentsInput(data_sources=args.data_sources, include_misc=args.include_misc) if entry.handler is departments and args.data_sources else
               entry.input_model.model_validate({name: getattr(args, name) for name in entry.input_model.model_fields}))
     assert entry.handler is not None

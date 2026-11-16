@@ -107,6 +107,22 @@ true, else rule `input`; the `raise_at_psr` reply is unchanged. `text`, like
 `waiting_on` and `anchor`, is masked for a caller without real-name access, so a
 caller that renders names needs the `unmasked` permission and the `reader` role.
 
+### Concern observe
+
+`concern observe` is a write that a scheduled app calls once for each run:
+`run_date` (the brief's date in Asia/Manila), `findings` (`project`, `text`,
+`source` of `flag_rule`, `pm_notes_read` or `leave`, optional `owner` and
+`waiting_on`), `unavailable` (`project` and `source` pairs that could not be read),
+`dry_run` and a required `idempotency_key`. `project` is a T6 Project ID or a
+Notion page ID the registry knows. The reply has, for each Project, `open` (every
+Concern that is not closed, oldest first: `id`, `text`, `source`, `opened_on`,
+`age_days`, `weeks`, `chronic`, `state`, `seen_this_run`) and
+`closed_since_last_run` (`id`, `text`: closed by any path since the previous
+`run_date` the audit rows know, else the 7 days before), and `counts`: `new`,
+`known`, `not_seen`, `unavailable`, `skipped`, `projects_with_both` and `closed`.
+The run closes nothing unless the server has `T6_CONCERN_OBSERVE_CLOSES` on. The
+reply names Concern text, so it is masked for a caller without real-name access.
+
 ### Drive reads
 
 `drive list`, `drive get`, `drive find`, `drive shipments`, `drive shipment` and

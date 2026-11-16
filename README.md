@@ -133,6 +133,7 @@ Mac mini. Both use only the standard library.
 | `T6_QUEUE_DB`, `T6_PUBLIC_BIND`, `T6_TAILNET_BIND` | database path, listener addresses |
 | `T6_REGISTRY_DB` | Project registry database path, default `t6-registry.sqlite` |
 | `T6_CONCERN_AUTOSCAN` | Set to `1` to scan PM Notes for Concerns automatically in the API server. Off by default; needs the LLM service. |
+| `T6_CONCERN_OBSERVE_CLOSES` | Set to `1` to let `concern observe` close a Concern its run did not find. Off by default: a run closes nothing. |
 | `T6_CONCERN_AUTOSCAN_SECONDS` | Seconds between automatic scans, default `900`, minimum `60` |
 | `T6_OPERATOR_IDS` | Telegram user IDs allowed to tap operator cards and send `/project`, comma separated; the first receives the cards core starts, and a `/project` card goes to whoever sent it. Unset turns operator actions off |
 | `T6_STANDING_CC` | A Contact page ID, added to the cc of every Job Order (`t6.domain.studio_people.standing_cc`). Unset means none |
@@ -1963,6 +1964,33 @@ oldest first, with `age_seconds` and `chronic` (open longer than
 `CHRONIC_DAYS`, 28); pass exactly one of `--raise-at-psr` and `--open`. `text`
 is masked like `waiting_on` and `anchor` for a caller without real-name access;
 reading it needs the `unmasked` permission.
+
+`concern observe` is how an app hands over the findings of one run (role
+`coordinator`; the reports service also needs `unmasked` to read the reply
+unmasked). `t6 concern observe --file findings.json --idempotency-key KEY
+[--dry-run]` reads `{"run_date", "findings", "unavailable"}`; a finding is
+`{project, text, source, owner, waiting_on}` with `source` `flag_rule`,
+`pm_notes_read` or `leave`, and `unavailable` lists the `{project, source}` pairs
+that could not be read. The call is one step (no preview) and needs an
+`idempotency_key`; the same key and input return the first reply and write
+nothing twice. At most 500 findings and 100 unavailable pairs. For each finding
+the API decides: new (no Concern that is not closed has the text in the Project:
+a Concern opens with `opened_at` the run date), known (evidence is added, an
+open or quiet or expired Concern is open again, `opened_at` is kept), or, for a
+Concern the run did not find, not seen (nothing changes; the silence timers go
+on). The same text after a Concern was closed is a new Concern with a new age.
+A Concern of source `person`, `pm_notes_scan` or `date_rule` is never created,
+aged or closed by the run; it is listed in `open`. A finding whose `owner` is not
+an active coordinator of the Project is skipped, a finding with no owner is not.
+With `T6_CONCERN_OBSERVE_CLOSES` on, a not-seen Concern whose pair was not
+`unavailable` is closed, unless a person decided it. The reply holds, for each
+Project, `open` (`id`, `text`, `source`, `opened_on`, `age_days`, `weeks`,
+`chronic`, `state`, `seen_this_run`) and `closed_since_last_run`, and the counts
+`new`, `known`, `not_seen`, `unavailable`, `skipped`, `projects_with_both` and
+`closed`. `--dry-run` computes the same reply and writes nothing. Every real run
+writes one `concern_observe` audit row and one log line holding the counts, never
+text, names or IDs; the PM Notes scan writes a line of its counts too
+(`projects`, `raised`, `continued`, `announced`).
 
 `project flags` recomputes date warnings and missing health from the current
 Project data, without Concern IDs or ages. Health-vs-evidence and source
