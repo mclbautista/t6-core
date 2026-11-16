@@ -232,6 +232,7 @@ class InsideJobsTests(Reach, SyncTestCase):
         page = self.page()
         project = self.new("ABC", "in", page=page)
         self.drain_main()
+        self.notion.add_option(PROJECTS, "Status", "Standby")
         writes = ProjectWrites(self.registry, PreviewTokens("secret"))
         preview = writes.run("hold", project["id"], "paused", actor="operator", idempotency_key="hold")
         assert isinstance(preview, Preview)

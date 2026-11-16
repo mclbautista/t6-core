@@ -19,6 +19,8 @@ class DeliverableSyncTests(SyncTestCase):
         self.drain()
         self.notion.add_snapshot_data_source('deliverables', 'deliverables')
         self.notion.add_property('deliverables', 'T6 ID', 'rich_text')
+        for option in ('Staged', 'Waiting for Lock', 'In Progress', 'Mastering', 'QC Passed', 'Delivered', 'Archiving', 'Archived'):
+            self.notion.add_option('deliverables', 'Status', option)
         store = DeliverableStore(self.registry, PreviewTokens('secret'))
         values = {'template': 'film', 'project': project['id'], 'code': 'Ep01', 'episode': None, 'due': '2026-12-01', 'air': None}
         preview = store.define(values, actor='alice', idempotency_key='define')
@@ -42,6 +44,8 @@ class DeliverableSyncTests(SyncTestCase):
         self.drain()
         self.notion.add_snapshot_data_source('deliverables', 'deliverables')
         self.notion.add_property('deliverables', 'T6 ID', 'rich_text')
+        for option in ('Staged', 'Waiting for Lock', 'In Progress', 'Mastering', 'QC Passed', 'Delivered', 'Archiving', 'Archived'):
+            self.notion.add_option('deliverables', 'Status', option)
         store = DeliverableStore(self.registry, PreviewTokens('secret'))
         values = {'template': 'film', 'project': project['id'], 'code': 'Ep01', 'episode': None}
         preview = store.define(values, actor='alice', idempotency_key='define')
@@ -85,6 +89,8 @@ class DeliverableSyncTests(SyncTestCase):
         self.drain()
         self.notion.add_snapshot_data_source('deliverables', 'deliverables')
         self.notion.add_property('deliverables', 'T6 ID', 'rich_text')
+        for option in ('Staged', 'Waiting for Lock', 'In Progress', 'Mastering', 'QC Passed', 'Delivered', 'Archiving', 'Archived'):
+            self.notion.add_option('deliverables', 'Status', option)
         prop_id = self.notion._data_sources['deliverables']['properties']['T6 ID']['id']
         self.notion.rename_property('deliverables', 'T6 ID', 'Renamed identity')
         store = DeliverableStore(self.registry, PreviewTokens('secret'))

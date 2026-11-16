@@ -5,7 +5,11 @@ import hmac
 import json
 import os
 import sys
+import re
 import tempfile
+import threading
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from importlib.metadata import version
 from typing import Any, Callable, Mapping, cast
@@ -31,7 +35,8 @@ class VerbAPI:
                  *, llm_service: Any = None, data_sources: Mapping[str, str] | None = None,
                  privacy_registry: PrivacyRegistry | None = None, transcribe_rate: float = 0.4,
                  translate_enabled: bool = False, frameio_timeout: float = 60.0,
-                 frameio_queue: Any = None, concern_observe_closes: bool = False) -> None:
+                 frameio_queue: Any = None, concern_observe_closes: bool = False,
+                 request_log: Callable[[str], None] | None = None, privacy_list: PrivacyList | None = None) -> None:
         import math
         if not math.isfinite(transcribe_rate) or transcribe_rate < 0:
             raise ValueError('Transcription rate must be finite and non-negative')
@@ -42,10 +47,11 @@ class VerbAPI:
         self.tap_app = tap_app
         self.llm_service = llm_service
         self.data_sources = dict(data_sources or {})
-        self.privacy_registry = privacy_registry
+        self._privacy_registry, self.privacy_list = privacy_registry, privacy_list
         self.transcribe_rate = transcribe_rate
         self.translate_enabled = translate_enabled
         self.concern_observe_closes = concern_observe_closes
+        self.request_log = request_log
         self.frameio = QueueFrameioWriter(frameio_queue or LocalFrameioQueue(queue), timeout=frameio_timeout)  # asks the Frame.io worker; holds no token
         self.routes = {f'/v1/{v.noun}' + ('/' + v.verb.replace(' ', '/') if v.verb else ''): v for v in VERBS}
         for verb in VERBS:
@@ -53,7 +59,30 @@ class VerbAPI:
                 for alias in verb.aliases:
                     self.routes['/v1/' + alias.replace(' ', '/')] = verb
 
+    @property
+    def privacy_registry(self) -> PrivacyRegistry | None:
+        return self.privacy_list.current() if self.privacy_list else self._privacy_registry
+
+    @privacy_registry.setter
+    def privacy_registry(self, value: PrivacyRegistry | None) -> None:
+        self._privacy_registry, self.privacy_list = value, None
+
     def __call__(self, request: Request) -> Response:
+        """Answer a request and write its one request log line (see `request_line`); `/health` is not logged."""
+        path = urlsplit(request.path).path
+        if self.request_log is None or path == '/health':
+            return self._handle(request, {})
+        seen: dict[str, str] = {}
+        started = time.monotonic()
+        try:
+            response = self._handle(request, seen)
+        except Exception:
+            self.request_log(request_line(path, seen.get('identity'), Response(500), time.monotonic() - started, self.routes))
+            raise
+        self.request_log(request_line(path, seen.get('identity'), response, time.monotonic() - started, self.routes))
+        return response
+
+    def _handle(self, request: Request, seen: dict[str, str]) -> Response:
         path = urlsplit(request.path).path
         if path == '/health':
             if request.method != 'GET':
@@ -62,13 +91,15 @@ class VerbAPI:
                 schema = db.execute('SELECT MAX(version) FROM schema_version').fetchone()[0]
             with self.queue._transaction() as db:
                 jobs = dict(db.execute('SELECT state, COUNT(*) FROM jobs GROUP BY state').fetchall())
-            return Response(200, {'version': version('t6'), 'schema_version': schema, 'jobs': jobs})
+            return Response(200, {'version': version('t6'), 'schema_version': schema, 'jobs': jobs,
+                                  'privacy_registry': self.privacy_list.status() if self.privacy_list else None})
         auth = request.header('authorization')
         supplied = auth[7:] if auth.lower().startswith('bearer ') else ''
         actor = next((identity for secret, identity in self.secrets.items()
                       if supplied and hmac.compare_digest(secret, supplied)), None)
         if actor is None:
             return Response(401, {'error': 'unauthorized'})
+        seen['identity'] = actor
         if path.startswith('/v1/transcribe/'):
             return self._transcribe_route(path, request, actor)
         if path == '/tap':
@@ -86,6 +117,7 @@ class VerbAPI:
             if not row:
                 return self.refused('identity', 'No active Person for Telegram user ID')
             actor = row[0]
+            seen['identity'] = actor
         if path == '/v1/commands':
             return Response(200, cast(Mapping[str, JsonValue], catalogue())) if request.method == 'GET' else Response(405)
         if path == '/v1/admin/media/migrate':
@@ -783,7 +815,7 @@ class VerbAPI:
         from t6.notion.reads import ProjectReader, DeliverableReader, is_live
         from t6.notion.job_orders import JobOrders
         from t6.notion.meeting_notes import note_from_page
-        from t6.domain.job_order_rules import status_group, is_active, health_flags
+        from t6.domain.job_order_rules import status_group, is_active, is_done, health_flags
         from t6.domain import project_rules
         from t6.registry import ProjectRefs
         from t6.registry.core import normalize_page_id
@@ -853,7 +885,7 @@ class VerbAPI:
         def order_result(order: Any) -> dict[str, Any]:
             item = asdict(order)
             group = status_group(order.status)
-            item.update(status_group=group.value if group else None, active=is_active(order.status), health_flags=list(health_flags(order.health)))
+            item.update(status_group=group.value if group else None, active=is_active(order.status), done=is_done(order.status), health_flags=list(health_flags(order.health)))
             item['t6_id'] = self.people.registry.bound_entity('notion', order.page_id)
             item['project_id'] = refs.identity(order.project_id) or order.project_id
             item['project_ids'] = [refs.identity(page) or page for page in order.project_ids]
@@ -974,7 +1006,7 @@ class VerbAPI:
                                 group = status_group(status)
                                 return Done(result={'job_order': {
                                     **record['fields'], **record, 't6_id': record['id'],
-                                    'status_group': group.value if group else None, 'active': is_active(status),
+                                    'status_group': group.value if group else None, 'active': is_active(status), 'done': is_done(status),
                                     'health_flags': list(health_flags(record['fields'].get('health'))),
                                     'project_ids': [record['project_id']] if record['project_id'] else []}})
                         else:
@@ -1248,6 +1280,32 @@ class VerbAPI:
         return response
 
 
+_FIXED_PATHS = {'/tap': 'tap', '/v1/commands': 'commands', '/v1/admin/media/migrate': 'admin.media.migrate'}
+
+
+def request_line(path: str, identity: str | None, response: Response, seconds: float, routes: Mapping[str, Any]) -> str:
+    """The request log line: `t6.server: request time=<UTC> identity=<service or T6 Person ID> verb=<noun.verb> outcome=<kind> ms=<n>`.
+
+    `outcome` is `done`, `preview`, `refused:<rule>` or `error:<HTTP status>`. The line holds no input,
+    result, secret, name or path: the verb comes from the route table, never from the request text.
+    """
+    entry = routes.get(path)
+    verb = '.'.join(part for part in (entry.noun, entry.verb.replace(' ', '.')) if part) if entry else \
+        'transcribe' if path.startswith('/v1/transcribe/') else _FIXED_PATHS.get(path, 'unknown')
+    body = response.body if isinstance(response.body, Mapping) else {}
+    kind = body.get('outcome')
+    if response.status == 401:
+        outcome = 'refused:unauthorized'
+    elif response.status == 200 and kind in {None, 'done', 'preview'}:
+        outcome = str(kind or 'done')
+    elif response.status == 200 and kind == 'refused':
+        outcome = 'refused:' + (re.fullmatch(r'[a-z0-9_-]{1,40}', str(body.get('rule'))) or ['other'])[0]
+    else:
+        outcome = f'error:{response.status}'
+    stamp = datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+    return f't6.server: request time={stamp} identity={identity or "-"} verb={verb} outcome={outcome} ms={round(seconds * 1000)}'
+
+
 def secrets_from_env(environ: Mapping[str, str]) -> dict[str, str]:
     """Read JSON mapping bearer secrets to their identities."""
     value = json.loads(environ.get('T6_API_SECRETS', '{}'))
@@ -1270,17 +1328,75 @@ def service_permissions_from_env(environ: Mapping[str, str]) -> dict[str, frozen
     return grants
 
 
+def _read_privacy_names(path: str) -> PrivacyRegistry:
+    from t6.privacy import Person
+    with open(path, encoding='utf-8') as file:
+        names = json.load(file)
+    if not isinstance(names, list) or any(not isinstance(name, str) or not name.strip() for name in names):
+        raise ValueError('T6_READ_PRIVACY_REGISTRY must contain a JSON array of client names')
+    return PrivacyRegistry(people=[Person(name=name) for name in names])
+
+
+class PrivacyList:
+    """The client-name file of masked reads, read again when it changes (no restart).
+
+    A file that cannot be read (missing, bad JSON, wrong shape) keeps the last good list and logs one
+    line for that state of the file; the next change is tried again. `status` is shown by `/health`.
+    """
+
+    def __init__(self, path: str, registry: PrivacyRegistry, log: Callable[[str], None] | None = None,
+                 clock: Callable[[], float] = time.time) -> None:
+        self.path, self._registry, self._log, self._clock = path, registry, log, clock
+        self._lock = threading.Lock()
+        self._seen: tuple[int, int] | None = None  # (mtime_ns, size) of the file last tried
+        self._loaded: tuple[int, int] | None = None  # the same, of the list in use
+        self._failed = False
+        self._names = len(registry.people)
+        try:
+            self._seen = self._loaded = self._stamp()
+        except OSError:
+            pass
+
+    def _stamp(self) -> tuple[int, int]:
+        info = os.stat(self.path)
+        return info.st_mtime_ns, info.st_size
+
+    def current(self) -> PrivacyRegistry:
+        with self._lock:
+            stamp: tuple[int, int] | None = None
+            failure: str | None = None
+            try:
+                stamp = self._stamp()
+            except OSError as error:
+                failure = type(error).__name__
+            if stamp != self._seen:
+                self._seen = stamp
+                if stamp is not None:
+                    try:
+                        self._registry = _read_privacy_names(self.path)
+                        self._loaded, self._failed, self._names = stamp, False, len(self._registry.people)
+                        return self._registry
+                    except (OSError, ValueError) as error:  # JSONDecodeError is a ValueError
+                        failure = type(error).__name__
+                self._failed = True
+                if self._log is not None:
+                    self._log(f't6.server: read privacy registry not reloaded ({failure}); the last good list stays in use')
+            return self._registry
+
+    def status(self) -> dict[str, Any]:
+        """How many names are in use, how old the file they came from is, and whether a later file was refused."""
+        self.current()
+        with self._lock:
+            age = None if self._loaded is None else max(0, round(self._clock() - self._loaded[0] / 1e9))
+            return {'names': self._names, 'age_seconds': age, 'reload_failed': self._failed}
+
+
 def read_config_from_env(environ: Mapping[str, str]) -> tuple[dict[str, str], PrivacyRegistry | None]:
     """Load API-owned Notion source IDs and client-name masking terms."""
-    from t6.privacy import Person
     from t6.cli import _read_data_sources
     source_path = environ.get('T6_READ_DATA_SOURCES')
     privacy_path = environ.get('T6_READ_PRIVACY_REGISTRY')
     sources = _read_data_sources(Path(source_path)) if source_path else {}
     if not privacy_path:
         return sources, None
-    with open(privacy_path, encoding='utf-8') as file:
-        names = json.load(file)
-    if not isinstance(names, list) or any(not isinstance(name, str) or not name.strip() for name in names):
-        raise ValueError('T6_READ_PRIVACY_REGISTRY must contain a JSON array of client names')
-    return sources, PrivacyRegistry(people=[Person(name=name) for name in names])
+    return sources, _read_privacy_names(privacy_path)

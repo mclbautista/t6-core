@@ -11,6 +11,7 @@ from t6.domain.job_order_rules import (
     health_flags,
     is_active,
     is_deliverable_code,
+    is_done,
     is_mfg_shuttle,
     jo_id,
     jo_key,
@@ -136,6 +137,13 @@ class StatusTests(unittest.TestCase):
         self.assertFalse(is_active("Cancelled"))
         self.assertTrue(is_active("In progress"))
         self.assertTrue(is_active(None))
+
+    def test_only_the_done_status_is_done(self) -> None:
+        self.assertTrue(is_done(JobOrderStatus.DONE))
+        self.assertTrue(is_done("Done"))
+        for status in ("In progress", "Cancelled", "Needs Completion Review", "done", "Something new", "", None):
+            with self.subTest(status=status):
+                self.assertFalse(is_done(status))
 
     def test_health_flags_show_blocked_delayed_and_urgent(self) -> None:
         self.assertEqual(health_flags("🔴 Blocked"), ("Blocked",))

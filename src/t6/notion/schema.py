@@ -158,7 +158,11 @@ def check_schema(
             continue
         diff = diff_properties(database["properties"], live.get("properties") or {})
         diff["named_missing"] = named.missing_values(database, key, live.get("properties") or {})
-        drifted = any(diff[kind] for kind in ("added", "removed", "changed", "named_missing"))
+        kinds = ["added", "removed", "changed", "named_missing"]
+        if key == "projects":
+            diff["status_duplicates"] = named.duplicate_options(database, live.get("properties") or {}, "Status")
+            kinds.append("status_duplicates")
+        drifted = any(diff[kind] for kind in kinds)
         databases[key] = {"status": "drift" if drifted else "ok", **diff}
 
     project_codes: JSON | None = None
@@ -224,6 +228,8 @@ def drift_markdown(report: JSON) -> str:
             f"- named value no longer an option: {m['attribute']} {m['value']}"
             for m in database.get("named_missing", [])
         ]
+        if database.get("status_duplicates"):
+            lines.append(f"- Status has {len(database['status_duplicates'])} option(s) that differ from another only by emoji or case")
     if not lines:
         return ""
     renamed = [
