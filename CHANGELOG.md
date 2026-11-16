@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-11-16
+
+The MCP server gets a start command and a timeout setting, from the live MCP check on 0.6.4. No migration: the schema stays at 43.
+
 ### Added
 
 - `t6 mcp` runs the read-only MCP server on stdio, the same server as `python -m t6.mcp` (#413); `docs/deployment.md` has an "MCP server" section with the settings, the `mcp` service binding and an example client entry.
