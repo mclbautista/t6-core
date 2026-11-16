@@ -1734,7 +1734,7 @@ app's source:
 ## Container image
 
 One image, `ghcr.io/mclbautista/t6`, runs every role. It installs the `server`,
-`worker`, `notion`, `privacy`, `llm` and `frameio` extras, runs as a non-root
+`worker`, `notion`, `privacy`, `llm`, `frameio` and `drives` extras (so `t6 admin drive import` runs in the image), runs as a non-root
 user, and keeps the queue and Project registry databases in the `/data` volume. The command picks the
 role; the default is the server.
 
