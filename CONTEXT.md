@@ -179,12 +179,21 @@ classify to a review list.
 preview by job: the verb returns a job id, the main worker builds the plan, and
 the job's result is the Preview with its signed single-use token (read with
 `project start --job <id>`). Confirm (`--confirm <token>`, same inputs and key)
-applies the **t6 steps**; a changed input is refused. Role: operator, and the
-`bookings` permission when the Start asks for Bookings.
+requests the Approval and stores the Start as waiting; a changed input is
+refused. The other steps wait for the Approval: when it is granted a job on the
+main queue applies the **t6 steps** and the Frame.io step as the Person who
+confirmed, after building the plan again. A denied Approval ends the Start and
+applies nothing; a new Start (new key) may begin. A changed plan, a refused
+step or a Frame.io failure makes the Start `failed` with the reason (Audit and
+Activity); confirming again with the same key and token applies it again with
+no second Approval. The job result read and a retried confirm return the state
+(`waiting_for_approval`, `applied`, `denied`, `failed`). One Start of a Project
+at a time. Role: operator, and the `bookings` permission when the Start asks
+for Bookings.
 
-- **t6 steps**, each created once under a key derived from the Start's key: the
-  Approval (gate `project start`, state requested, a card goes out like any
-  Approval), the Deliverables with the milestone template of the Project Type
+- **t6 steps**, each created once under a key derived from the Start's key (the
+  Approval, gate `project start`, state requested, a card goes out like any
+  Approval, is made at confirm; the rest when it is granted): the Deliverables with the milestone template of the Project Type
   (the Type is read once; a Type without a template refuses the plan), the
   Media locations of the Project, and the initial Bookings. Each step goes
   through the store that owns it, so its rules (overlap, one Frame.io project
@@ -192,8 +201,8 @@ applies the **t6 steps**; a changed input is refused. Role: operator, and the
   the steps already done.
 - **Manual steps** the plan lists and does not do: creating the NAS folders, the
   Resolve project, the Resolve timelines with their stamps (manual stamping).
-  Confirm records each in Activity (`project_start_manual`) with `project_start`.
-- **Frame.io step**: confirm asks the Frame.io worker (the only token holder)
+  The apply records each in Activity (`project_start_manual`) with `project_start`.
+- **Frame.io step**: the apply asks the Frame.io worker (the only token holder)
   through the `frameio` queue for one Frame.io project and one folder per
   Deliverable, and records them as Media locations: the project as the
   Project's frameio-project (the `frameio project link` rules, role

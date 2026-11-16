@@ -21,7 +21,7 @@ work only a worker can do, the call returns a job ID and the job result is the
 Preview with its token. Tokens expire and refuse changed input. Every write is
 idempotent by key, so callers can retry safely. (2026-11-15: the resume of a begun
 `project start`, one whose Approval was made under its key, skips only the token
-expiry, so a begun Start may be finished after its token expired.)
+expiry, so a begun Start may be finished after its token expired. 2026-11-16 (#382): confirm only requests the Approval; the apply is a job, which needs no token, and a failed Start is applied again by confirming it with the same key and token, even past its expiry.)
 
 The actor is the authenticated Person or named service, never a flag supplied
 by the caller. Each API secret is bound to one Person or named service; only

@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Changed
+
+- `project start` waits for its Approval (#382): confirm only requests the Approval (gate `project start`) and stores the Start as waiting (`project_starts`, schema 42); it asks Frame.io for nothing and writes no Deliverable, Media location or Booking. Granting the Approval (`approval grant`, also the operator card) queues a `project_start.apply` job on the main queue; the main worker builds the plan again, then applies the Frame.io step and the t6 steps under the same derived keys, as the Person who confirmed. A changed plan, a refused step or a Frame.io failure records the Start as `failed` with the reason (Audit and Activity), and confirming again with the same key and token applies it again with no second Approval. A denied Approval ends the Start (Activity records the reason) and no longer blocks a new Start; while a Start waits, another is refused with rule `project_started`. The job result read and a retried confirm return the state: `waiting_for_approval`, `applying`, `applied`, `denied` or `failed`. The main worker needs no new setting: it asks the Frame.io worker through the `frameio` queue with its own grant. A Start that finished before this change is still read as started.
+
 ### Fixed
 
 - `drive exceptions` on a server without the `drives` extra (#371): the read reached the workbook importer, which imported `openpyxl` when it loaded, so the request crashed on the image. The importer now imports `openpyxl` only when it opens a workbook.
