@@ -153,6 +153,7 @@ class VerbAPI:
                 contents = data.pop(name + '_contents', None)
                 if not isinstance(contents, str):
                     if not entry.input_model.model_fields[name].is_required():
+                        data.pop(name, None)  # a path sent by the caller is never opened
                         continue
                     return Response(422, {'errors': [{'loc': [name], 'msg': 'File contents required'}]})
                 uploaded = Path(directory) / name
