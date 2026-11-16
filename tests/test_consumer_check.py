@@ -76,6 +76,19 @@ class CheckConsumerTests(unittest.TestCase):
                 code, report = run_check({"config.yaml": f"key: {key}\n"})
                 self.assertEqual((code, report["findings"][0]["rule"]), (1, "credential"))
 
+    def test_every_notion_credential_name_fails(self) -> None:
+        for key in ("NOTION_API_KEY", "NOTION_TOKEN", "T6_NOTION_API_KEY", "T6_NOTION_TOKEN"):
+            with self.subTest(key=key):
+                self.assert_flags(f"token = os.environ.get({key!r})", "credential")
+                code, report = run_check({".env.example": f"{key}=\n"})
+                self.assertEqual((code, [f["detail"] for f in report["findings"]]), (1, [f"references {key}"]))
+
+    def test_look_alike_notion_names_pass(self) -> None:
+        for name in ("T6_NOTION_WEBHOOK_TOKEN", "T6_NOTION_PROJECTS_DATA_SOURCE", "NOTION_TOKEN_FILE"):
+            with self.subTest(name=name):
+                code, _ = run_check({"a.py": f"x = os.environ.get({name!r})\n", ".env.example": f"{name}=\n"})
+                self.assertEqual(code, 0)
+
     def test_frameio_mention_passes(self) -> None:
         self.assertEqual(run_check({"a.py": "message = 'Open in Frame.io'"})[0], 0)
 
