@@ -80,6 +80,7 @@ Checks before a pull request in this repository: `uv sync --locked`, `uv run --l
 | mclbautista/t6-sixto-gateway#97 | Telegram transport roll-out for Chat links and abang. |
 | mclbautista/t6-netops#71 | The restart check after a power cut. The owner restarts the studio server; the session records what comes back. |
 | mclbautista/t6-jo-watchdog#103, #426 | Bookkeeping: both close when the first real Job Order message after the switch is seen written. |
+| `t6-munki-repo` (repository setting) | The owner sets the repository to private. Decided on 2026-11-17, not done on that date. Reason: its data files are read by the tools, so they cannot hold placeholders. Until it is private, add no real value to it. After the change, links from the other repositories to its issues show only to people with access. |
 
 ### 2. Ready for an agent (`ready-for-agent`)
 
