@@ -14,6 +14,9 @@ The base package has no third-party runtime dependencies and includes
 
 Domain terms are defined in [`CONTEXT.md`](CONTEXT.md).
 
+Starting work after a pause? Read [`docs/handover-2026-11.md`](docs/handover-2026-11.md) first:
+what is live, the rules that were decided, and the issue for each piece of open work.
+
 ## Domain
 
 `t6.domain` models T6 once, as immutable dataclasses that do no I/O:
