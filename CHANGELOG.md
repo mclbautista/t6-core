@@ -4,7 +4,9 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
-`llm run` refused every watchdog extraction with rule `masking` because the template and schema held a Project name or code that is an ordinary word (#498).
+## [0.6.9] - 2026-11-17
+
+A patch for the watchdog switch: `llm run` refused every watchdog extraction with rule `masking` because the template and schema held a Project name or code that is an ordinary word (#498). No migration: the schema stays at 45.
 
 ### Added
 
