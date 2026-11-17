@@ -15,7 +15,7 @@ hold every owner decision of the last round.
 | t6 edge (webhooks, queue, taps) | `v0.6.8` | the VPS |
 | Reports (`t6-notion-reports`) | main at `b45f1d2` | the studio server |
 | Gateway (`t6-sixto-gateway`) | main at `f4ce92b` | the studio server |
-| Watchdog (`t6-jo-watchdog`) | image from `10399de`, switched on 2026-11-17 | the studio server |
+| Watchdog (`t6-jo-watchdog`) | image from `11cf91e`, with its own Notion and LLM keys. The switch to the API image (`10399de`) on 2026-11-17 was undone the same day: see #498 | the studio server |
 | Munki fleet tools (`t6-munki-repo`) | checkout at `bdac236`, no service | the operator Mac |
 | Drive web app (`t6-drives`) | pinned at t6 `v0.6.2` | the studio server |
 | Transcribe worker | paused by the owner on 2026-11-16 | not running |
@@ -33,6 +33,12 @@ Three host facts to know before any work on the hosts (read on 2026-11-17):
   2026-11-17 a plain `docker compose up -d server` read a forgotten override file and ran the
   0.3.11 image for 87 minutes. The file is renamed now. The record and the open follow-ups are in
   mclbautista/t6-netops#135.
+
+The watchdog is the one app that is not on the API on this date. Every extraction call of the API
+image was refused by `llm run` (rule `masking`), because the prompt and the schema hold words that
+are also registered Project names or codes. The check of the switch compared stored rows and made
+no LLM call, so it did not see this. A switch of an app that calls the LLM needs one live call
+through the API first. The fix is #498 and mclbautista/t6-jo-watchdog#159.
 
 ## Rules that were decided (do not reopen without the owner)
 
@@ -84,13 +90,14 @@ Checks before a pull request in this repository: `uv sync --locked`, `uv run --l
 | #374, #375 | Bay scanner fact check and its ADR: one bay to inspect, and the owner's yes. |
 | mclbautista/t6-sixto-gateway#97 | Telegram transport roll-out for Chat links and abang. |
 | mclbautista/t6-netops#71 | The restart check after a power cut. The owner restarts the studio server; the session records what comes back. |
-| mclbautista/t6-jo-watchdog#103, #426 | Bookkeeping: both close when the first real Job Order message after the switch is seen written. |
+| mclbautista/t6-jo-watchdog#103, #426 | The switch was undone on 2026-11-17 and waits for #498 and mclbautista/t6-jo-watchdog#159. After the fix: one live extraction through the API, a copy of the ledger, the owner's yes, then the switch. Both close when the first real Job Order message is seen written by the API image. |
 | `t6-munki-repo` (repository setting) | The owner sets the repository to private. Decided on 2026-11-17, not done on that date. Reason: its data files are read by the tools, so they cannot hold placeholders. Until it is private, add no real value to it. After the change, links from the other repositories to its issues show only to people with access. |
 
 ### 2. Ready for an agent (`ready-for-agent`)
 
 | Issue | Note |
 |---|---|
+| #498, mclbautista/t6-jo-watchdog#159 | **First in line.** `llm run` refuses a prompt or schema with an ordinary word that is also a registered Project name or code; the watchdog prompt also holds a registered example code and has no start check. A patch release (0.6.9), then the second switch of the watchdog. |
 | #376, #377, #379, #380, #381, #274 | Bay scanner (#18) and Timeline conflicts. All wait for the fact check #374. |
 | mclbautista/t6-munki-repo#20 | Munki recipe for the bay scan job. Waits for #18. |
 | #414 | A failed job can be dismissed (0.6.8) but not run again. |
@@ -124,6 +131,17 @@ Checks before a pull request in this repository: `uv sync --locked`, `uv run --l
 #178 (the shape of t6-core; read its state block first), #179 (LLM evals), #180 (Transcripts),
 #115 (consumer contract), #426 (apps onto the API), mclbautista/t6-netops#1 and #64.
 
+## Staff documents (drafts in the studio wiki, Status "For approval")
+
+| Document | For | State on 2026-11-17 |
+|---|---|---|
+| Operator manual | the operator and the maintainer | At 0.6.8. The watchdog rows describe the API image; correct them after the second switch. |
+| New Employee Handbook (nine chapters) | all staff | At 0.6.8. Three owner questions are open. |
+| Traffic Coordinator Manual (six chapters) | the standing cc of every Job Order | Written on 2026-11-17 and checked against the repositories. Six owner questions are open: what the role may do (attach a Project, link a Frame.io project, hold `bookings`), if it reads the operations topic, where staff ask for a Booking, and if Project Start and the PSR briefing belong in it. |
+
+None is published. The owner approves each one. The links and the open questions are in the
+operator's private notes.
+
 ## Where to read more
 
 - Verbs and what each returns: `README.md` and `docs/api-read-verbs.md`.
@@ -137,5 +155,6 @@ Checks before a pull request in this repository: `uv sync --locked`, `uv run --l
 1. Check what is live: `t6 health`, and the pin in `t6-netops`.
 2. Check what `main` holds after the last tag (`git log v0.6.8..main`). On 2026-11-17 it was
    docs only.
-3. Open the issue for the work, read its comments, and check its label.
-4. Ask the owner only what the issues do not answer, and ask in one batch.
+3. Check which watchdog image runs. If it is still `11cf91e`, #498 is not live yet.
+4. Open the issue for the work, read its comments, and check its label.
+5. Ask the owner only what the issues do not answer, and ask in one batch.
