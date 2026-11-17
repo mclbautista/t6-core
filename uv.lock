@@ -1334,7 +1334,7 @@ wheels = [
 
 [[package]]
 name = "t6"
-version = "0.6.8"
+version = "0.6.9"
 source = { editable = "." }
 dependencies = [
     { name = "jsonschema" },
