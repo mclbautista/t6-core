@@ -215,6 +215,7 @@ def _terms(registry: Registry, options: MaskOptions) -> list[_Term]:
         for project in registry.projects:
             name = project.name.strip()
             trivial = len(name) < 4 or name.casefold() in PROJECT_PLAIN_WORDS or is_ordinary(name)
+            # A Project named with an ordinary word is skipped under `skip_trivial` (via `trivial`) and under any `ordinary_words` other than "hidden" (via `plain`).
             plain = name.casefold() in PROJECT_PLAIN_WORDS or is_ordinary(name)
             if name and not (options.skip_trivial and trivial) and not (options.ordinary_words != "hidden" and plain):
                 add(_Term("project", project.name))

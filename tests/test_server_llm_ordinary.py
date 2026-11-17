@@ -66,6 +66,32 @@ class OrdinaryNameTests(unittest.TestCase):
         self.assertNotIn('zqx', json.dumps(body).lower())
         self.assertEqual(self.fake.calls, [])
 
+    def test_property_names_and_required_entries_are_checked(self) -> None:
+        for word in ('zqx', 'Beacon'):
+            for schema in (self.schema_with(**{word: {'type': 'string'}}),
+                           {'type': 'object', 'properties': {'summary': {'type': 'string'}}, 'required': ['summary', word]}):
+                with self.subTest(word=word, schema=schema):
+                    self.body['output_schema'] = schema
+                    body = self.call()
+                    self.assertEqual((body['rule'], body['reason']), ('masking', 'Unresolved registered names in the output schema'))
+        for word in ('timeline', 'SO'):
+            for schema in (self.schema_with(**{word: {'type': 'string', 'title': word.capitalize()}}),
+                           {'type': 'object', 'properties': {'summary': {'type': 'string'}}, 'required': ['summary', word]}):
+                with self.subTest(word=word, schema=schema):
+                    self.body['output_schema'] = schema
+                    self.assertEqual(self.call()['outcome'], 'done')
+
+    def test_a_pydantic_schema_with_a_field_named_after_an_ordinary_project_passes(self) -> None:
+        from pydantic import BaseModel
+
+        class Model(BaseModel):
+            summary: str
+            timeline: str
+
+        self.body['output_schema'] = Model.model_json_schema()
+        self.fake.reply('{"summary":"a","timeline":"b"}')
+        self.assertEqual(self.call()['outcome'], 'done')
+
     def test_a_non_ordinary_name_is_refused_even_when_a_trivial_term_sits_beside_it(self) -> None:
         self.body['prompt_template'] = 'so Harbour: {input}'
         self.assertEqual(self.call()['reason'], 'Unresolved registered names in the prompt template')

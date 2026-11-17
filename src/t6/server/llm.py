@@ -84,7 +84,7 @@ class LLMService:
         _, session = pseudonymize('', self.registry, options='names')
         _, name_check = pseudonymize('', self.registry, options=FIXED_TEXT)
         # The question, criteria and state keys are sent as written, so a registered name that is no ordinary word is refused; values are masked.
-        fixed = [('the question', [inputs.question]), ('the criteria', [*inputs.criteria.values()]), ('a state key', [*inputs.state])]
+        fixed = [('the question', [inputs.question]), ('the criteria', [*inputs.criteria, *inputs.criteria.values()]), ('a state key', [*inputs.state])]
         for part, found in fixed:
             if any(name_check.leaks(text) or withhold(text).text != text for text in found):
                 return Refused(rule='masking', reason=f'Unresolved registered names in {part}')
@@ -139,7 +139,7 @@ class LLMService:
         state = {'message': inputs.text} | ({'replied_to': inputs.reply_to_text} if inputs.reply_to_text is not None else {})
         state = {key: session.mask(withhold(value).text).text for key, value in state.items()}
         if any(session.leaks(text) for text in state.values()):
-            return Refused(rule='masking', reason='Unresolved registered names')
+            return Refused(rule='masking', reason='Unresolved registered names in the message')
         asked = self._ask_decisions(provider, DecisionsRequest(state, {candidate_key(0): Choice(rule.question, dict(rule.criteria))}), require_zdr)
         if isinstance(asked, Refused):
             return asked
@@ -233,7 +233,8 @@ class LLMService:
         schema_text = schema_bytes.decode()
         if name_check.leaks(inputs.prompt_template) or withhold(inputs.prompt_template).text != inputs.prompt_template:
             return Refused(rule='masking', reason='Unresolved registered names in the prompt template')
-        if name_check.leaks(inputs.output_schema) or withhold(schema_text).text != schema_text:
+        # The serialised text also holds the property names, which `leaks` does not read from a dict.
+        if name_check.leaks(inputs.output_schema) or name_check.leaks(schema_text) or withhold(schema_text).text != schema_text:
             return Refused(rule='masking', reason='Unresolved registered names in the output schema')
         if session.leaks(masked.text):
             return Refused(rule='masking', reason='Unresolved registered names in the masked input')

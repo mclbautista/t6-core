@@ -2078,7 +2078,7 @@ from the input: a registered Project name or code that is an ordinary word, or a
 trivial term (a Project name under four letters or a plain Project word, a code
 or alias of one character), is not a name there, in any case, so a field titled
 `Status` passes when a Project is called "status". A registered name that is no
-ordinary word is refused with rule `masking`. The reason names the part and
+ordinary word is refused with rule `masking`; the property names of the schema are checked too. A person's name or alias that is an ordinary word is still refused: only Project names, Project codes and name words are exempted. The reason names the part and
 never the word: `Unresolved registered names in the prompt template`, `... in the
 output schema` or `... in the masked input`. For `llm decide` the parts are `the
 question`, `the criteria`, `a state key`, `a state value` and `a candidate`. The
@@ -2130,8 +2130,7 @@ candidates. Send `task_name`, `state` (text values), `question` (exactly one
 The server masks `state` values and candidate names with one Session, keys the
 candidates `c0`, `c1` and so on, and returns `answers` in candidate order, each
 with `index`, `choice` and the `match`, `maybe` and `no` probabilities, plus
-`model`, `provider`, `tokens` and `zdr`. A registered name that is no ordinary word in `question` or
-`criteria` is refused with rule `masking`. The caller decides what is sure
+`model`, `provider`, `tokens` and `zdr`. A registered name that is no ordinary word in `question`, `criteria` (keys and values) or a `state` key is refused with rule `masking`. The caller decides what is sure
 enough. Without a top-level `decisions` key in the config file (`url`, `model`,
 `retention`, `api_key_env`) the verb is refused with rule `config`. Its retention
 floor is the `provider_min_retention` entry named `decisions`. Failures carry
