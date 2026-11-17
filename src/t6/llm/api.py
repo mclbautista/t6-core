@@ -29,6 +29,7 @@ class LLMRunInput(BaseModel):
     allow_projects: list[str] = []
     repair_quotes: bool = False
     restore: Literal['whole', 'per_field'] = 'whole'
+    dry_run: bool = False
 
 
 class LLMRunOutput(BaseModel):
@@ -44,6 +45,7 @@ class LLMRunOutput(BaseModel):
     repaired: bool = False
     unresolved: list[str] = []
     masked_output: Any = None
+    dry_run: bool = False
 
 
 

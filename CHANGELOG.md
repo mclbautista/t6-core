@@ -4,6 +4,20 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.9] - unreleased
+
+`llm run` refused every watchdog extraction with rule `masking` because the template and schema held a Project name or code that is an ordinary word (#498).
+
+### Added
+
+- `llm run` takes `dry_run: true` (#498): every check before the provider call runs, then the verb returns `done` with `output: null` and `dry_run: true`, and nothing is sent. A refusal is the same as a real call's. The audit record holds `dry_run: true`. An app calls it at start to prove its template and schema pass against the live registry.
+
+### Changed
+
+- The prompt template and output schema of `llm run`, and the question, criteria and state keys of `llm decide`, no longer refuse a registered name that is an ordinary word or a trivial term (a Project name under four letters or a plain Project word, a code or alias of one character), in any case. A name that is no ordinary word is still refused.
+- A masking refusal says which part it came from, for example `Unresolved registered names in the output schema`, and never the word.
+- Privacy: the `names` preset now leaves a Project name that is an ordinary word readable and hides an ordinary-word Project code only as written, capitalised or in capitals (what `strict` does for those two cases). The provider of `llm run`, `llm filter` and `llm decide` can now read ordinary-word Project names and codes that `names` used to hide. Person names, aliases, handles and IDs are unchanged, and masked reads still hide every registered name.
+
 ## [0.6.8] - 2026-11-17
 
 One round of fixes for what the live checks and the reviews of 0.6.5 to 0.6.7 found. No migration: the schema stays at 45.

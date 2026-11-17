@@ -21,7 +21,7 @@ from pydantic import ValidationError
 
 from t6.frameio.project_folders import LocalFrameioQueue, QueueFrameioWriter
 from t6.person import AUTO_ACTOR, PERMISSIONS, SERVICES, People
-from t6.privacy import Registry as PrivacyRegistry, Session, mask_reply
+from t6.privacy import MaskOptions, Registry as PrivacyRegistry, Session, mask_reply
 from t6.server.app import Request, Response, WebhookApp
 from t6.server.queue import MAIN_QUEUE
 from t6.registry.sqlite import _audit
@@ -238,7 +238,7 @@ class VerbAPI:
     def _mask_mcp(self, response: Response) -> Response:
         if self.privacy_registry is None:
             return self.refused('masking', 'Read privacy registry is not configured')
-        session = Session(self.privacy_registry)
+        session = Session(self.privacy_registry, options=MaskOptions())  # reads hide every registered name, as before
         try:
             return Response(response.status, mask_reply(session, response.body))
         except ValueError:
@@ -390,7 +390,7 @@ class VerbAPI:
         if self.privacy_registry is None:
             return Refused(rule='masking', reason='Read privacy registry is not configured')
         try:
-            return Done(result=mask_reply(Session(self.privacy_registry), outcome.model_dump(mode='json')['result']))
+            return Done(result=mask_reply(Session(self.privacy_registry, options=MaskOptions()), outcome.model_dump(mode='json')['result']))
         except ValueError:
             return Refused(rule='masking', reason='A client name occurs in an identifier')
 

@@ -8,6 +8,7 @@ from text and log lines.
 """
 
 from t6.privacy.masking import (
+    FIXED_TEXT,
     NAMES,
     PRESETS,
     STRICT,
@@ -28,6 +29,7 @@ from t6.privacy.withhold import MASKER_VERSION, WITHHELD, Withheld, withhold
 __all__ = [
     "REDACTED",
     "MASKER_VERSION",
+    "FIXED_TEXT",
     "NAMES",
     "PRESETS",
     "STRICT",
