@@ -20,7 +20,7 @@ from t6.llm.policy import RETENTIONS, DataPolicy, Retention
 from t6.llm.transport import Choice, Completion, DecisionsRequest, Message, OpenAIChat, Provider, ProviderError, ProviderTimeout, RateLimited
 from t6.llm.result import Reason
 from t6.verbs import Done, LLMDecideInput, LLMDecideOutput, LLMFilterInput, LLMFilterOutput, LLMRunInput, LLMRunOutput, Refused
-from t6.privacy import STRICT, Person, Project, Registry, Unresolved, pseudonymize, withhold
+from t6.privacy import FIXED_TEXT, STRICT, Person, Project, Registry, Unresolved, pseudonymize, withhold
 
 
 def _hash(value: bytes) -> str:
@@ -82,15 +82,18 @@ class LLMService:
         if refusal:
             return refusal
         _, session = pseudonymize('', self.registry, options='names')
-        _, name_check = pseudonymize('', self.registry, options='names')
-        # The question, criteria and state keys are sent as written, so they are checked strictly; values are masked.
-        fixed = [*inputs.state, inputs.question, *inputs.criteria.values()]
-        if any(name_check.leaks(text) or withhold(text).text != text for text in fixed):
-            return Refused(rule='masking', reason='Unresolved registered names')
+        _, name_check = pseudonymize('', self.registry, options=FIXED_TEXT)
+        # The question, criteria and state keys are sent as written, so a registered name that is no ordinary word is refused; values are masked.
+        fixed = [('the question', [inputs.question]), ('the criteria', [*inputs.criteria, *inputs.criteria.values()]), ('a state key', [*inputs.state])]
+        for part, found in fixed:
+            if any(name_check.leaks(text) or withhold(text).text != text for text in found):
+                return Refused(rule='masking', reason=f'Unresolved registered names in {part}')
         state = {key: session.mask(withhold(value).text).text for key, value in inputs.state.items()}
         names = [session.mask(withhold(name).text).text for name in inputs.candidates]
-        if any(session.leaks(text) for text in (*state.values(), *names)):
-            return Refused(rule='masking', reason='Unresolved registered names')
+        if any(session.leaks(text) for text in state.values()):
+            return Refused(rule='masking', reason='Unresolved registered names in a state value')
+        if any(session.leaks(text) for text in names):
+            return Refused(rule='masking', reason='Unresolved registered names in a candidate')
         request = DecisionsRequest(state, {
             candidate_key(i): Choice(inputs.question.replace('{candidate}', name), dict(inputs.criteria))
             for i, name in enumerate(names)})
@@ -136,7 +139,7 @@ class LLMService:
         state = {'message': inputs.text} | ({'replied_to': inputs.reply_to_text} if inputs.reply_to_text is not None else {})
         state = {key: session.mask(withhold(value).text).text for key, value in state.items()}
         if any(session.leaks(text) for text in state.values()):
-            return Refused(rule='masking', reason='Unresolved registered names')
+            return Refused(rule='masking', reason='Unresolved registered names in the message')
         asked = self._ask_decisions(provider, DecisionsRequest(state, {candidate_key(0): Choice(rule.question, dict(rule.criteria))}), require_zdr)
         if isinstance(asked, Refused):
             return asked
@@ -224,16 +227,26 @@ class LLMService:
         # `strict` hides ids as `[id]` for apps that restore them themselves; here the same session restores them, so a quoted line equals its source.
         options = replace(STRICT, id_restore='original') if inputs.masking_preset == 'strict' else inputs.masking_preset
         masked, session = pseudonymize(withhold(inputs.input_text).text, self.registry, allow=allow, options=options)
-        _, name_check = pseudonymize('', self.registry, options='names')
-        # The masked text and the reply are checked the way the caller's preset masks; the template and schema, strictly.
-        if (session.leaks(masked.text) or name_check.leaks(inputs.prompt_template)
-                or name_check.leaks(inputs.output_schema)
-                or withhold(inputs.prompt_template).text != inputs.prompt_template
-                or withhold(schema_bytes.decode()).text != schema_bytes.decode()):
-            return Refused(rule='masking', reason='Unresolved registered names')
+        # The template and schema are texts the app wrote: a name counts only when it is no ordinary word. The masked
+        # input and the reply are checked the way the caller's preset masks.
+        _, name_check = pseudonymize('', self.registry, options=FIXED_TEXT)
+        schema_text = schema_bytes.decode()
+        if name_check.leaks(inputs.prompt_template) or withhold(inputs.prompt_template).text != inputs.prompt_template:
+            return Refused(rule='masking', reason='Unresolved registered names in the prompt template')
+        # The serialised text also holds the property names, which `leaks` does not read from a dict.
+        if name_check.leaks(inputs.output_schema) or name_check.leaks(schema_text) or withhold(schema_text).text != schema_text:
+            return Refused(rule='masking', reason='Unresolved registered names in the output schema')
+        if session.leaks(masked.text):
+            return Refused(rule='masking', reason='Unresolved registered names in the masked input')
         # The template has exactly one substitution marker; no Python formatting is evaluated.
         if inputs.prompt_template.count('{input}') != 1:
             return Refused(rule='template', reason='Template must contain exactly one {input} marker')
+        if inputs.dry_run:
+            # Every check before the provider call has passed; nothing is sent.
+            meta['dry_run'] = True
+            return Done(result=LLMRunOutput(output=None, model=provider.model, provider=name,
+                        prompt_hash=_hash(prompt_bytes), schema_hash=_hash(schema_bytes),
+                        tokens={'prompt': 0, 'completion': 0, 'total': 0}, zdr=require_zdr, output_valid=True, failure=None, dry_run=True))
         prompt = inputs.prompt_template.replace('{input}', masked.text)
         messages: list[Message] = [{'role': 'system', 'content': 'Return JSON matching this schema: ' + schema_bytes.decode()}]
         for example in inputs.examples:

@@ -1294,10 +1294,15 @@ options)`). It takes a `MaskOptions` or a preset name.
 | `projects` | Project names and codes | yes | yes |
 | `ids` | any ID or link found in the text: Notion and t.me links, `tg://`, UUIDs, `@handles`, runs of 7+ digits | no | yes |
 | `id_restore` | an ID comes back as `"original"` text or as `"[id]"` | original | `[id]` |
-| `ordinary_words` | `"capitalised"`: an ordinary word that is a name word or Project code is hidden only as written capitalised or in capitals | `hidden` | `capitalised` |
+| `ordinary_words` | `"capitalised"`: an ordinary word that is a name word or Project code is hidden only as written capitalised or in capitals, and a Project name that is an ordinary word is not hidden. `"readable"`: an ordinary word is never a name | `capitalised` | `capitalised` |
 | `skip_trivial` | leave one-character aliases and codes, and Project names under 4 letters or ordinary words | no | yes |
 
-`names` is today's default. `strict` reproduces the notion-reports redactor.
+`names` is today's default. Since 0.6.9 it leaves a Project name that is an
+ordinary word readable ("Home") and hides an ordinary-word Project code only as
+written, capitalised or in capitals ("two" stays, "Two" and "TWO" go), which is
+what `strict` does for those two cases; `names` used to hide them in every case.
+Person names, aliases, handles and IDs under `names` are unchanged, and masked
+reads still hide every registered name. `strict` reproduces the notion-reports redactor.
 Registered IDs (`Registry.ids`) are hidden in both. `restore` fails closed on a
 placeholder it did not issue in both.
 
@@ -2068,6 +2073,32 @@ and an assistant turn (the masked JSON output), sent before the real user turn
 and masked with the same placeholders. An example `output` that does not match
 `output_schema` is refused with rule `schema`.
 
+The template and the schema are texts the app wrote, so they are checked apart
+from the input: a registered Project name or code that is an ordinary word, or a
+trivial term (a Project name under four letters or a plain Project word, a code
+or alias of one character), is not a name there, in any case, so a field titled
+`Status` passes when a Project is called "status". A registered name that is no
+ordinary word is refused with rule `masking`; the property names of the schema are checked too. A person's name or alias that is an ordinary word is still refused: only Project names, Project codes and name words are exempted. The reason names the part and
+never the word: `Unresolved registered names in the prompt template`, `... in the
+output schema` or `... in the masked input`. For `llm decide` the parts are `the
+question`, `the criteria`, `a state key`, `a state value` and `a candidate`. The
+reply that holds an unmasked name stays `Output contains unmasked registered names`.
+
+With the `names` preset the provider now reads a Project name that is an ordinary
+word, and an ordinary-word Project code written in lower case, in the input of
+`llm run`, `llm filter` and `llm decide`; `names` used to hide both. The leak
+check on the reply follows the same rule. Use `strict` or leave the Project out
+of the text when that is not acceptable.
+
+`dry_run: true` runs every check of a real call (size, schema, examples, provider
+and retention policy, `allow_projects`, all masking checks and the `{input}`
+marker) and then returns `done` without calling the provider: `output` is `null`,
+`dry_run` is `true`, the tokens are zero, and `model`, `provider`, the two hashes
+and `zdr` are those a real call would use. A refusal is the same as a real call's.
+The audit record is written and holds `dry_run: true`. An app calls it at start
+with its real template, schema and a harmless input text, to prove the live
+registry accepts them. There is no `t6` CLI command for `llm run`, so no flag.
+
 A refusal with rule `provider`, `policy` or `masking` carries `failure`, one of
 `timeout`, `api_error`, `leak` or `policy`; for a 429 it also carries
 `retry_after` in seconds when the provider sent one. Other verbs' refusals have
@@ -2099,8 +2130,7 @@ candidates. Send `task_name`, `state` (text values), `question` (exactly one
 The server masks `state` values and candidate names with one Session, keys the
 candidates `c0`, `c1` and so on, and returns `answers` in candidate order, each
 with `index`, `choice` and the `match`, `maybe` and `no` probabilities, plus
-`model`, `provider`, `tokens` and `zdr`. A registered name in `question` or
-`criteria` is refused with rule `masking`. The caller decides what is sure
+`model`, `provider`, `tokens` and `zdr`. A registered name that is no ordinary word in `question`, `criteria` (keys and values) or a `state` key is refused with rule `masking`. The caller decides what is sure
 enough. Without a top-level `decisions` key in the config file (`url`, `model`,
 `retention`, `api_key_env`) the verb is refused with rule `config`. Its retention
 floor is the `provider_min_retention` entry named `decisions`. Failures carry

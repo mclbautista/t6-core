@@ -65,21 +65,28 @@ class MaskOptions:
     more digits. Registered IDs (``Registry.ids``) are always hidden."""
     id_restore: Literal["original", "[id]"] = "original"
     """What a restored ID becomes: the original text, or the fixed text ``[id]``."""
-    ordinary_words: Literal["hidden", "capitalised"] = "hidden"
+    ordinary_words: Literal["hidden", "capitalised", "readable"] = "hidden"
     """``capitalised``: a name word or Project code that is an ordinary word is hidden only as written,
-    capitalised or in capitals, so "will" and "two" stay readable while "Will" and "TWO" are hidden."""
+    capitalised or in capitals, so "will" and "two" stay readable while "Will" and "TWO" are hidden. A
+    Project name that is an ordinary word ("Home") is not hidden at all. ``readable``: an ordinary word
+    is never a name, in any case; for fixed texts that the app writes and the provider reads."""
     skip_trivial: bool = False
     """Leave alone aliases and Project codes of one character, and Project names of under four letters
     or that are an ordinary word ("Home", "Live"), since they are far more often plain words."""
 
 
-NAMES = MaskOptions()
-"""Hide registered names, projects and IDs. The default."""
+NAMES = MaskOptions(ordinary_words="capitalised")
+"""Hide registered names, projects and IDs. The default. A Project name that is an ordinary word stays
+readable, and an ordinary-word Project code is hidden only as written, capitalised or in capitals."""
 
 STRICT = MaskOptions(
     name_words=True, ids=True, id_restore="[id]", ordinary_words="capitalised", skip_trivial=True
 )
 """The notion-reports redactor: also single name words and any ID or link in the text."""
+
+FIXED_TEXT = MaskOptions(ordinary_words="readable", skip_trivial=True)
+"""For texts the app writes and the provider reads (template, schema, question): a name counts only when it is
+not an ordinary word and not a trivial term. Not a preset a caller can choose."""
 
 PRESETS: dict[str, MaskOptions] = {"names": NAMES, "strict": STRICT}
 
@@ -172,6 +179,7 @@ class _Term:
 def _terms(registry: Registry, options: MaskOptions) -> list[_Term]:
     """The names to hide under ``options``. The first kind to claim a name keeps it: person, project, ID."""
     cautious = options.ordinary_words == "capitalised"
+    readable = options.ordinary_words == "readable"
     found: dict[str, _Term] = {}
 
     def add(term: _Term) -> None:
@@ -196,7 +204,8 @@ def _terms(registry: Registry, options: MaskOptions) -> list[_Term]:
         if options.name_words:
             for word in person.name.split():
                 if len(word) >= 3 and word.casefold() not in MONTH_WORDS and _key(word) != _key(person.name):
-                    words.append(_Term("person", word, loose=not (cautious and is_ordinary(word))))
+                    if not (readable and is_ordinary(word)):
+                        words.append(_Term("person", word, loose=not (cautious and is_ordinary(word))))
     # A partial word never weakens a full name, whatever order the people came in.
     full = {_key(t.name) for t in found.values()}
     for term in words:
@@ -206,10 +215,12 @@ def _terms(registry: Registry, options: MaskOptions) -> list[_Term]:
         for project in registry.projects:
             name = project.name.strip()
             trivial = len(name) < 4 or name.casefold() in PROJECT_PLAIN_WORDS or is_ordinary(name)
-            if name and not (options.skip_trivial and trivial):
+            # A Project named with an ordinary word is skipped under `skip_trivial` (via `trivial`) and under any `ordinary_words` other than "hidden" (via `plain`).
+            plain = name.casefold() in PROJECT_PLAIN_WORDS or is_ordinary(name)
+            if name and not (options.skip_trivial and trivial) and not (options.ordinary_words != "hidden" and plain):
                 add(_Term("project", project.name))
             code = (project.code or "").strip()
-            if code and not (options.skip_trivial and len(code) < 2):
+            if code and not (options.skip_trivial and len(code) < 2) and not (readable and is_ordinary(code)):
                 add(_Term("project", code, loose=not (cautious and is_ordinary(code))))
     for known in registry.ids:
         add(_Term("id", known))
