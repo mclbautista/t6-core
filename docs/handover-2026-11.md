@@ -22,6 +22,9 @@ hold every owner decision of the last round.
 | Bay calendars (Google) | five calendars, five channels, three editors, since 2026-11-17 | the studio server (API config) and the VPS (webhook route) |
 
 The deploy pin and the runbooks for the hosts are in the private repository `t6-netops`.
+`t6-munki-repo` is private since 2026-11-17, because its data files are read by the tools and
+cannot hold placeholders. Links from the other repositories to its issues show only to people
+with access.
 
 Three host facts to know before any work on the hosts (read on 2026-11-17):
 
@@ -91,7 +94,6 @@ Checks before a pull request in this repository: `uv sync --locked`, `uv run --l
 | mclbautista/t6-sixto-gateway#97 | Telegram transport roll-out for Chat links and abang. |
 | mclbautista/t6-netops#71 | The restart check after a power cut. The owner restarts the studio server; the session records what comes back. |
 | mclbautista/t6-jo-watchdog#103, #426 | The switch was undone on 2026-11-17 and waits for #498 and mclbautista/t6-jo-watchdog#159. After the fix: one live extraction through the API, a copy of the ledger, the owner's yes, then the switch. Both close when the first real Job Order message is seen written by the API image. |
-| `t6-munki-repo` (repository setting) | The owner sets the repository to private. Decided on 2026-11-17, not done on that date. Reason: its data files are read by the tools, so they cannot hold placeholders. Until it is private, add no real value to it. After the change, links from the other repositories to its issues show only to people with access. |
 
 ### 2. Ready for an agent (`ready-for-agent`)
 
