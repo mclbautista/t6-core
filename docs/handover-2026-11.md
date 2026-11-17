@@ -19,15 +19,20 @@ hold every owner decision of the last round.
 | Munki fleet tools (`t6-munki-repo`) | checkout at `bdac236`, no service | the operator Mac |
 | Drive web app (`t6-drives`) | pinned at t6 `v0.6.2` | the studio server |
 | Transcribe worker | paused by the owner on 2026-11-16 | not running |
+| Bay calendars (Google) | five calendars, five channels, three editors, since 2026-11-17 | the studio server (API config) and the VPS (webhook route) |
 
 The deploy pin and the runbooks for the hosts are in the private repository `t6-netops`.
 
-Two host facts to know before any work on the studio server (read on 2026-11-17):
+Three host facts to know before any work on the hosts (read on 2026-11-17):
 
 - After a reboot or a power cut nothing comes back by itself. Auto-login is off and nothing
   starts the container runtime, so a person (or an SSH session) must start it. The fix and the
   restart test are in mclbautista/t6-netops#71.
 - The deploy account on the studio server has no sudo. A restart of the machine needs the owner.
+- On the VPS, name the compose file in every command (`docker compose -f compose.yaml ...`). On
+  2026-11-17 a plain `docker compose up -d server` read a forgotten override file and ran the
+  0.3.11 image for 87 minutes. The file is renamed now. The record and the open follow-ups are in
+  mclbautista/t6-netops#135.
 
 ## Rules that were decided (do not reopen without the owner)
 
@@ -71,7 +76,7 @@ Checks before a pull request in this repository: `uv sync --locked`, `uv run --l
 |---|---|
 | #250 | Concern matching live run: the owner's go, a cost cap, real cases, the owner as reviewer. |
 | #253 | abang live check: the owner and one freelancer in one real group. |
-| #259, #260, #270, #271, #276 | Bay calendars: the Google set-up on the studio server, then four live checks. |
+| #276 | Bay calendars are live (#259, #260, #270, #271 closed). Checks 1 to 3 passed on 2026-11-17. Open: check 4 (a person with view access only tries to change a booking), and the recheck on 2026-11-21 that the five channels were renewed. Each editor adds the calendars to their own list once (`docs/deployment.md`). |
 | #263, #55 | Drive import: the drive custodian clears the exceptions and signs off. |
 | #226 | First recorded live PSR eval run. |
 | #213, #214 | Transcripts: live run and acceptance. They wait for the transcribe worker (paused). |
@@ -91,6 +96,7 @@ Checks before a pull request in this repository: `uv sync --locked`, `uv run --l
 | #414 | A failed job can be dismissed (0.6.8) but not run again. |
 | mclbautista/t6-jo-watchdog#158 | A refused API read is held like a timeout; `compare-raise` says why a row was not built. |
 | mclbautista/t6-netops#133 | 78 failed jobs in the VPS queue: read them, then dismiss. |
+| mclbautista/t6-netops#135 | After the old image on the VPS (2026-11-17): the runbook names the compose file, a check compares the running image with the pin, and 9 refused Frame.io events are looked up. |
 | #453 | Message filter for each Telegram chat and topic. Built; the count-first step and the switch are open. |
 | #362 | Refactor backlog from the Phase 3 review. Triage each line first. |
 | mclbautista/t6-sixto-gateway#87, #104 | Chat links transport; a DM reply to the PSR brief passed through to t6. |
