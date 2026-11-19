@@ -374,6 +374,8 @@ _MIGRATIONS = (
     ALTER TABLE concerns_new RENAME TO concerns"""),
     (45, False, """CREATE TABLE concern_listings (run_date TEXT NOT NULL, concern_id TEXT NOT NULL REFERENCES concerns(id), PRIMARY KEY (run_date, concern_id));
     ALTER TABLE concern_brief_messages ADD COLUMN brief_date TEXT"""),
+    # Every open's activity backfill looks up activity by audit_id; without this it scans activity once per audit row (#502).
+    (46, False, "CREATE INDEX IF NOT EXISTS activity_by_audit ON activity (audit_id)"),
 )
 
 
