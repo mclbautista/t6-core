@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.10] - 2026-11-19
+
+A patch for the registry lock on Sixto (#502). Migration 46 takes the schema from 45 to 46; it is not forward-only, so the 0.6.9 image still opens the database.
+
 ### Fixed
 
 - Opening a registry no longer holds the write lock for minutes on a large audit history (#502). Every open copies audit rows that have no activity row into `activity`, and its check scanned the whole `activity` table once per audit row, so each open took time quadratic in history and the API, `/health` and other workers waited on `database is locked`. Registry migration 46 adds the index `activity_by_audit` on `activity (audit_id)`; it only adds an index, so the previous release still opens the file. An index of that name made by hand before the upgrade is kept.
