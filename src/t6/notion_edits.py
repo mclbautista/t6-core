@@ -6,7 +6,7 @@ from typing import Any
 
 from t6.job_order import JobOrderStore
 from t6.preview import PreviewTokens
-from t6.person import People
+from t6.person import NOTION_ACTOR, People
 from t6.registry import normalize_page_id
 from t6.registry.sqlite import SqliteProjectRegistry, _open_review, _close_review
 from t6.verbs import Done, Preview, Refused
@@ -71,7 +71,7 @@ class NotionEdits:
             if verb == 'cancel':
                 values['reason'] = f'set in Notion by {editor}'
             key = 'notion:' + event + ':jo-status'
-            result = People(self.registry, self.orders.tokens).authorize(actor, 'coordinator') if person else Refused(rule='permission', reason='Notion editor is not bound to a Person')
+            result = People(self.registry, self.orders.tokens).authorize(actor, 'coordinator') if person or editor == NOTION_ACTOR else Refused(rule='permission', reason='Notion editor is not bound to a Person')
             if result is None:
                 result = self.orders.write(verb, values, actor=actor, idempotency_key=key, notion_editor=editor)
             if isinstance(result, Preview):
@@ -163,7 +163,7 @@ class NotionEdits:
         if verb:
             writes = ProjectWrites(self.registry, PreviewTokens('internal-notion-reconciliation'))
             key = 'notion:' + event + ':project-status'
-            result = People(self.registry, writes.tokens).authorize(actor, 'coordinator' if verb == 'archive' else 'operator') if person else Refused(rule='permission', reason='Notion editor is not bound to a Person')
+            result = People(self.registry, writes.tokens).authorize(actor, 'coordinator' if verb == 'archive' else 'operator') if person or editor == NOTION_ACTOR else Refused(rule='permission', reason='Notion editor is not bound to a Person')
             reason = f'set in Notion by {editor}' if verb == 'hold' else None
             if result is None:
                 result = writes.run(verb, project.id, reason, actor=actor, idempotency_key=key, notion_editor=editor)
