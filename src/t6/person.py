@@ -26,7 +26,8 @@ SERVICES = frozenset({'gateway', 'worker', 'reports', 'watchdog', 'munki', 'herm
 # can name them and `T6_API_SERVICE_PERMISSIONS` cannot grant them anything; their grants are fixed here.
 CALENDAR_ACTOR = 'google-calendar'  # inbound Google Calendar edits (#270): Google names no editor, calendar sharing is the check
 FRAMEIO_ACTOR = 'frameio'  # Frame.io events (#275): a file landing in a Deliverable's folder, a client viewing a share. It writes its own rows and runs no verb
-INTERNAL_ACTORS: Mapping[str, frozenset[str]] = {CALENDAR_ACTOR: frozenset({'bookings'}), FRAMEIO_ACTOR: frozenset()}
+NOTION_ACTOR = 'T6 Notion'  # edits made in Notion by the T6 integration itself: no Person is bound to it, so it may run the coordinator and operator verbs
+INTERNAL_ACTORS: Mapping[str, frozenset[str]] = {CALENDAR_ACTOR: frozenset({'bookings'}), FRAMEIO_ACTOR: frozenset(), NOTION_ACTOR: frozenset({'operator', 'coordinator'})}
 
 PERMISSIONS = frozenset({"operator", "coordinator", "bookings", "drives", "admin", "llm", "unmasked", "fleet", "minutes"})
 STAFF_RULE = "role:staff"

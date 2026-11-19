@@ -214,6 +214,26 @@ class NotionEditTests(SyncTestCase):
         self.assertEqual(edits.job_order('jo-page', {'status': 'Cancelled'}, ['status'], 'Ada', 'cancel', editor_id='user-1')['outcome'], 'accepted')
         self.assertIn('set in Notion by Ada', str(self.registry.audit(jo)[-1].after))
 
+    def test_t6_notion_integration_edits_without_a_person(self) -> None:
+        from t6.ids import EntityKind, T6Id
+        from t6.notion_edits import NotionEdits
+        from t6.job_order import JobOrderStore
+        from t6.preview import PreviewTokens
+        from t6.verbs import Preview, Done
+        page = self.page()
+        self.new('SHOW', page=page)
+        edits = NotionEdits(self.registry)
+        self.assertEqual(edits.project_status(page, 'Standby', 'T6 Notion', 'hold', 'bot-1')['outcome'], 'accepted')
+        store = JobOrderStore(self.registry, PreviewTokens('secret'))
+        values = {'fields': {'project_id': page, 'name': 'JO'}}
+        preview = store.write('raise', values, actor='setup', idempotency_key='raise')
+        assert isinstance(preview, Preview)
+        done = store.write('raise', values, actor='setup', idempotency_key='raise', confirm=preview.token)
+        assert isinstance(done, Done)
+        jo = done.result['jo_id']
+        self.registry.bind_entity('notion', 'jo-page', T6Id.parse(jo, EntityKind.JOB_ORDER), actor='setup')
+        self.assertEqual(edits.job_order('jo-page', {'status': 'Cancelled'}, ['status'], 'T6 Notion', 'cancel', editor_id='bot-1')['outcome'], 'accepted')
+
     def test_flag_notification_is_delivered_to_operators(self) -> None:
         from unittest.mock import MagicMock
         from t6.worker.client import WorkerJob
