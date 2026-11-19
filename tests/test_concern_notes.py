@@ -8,7 +8,7 @@ from t6.domain.studio_time import MANILA
 from t6.ids import EntityKind, T6Id
 from t6.preview import PreviewTokens
 from t6.registry import Registered
-from t6.verbs import Done, Preview
+from t6.verbs import Done, Preview, Refused
 from test_person import MemoryRegistry
 
 
@@ -174,7 +174,7 @@ class ConcernAutoScanTests(ConcernNotesTests):
         from t6.server.__main__ import concern_autoscan_seconds
         self.assertIsNone(concern_autoscan_seconds({}))
         self.assertIsNone(concern_autoscan_seconds({'T6_CONCERN_AUTOSCAN': '0'}))
-        self.assertEqual(concern_autoscan_seconds({'T6_CONCERN_AUTOSCAN': '1'}), 900.0)
+        self.assertEqual(concern_autoscan_seconds({'T6_CONCERN_AUTOSCAN': '1'}), 86400.0)  # once a day
         self.assertEqual(concern_autoscan_seconds({'T6_CONCERN_AUTOSCAN': 'on', 'T6_CONCERN_AUTOSCAN_SECONDS': '5'}), 60.0)
 
     def test_scan_reads_each_projects_notes_and_skips_projects_without_a_coordinator(self) -> None:
@@ -193,3 +193,26 @@ class ConcernAutoScanTests(ConcernNotesTests):
             self.assertEqual(api.scan_concerns(), 1)
         self.assertEqual(len(self.store.changes(self.project, '2026-01-01')), 1)
         self.assertEqual(err.getvalue(), 't6.server: concern scan projects=1 raised=1 continued=0 announced=0\n')
+
+    def test_a_refused_llm_run_stops_the_whole_scan_after_one_call(self) -> None:
+        # A refusal of the request itself holds for every line; re-sending each line made 51k refused calls on Sixto (#504).
+        from unittest.mock import patch
+        import contextlib
+        import io
+        api = self.api()
+        with self.registry._transaction() as db:
+            db.execute("UPDATE projects SET rotation = 'in' WHERE id = ?", (self.project,))
+        notes = Done(result={'lines': [{'text': f'Waiting on client {n}', 'as_of': '2026-11-01'} for n in range(5)]})
+        calls: list[object] = []
+
+        class Refusing:
+            def run(self, inputs: object, *, actor: str, registry: object) -> Refused:
+                calls.append(inputs)
+                return Refused(rule='masking', reason='Unresolved registered names in the prompt template')
+        api.llm_service = Refusing()
+        err = io.StringIO()
+        with patch.object(api, '_coordinators', return_value={'coordinator'}), patch.object(api, '_typed_read', return_value=notes), contextlib.redirect_stderr(err):
+            self.assertEqual(api.scan_concerns(), 0)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(err.getvalue(), 't6.server: concern scan stopped: llm run refused rule=masking projects=0\n')
+        self.assertEqual(self.store.changes(self.project, '2026-01-01'), [])

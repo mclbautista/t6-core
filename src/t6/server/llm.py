@@ -50,7 +50,9 @@ class LLMService:
         with registry._transaction() as db:
             db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)',
                        (actor, 'llm_run', actor, time.time(), None,
-                        json.dumps({'outcome': outcome.outcome, **meta})))
+                        json.dumps({'outcome': outcome.outcome, **meta,
+                                    # A refusal's rule and failure class are fixed words, never caller text.
+                                    **({'refused_rule': outcome.rule, 'failure': outcome.failure} if isinstance(outcome, Refused) else {})})))
         return outcome
 
     def decide(self, inputs: LLMDecideInput, *, actor: str, registry: Any) -> Done | Refused:

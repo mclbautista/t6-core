@@ -322,7 +322,7 @@ class VerbAPI:
             else:
                 from t6.verbs import ProjectNotesInput
                 from t6.concern import ConcernStore
-                from t6.concern_task import classify
+                from t6.concern_task import ClassifyRefused, classify
                 notes = self._typed_read('project', 'notes', ProjectNotesInput(project=inputs.project)) if inputs.owner in self._coordinators(inputs.project) else Refused(rule='owner', reason='Owner must be a Project coordinator')
                 if isinstance(notes, Done):
                     try:
@@ -330,6 +330,8 @@ class VerbAPI:
                         outcome = Done(result={'project': inputs.project})
                     except ValueError:
                         outcome = Refused(rule='project', reason='Project and active coordinator are required')
+                    except ClassifyRefused as refused:
+                        outcome = Refused(rule=refused.rule, reason='llm run refused the classification')
                 else:
                     outcome = notes
         elif (entry.noun, entry.verb) == ('llm', 'run'):
@@ -802,7 +804,7 @@ class VerbAPI:
     def scan_concerns(self) -> int:
         """Scan the PM Notes of every Project in rotation for new Concern evidence; returns how many were scanned."""
         from t6.concern import ConcernStore
-        from t6.concern_task import classify
+        from t6.concern_task import ClassifyRefused, classify
         from t6.registry import Rotation
         from t6.verbs import ProjectNotesInput
         if self.llm_service is None:
@@ -820,6 +822,9 @@ class VerbAPI:
                 changes = {name: count + done[name] for name, count in changes.items()}
             except ValueError:
                 continue
+            except ClassifyRefused as refused:
+                print(f't6.server: concern scan stopped: llm run refused rule={refused.rule} projects={scanned}', file=sys.stderr, flush=True)  # rule only: no text
+                return scanned
         print(f't6.server: concern scan projects={scanned} ' + ' '.join(f'{name}={count}' for name, count in changes.items()), file=sys.stderr, flush=True)  # counts only: no text
         return scanned
 

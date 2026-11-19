@@ -173,6 +173,12 @@ class LLMAPITests(unittest.TestCase):
         audit = self.audit()
         self.assertEqual(audit, {'outcome': 'done', 'provider': 'fake', 'zdr': True, 'allow_projects': 0})
 
+    def test_a_refused_audit_row_names_the_rule_and_failure_and_no_text(self) -> None:
+        # Without the rule, 51k refused rows on Sixto could not say why they were refused (#504).
+        self.body.update(prompt_template='Ask Jane Doe: {input}')
+        self.call()
+        self.assertEqual(self.audit(), {'outcome': 'refused', 'provider': 'fake', 'zdr': True, 'allow_projects': 0, 'refused_rule': 'masking', 'failure': None})
+
     def test_other_refusals_have_no_failure_keys(self) -> None:
         self.api.people.service_permissions = {}
         body = self.call()

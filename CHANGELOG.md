@@ -4,6 +4,12 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Changed
+
+- The automatic PM Notes scan (`T6_CONCERN_AUTOSCAN`) runs once a day by default instead of every 15 minutes (`T6_CONCERN_AUTOSCAN_SECONDS` now defaults to `86400`); the first scan still runs at start (#504).
+- A scan stops at the first `llm run` refusal and logs one counts-only line with the rule (`t6.server: concern scan stopped: llm run refused rule=...`). `concern scan` returns that refusal. Before, every PM Notes line was sent again on every scan: on Sixto 51k refused calls in two days (#504).
+- The audit row of a refused `llm run` holds `refused_rule` and `failure` (fixed words, never text), so a refusal can be traced from the data (#504).
+
 ## [0.6.10] - 2026-11-19
 
 A patch for the registry lock on Sixto (#502). Migration 46 takes the schema from 45 to 46; it is not forward-only, so the 0.6.9 image still opens the database.

@@ -138,7 +138,7 @@ that the edge route file and the API need.
 | `T6_REGISTRY_DB` | Project registry database path, default `t6-registry.sqlite` |
 | `T6_CONCERN_AUTOSCAN` | Set to `1` to scan PM Notes for Concerns automatically in the API server. Off by default; needs the LLM service. |
 | `T6_CONCERN_OBSERVE_CLOSES` | Set to `1` to let `concern observe` close a Concern its run did not find. Off by default: a run closes nothing. |
-| `T6_CONCERN_AUTOSCAN_SECONDS` | Seconds between automatic scans, default `900`, minimum `60` |
+| `T6_CONCERN_AUTOSCAN_SECONDS` | Seconds between automatic scans, default `86400` (once a day; the first scan runs at start), minimum `60`. A scan stops at the first `llm run` refusal and logs its rule |
 | `T6_OPERATOR_IDS` | Telegram user IDs allowed to tap operator cards and send `/project`, comma separated; the first receives the cards core starts, and a `/project` card goes to whoever sent it. Unset turns operator actions off |
 | `T6_STANDING_CC` | A Contact page ID, added to the cc of every Job Order (`t6.domain.studio_people.standing_cc`). Unset means none |
 | `T6_OPERATOR_DB`, `T6_OPERATOR_TTL_SECONDS` | operator action database, default `t6-operator.sqlite`; how long a card stays live, default 7 days |

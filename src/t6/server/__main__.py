@@ -35,7 +35,7 @@ def concern_autoscan_seconds(environ: Mapping[str, str]) -> float | None:
     """Seconds between automatic PM Notes scans, or None when the scan is off (the default)."""
     if environ.get("T6_CONCERN_AUTOSCAN", "").strip().lower() not in {"1", "true", "on", "yes"}:
         return None
-    return max(60.0, float(environ.get("T6_CONCERN_AUTOSCAN_SECONDS", "900")))
+    return max(60.0, float(environ.get("T6_CONCERN_AUTOSCAN_SECONDS", "86400")))
 
 
 def _autoscan(api: VerbAPI, seconds: float) -> None:
