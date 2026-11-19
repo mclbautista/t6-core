@@ -4,6 +4,14 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.12] - 2026-11-19
+
+The T6 Notion integration can edit without a bound Person (#509). No migration: the schema stays at 46.
+
+### Fixed
+
+- Notion edits made by the T6 Notion integration no longer need a bound Person (#509).
+
 ## [0.6.11] - 2026-11-19
 
 The Concern scan stops flooding `llm run` (#504). No migration: the schema stays at 46.
