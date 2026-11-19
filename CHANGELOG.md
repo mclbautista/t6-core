@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Fixed
+
+- Opening a registry no longer holds the write lock for minutes on a large audit history (#502). Every open copies audit rows that have no activity row into `activity`, and its check scanned the whole `activity` table once per audit row, so each open took time quadratic in history and the API, `/health` and other workers waited on `database is locked`. Registry migration 46 adds the index `activity_by_audit` on `activity (audit_id)`; it only adds an index, so the previous release still opens the file. An index of that name made by hand before the upgrade is kept.
+
 ## [0.6.9] - 2026-11-17
 
 A patch for the watchdog switch: `llm run` refused every watchdog extraction with rule `masking` because the template and schema held a Project name or code that is an ordinary word (#498). No migration: the schema stays at 45.
