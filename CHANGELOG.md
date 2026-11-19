@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.11] - 2026-11-19
+
+The Concern scan stops flooding `llm run` (#504). No migration: the schema stays at 46.
+
 ### Changed
 
 - The automatic PM Notes scan (`T6_CONCERN_AUTOSCAN`) runs once a day by default instead of every 15 minutes (`T6_CONCERN_AUTOSCAN_SECONDS` now defaults to `86400`); the first scan still runs at start (#504).
