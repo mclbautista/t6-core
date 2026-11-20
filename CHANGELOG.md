@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.13] - 2026-11-20
+
+`machine edit` edits approved Bays properties (#531). No migration: the schema stays at 46.
+
 ### Added
 
 - Verb `machine edit` and permission `bays_edit` (#531). It edits the Bays properties on an owner-approved list (LAN IP Address, Hostname, Device UIID, Has Paragon, Adobe email, Username, Avid System ID, Avid Activation ID, OS Version, Paragon License) with preview, then confirm. A property not on the list or a value of the wrong type fails the whole call; a blank or left-out value means no change; nothing is cleared; no row is created. Each applied row is audited as `machine_edit` with old and new values. `bays_edit` allows `machine edit` and nothing else. Typed client method `machine_edit`, and `t6.fleet.Fleet.edit`.
