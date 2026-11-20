@@ -91,20 +91,22 @@ def run(args: argparse.Namespace, open_notion: Callable[[str], NotionClient]) ->
         source_key = {"contacts": "contacts", "projects": "projects"}[args.command]
         if source_key not in sources:
             return _fail(f"--data-sources has no '{source_key}' entry")
-        with open_notion(token) as client:
-            if args.command == "contacts":
-                result = _contacts_find(client, sources[source_key], args.mention, args.mentions, args.suggest, args.prefer_telegram)
-                if getattr(args, "person_lookup", False):
-                    from t6.verbs import _people
-                    try:
-                        people = _people()
-                    except ValueError:
-                        people = None
-                    for found in result.get("results", [result]):
-                        for item in ([found["match"]] if found["match"] else []) + found["candidates"]:
-                            item["t6_id"] = people.registry.bound_entity("notion", item["id"]) if people else None
-            else:
-                result = _projects_resolve(client, sources[source_key], args.text, args.registry_db, args.in_text)
+        from t6.notion.source import NotionSource
+
+        notion = NotionSource(lambda: open_notion(token))
+        if args.command == "contacts":
+            result = _contacts_find(notion, sources[source_key], args.mention, args.mentions, args.suggest, args.prefer_telegram)
+            if getattr(args, "person_lookup", False):
+                from t6.verbs import _people
+                try:
+                    people = _people()
+                except ValueError:
+                    people = None
+                for found in result.get("results", [result]):
+                    for item in ([found["match"]] if found["match"] else []) + found["candidates"]:
+                        item["t6_id"] = people.registry.bound_entity("notion", item["id"]) if people else None
+        else:
+            result = _projects_resolve(notion, sources[source_key], args.text, args.registry_db, args.in_text)
     except (OSError, ValueError, ImportError, NotionError) as error:
         return _fail(str(error))
     return _print(result)

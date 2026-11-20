@@ -191,10 +191,9 @@ class VerbAPI:
                 signing = os.environ.get('T6_PREVIEW_SIGNING_KEY')
                 if not self.data_sources.get('external_links'):
                     return self.refused('config', 'There is no External Links source to migrate from')
-                if not token or not signing:
+                if not token and not self._has_custom_source() or not signing:
                     return self.refused('config', 'Notion and preview configuration are required')
-                with self.open_notion(token) as client:
-                    rows = read_external_links_once_for_migration(client, self.data_sources['external_links'])
+                rows = read_external_links_once_for_migration(self.notion_source, self.data_sources['external_links'])
                 result = MediaStore(self.people.registry, self.people.tokens).migrate_write(
                     rows, actor=actor, idempotency_key=key or inputs.idempotency_key, confirm=inputs.confirm)
                 if self.tap_app:  # the route is outside the verb registry; what follows a verb follows it too
@@ -329,10 +328,9 @@ class VerbAPI:
                 try:
                     token = os.environ.get(TOKEN_VARIABLE)
                     source = self.data_sources.get('package_specs')
-                    if token and source:
-                        with self.open_notion(token) as client:
-                            store.specs = PackageSpecReader(client, source)
-                            outcome = store.deliver(inputs.model_dump(exclude={'idempotency_key', 'confirm'}), actor=actor, idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+                    if (token or self._has_custom_source()) and source:
+                        store.specs = PackageSpecReader(self.notion_source, source, freshness='live')
+                        outcome = store.deliver(inputs.model_dump(exclude={'idempotency_key', 'confirm'}), actor=actor, idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
                     else:
                         outcome = store.deliver(inputs.model_dump(exclude={'idempotency_key', 'confirm'}), actor=actor, idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
                 except (OSError, ValueError, KeyError, NotionError) as error:
@@ -390,7 +388,7 @@ class VerbAPI:
             from dataclasses import replace
             from t6.verbs import jo_write
             source = self.data_sources.get('job_orders')
-            outcome = invoke(replace(entry, handler=lambda i, o: jo_write(i, o, source)), inputs, actor=actor, people=self.people, open_notion=self.open_notion)
+            outcome = invoke(replace(entry, handler=lambda i, o: jo_write(i, o, source)), inputs, actor=actor, people=self.people, open_notion=self.open_notion, notion_source=self.notion_source)
         elif (entry.noun, entry.verb) == ('person', 'set-telegram') and (page := self._contact_page(inputs.person_id)):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._person_set_telegram(inputs, actor, page)
@@ -403,7 +401,7 @@ class VerbAPI:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._legacy_read(entry.noun, entry.verb, inputs)
         else:
-            outcome = invoke(entry, inputs, actor=actor, people=self.people, open_notion=self.open_notion, frameio=self.frameio)
+            outcome = invoke(entry, inputs, actor=actor, people=self.people, open_notion=self.open_notion, frameio=self.frameio, notion_source=self.notion_source)
         if entry.noun == 'project' and entry.verb in ('link-chat', 'unlink-chat') and isinstance(outcome, Preview):
             if self.tap_app and self.tap_app._operator and outcome.plan.get('approval_id'):
                 from t6.approval import Approvals
@@ -526,8 +524,9 @@ class VerbAPI:
         if holder:
             return Refused(rule='telegram_id', reason=f'Telegram ID is held by {holder[0]}')
         try:
-            with self.open_notion(os.environ['T6_NOTION_TOKEN']) as client:
-                saved = Contacts(client, self.data_sources['contacts']).set_telegram_user_id(str(UUID(page)) if len(page) == 32 else page, inputs.telegram_id)
+            if not self._has_custom_source() and 'T6_NOTION_TOKEN' not in os.environ:
+                raise KeyError('T6_NOTION_TOKEN')
+            saved = Contacts(self.notion_source, self.data_sources['contacts']).set_telegram_user_id(str(UUID(page)) if len(page) == 32 else page, inputs.telegram_id)
         except (ValueError, KeyError, OSError, NotionError) as error:
             return Refused(rule='input', reason=str(error))
         if isinstance(saved, Rejected):
@@ -575,7 +574,8 @@ class VerbAPI:
 
         try:
             source = self.data_sources['contacts']
-            token = os.environ['T6_NOTION_TOKEN']
+            if not self._has_custom_source() and 'T6_NOTION_TOKEN' not in os.environ:
+                raise KeyError('T6_NOTION_TOKEN')
             with registry._transaction() as db:
                 previous = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key=?', (key,)).fetchone()
                 if previous and previous[0] != fingerprint:
@@ -594,8 +594,7 @@ class VerbAPI:
                     return self.people.tokens.create('person create', actor, values, {'action': 'create', **values})
                 db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
                 db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps({'pending': True, 'reason': 'The Contacts page may have been created'})))
-            with self.open_notion(token) as client:
-                saved = Contacts(client, source).create(name, telegram_user_id=inputs.telegram_id, telegram_handle=handle, note=note)
+            saved = Contacts(self.notion_source, source).create(name, telegram_user_id=inputs.telegram_id, telegram_handle=handle, note=note)
             if isinstance(saved, Rejected):
                 # Notion made no page, so the key is free for another try.
                 with registry._transaction() as db:
@@ -665,54 +664,55 @@ class VerbAPI:
 
         try:
             source = self.data_sources['meeting_notes']
-            token = os.environ['T6_NOTION_TOKEN']
-            with self.open_notion(token) as client:
-                notes = MeetingNotes(client, source)
-                if verb == 'create':
-                    day = date.fromisoformat(inputs.meeting_date)
-                    pages = []
-                    for ref in inputs.project_ids:
-                        found = refs.pages(ref)
-                        if not found:
-                            return Refused(rule='project', reason=f'Project {ref} not found')
-                        pages.append(found[0])
-                    saved = notes.create(title=inputs.title, meeting_date=day, project_ids=pages, attendee_ids=inputs.attendee_ids, blocks=notion_blocks(inputs.blocks))
-                    if isinstance(saved, Rejected):
-                        return Refused(rule='notion', reason=str(saved))
-                    if isinstance(saved, WriteAmbiguous):
-                        if saved.page_id:
-                            audit('meeting_note_create', saved.page_id)
-                        return Ambiguous(candidates=[{'pending': True, 'reason': str(saved), 'page_id': saved.page_id}])
-                    audit('meeting_note_create', saved.page_id)
-                    return done(saved)
-                page = client.retrieve_page(inputs.note)
-                if normalize_page_id((page.get('parent') or {}).get('data_source_id') or '') != normalize_page_id(source):
-                    return Refused(rule='input', reason='Not a Meeting Notes page')
-                note = note_from_page(page)
-                if verb == 'mark-sent':
-                    if note.sent_at is not None:
-                        return done(note)
-                    when = inputs.at or datetime.now(timezone(timedelta(hours=8)))
-                    saved = notes.mark_sent(note.page_id, when)
-                    if isinstance(saved, Rejected):
-                        return Refused(rule='notion', reason=str(saved))
-                    if isinstance(saved, WriteAmbiguous):
-                        return Ambiguous(candidates=[{'pending': True, 'reason': str(saved), 'page_id': note.page_id}])
-                    audit('meeting_note_sent', note.page_id)
-                    return done(saved)
+            if not self._has_custom_source() and 'T6_NOTION_TOKEN' not in os.environ:
+                raise KeyError('T6_NOTION_TOKEN')
+            notion = self.notion_source
+            notes = MeetingNotes(notion, source)
+            if verb == 'create':
+                day = date.fromisoformat(inputs.meeting_date)
+                pages = []
+                for ref in inputs.project_ids:
+                    found = refs.pages(ref)
+                    if not found:
+                        return Refused(rule='project', reason=f'Project {ref} not found')
+                    pages.append(found[0])
+                saved = notes.create(title=inputs.title, meeting_date=day, project_ids=pages, attendee_ids=inputs.attendee_ids, blocks=notion_blocks(inputs.blocks))
+                if isinstance(saved, Rejected):
+                    return Refused(rule='notion', reason=str(saved))
+                if isinstance(saved, WriteAmbiguous):
+                    if saved.page_id:
+                        audit('meeting_note_create', saved.page_id)
+                    return Ambiguous(candidates=[{'pending': True, 'reason': str(saved), 'page_id': saved.page_id}])
+                audit('meeting_note_create', saved.page_id)
+                return done(saved)
+            page = notion.retrieve_page(inputs.note, freshness='live')
+            if normalize_page_id((page.get('parent') or {}).get('data_source_id') or '') != normalize_page_id(source):
+                return Refused(rule='input', reason='Not a Meeting Notes page')
+            note = note_from_page(page)
+            if verb == 'mark-sent':
                 if note.sent_at is not None:
-                    return Refused(rule='sent', reason='The note is already sent')
-                if verb == 'trash':
-                    notes.trash(note.page_id)
-                    audit('meeting_note_trash', note.page_id)
-                else:
-                    if page.get('in_trash') or page.get('archived'):
-                        return Refused(rule='sent', reason='The note is in the trash')
-                    try:
-                        notes.append(note.page_id, notion_blocks(inputs.blocks))
-                    finally:
-                        audit('meeting_note_append', note.page_id)  # a refused later chunk leaves the earlier ones written
-                return done(note_from_page(client.retrieve_page(note.page_id)))
+                    return done(note)
+                when = inputs.at or datetime.now(timezone(timedelta(hours=8)))
+                saved = notes.mark_sent(note.page_id, when)
+                if isinstance(saved, Rejected):
+                    return Refused(rule='notion', reason=str(saved))
+                if isinstance(saved, WriteAmbiguous):
+                    return Ambiguous(candidates=[{'pending': True, 'reason': str(saved), 'page_id': note.page_id}])
+                audit('meeting_note_sent', note.page_id)
+                return done(saved)
+            if note.sent_at is not None:
+                return Refused(rule='sent', reason='The note is already sent')
+            if verb == 'trash':
+                notes.trash(note.page_id)
+                audit('meeting_note_trash', note.page_id)
+            else:
+                if page.get('in_trash') or page.get('archived'):
+                    return Refused(rule='sent', reason='The note is in the trash')
+                try:
+                    notes.append(note.page_id, notion_blocks(inputs.blocks))
+                finally:
+                    audit('meeting_note_append', note.page_id)  # a refused later chunk leaves the earlier ones written
+            return done(note_from_page(notion.retrieve_page(note.page_id, freshness='live')))
         except (ValueError, KeyError, OSError, NotionError) as error:
             return Refused(rule='input', reason=str(error))
 
@@ -727,7 +727,8 @@ class VerbAPI:
             return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
         try:
             source = self.data_sources['bays']
-            token = os.environ['T6_NOTION_TOKEN']
+            if not self._has_custom_source() and 'T6_NOTION_TOKEN' not in os.environ:
+                raise KeyError('T6_NOTION_TOKEN')
             if verb == 'sync':
                 values = inputs.model_dump(mode='json', exclude={'confirm'})
                 nonce = self.people.tokens.verify(inputs.confirm, 'machine sync', actor, values) if inputs.confirm else None
@@ -739,21 +740,20 @@ class VerbAPI:
                         return Refused(rule='token_used', reason='Preview token has already been used')
                     if nonce:
                         db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
-            with self.open_notion(token) as client:
-                fleet = Fleet(client, source)
-                if verb == 'list':
-                    return Done(result={'machines': [asdict(machine) for machine in fleet.machines()]})
-                results = []
-                for facts_item, found in zip(facts, fleet.sync(facts, apply=nonce is not None), strict=True):
-                    written = found.written
-                    results.append(MachineSyncResult(
-                        name=found.name, status=found.status, page_id=found.page_id,
-                        changes=[MachineFactChange(fact=change.fact, old=change.old, new=change.new) for change in found.changes],
-                        skipped=[MachineFactSkipped(fact=fact, reason='unknown' if getattr(facts_item, fact) in (None, '') else 'stale') for fact in found.skipped],
-                        written=None if written is None else 'rejected' if isinstance(written, Rejected) else 'ambiguous' if isinstance(written, WriteAmbiguous) else 'saved',
-                        detail=str(written) if isinstance(written, (Rejected, WriteAmbiguous)) else None))
-                plan = {'machines': [result.model_dump(mode='json') for result in results]}
-                return self.people.tokens.create('machine sync', actor, values, plan) if nonce is None else Done(result=plan)
+            fleet = Fleet(self.notion_source, source)
+            if verb == 'list':
+                return Done(result={'machines': [asdict(machine) for machine in fleet.machines()]})
+            results = []
+            for facts_item, found in zip(facts, fleet.sync(facts, apply=nonce is not None), strict=True):
+                written = found.written
+                results.append(MachineSyncResult(
+                    name=found.name, status=found.status, page_id=found.page_id,
+                    changes=[MachineFactChange(fact=change.fact, old=change.old, new=change.new) for change in found.changes],
+                    skipped=[MachineFactSkipped(fact=fact, reason='unknown' if getattr(facts_item, fact) in (None, '') else 'stale') for fact in found.skipped],
+                    written=None if written is None else 'rejected' if isinstance(written, Rejected) else 'ambiguous' if isinstance(written, WriteAmbiguous) else 'saved',
+                    detail=str(written) if isinstance(written, (Rejected, WriteAmbiguous)) else None))
+            plan = {'machines': [result.model_dump(mode='json') for result in results]}
+            return self.people.tokens.create('machine sync', actor, values, plan) if nonce is None else Done(result=plan)
         except (ValueError, KeyError, OSError, NotionError, FleetSafetyError) as error:
             return Refused(rule='input', reason=str(error))
 
@@ -767,7 +767,8 @@ class VerbAPI:
             return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
         try:
             source = self.data_sources['bays']
-            token = os.environ['T6_NOTION_TOKEN']
+            if not self._has_custom_source() and 'T6_NOTION_TOKEN' not in os.environ:
+                raise KeyError('T6_NOTION_TOKEN')
             edits = [MachineEdit(names=tuple(machine.names), values=machine.values) for machine in inputs.machines]  # refuses an unlisted property or a wrong type before any read
             values = inputs.model_dump(mode='json', exclude={'confirm'})
             nonce = self.people.tokens.verify(inputs.confirm, 'machine edit', actor, values) if inputs.confirm else None
@@ -779,14 +780,13 @@ class VerbAPI:
                 if nonce:
                     db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
             results = []
-            with self.open_notion(token) as client:
-                for found in Fleet(client, source).edit(edits, apply=nonce is not None):
-                    written = found.written
-                    results.append(MachineEditResult(
-                        name=found.name, status=found.status, page_id=found.page_id,
-                        changes=[MachineFactChange(fact=change.fact, old=change.old, new=change.new) for change in found.changes],
-                        written=None if written is None else 'rejected' if isinstance(written, Rejected) else 'ambiguous' if isinstance(written, WriteAmbiguous) else 'saved',
-                        detail=str(written) if isinstance(written, (Rejected, WriteAmbiguous)) else None))
+            for found in Fleet(self.notion_source, source).edit(edits, apply=nonce is not None):
+                written = found.written
+                results.append(MachineEditResult(
+                    name=found.name, status=found.status, page_id=found.page_id,
+                    changes=[MachineFactChange(fact=change.fact, old=change.old, new=change.new) for change in found.changes],
+                    written=None if written is None else 'rejected' if isinstance(written, Rejected) else 'ambiguous' if isinstance(written, WriteAmbiguous) else 'saved',
+                    detail=str(written) if isinstance(written, (Rejected, WriteAmbiguous)) else None))
             if nonce is not None:
                 with self.people.registry._transaction() as db:
                     for result in results:
@@ -813,7 +813,8 @@ class VerbAPI:
         try:
             fields = validate_update(inputs.fields)
             source = self.data_sources['cameras']
-            token = os.environ['T6_NOTION_TOKEN']
+            if not self._has_custom_source() and 'T6_NOTION_TOKEN' not in os.environ:
+                raise KeyError('T6_NOTION_TOKEN')
             values = {'page_id': inputs.page_id, 'fields': fields, 'idempotency_key': key}
             fingerprint = json.dumps({'verb': 'camera enrich', 'actor': actor, **values}, sort_keys=True, separators=(',', ':'))
             nonce = self.people.tokens.verify(inputs.confirm, 'camera enrich', actor, values) if inputs.confirm else None
@@ -829,21 +830,21 @@ class VerbAPI:
                     db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
                     result = json.loads(previous[1])
                     return Ambiguous(candidates=[result]) if result.get('pending') else Done(result=result)
-            with self.open_notion(token) as client:
-                before = get_cameras(client, source, page_id=inputs.page_id)[0]
-                if nonce is None:
-                    return self.people.tokens.create('camera enrich', actor, values, {**values, 'before': before})
-                with self.people.registry._transaction() as db:
-                    db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
-                    db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps({'pending': True, 'reason': 'Notion write may have happened'})))
-                saved = update_row(client, CamerasRow, inputs.page_id, fields)
-                if isinstance(saved, (Rejected, WriteAmbiguous)):
-                    return Ambiguous(candidates=[{'reason': str(saved)}])
-                result = camera_to_json(saved)
-                with self.people.registry._transaction() as db:
-                    db.execute('UPDATE verb_requests SET result=? WHERE idempotency_key=?', (json.dumps(result), key))
-                    _audit(db, inputs.page_id, 'camera_enrich', actor, self.people.registry._clock(), before, fields)
-                return Done(result=result)
+            notion = self.notion_source
+            before = get_cameras(notion, source, page_id=inputs.page_id)[0]
+            if nonce is None:
+                return self.people.tokens.create('camera enrich', actor, values, {**values, 'before': before})
+            with self.people.registry._transaction() as db:
+                db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
+                db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps({'pending': True, 'reason': 'Notion write may have happened'})))
+            saved = update_row(notion, CamerasRow, inputs.page_id, fields)
+            if isinstance(saved, (Rejected, WriteAmbiguous)):
+                return Ambiguous(candidates=[{'reason': str(saved)}])
+            result = camera_to_json(saved)
+            with self.people.registry._transaction() as db:
+                db.execute('UPDATE verb_requests SET result=? WHERE idempotency_key=?', (json.dumps(result), key))
+                _audit(db, inputs.page_id, 'camera_enrich', actor, self.people.registry._clock(), before, fields)
+            return Done(result=result)
         except (ValueError, KeyError, OSError, NotionError) as error:
             return Refused(rule='input', reason=str(error))
 
@@ -1031,12 +1032,10 @@ class VerbAPI:
                 return Done(result={'description': ''.join(run['text'] for run in runs), 'runs': runs})
             if noun == 'departments':
                 from t6.notion.departments import get_departments
-                with notion.open_write_client() as client:
-                    return Done(result={'departments': [{'id': d.option_id, 'name': d.name} for d in get_departments(client, self.data_sources['job_orders'], include_misc=inputs.include_misc)]})
+                return Done(result={'departments': [{'id': d.option_id, 'name': d.name} for d in get_departments(notion, self.data_sources['job_orders'], include_misc=inputs.include_misc)]})
             if noun == 'camera':
                 from t6.notion.cameras import get_cameras
-                with notion.open_write_client() as client:
-                    cameras = get_cameras(client, self.data_sources['cameras'], page_id=inputs.page_id)
+                cameras = get_cameras(notion, self.data_sources['cameras'], page_id=inputs.page_id)
                 return Done(result={'cameras': [{'page_id': c['id'], 'name': c['name'] or '', 'tags': c['tags']} for c in cameras]})
             if noun == 'project':
                 projects = [project_result(p) for p in ProjectReader(notion, self.data_sources['projects']).list()]
@@ -1172,7 +1171,7 @@ class VerbAPI:
                 notes = [max(dated, key=lambda n: (meeting_day(n), n.last_edited.timestamp() if n.last_edited else 0))] if dated else []
             def blocks(parent: str) -> list[dict[str, Any]]:
                 result = []
-                for block in notion.list_block_children(parent):
+                for block in notion.list_block_children(parent, freshness='live'):
                     kind = block.get('type', '')
                     content = block.get(kind) or {}
                     parts = content.get('rich_text') or []
@@ -1226,8 +1225,7 @@ class VerbAPI:
                                            inputs.registry_db or Path(os.environ.get('T6_REGISTRY_DB', 't6-registry.sqlite')), inputs.in_text)
             elif (noun, verb) == ('camera', 'get'):
                 from t6.notion.cameras import get_cameras
-                with notion.open_write_client() as client:
-                    result = get_cameras(client, sources['cameras'], page_id=inputs.page_id)
+                result = get_cameras(notion, sources['cameras'], page_id=inputs.page_id)
             else:
                 return Refused(rule='verb', reason='Verb has no registered handler')
             return Done(result=result)

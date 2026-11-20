@@ -1424,3 +1424,121 @@ class ReadTests(unittest.TestCase):
             server.shutdown()
             thread.join()
             server.server_close()
+
+    def test_remaining_verb_api_routes_use_notion_source_with_expected_freshness(self) -> None:
+        from t6.notion import Freshness, NotionSource
+        from t6.notion.testing import external_link_properties, package_spec_properties, project_properties
+        from t6.registry import Registered
+        from t6.verbs import (
+            CameraGetInput,
+            DeliverableDefineInput,
+            DeliverableDeliverInput,
+            DepartmentsInput,
+            MachineListInput,
+            MediaMigrateInput,
+            MeetingNotesCreateInput,
+            MeetingNotesListInput,
+            PersonGetInput,
+            PersonListInput,
+            StudioNoticesInput,
+        )
+
+        self.notion.add_snapshot_data_source('bays', 'bays')
+        self.notion.add_snapshot_data_source('package_specs', 'package_specs')
+        self.notion.add_data_source('external_links')
+        self.notion.add_option('job_orders', 'Department', 'AE')
+        self.notion.add_page('bays', {'Name': title('Bay 1')})
+        self.notion.add_page('package_specs', package_spec_properties(package_kind='delivery', version='1'))
+        self.notion.add_page('external_links', external_link_properties(system='resolve', kind='project', external_id='db/show', projects=[self.project['id']], active=True))
+        typed_proj = self.notion.add_page('projects', project_properties(name='Typed Show', project_type='Feature Film'))
+        reg_proj = self.registry.register(actor='setup', idempotency_key='typed-proj', notion_page_id=typed_proj['id'])
+        assert isinstance(reg_proj, Registered)
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO deliverables VALUES ('t6v_del', ?, 'FTR', NULL, NULL, NULL)", (reg_proj.project.id,))
+            db.execute("INSERT INTO persons VALUES ('t6n_1', 'staff', '[]', '[]', NULL, 0, 1)")
+            db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, 't6n_1', 'now', 1)", (self.person['id'].replace('-', ''),))
+            db.execute("INSERT INTO person_permissions VALUES (?, 'minutes')", ('t6n_' + '1' * 32,))
+            db.execute("INSERT INTO person_permissions VALUES (?, 'admin')", ('t6n_' + '1' * 32,))
+        self.api.data_sources.update({'bays': 'bays', 'package_specs': 'package_specs', 'external_links': 'external_links'})
+
+        calls: list[tuple[str, str, Freshness]] = []
+
+        class SpySource(NotionSource):
+            def query_data_source(self, data_source_id: str, *, filter: dict[str, Any] | None = None, sorts: list[dict[str, Any]] | None = None, page_size: int = 100, freshness: Freshness = 'mirror') -> list[dict[str, Any]]:
+                calls.append(('query_data_source', data_source_id, freshness))
+                return super().query_data_source(data_source_id, filter=filter, sorts=sorts, page_size=page_size, freshness=freshness)
+
+            def retrieve_page(self, page_id: str, *, freshness: Freshness = 'mirror') -> dict[str, Any]:
+                calls.append(('retrieve_page', page_id, freshness))
+                return super().retrieve_page(page_id, freshness=freshness)
+
+            def retrieve_data_source(self, data_source_id: str, *, freshness: Freshness = 'mirror') -> dict[str, Any]:
+                calls.append(('retrieve_data_source', data_source_id, freshness))
+                return super().retrieve_data_source(data_source_id, freshness=freshness)
+
+            def list_block_children(self, block_id: str, *, page_size: int = 100, freshness: Freshness = 'live') -> list[dict[str, Any]]:
+                calls.append(('list_block_children', block_id, freshness))
+                return super().list_block_children(block_id, page_size=page_size, freshness=freshness)
+
+        self.api.notion_source = SpySource(self.notion.client)
+        self.api.open_notion = lambda _token: (_ for _ in ()).throw(AssertionError('direct open_notion call'))
+
+        operator = Client(f'http://127.0.0.1:{self.server.server_port}', 'operator')
+
+        self.assertIsInstance(operator.studio_notices(StudioNoticesInput()), Done)
+        self.assertEqual(calls, [('retrieve_data_source', 'projects', 'mirror')])
+
+        calls.clear()
+        self.assertIsInstance(operator.departments(DepartmentsInput()), Done)
+        self.assertEqual(calls, [('retrieve_data_source', 'job_orders', 'live')])
+
+        calls.clear()
+        self.assertIsInstance(operator.camera_get(CameraGetInput()), Done)
+        self.assertEqual(calls, [('query_data_source', 'cameras', 'mirror')])
+
+        calls.clear()
+        self.assertIsInstance(operator.person_list(PersonListInput()), Done)
+        self.assertEqual(calls, [('query_data_source', 'contacts', 'mirror')])
+
+        calls.clear()
+        self.assertIsInstance(operator.person_get(PersonGetInput(person_id='t6n_1')), Done)
+        self.assertEqual(calls, [('retrieve_page', self.person['id'], 'mirror'), ('retrieve_page', self.person['id'], 'mirror')])
+
+        calls.clear()
+        self.assertIsInstance(operator.meeting_notes_list(MeetingNotesListInput(include_body=False)), Done)
+        self.assertEqual(calls, [('query_data_source', 'meeting_notes', 'mirror')])
+
+        calls.clear()
+        self.assertIsInstance(operator.meeting_notes_list(MeetingNotesListInput(include_body=True)), Done)
+        self.assertEqual(calls, [('query_data_source', 'meeting_notes', 'mirror'), ('list_block_children', self.note['id'], 'live')])
+
+        calls.clear()
+        self.assertIsInstance(operator.meeting_notes_create(MeetingNotesCreateInput(title='New note', meeting_date='2026-11-18', project_ids=[], attendee_ids=[], blocks=[])), Done)
+        self.assertTrue(calls)
+        self.assertTrue(all(f == 'live' for _, _, f in calls))
+
+        calls.clear()
+        self.assertIsInstance(operator.machine_list(MachineListInput()), Done)
+        self.assertEqual(calls, [('query_data_source', 'bays', 'mirror')])
+
+        calls.clear()
+        with patch.dict(os.environ, {'T6_PREVIEW_SIGNING_KEY': 'key'}):
+            self.assertIsInstance(operator.deliverable_deliver(DeliverableDeliverInput(deliverable='t6v_del', carrier='drive', idempotency_key='del-1')), Preview)
+        self.assertEqual(calls, [('query_data_source', 'package_specs', 'live')])
+
+        calls.clear()
+        with patch.dict(os.environ, {'T6_PREVIEW_SIGNING_KEY': 'key'}):
+            self.assertIsInstance(operator.deliverable_define(DeliverableDefineInput(project=reg_proj.project.id, code='Ep01', idempotency_key='def-1')), Preview)
+        self.assertEqual(calls, [('retrieve_page', typed_proj['id'], 'live')])
+
+        calls.clear()
+        with patch.dict(os.environ, {'T6_PREVIEW_SIGNING_KEY': 'key'}):
+            preview = operator.admin_media_migrate(MediaMigrateInput(idempotency_key='mig-1'))
+        self.assertIsInstance(preview, Preview)
+        self.assertEqual(calls, [('query_data_source', 'external_links', 'live')])
+
+        calls.clear()
+        health = operator.health()
+        assert isinstance(health, dict)
+        self.assertIn('data_gaps', health)
+        self.assertEqual(calls, [('query_data_source', 'projects', 'mirror')])

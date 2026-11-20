@@ -27,6 +27,7 @@ from typing import Any, Literal, TypeVar, overload
 
 from t6.notion.errors import NotionError
 from t6.notion.model import ID_KEY, NAME_KEY, TYPE_KEY, NotionModel, OptionId
+from t6.notion.source import NotionSource, as_source
 from t6.notion.sync import NotionClient
 from t6.privacy.withhold import withhold
 
@@ -58,13 +59,13 @@ class Ambiguous:
 
 
 @overload
-def create_row(client: NotionClient, model: type[M], data_source_id: str, values: JSON, *, extra_properties: JSON | None = None) -> M | Rejected | Ambiguous: ...
+def create_row(source: NotionSource | NotionClient, model: type[M], data_source_id: str, values: JSON, *, extra_properties: JSON | None = None) -> M | Rejected | Ambiguous: ...
 @overload
 def create_row(
-    client: NotionClient, model: type[M], data_source_id: str, values: JSON, *, to_domain: Callable[[M], T], extra_properties: JSON | None = None
+    source: NotionSource | NotionClient, model: type[M], data_source_id: str, values: JSON, *, to_domain: Callable[[M], T], extra_properties: JSON | None = None
 ) -> T | Rejected | Ambiguous: ...
 def create_row(
-    client: NotionClient,
+    source: NotionSource | NotionClient,
     model: type[M],
     data_source_id: str,
     values: JSON,
@@ -74,17 +75,17 @@ def create_row(
 ) -> Any:
     """Create a page in `data_source_id` from `values` (Python attribute names) and check it."""
     body = {"parent": {"data_source_id": data_source_id}, "properties": {**model.to_properties(**values), **(extra_properties or {})}}
-    return _write(client, model, values, lambda: client.create_page(body), None, to_domain)
+    return _write(source, model, values, lambda client: client.create_page(body), None, to_domain)
 
 
 @overload
-def update_row(client: NotionClient, model: type[M], page_id: str, values: JSON) -> M | Rejected | Ambiguous: ...
+def update_row(source: NotionSource | NotionClient, model: type[M], page_id: str, values: JSON) -> M | Rejected | Ambiguous: ...
 @overload
 def update_row(
-    client: NotionClient, model: type[M], page_id: str, values: JSON, *, to_domain: Callable[[M], T]
+    source: NotionSource | NotionClient, model: type[M], page_id: str, values: JSON, *, to_domain: Callable[[M], T]
 ) -> T | Rejected | Ambiguous: ...
 def update_row(
-    client: NotionClient,
+    source: NotionSource | NotionClient,
     model: type[M],
     page_id: str,
     values: JSON,
@@ -93,23 +94,25 @@ def update_row(
 ) -> Any:
     """Update the page `page_id` with `values` (Python attribute names) and check it."""
     body = {"properties": model.to_properties(**values)}
-    return _write(client, model, values, lambda: client.update_page(page_id, body), page_id, to_domain)
+    return _write(source, model, values, lambda client: client.update_page(page_id, body), page_id, to_domain)
 
 
 def _write(
-    client: NotionClient,
+    source: NotionSource | NotionClient,
     model: type[M],
     values: JSON,
-    send: Callable[[], JSON],
+    send: Callable[[NotionClient], JSON],
     page_id: str | None,
     to_domain: Callable[[M], Any] | None,
 ) -> Any:
+    notion = as_source(source)
     try:
-        page_id = str(send()["id"])
+        with notion.open_write_client() as client:
+            page_id = str(send(client)["id"])
     except NotionError as error:
         return _failure(error, page_id)
     try:
-        page = client.retrieve_page(page_id)
+        page = notion.retrieve_page(page_id, freshness="live")
     except NotionError as error:
         return Ambiguous("readback_failed", str(error), page_id)
     mismatched = tuple(

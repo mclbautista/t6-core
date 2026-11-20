@@ -356,6 +356,183 @@ class NotionSourceTests(unittest.TestCase):
             ],
         )
 
+    def test_all_other_notion_readers_and_helpers_route_through_notion_source(self) -> None:
+        import tempfile
+        from unittest.mock import MagicMock
+        from t6.fleet import Fleet, MachineFacts
+        from t6.google.names import NotionNames
+        from t6.media_migration import read_external_links_once_for_migration
+        from t6.notion.cameras import get_cameras
+        from t6.notion.contacts import Contacts
+        from t6.notion.deliverable_projection import DeliverableProjection
+        from t6.notion.departments import get_departments
+        from t6.notion.editor import editor as notion_editor
+        from t6.notion.jo_projection import JobOrderProjection
+        from t6.notion.meeting_notes import MeetingNotes
+        from t6.notion.migration import read_legacy_projects
+        from t6.notion.package_specs import PackageSpecReader
+        from t6.notion.projection import ProjectProjection
+        from t6.notion.schema import check_schema, load_snapshot, refresh_snapshot
+        from t6.notion.swing_drives import read_swing_drives
+        from t6.notion.testing import external_link_properties, package_spec_properties
+        from t6.registry import Registered, SqliteProjectRegistry
+        from t6.worker.client import WorkerJob
+
+        notion = fake()
+        for ds_id, db_name in (
+            ("ds-cameras", "cameras"),
+            ("ds-meeting-notes", "meeting_notes"),
+            ("ds-package-specs", "package_specs"),
+            ("ds-bays", "bays"),
+            ("ds-swing", "swing_drives"),
+        ):
+            notion.add_snapshot_data_source(ds_id, db_name)
+        notion.add_data_source("ds-links")
+        notion.add_option(JOB_ORDERS, "Department", "AE")
+        notion.add_user("user-1", "Ana Cruz")
+        proj = notion.add_page(PROJECTS, {ProjectsRow.notion_name("name"): title("Show A")})
+        contact = notion.add_page(CONTACTS, {ContactsRow.notion_name("name"): title("Ana Cruz")})
+        notion.add_page("ds-cameras", {"Name": title("Camera One")})
+        notion.add_page("ds-package-specs", package_spec_properties(package_kind="delivery", version="1"))
+        notion.add_page("ds-bays", {"Name": title("Bay 1"), "Hostname": rich_text("bay-1")})
+        notion.add_page("ds-swing", {"Name": title("Swing 1")})
+        notion.add_page("ds-links", external_link_properties(system="resolve", kind="project", external_id="db/show", projects=[str(proj["id"])], active=True))
+
+        source = _RecordingNotionSource(notion.client)
+
+        contacts = Contacts(source, CONTACTS)
+        self.assertEqual(len(contacts.list()), 1)
+        self.assertEqual(contacts.get(str(contact["id"])).name, "Ana Cruz")
+        contacts.set_telegram_user_id(str(contact["id"]), 42)
+        self.assertEqual(
+            source.calls,
+            [
+                ("query_data_source", CONTACTS, "mirror"),
+                ("retrieve_page", str(contact["id"]), "mirror"),
+                ("retrieve_page", str(contact["id"]), "live"),
+            ],
+        )
+
+        source.calls.clear()
+        self.assertEqual(len(get_cameras(source, "ds-cameras")), 1)
+        self.assertEqual(source.calls, [("query_data_source", "ds-cameras", "mirror")])
+
+        source.calls.clear()
+        self.assertIn("AE", [d.name for d in get_departments(source, JOB_ORDERS)])
+        self.assertEqual(source.calls, [("retrieve_data_source", JOB_ORDERS, "live")])
+
+        source.calls.clear()
+        notes = MeetingNotes(source, "ds-meeting-notes")
+        created_note = notes.create(title="Weekly", meeting_date=dt.date(2026, 11, 16))
+        notes.with_title("Weekly")
+        self.assertEqual(
+            source.calls,
+            [
+                ("retrieve_page", created_note.page_id, "live"),  # type: ignore[union-attr]
+                ("retrieve_page", created_note.page_id, "live"),  # type: ignore[union-attr]
+                ("query_data_source", "ds-meeting-notes", "mirror"),
+            ],
+        )
+
+        source.calls.clear()
+        self.assertEqual(len(PackageSpecReader(source, "ds-package-specs").find("delivery")), 1)
+        self.assertEqual(len(PackageSpecReader(source, "ds-package-specs", freshness="live").find("delivery")), 1)
+        self.assertEqual(
+            source.calls,
+            [
+                ("query_data_source", "ds-package-specs", "mirror"),
+                ("query_data_source", "ds-package-specs", "live"),
+            ],
+        )
+
+        source.calls.clear()
+        self.assertEqual(len(read_swing_drives(source, "ds-swing")), 1)
+        self.assertEqual(len(read_external_links_once_for_migration(source, "ds-links")), 1)
+        legacy_projects, _ = read_legacy_projects(source, {"projects": PROJECTS})
+        self.assertEqual(len(legacy_projects), 1)
+        self.assertEqual(
+            source.calls,
+            [
+                ("query_data_source", "ds-swing", "live"),
+                ("query_data_source", "ds-links", "live"),
+                ("query_data_source", PROJECTS, "live"),
+            ],
+        )
+
+        source.calls.clear()
+        snap = refresh_snapshot(source, load_snapshot(), {"projects": PROJECTS})
+        check_schema(source, snap, {"projects": PROJECTS})
+        self.assertEqual(
+            source.calls,
+            [
+                ("retrieve_data_source", PROJECTS, "live"),
+                ("retrieve_data_source", PROJECTS, "live"),
+                ("query_data_source", PROJECTS, "live"),
+            ],
+        )
+
+        source.calls.clear()
+        self.assertEqual(
+            notion_editor(source, WorkerJob(1, "main", "notion.page_changed", "k", {"authors": [{"id": "user-1"}]}, "t", 1)),
+            ("Ana Cruz", "user-1"),
+        )
+        self.assertEqual(source.calls, [("retrieve_user", "user-1", "live")])
+
+        source.calls.clear()
+        fleet = Fleet(source, "ds-bays")
+        self.assertEqual(len(fleet.machines()), 1)
+        fleet.sync([MachineFacts(names=("bay-1",), serial_number="S1", observed_at=dt.datetime.now(dt.timezone.utc))], apply=True)
+        self.assertEqual(
+            source.calls,
+            [
+                ("query_data_source", "ds-bays", "mirror"),
+                ("retrieve_data_source", "ds-bays", "live"),
+                ("query_data_source", "ds-bays", "mirror"),
+                ("retrieve_page", source.calls[3][1], "live"),
+                ("retrieve_page", source.calls[3][1], "live"),
+                ("retrieve_page", source.calls[3][1], "live"),
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = SqliteProjectRegistry(f"{tmp}/registry.sqlite3")
+            reg_proj = reg.register(actor="setup", idempotency_key="p", notion_page_id=str(proj["id"]))
+            assert isinstance(reg_proj, Registered)
+            with reg._transaction() as db:
+                db.execute("INSERT INTO persons VALUES ('t6n_1', 'staff', '[]', '[]', NULL, 0, 1)")
+                db.execute(
+                    "INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, 't6n_1', 'now', 1)",
+                    (str(contact["id"]).replace("-", ""),),
+                )
+            source.calls.clear()
+            names = NotionNames(reg, source)
+            self.assertEqual(names.project(reg_proj.project.id), "Show A")
+            self.assertEqual(names.person("t6n_1"), "Ana Cruz")
+            self.assertEqual(
+                source.calls,
+                [
+                    ("retrieve_page", str(proj["id"]), "mirror"),
+                    ("retrieve_page", str(contact["id"]), "mirror"),
+                ],
+            )
+
+        mock_reg = MagicMock()
+        mock_reg.observed.return_value = "bound"
+        mock_reg.observe_job_order.return_value = {}
+        mock_reg.observe_deliverable.return_value = {}
+        source.calls.clear()
+        ProjectProjection(source, mock_reg, PROJECTS).reconcile(WorkerJob(1, "main", "notion.page_changed", "k1", {"page_id": str(proj["id"]), "authors": []}, "t", 1))
+        JobOrderProjection(source, mock_reg, JOB_ORDERS).reconcile(WorkerJob(2, "main", "notion.page_changed", "k2", {"page_id": str(proj["id"]), "authors": []}, "t", 1))
+        DeliverableProjection(source, mock_reg, DELIVERABLES).reconcile(WorkerJob(3, "main", "notion.page_changed", "k3", {"page_id": str(proj["id"]), "authors": []}, "t", 1))
+        self.assertEqual(
+            source.calls,
+            [
+                ("retrieve_page", str(proj["id"]), "live"),
+                ("retrieve_page", str(proj["id"]), "live"),
+                ("retrieve_page", str(proj["id"]), "live"),
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

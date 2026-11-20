@@ -22,6 +22,7 @@ from t6.domain import MeetingNote
 from t6.notion.errors import NotionError
 from t6.notion.generated import MeetingNotesRow
 from t6.notion.reads import is_live, page_edited
+from t6.notion.source import Freshness, NotionSource, as_source
 from t6.notion.sync import NotionClient
 from t6.notion.writes import Ambiguous, Rejected, create_row, update_row
 
@@ -56,21 +57,21 @@ def note_from_page(page: JSON) -> MeetingNote:
 class MeetingNotes:
     """Reads and writes Meeting Notes pages in one data source."""
 
-    def __init__(self, client: NotionClient, data_source_id: str) -> None:
-        self._client = client
+    def __init__(self, source: NotionSource | NotionClient, data_source_id: str) -> None:
+        self._notion = as_source(source)
         self._source = data_source_id
 
-    def with_title(self, title: str) -> tuple[MeetingNote, ...]:
+    def with_title(self, title: str, *, freshness: Freshness = "mirror") -> tuple[MeetingNote, ...]:
         """The notes whose title is exactly `title`."""
-        found = self._query({"property": _key("name"), "title": {"equals": title}})
+        found = self._query({"property": _key("name"), "title": {"equals": title}}, freshness=freshness)
         return tuple(note for note in found if note.name == title)
 
-    def with_title_prefix(self, prefix: str) -> tuple[MeetingNote, ...]:
+    def with_title_prefix(self, prefix: str, *, freshness: Freshness = "mirror") -> tuple[MeetingNote, ...]:
         """The notes whose title starts with `prefix`."""
-        found = self._query({"property": _key("name"), "title": {"starts_with": prefix}})
+        found = self._query({"property": _key("name"), "title": {"starts_with": prefix}}, freshness=freshness)
         return tuple(note for note in found if note.name.startswith(prefix))
 
-    def ready_to_send(self, title_prefix: str = "") -> tuple[MeetingNote, ...]:
+    def ready_to_send(self, title_prefix: str = "", *, freshness: Freshness = "mirror") -> tuple[MeetingNote, ...]:
         """The notes marked Ready to send and not yet sent, with a title starting with `title_prefix`."""
         found = self._query(
             {
@@ -78,7 +79,8 @@ class MeetingNotes:
                     {"property": _key("ready_to_send"), "checkbox": {"equals": True}},
                     {"property": _key("sent_at"), "date": {"is_empty": True}},
                 ]
-            }
+            },
+            freshness=freshness,
         )
         return tuple(
             note
@@ -97,7 +99,7 @@ class MeetingNotes:
     ) -> MeetingNote | Rejected | Ambiguous:
         """Create a note with a body of Notion `blocks` and return it as saved."""
         saved = create_row(
-            self._client,
+            self._notion,
             MeetingNotesRow,
             self._source,
             {
@@ -111,28 +113,28 @@ class MeetingNotes:
             return saved
         for start in range(0, len(blocks), BLOCKS_PER_REQUEST):
             try:
-                self._client.append_block_children(saved.page_id, list(blocks[start : start + BLOCKS_PER_REQUEST]))
+                self._notion.append_block_children(saved.page_id, list(blocks[start : start + BLOCKS_PER_REQUEST]))
             except NotionError as error:
                 reason = error.code if error.code in ("timeout", "network_error") else "readback_failed"
                 return Ambiguous(reason, f"the page was created but its body was not saved: {error}", saved.page_id)  # type: ignore[arg-type]
-        return note_from_page(self._client.retrieve_page(saved.page_id))
+        return note_from_page(self._notion.retrieve_page(saved.page_id, freshness="live"))
 
     def append(self, page_id: str, blocks: Sequence[JSON]) -> None:
         """Append Notion `blocks` to the body in chunks. Raises `NotionError` if Notion refuses."""
         for start in range(0, len(blocks), BLOCKS_PER_REQUEST):
-            self._client.append_block_children(page_id, list(blocks[start : start + BLOCKS_PER_REQUEST]))
+            self._notion.append_block_children(page_id, list(blocks[start : start + BLOCKS_PER_REQUEST]))
 
     def trash(self, page_id: str) -> None:
         """Move the note to the trash. Raises `NotionError` if Notion refuses."""
-        self._client.update_page(page_id, {"in_trash": True})
+        self._notion.update_page(page_id, {"in_trash": True})
 
     def mark_sent(self, page_id: str, when: dt.datetime) -> MeetingNote | Rejected | Ambiguous:
         """Set Sent at to `when` and return the note as saved."""
-        saved = update_row(self._client, MeetingNotesRow, page_id, {"sent_at": when})
+        saved = update_row(self._notion, MeetingNotesRow, page_id, {"sent_at": when})
         if isinstance(saved, (Rejected, Ambiguous)):
             return saved
-        return note_from_page(self._client.retrieve_page(page_id))
+        return note_from_page(self._notion.retrieve_page(page_id, freshness="live"))
 
-    def _query(self, filter: JSON) -> tuple[MeetingNote, ...]:
-        pages = self._client.query_data_source(self._source, filter=filter)
+    def _query(self, filter: JSON, *, freshness: Freshness = "mirror") -> tuple[MeetingNote, ...]:
+        pages = self._notion.query_data_source(self._source, filter=filter, freshness=freshness)
         return tuple(note_from_page(page) for page in pages if is_live(page))

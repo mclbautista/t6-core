@@ -144,22 +144,26 @@ def configured_handlers(
         handlers[JobKind.CHAT_REPLY.value] = ChatReply(gateway).deliver
         handlers['notion.state_flagged'] = StateEditNotification(gateway, operator_ids(environ)).deliver
     token, projects = environ.get("T6_NOTION_TOKEN"), environ.get("T6_NOTION_PROJECTS_DATA_SOURCE")
-    if token and projects:
-        from t6.notion import NotionClient
+    job_orders = environ.get("T6_NOTION_JOB_ORDERS_DATA_SOURCE")
+    deliverables = environ.get('T6_NOTION_DELIVERABLES_DATA_SOURCE')
+    notion = None
+    if token and (projects or job_orders or deliverables):
+        from t6.notion import NotionClient, NotionSource
+
+        notion = NotionSource.from_client(NotionClient(token))
+    if notion and projects:
         from t6.notion.projection import ProjectProjection
         from t6.worker.registry import RegistryClient
 
         offer = operator.offer_unbound_page if gateway_url and gateway_secret else None
         projection = ProjectProjection(
-            NotionClient(token), RegistryClient(api, settings.secret), projects, offer=offer
+            notion, RegistryClient(api, settings.secret), projects, offer=offer
         )
         handlers.update(projection.handlers())
-    job_orders = environ.get("T6_NOTION_JOB_ORDERS_DATA_SOURCE")
-    if token and job_orders:
-        from t6.notion import NotionClient
+    if notion and job_orders:
         from t6.notion.jo_projection import JobOrderProjection
         from t6.worker.registry import RegistryClient
-        jo_projection = JobOrderProjection(NotionClient(token), RegistryClient(api, settings.secret), job_orders)
+        jo_projection = JobOrderProjection(notion, RegistryClient(api, settings.secret), job_orders)
         project_reconcile = handlers.get("notion.page_changed")
         handlers.update(jo_projection.handlers())
         if project_reconcile is not None:
@@ -169,12 +173,10 @@ def configured_handlers(
                     return jo_projection.reconcile(job)
                 return result
             handlers["notion.page_changed"] = reconcile
-    deliverables = environ.get('T6_NOTION_DELIVERABLES_DATA_SOURCE')
-    if token and deliverables:
-        from t6.notion import NotionClient
+    if notion and deliverables:
         from t6.notion.deliverable_projection import DeliverableProjection
         from t6.worker.registry import RegistryClient
-        deliverable_projection = DeliverableProjection(NotionClient(token), RegistryClient(api, settings.secret), deliverables)
+        deliverable_projection = DeliverableProjection(notion, RegistryClient(api, settings.secret), deliverables)
         handlers['deliverable.sync'] = deliverable_projection.sync
         prior_reconcile = handlers.get('notion.page_changed')
         if prior_reconcile is None:
@@ -286,12 +288,12 @@ def project_start_handler(environ: Mapping[str, str]) -> Handler:
         token = environ.get("T6_NOTION_TOKEN")
         if not token:
             raise ValueError("missing environment variable: T6_NOTION_TOKEN (the plan reads the Project Type)")
-        from t6.notion import NotionClient, NotionError
+        from t6.notion import NotionClient, NotionError, NotionSource
         from t6.notion.generated import ProjectsRow
 
+        notion = NotionSource(lambda: NotionClient(token))
         try:
-            with NotionClient(token) as client:
-                return ProjectsRow.from_page(client.retrieve_page(page)).project_type
+            return ProjectsRow.from_page(notion.retrieve_page(page)).project_type
         except NotionError as error:
             raise ValueError(f"could not read the Project Type from Notion: {error}") from error
 
@@ -299,12 +301,12 @@ def project_start_handler(environ: Mapping[str, str]) -> Handler:
         token = environ.get("T6_NOTION_TOKEN")
         if not token:
             raise ValueError("missing environment variable: T6_NOTION_TOKEN (the plan reads the Project name for Frame.io)")
-        from t6.notion import NotionClient, NotionError
+        from t6.notion import NotionClient, NotionError, NotionSource
         from t6.notion.generated import ProjectsRow
 
+        notion = NotionSource(lambda: NotionClient(token))
         try:
-            with NotionClient(token) as client:
-                return ProjectsRow.from_page(client.retrieve_page(page)).name
+            return ProjectsRow.from_page(notion.retrieve_page(page)).name
         except NotionError as error:
             raise ValueError(f"could not read the Project name from Notion: {error}") from error
 
@@ -341,9 +343,9 @@ def booking_calendar_handler(environ: Mapping[str, str]) -> Handler:
         if not token:
             raise ValueError("missing environment variable: T6_NOTION_TOKEN (the calendar events carry Project and Person names)")
         from t6.google.names import NotionNames
-        from t6.notion import NotionClient
+        from t6.notion import NotionClient, NotionSource
 
-        return NotionNames(registry, NotionClient(token))
+        return NotionNames(registry, NotionSource(lambda: NotionClient(token)))
 
     try:
         return calendar_handler(environ, lambda: SqliteProjectRegistry(environ["T6_DATABASE"]), names)
@@ -365,9 +367,9 @@ def inbound_calendar_handlers(environ: Mapping[str, str]) -> dict[str, Handler]:
         if not token:
             raise ValueError("missing environment variable: T6_NOTION_TOKEN (inbound calendar edits map the editor's email to a Person)")
         from t6.google.names import NotionNames
-        from t6.notion import NotionClient
+        from t6.notion import NotionClient, NotionSource
 
-        return NotionNames(registry, NotionClient(token))
+        return NotionNames(registry, NotionSource(lambda: NotionClient(token)))
 
     try:
         return inbound_handlers(environ, lambda: SqliteProjectRegistry(environ["T6_DATABASE"]), names)
@@ -389,9 +391,9 @@ def sharing_calendar_handlers(environ: Mapping[str, str]) -> dict[str, Handler]:
         if not token:
             raise ValueError("missing environment variable: T6_NOTION_TOKEN (calendar sharing maps a Person to a Google email)")
         from t6.google.names import NotionNames
-        from t6.notion import NotionClient
+        from t6.notion import NotionClient, NotionSource
 
-        return NotionNames(registry, NotionClient(token))
+        return NotionNames(registry, NotionSource(lambda: NotionClient(token)))
 
     try:
         return sharing_handlers(environ, lambda: SqliteProjectRegistry(environ["T6_DATABASE"]), identities)
