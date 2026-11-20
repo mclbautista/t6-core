@@ -2,6 +2,7 @@
 
 - `AsyncNotionClient`: async httpx client for pages and data sources.
 - `NotionClient`: blocking wrapper with the same methods and results.
+- `NotionSource`: reader layer with explicit `freshness` (`"mirror"` or `"live"`).
 - `NotionError`: the only error either client raises.
 - `RetryPolicy`: opt-in retry (see the README).
 - `t6.notion.contacts`: read Contacts, set a Telegram user ID, create a Contact, in domain terms.
@@ -14,13 +15,17 @@
 
 from t6.notion.client import BASE_URL, NOTION_VERSION, AsyncNotionClient, RetryPolicy
 from t6.notion.errors import NotionError
+from t6.notion.source import Freshness, NotionSource, as_source
 from t6.notion.sync import NotionClient
 
 __all__ = [
     "BASE_URL",
     "NOTION_VERSION",
     "AsyncNotionClient",
+    "Freshness",
     "NotionClient",
     "NotionError",
+    "NotionSource",
     "RetryPolicy",
+    "as_source",
 ]

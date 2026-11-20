@@ -1286,3 +1286,141 @@ class ReadTests(unittest.TestCase):
         result = self.client.jo_get(JoGetInput(ref='-100:3'))
         assert isinstance(result, Done)
         self.assertEqual(result.result['job_order']['page_id'], self.jo['id'])
+
+    def test_watchdog_verbs_read_only_through_notion_source_and_jo_get_passes_live(self) -> None:
+        from t6.notion import Freshness, NotionSource
+        from t6.verbs import (
+            DeliverableCandidatesInput,
+            JoFindInput,
+            JoGetInput,
+            PersonFindInput,
+            ProjectResolveInput,
+        )
+
+        calls: list[tuple[str, str, Freshness]] = []
+
+        class SpySource(NotionSource):
+            def query_data_source(
+                self,
+                data_source_id: str,
+                *,
+                filter: dict[str, Any] | None = None,
+                sorts: list[dict[str, Any]] | None = None,
+                page_size: int = 100,
+                freshness: Freshness = 'mirror',
+            ) -> list[dict[str, Any]]:
+                calls.append(('query_data_source', data_source_id, freshness))
+                return super().query_data_source(
+                    data_source_id, filter=filter, sorts=sorts, page_size=page_size, freshness=freshness
+                )
+
+            def retrieve_page(self, page_id: str, *, freshness: Freshness = 'mirror') -> dict[str, Any]:
+                calls.append(('retrieve_page', page_id, freshness))
+                return super().retrieve_page(page_id, freshness=freshness)
+
+            def list_block_children(
+                self, block_id: str, *, page_size: int = 100, freshness: Freshness = 'live'
+            ) -> list[dict[str, Any]]:
+                calls.append(('list_block_children', block_id, freshness))
+                return super().list_block_children(block_id, page_size=page_size, freshness=freshness)
+
+        spy = SpySource(self.notion.client)
+        self.api.notion_source = spy
+        # Prove none of the 5 watchdog verbs open their own Notion client directly.
+        self.api.open_notion = lambda _token: (_ for _ in ()).throw(AssertionError('direct open_notion call'))
+
+        unmasked = Client(f'http://127.0.0.1:{self.server.server_port}', 'unmasked-secret')
+
+        resolved = unmasked.project_resolve(ProjectResolveInput(text='Example Show'))
+        self.assertIsInstance(resolved, Done)
+        self.assertEqual(calls, [('query_data_source', 'projects', 'mirror')])
+
+        calls.clear()
+        person = unmasked.person_find(PersonFindInput(mention='Ana Cruz'))
+        self.assertIsInstance(person, Done)
+        self.assertEqual(calls, [('query_data_source', 'contacts', 'mirror')])
+
+        calls.clear()
+        candidates = unmasked.deliverable_candidates(DeliverableCandidatesInput(project=self.project['id']))
+        self.assertIsInstance(candidates, Done)
+        self.assertEqual(calls, [('query_data_source', 'deliverables', 'mirror')])
+
+        calls.clear()
+        found_jo = unmasked.jo_find(JoFindInput(telegram_key='-100:3'))
+        self.assertIsInstance(found_jo, Done)
+        self.assertEqual(calls, [('query_data_source', 'job_orders', 'mirror')])
+
+        calls.clear()
+        got_by_id = unmasked.jo_get(JoGetInput(ref=self.jo['id']))
+        self.assertIsInstance(got_by_id, Done)
+        self.assertEqual(
+            calls,
+            [
+                ('retrieve_page', self.jo['id'], 'live'),
+                ('retrieve_page', self.jo['id'], 'live'),
+                ('list_block_children', self.jo['id'], 'live'),
+            ],
+        )
+
+        calls.clear()
+        got_by_key = unmasked.jo_get(JoGetInput(ref='-100:3'))
+        self.assertIsInstance(got_by_key, Done)
+        self.assertEqual(
+            calls,
+            [
+                ('query_data_source', 'job_orders', 'live'),
+                ('retrieve_page', self.jo['id'], 'live'),
+                ('retrieve_page', self.jo['id'], 'live'),
+                ('list_block_children', self.jo['id'], 'live'),
+            ],
+        )
+
+    def test_verb_api_uses_single_lazy_notion_source_and_supports_injection(self) -> None:
+        from t6.notion import NotionSource
+        from t6.verbs import DeliverableCandidatesInput, JoFindInput, JoGetInput, PersonFindInput, ProjectResolveInput
+
+        # Default server-owned NotionSource reads T6_NOTION_TOKEN lazily and is reused across calls.
+        source = self.api.notion_source
+        self.assertIsInstance(source, NotionSource)
+        tokens_seen: list[str] = []
+        original_open = self.api.open_notion
+
+        def recording_open(token: str) -> Any:
+            tokens_seen.append(token)
+            return original_open(token)
+
+        self.api.open_notion = recording_open
+        with patch.dict(os.environ, {'T6_NOTION_TOKEN': 'rotated-token'}):
+            self.assertIsInstance(self.client.project_resolve(ProjectResolveInput(text='Example Show')), Done)
+            self.assertIsInstance(self.client.person_find(PersonFindInput(mention='Ana Cruz')), Done)
+            self.assertIsInstance(self.client.jo_find(JoFindInput(telegram_key='-100:3')), Done)
+            self.assertIsInstance(self.client.jo_get(JoGetInput(ref=self.jo['id'])), Done)
+            self.assertIsInstance(self.client.deliverable_candidates(DeliverableCandidatesInput(project=self.project['id'])), Done)
+        self.assertIs(self.api.notion_source, source)
+        self.assertTrue(tokens_seen)
+        self.assertEqual(set(tokens_seen), {'rotated-token'})
+
+        # Injected NotionSource works even without T6_NOTION_TOKEN in the environment.
+        injected = NotionSource(self.notion.client)
+        injected_api = VerbAPI(
+            self.api.people,
+            self.api.queue,
+            {'secret': 'reports'},
+            lambda _: (_ for _ in ()).throw(AssertionError('must use injected NotionSource')),
+            privacy_registry=self.api.privacy_registry,
+            data_sources=self.api.data_sources,
+            notion_source=injected,
+        )
+        server = make_server(('127.0.0.1', 0), injected_api)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with patch.dict(os.environ, {}, clear=True):
+                res = Client(f'http://127.0.0.1:{server.server_port}', 'secret').project_resolve(
+                    ProjectResolveInput(text='Example Show')
+                )
+            self.assertIsInstance(res, Done)
+        finally:
+            server.shutdown()
+            thread.join()
+            server.server_close()

@@ -19,6 +19,7 @@ from t6.notion import codec
 from t6.domain import Contact, Deliverable, Project
 from t6.notion.generated import ContactsRow, DeliverablesRow, ProjectsRow, StudiosRow
 from t6.notion.model import NotionModel
+from t6.notion.source import Freshness, NotionSource, as_source
 from t6.notion.sync import NotionClient
 
 JSON = dict[str, Any]
@@ -128,52 +129,53 @@ def deliverable_from_row(row: DeliverablesRow) -> Deliverable:
 
 
 class ProjectReader:
-    def __init__(self, client: NotionClient, data_source_id: str) -> None:
-        self._client, self._source = client, data_source_id
+    def __init__(self, source: NotionSource | NotionClient, data_source_id: str) -> None:
+        self._notion, self._source = as_source(source), data_source_id
 
-    def get(self, page_id: str) -> Project:
-        page = self._client.retrieve_page(page_id)
+    def get(self, page_id: str, *, freshness: Freshness = "mirror") -> Project:
+        page = self._notion.retrieve_page(page_id, freshness=freshness)
         return project_from_row(ProjectsRow.from_page(page), page_edited(page), page)
 
-    def list(self) -> tuple[Project, ...]:
-        pages = self._client.query_data_source(self._source)
+    def list(self, *, freshness: Freshness = "mirror") -> tuple[Project, ...]:
+        pages = self._notion.query_data_source(self._source, freshness=freshness)
         return tuple(project_from_row(ProjectsRow.from_page(page), page_edited(page), page) for page in pages if is_live(page))
 
 
 class ContactReader:
-    def __init__(self, client: NotionClient, data_source_id: str) -> None:
-        self._client, self._source = client, data_source_id
+    def __init__(self, source: NotionSource | NotionClient, data_source_id: str) -> None:
+        self._notion, self._source = as_source(source), data_source_id
 
-    def get(self, page_id: str) -> Contact:
-        page = self._client.retrieve_page(page_id)
+    def get(self, page_id: str, *, freshness: Freshness = "mirror") -> Contact:
+        page = self._notion.retrieve_page(page_id, freshness=freshness)
         return contact_from_row(ContactsRow.from_page(page), page_edited(page))
 
-    def list(self) -> tuple[Contact, ...]:
-        pages = self._client.query_data_source(self._source)
+    def list(self, *, freshness: Freshness = "mirror") -> tuple[Contact, ...]:
+        pages = self._notion.query_data_source(self._source, freshness=freshness)
         return tuple(contact_from_row(ContactsRow.from_page(page), page_edited(page)) for page in pages if is_live(page))
 
 
 class StudioReader:
-    def __init__(self, client: NotionClient, data_source_id: str) -> None:
-        self._client, self._source = client, data_source_id
+    def __init__(self, source: NotionSource | NotionClient, data_source_id: str) -> None:
+        self._notion, self._source = as_source(source), data_source_id
 
-    def names(self) -> tuple[str, ...]:
+    def names(self, *, freshness: Freshness = "mirror") -> tuple[str, ...]:
         """Each Studio's name, then its aliases, in the data source's order. Pages in the trash are not skipped."""
         names: list[str] = []
-        for page in self._client.query_data_source(self._source):
+        for page in self._notion.query_data_source(self._source, freshness=freshness):
             row = StudiosRow.from_page(page)
             names += [row.name or "", *row.aliases]
         return tuple(names)
 
 
 class DeliverableReader:
-    def __init__(self, client: NotionClient, data_source_id: str) -> None:
-        self._client, self._source = client, data_source_id
+    def __init__(self, source: NotionSource | NotionClient, data_source_id: str) -> None:
+        self._notion, self._source = as_source(source), data_source_id
 
-    def for_project(self, project_id: str) -> tuple[Deliverable, ...]:
+    def for_project(self, project_id: str, *, freshness: Freshness = "mirror") -> tuple[Deliverable, ...]:
         """The Deliverables related to the Project page `project_id`."""
-        pages = self._client.query_data_source(
+        pages = self._notion.query_data_source(
             self._source,
             filter={"property": _key(DeliverablesRow, "projects"), "relation": {"contains": project_id}},
+            freshness=freshness,
         )
         return tuple(deliverable_from_row(DeliverablesRow.from_page(page)) for page in pages)

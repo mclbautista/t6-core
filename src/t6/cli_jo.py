@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from t6.cli import TOKEN_VARIABLE, _fail, _read_data_sources
 
 if TYPE_CHECKING:
+    from t6.notion.source import NotionSource
     from t6.notion.sync import NotionClient
 
 JSON = dict[str, Any]
@@ -157,7 +158,7 @@ def _deadline(phrase: str, posted: datetime | None, assignees: tuple[Any, ...], 
     }
 
 
-def _get(client: NotionClient, data_source_id: str, ref: str) -> JSON:
+def _get(client: NotionSource | NotionClient, data_source_id: str, ref: str) -> JSON:
     from t6.domain.job_order_rules import parse_telegram_key
     from t6.notion.job_orders import JobOrders
 
@@ -174,17 +175,17 @@ def _get(client: NotionClient, data_source_id: str, ref: str) -> JSON:
         record = None
     if record is not None:
         page = next((b["page_id"] for b in record["bindings"] if b["active"]), None)
-        fields = _order(orders.get(page)) if page else dict(record["fields"])
+        fields = _order(orders.get(page, freshness="live")) if page else dict(record["fields"])
         fields["notion_notes"] = fields.get("notes")
         fields.update(id=record["id"], t6_id=record["id"], page_id=page,
                       state=record["state"], history=record["history"], assignee_id=record["assignee_id"], assignee=people.get(record["assignee_id"]) if record["assignee_id"] else None, notes=record["notes"])
         return fields
     if parse_telegram_key(ref) is not None:
-        found = orders.find_by_telegram_key(ref)
+        found = orders.find_by_telegram_key(ref, freshness="live")
         if found is None:
             raise ValueError(f"no Job Order has the Telegram Key {ref}")
-        return _order(orders.get(found.page_id))
-    return _order(orders.get(ref))
+        return _order(orders.get(found.page_id, freshness="live"))
+    return _order(orders.get(ref, freshness="live"))
 
 
 def read_fields_file(path: Path) -> JSON:

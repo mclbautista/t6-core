@@ -12,7 +12,10 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from importlib.metadata import version
-from typing import Any, Callable, Mapping, cast
+from typing import TYPE_CHECKING, Any, Callable, Mapping, cast
+
+if TYPE_CHECKING:
+    from t6.notion.source import NotionSource
 
 from t6.domain.events import JobKind, JsonValue
 from urllib.parse import urlsplit
@@ -36,7 +39,8 @@ class VerbAPI:
                  privacy_registry: PrivacyRegistry | None = None, transcribe_rate: float = 0.4,
                  translate_enabled: bool = False, frameio_timeout: float = 60.0,
                  frameio_queue: Any = None, concern_observe_closes: bool = False,
-                 request_log: Callable[[str], None] | None = None, privacy_list: PrivacyList | None = None) -> None:
+                 request_log: Callable[[str], None] | None = None, privacy_list: PrivacyList | None = None,
+                 notion_source: NotionSource | None = None) -> None:
         import math
         if not math.isfinite(transcribe_rate) or transcribe_rate < 0:
             raise ValueError('Transcription rate must be finite and non-negative')
@@ -44,6 +48,8 @@ class VerbAPI:
                for secret, identity in secrets.items()):
             raise ValueError('Each API secret must bind to a Person or named service')
         self.people, self.queue, self.secrets, self.open_notion = people, queue, dict(secrets), open_notion
+        self._notion_source: NotionSource | None = notion_source
+        self._default_notion_source: NotionSource | None = None
         self.tap_app = tap_app
         self.llm_service = llm_service
         self.data_sources = dict(data_sources or {})
@@ -59,16 +65,34 @@ class VerbAPI:
                 for alias in verb.aliases:
                     self.routes['/v1/' + alias.replace(' ', '/')] = verb
 
+    @property
+    def notion_source(self) -> NotionSource:
+        """Server-owned `NotionSource` built lazily from `open_notion` and `$T6_NOTION_TOKEN` unless injected."""
+        source = getattr(self, '_notion_source', None)
+        if source is None:
+            from t6.notion.source import NotionSource
+            source = NotionSource(lambda: self.open_notion(os.environ.get('T6_NOTION_TOKEN', '')))
+            self._notion_source = source
+            self._default_notion_source = source
+        return source
+
+    @notion_source.setter
+    def notion_source(self, value: NotionSource | None) -> None:
+        self._notion_source = value
+
+    def _has_custom_source(self) -> bool:
+        source = getattr(self, '_notion_source', None)
+        return source is not None and source is not getattr(self, '_default_notion_source', None)
+
     def _data_gaps(self) -> dict[str, JsonValue]:
         """Projects whose Notion row has no name: the page ids, never a name, for the operator to fix in Notion."""
         token = os.environ.get('T6_NOTION_TOKEN')
-        if not token or not self.data_sources.get('projects'):
+        if (not token and not self._has_custom_source()) or not self.data_sources.get('projects'):
             return {}
         from t6.notion import NotionError
         from t6.notion.reads import ProjectReader
         try:
-            with self.open_notion(token) as client:
-                blank = sorted(p.page_id for p in ProjectReader(client, self.data_sources['projects']).list() if not p.name.strip())
+            blank = sorted(p.page_id for p in ProjectReader(self.notion_source, self.data_sources['projects']).list() if not p.name.strip())
         except (NotionError, OSError) as error:
             return {'data_gaps': {'unavailable': str(error)}}
         return {'data_gaps': {'projects_without_name': {'count': len(blank), 'page_ids': list(blank)}}}
@@ -833,11 +857,10 @@ class VerbAPI:
         from t6.notion.reads import ContactReader
         from t6.registry.core import normalize_page_id
         token, source = os.environ.get(TOKEN_VARIABLE), self.data_sources.get('contacts')
-        if not token or not source:
+        if (not token and not self._has_custom_source()) or not source:
             return None
         try:
-            with self.open_notion(token) as client:
-                found = Lookup(Index(contacts=ContactReader(client, source).list())).contact(mention)
+            found = Lookup(Index(contacts=ContactReader(self.notion_source, source).list())).contact(mention)
         except (NotionError, OSError, ValueError, KeyError):
             return None
         if found.entity is None or found.needs_review:
@@ -924,9 +947,9 @@ class VerbAPI:
         if noun == 'external-link':
             from t6.media import external_link_result
             return Done(result={'link': external_link_result(self.people.registry, inputs.system, inputs.kind, inputs.external_id)})
-        token = os.environ.get(TOKEN_VARIABLE)
-        if not token:
+        if not self._has_custom_source() and not os.environ.get(TOKEN_VARIABLE):
             return Refused(rule='config', reason='Notion token is not configured')
+        notion = self.notion_source
         refs = ProjectRefs(self.people.registry)
         def identity(page: str) -> str:
             return self.people.registry.bound_entity('notion', page) or page
@@ -966,210 +989,211 @@ class VerbAPI:
                 item[field] = [identity(page) for page in item[field]]
             return item
         try:
-            with self.open_notion(token) as client:
-                if noun == 'person':
-                    from t6.notion.reads import ContactReader
-                    from t6.cli_studio import _find_contacts
+            if noun == 'person':
+                from t6.notion.reads import ContactReader
+                from t6.cli_studio import _find_contacts
+                from uuid import UUID
+                contact_reader = ContactReader(notion, self.data_sources['contacts'])
+                def contact(c: Any) -> dict[str, Any]:
+                    item = asdict(c)
+                    item['t6_id'] = self.people.registry.bound_entity('notion', c.page_id)
+                    return item
+                if verb == 'list':
+                    people = [contact(c) for c in contact_reader.list()]
+                    kinds: dict[str, str] = {}
+                    if inputs.kind:
+                        with self.people.registry._transaction() as db:
+                            kinds = dict(db.execute('SELECT id, kind FROM persons').fetchall())
+                    return Done(result={'people': [c for c in people if (inputs.registered is None or (c['t6_id'] is not None) == inputs.registered)
+                                                   and (inputs.kind is None or kinds.get(c['t6_id']) == inputs.kind)]})
+                if verb == 'find':
+                    try:
+                        return Done(result=_find_contacts(contact_reader.list(), contact, inputs.mention, inputs.mentions, inputs.suggest, inputs.prefer_telegram))
+                    except ValueError as error:
+                        return Refused(rule='input', reason=str(error))
+                person = self.people.get(identity(inputs.person_id))
+                page = next((b['page_id'] for b in person['bindings'] if b['active']), None) if person else inputs.person_id
+                if not page:
+                    return Refused(rule='person', reason='Person has no active Contact binding')
+                if len(page) == 32:
+                    page = str(UUID(page))
+                if (notion.retrieve_page(page).get('parent') or {}).get('data_source_id') != self.data_sources['contacts']:
+                    return Refused(rule='person', reason='Contact not found')
+                item = contact(contact_reader.get(page))
+                if person:
+                    item.update({key: person[key] for key in ('kind', 'departments', 'roles', 'project_roles', 'shift', 'permissions', 'master_brief', 'active')})
+                return Done(result={'person': item})
+            if noun == 'studio':
+                source = notion.retrieve_data_source(self.data_sources['projects'])
+                runs = [{'text': part.get('plain_text', (part.get('text') or {}).get('content', '')),
+                         'bold': bool((part.get('annotations') or {}).get('bold'))}
+                        for part in source.get('description') or []]
+                return Done(result={'description': ''.join(run['text'] for run in runs), 'runs': runs})
+            if noun == 'departments':
+                from t6.notion.departments import get_departments
+                with notion.open_write_client() as client:
+                    return Done(result={'departments': [{'id': d.option_id, 'name': d.name} for d in get_departments(client, self.data_sources['job_orders'], include_misc=inputs.include_misc)]})
+            if noun == 'camera':
+                from t6.notion.cameras import get_cameras
+                with notion.open_write_client() as client:
+                    cameras = get_cameras(client, self.data_sources['cameras'], page_id=inputs.page_id)
+                return Done(result={'cameras': [{'page_id': c['id'], 'name': c['name'] or '', 'tags': c['tags']} for c in cameras]})
+            if noun == 'project':
+                projects = [project_result(p) for p in ProjectReader(notion, self.data_sources['projects']).list()]
+                def flags_of(project: Any, stated_dates: Mapping[str, Any]) -> dict[str, Any]:
+                    from dataclasses import replace
+                    from t6.domain.project_rules import date_flags, date_sanity, health_missing, missing_roles
+                    from t6.domain.studio_time import MANILA
+                    today = inputs.as_of or datetime.fromtimestamp(self.people.registry._clock(), MANILA).date()
+                    stated = {name: day for name, day in stated_dates.items() if getattr(project, name) is None}
+                    judged = replace(project, **{name: day for name, day in stated.items() if day is not None})
+                    flags = [{'kind': 'data_gap' if f.kind == 'missing' else f.kind, 'field': f.field, 'detail': f.kind, **({'days': f.days} if f.days is not None else {})}
+                             for f in date_flags(judged, today, inputs.lead_warning_days) if not (f.kind == 'missing' and f.field in stated)]
+                    if health_missing(project):
+                        flags.append({'kind': 'data_gap', 'field': 'health', 'detail': 'missing health update'})
+                    sanity = [{'kind': kind, 'first': first, 'second': second, 'first_date': first_date, 'second_date': second_date,
+                               'from_notes': stated.get(first) is not None or stated.get(second) is not None}
+                              for kind, first, second, first_date, second_date in date_sanity({name: getattr(judged, name) for name in ('playdate', 'submission_deadline', 'archival_deadline')})]
+                    return {'flags': flags, 'missing_roles': list(missing_roles(project)), 'sanity': sanity}
+                if verb == 'flags' and inputs.projects:
+                    by_page = {p.page_id.replace('-', '').lower(): p for p in projects}
+                    several = []
+                    for item in inputs.projects:
+                        pages = refs.pages(item.project)
+                        found = by_page.get((pages[0] if pages else item.project).replace('-', '').lower())
+                        several.append({'project': item.project, 'found': True, **flags_of(found, item.stated)} if found else {'project': item.project, 'found': False})
+                    return Done(result={'projects': several})
+                if verb in ('get', 'notes', 'flags'):
+                    pages = refs.pages(inputs.project)
+                    active = (pages[0] if pages else inputs.project).replace('-', '').lower()
+                    project = next((p for p in projects if p.page_id.replace('-', '').lower() == active), None)
+                    if verb == 'notes' and project:
+                        from t6.pm_notes import dated_lines
+                        from t6.domain.studio_time import MANILA
+                        return Done(result={'lines': dated_lines(project.pm_notes, datetime.fromtimestamp(self.people.registry._clock(), MANILA).date())})
+                    if verb == 'flags' and project:
+                        return Done(result=flags_of(project, inputs.stated))
+                    return Done(result={'project': read_project(project)}) if project else Refused(rule='project', reason='Project not found')
+                if verb == 'resolve':
+                    from t6.lookup import Index, Lookup
+                    from t6.cli_studio import _resolution
+                    lookup = Lookup(Index(projects=tuple(projects)))
+                    if inputs.in_text:
+                        found = lookup.project_in_text(inputs.text)
+                    else:
+                        found = lookup.project(inputs.text)
+                        if found.entity is None and not found.candidates:
+                            found = lookup.project(None, name=inputs.text)
+                    return Done(result=_resolution(found, asdict))
+                return Done(result={'projects': [read_project(p) for p in projects if (inputs.rotation is None or p.rotation == inputs.rotation)
+                            and (inputs.status is None or p.status == inputs.status)
+                            and (inputs.status_group is None or getattr(project_rules.status_gate(p.status), 'value', None) == inputs.status_group)]})
+            if noun == 'jo':
+                jo_reader = JobOrders(notion, self.data_sources['job_orders'])
+                if verb == 'get':
+                    from t6.job_order import JobOrderStore
+                    from t6.preview import PreviewTokens
                     from uuid import UUID
-                    contact_reader = ContactReader(client, self.data_sources['contacts'])
-                    def contact(c: Any) -> dict[str, Any]:
-                        item = asdict(c)
-                        item['t6_id'] = self.people.registry.bound_entity('notion', c.page_id)
-                        return item
-                    if verb == 'list':
-                        people = [contact(c) for c in contact_reader.list()]
-                        kinds: dict[str, str] = {}
-                        if inputs.kind:
-                            with self.people.registry._transaction() as db:
-                                kinds = dict(db.execute('SELECT id, kind FROM persons').fetchall())
-                        return Done(result={'people': [c for c in people if (inputs.registered is None or (c['t6_id'] is not None) == inputs.registered)
-                                                       and (inputs.kind is None or kinds.get(c['t6_id']) == inputs.kind)]})
-                    if verb == 'find':
-                        try:
-                            return Done(result=_find_contacts(contact_reader.list(), contact, inputs.mention, inputs.mentions, inputs.suggest, inputs.prefer_telegram))
-                        except ValueError as error:
-                            return Refused(rule='input', reason=str(error))
-                    person = self.people.get(identity(inputs.person_id))
-                    page = next((b['page_id'] for b in person['bindings'] if b['active']), None) if person else inputs.person_id
+                    record = JobOrderStore(self.people.registry, PreviewTokens('read-only')).get(inputs.ref)
+                    if record:
+                        page = next((b['page_id'] for b in record['bindings'] if b['active']), None)
+                        if page is None:
+                            # No Notion page yet (the poll after `jo raise`): the rule results come from the stored status.
+                            status = record['state']['status']
+                            group = status_group(status)
+                            return Done(result={'job_order': {
+                                **record['fields'], **record, 't6_id': record['id'],
+                                'status_group': group.value if group else None, 'active': is_active(status), 'done': is_done(status),
+                                'health_flags': list(health_flags(record['fields'].get('health'))),
+                                'project_ids': [record['project_id']] if record['project_id'] else []}})
+                    else:
+                        from t6.domain.job_order_rules import parse_telegram_key
+                        if parse_telegram_key(inputs.ref) is not None:
+                            matching_orders = jo_reader.find_all_by_telegram_key(inputs.ref, freshness='live')
+                            if len(matching_orders) > 1:
+                                from t6.verbs import Ambiguous
+                                return Ambiguous(candidates=[identity(o.page_id) for o in matching_orders])
+                            page = matching_orders[0].page_id if matching_orders else None
+                        else:
+                            page = inputs.ref
                     if not page:
-                        return Refused(rule='person', reason='Person has no active Contact binding')
+                        return Refused(rule='job_order', reason='Job Order has no active Notion page')
                     if len(page) == 32:
                         page = str(UUID(page))
-                    if (client.retrieve_page(page).get('parent') or {}).get('data_source_id') != self.data_sources['contacts']:
-                        return Refused(rule='person', reason='Contact not found')
-                    item = contact(contact_reader.get(page))
-                    if person:
-                        item.update({key: person[key] for key in ('kind', 'departments', 'roles', 'project_roles', 'shift', 'permissions', 'master_brief', 'active')})
-                    return Done(result={'person': item})
-                if noun == 'studio':
-                    source = client.retrieve_data_source(self.data_sources['projects'])
-                    runs = [{'text': part.get('plain_text', (part.get('text') or {}).get('content', '')),
-                             'bold': bool((part.get('annotations') or {}).get('bold'))}
-                            for part in source.get('description') or []]
-                    return Done(result={'description': ''.join(run['text'] for run in runs), 'runs': runs})
-                if noun == 'departments':
-                    from t6.notion.departments import get_departments
-                    return Done(result={'departments': [{'id': d.option_id, 'name': d.name} for d in get_departments(client, self.data_sources['job_orders'], include_misc=inputs.include_misc)]})
-                if noun == 'camera':
-                    from t6.notion.cameras import get_cameras
-                    cameras = get_cameras(client, self.data_sources['cameras'], page_id=inputs.page_id)
-                    return Done(result={'cameras': [{'page_id': c['id'], 'name': c['name'] or '', 'tags': c['tags']} for c in cameras]})
-                if noun == 'project':
-                    projects = [project_result(p) for p in ProjectReader(client, self.data_sources['projects']).list()]
-                    def flags_of(project: Any, stated_dates: Mapping[str, Any]) -> dict[str, Any]:
-                        from dataclasses import replace
-                        from t6.domain.project_rules import date_flags, date_sanity, health_missing, missing_roles
-                        from t6.domain.studio_time import MANILA
-                        today = inputs.as_of or datetime.fromtimestamp(self.people.registry._clock(), MANILA).date()
-                        stated = {name: day for name, day in stated_dates.items() if getattr(project, name) is None}
-                        judged = replace(project, **{name: day for name, day in stated.items() if day is not None})
-                        flags = [{'kind': 'data_gap' if f.kind == 'missing' else f.kind, 'field': f.field, 'detail': f.kind, **({'days': f.days} if f.days is not None else {})}
-                                 for f in date_flags(judged, today, inputs.lead_warning_days) if not (f.kind == 'missing' and f.field in stated)]
-                        if health_missing(project):
-                            flags.append({'kind': 'data_gap', 'field': 'health', 'detail': 'missing health update'})
-                        sanity = [{'kind': kind, 'first': first, 'second': second, 'first_date': first_date, 'second_date': second_date,
-                                   'from_notes': stated.get(first) is not None or stated.get(second) is not None}
-                                  for kind, first, second, first_date, second_date in date_sanity({name: getattr(judged, name) for name in ('playdate', 'submission_deadline', 'archival_deadline')})]
-                        return {'flags': flags, 'missing_roles': list(missing_roles(project)), 'sanity': sanity}
-                    if verb == 'flags' and inputs.projects:
-                        by_page = {p.page_id.replace('-', '').lower(): p for p in projects}
-                        several = []
-                        for item in inputs.projects:
-                            pages = refs.pages(item.project)
-                            found = by_page.get((pages[0] if pages else item.project).replace('-', '').lower())
-                            several.append({'project': item.project, 'found': True, **flags_of(found, item.stated)} if found else {'project': item.project, 'found': False})
-                        return Done(result={'projects': several})
-                    if verb in ('get', 'notes', 'flags'):
-                        pages = refs.pages(inputs.project)
-                        active = (pages[0] if pages else inputs.project).replace('-', '').lower()
-                        project = next((p for p in projects if p.page_id.replace('-', '').lower() == active), None)
-                        if verb == 'notes' and project:
-                            from t6.pm_notes import dated_lines
-                            from t6.domain.studio_time import MANILA
-                            return Done(result={'lines': dated_lines(project.pm_notes, datetime.fromtimestamp(self.people.registry._clock(), MANILA).date())})
-                        if verb == 'flags' and project:
-                            return Done(result=flags_of(project, inputs.stated))
-                        return Done(result={'project': read_project(project)}) if project else Refused(rule='project', reason='Project not found')
-                    if verb == 'resolve':
-                        from t6.lookup import Index, Lookup
-                        from t6.cli_studio import _resolution
-                        lookup = Lookup(Index(projects=tuple(projects)))
-                        if inputs.in_text:
-                            found = lookup.project_in_text(inputs.text)
-                        else:
-                            found = lookup.project(inputs.text)
-                            if found.entity is None and not found.candidates:
-                                found = lookup.project(None, name=inputs.text)
-                        return Done(result=_resolution(found, asdict))
-                    return Done(result={'projects': [read_project(p) for p in projects if (inputs.rotation is None or p.rotation == inputs.rotation)
-                                and (inputs.status is None or p.status == inputs.status)
-                                and (inputs.status_group is None or getattr(project_rules.status_gate(p.status), 'value', None) == inputs.status_group)]})
-                if noun == 'jo':
-                    jo_reader = JobOrders(client, self.data_sources['job_orders'])
-                    if verb == 'get':
-                        from t6.job_order import JobOrderStore
-                        from t6.preview import PreviewTokens
-                        from uuid import UUID
-                        record = JobOrderStore(self.people.registry, PreviewTokens('read-only')).get(inputs.ref)
-                        if record:
-                            page = next((b['page_id'] for b in record['bindings'] if b['active']), None)
-                            if page is None:
-                                # No Notion page yet (the poll after `jo raise`): the rule results come from the stored status.
-                                status = record['state']['status']
-                                group = status_group(status)
-                                return Done(result={'job_order': {
-                                    **record['fields'], **record, 't6_id': record['id'],
-                                    'status_group': group.value if group else None, 'active': is_active(status), 'done': is_done(status),
-                                    'health_flags': list(health_flags(record['fields'].get('health'))),
-                                    'project_ids': [record['project_id']] if record['project_id'] else []}})
-                        else:
-                            from t6.domain.job_order_rules import parse_telegram_key
-                            if parse_telegram_key(inputs.ref) is not None:
-                                matching_orders = jo_reader.find_all_by_telegram_key(inputs.ref)
-                                if len(matching_orders) > 1:
-                                    from t6.verbs import Ambiguous
-                                    return Ambiguous(candidates=[identity(o.page_id) for o in matching_orders])
-                                page = matching_orders[0].page_id if matching_orders else None
-                            else:
-                                page = inputs.ref
-                        if not page:
-                            return Refused(rule='job_order', reason='Job Order has no active Notion page')
-                        if len(page) == 32:
-                            page = str(UUID(page))
-                        if (client.retrieve_page(page).get('parent') or {}).get('data_source_id') != self.data_sources['job_orders']:
-                            return Refused(rule='job_order', reason='Job Order not found')
-                        order = jo_reader.get(page)
-                        result = order_result(order)
-                        if record:
-                            result['notion_notes'] = result.get('notes')
-                            result.update(id=record['id'], t6_id=record['id'], page_id=page,
-                                          assignee_id=record['assignee_id'], notes=record['notes'],
-                                          state=record['state'], history=record['history'])
-                        return Done(result={'job_order': result})
-                    if verb == 'find':
-                        from t6.job_order import find_forms
-                        located = find_forms(jo_reader, self.people.registry, inputs)
-                        if isinstance(located, Refused):
-                            return located
-                        orders = located
-                    else:
-                        orders = jo_reader.list(oldest_first=bool(inputs.no_project))
-                    if verb == 'list':
-                        if inputs.no_project and inputs.project:
-                            return Refused(rule='input', reason='Give project or no_project, not both')
-                        orders = tuple(o for o in orders if (not inputs.project or same_project(o.project_id, inputs.project))
-                            and (not inputs.no_project or not o.project_id)
-                            and (not inputs.assignee or any(normalize_page_id(identity(p)) == normalize_page_id(identity(inputs.assignee)) for p in o.assigned_ids))
-                            and (not inputs.status_group or (is_active(o.status) if inputs.status_group == 'active' else status_group(o.status) == inputs.status_group)))
-                    items = []
-                    for order in orders:
-                        items.append(order_result(order))
-                    return Done(result={'job_orders': items})
-                if noun == 'deliverable':
-                    pages = refs.pages(inputs.project)
-                    known = {d.page_id: d for page in pages for d in DeliverableReader(client, self.data_sources['deliverables']).for_project(page)}
-                    return Done(result={'candidates': [{'page_id': d.page_id, 'name': d.name, 'status': d.status, 'deliverable_class': d.deliverable_class} for d in known.values()]})
-                since = date.fromisoformat(inputs.since) if inputs.since else None
-                notes = [note_from_page(p) for p in client.query_data_source(self.data_sources['meeting_notes']) if is_live(p)]
-                before = date.fromisoformat(inputs.before) if inputs.before else None
-                def matches_note(n: Any) -> bool:
-                    day = n.meeting_date.date() if isinstance(n.meeting_date, datetime) else n.meeting_date
-                    return bool((not inputs.project or any(same_project(p, inputs.project) for p in n.project_ids))
-                        and (since is None or (day is not None and day >= since))
-                        and (before is None or (day is not None and day < before))
-                        and (inputs.title is None or n.name == inputs.title)
-                        and (inputs.title_prefix is None or n.name.startswith(inputs.title_prefix))
-                        and (inputs.ready_to_send is None or (n.ready_to_send and n.sent_at is None) == inputs.ready_to_send))
-                notes = [n for n in notes if matches_note(n)]
-                if inputs.latest:
-                    def meeting_day(n: Any) -> Any:
-                        return n.meeting_date.date() if isinstance(n.meeting_date, datetime) else n.meeting_date
-                    dated = [n for n in notes if meeting_day(n) is not None]
-                    notes = [max(dated, key=lambda n: (meeting_day(n), n.last_edited.timestamp() if n.last_edited else 0))] if dated else []
-                def blocks(parent: str) -> list[dict[str, Any]]:
-                    result = []
-                    for block in client.list_block_children(parent):
-                        kind = block.get('type', '')
-                        content = block.get(kind) or {}
-                        parts = content.get('rich_text') or []
-                        text = ''.join(part.get('plain_text', (part.get('text') or {}).get('content', '')) for part in parts)
-                        spans = []
-                        for part in parts:
-                            annotations = part.get('annotations') or {}
-                            spans.append({'text': part.get('plain_text', (part.get('text') or {}).get('content', '')),
-                                          **{key: bool(annotations.get(key)) for key in ('bold', 'italic', 'underline', 'strikethrough', 'code')},
-                                          'url': part.get('href') or ((part.get('text') or {}).get('link') or {}).get('url')})
-                        result.append({'kind': kind, 'text': text, 'spans': spans,
-                                       'checked': content.get('checked') if kind == 'to_do' else None,
-                                       'children': blocks(block['id']) if block.get('has_children') else []})
-                    return result
+                    if (notion.retrieve_page(page, freshness='live').get('parent') or {}).get('data_source_id') != self.data_sources['job_orders']:
+                        return Refused(rule='job_order', reason='Job Order not found')
+                    order = jo_reader.get(page, freshness='live')
+                    result = order_result(order)
+                    if record:
+                        result['notion_notes'] = result.get('notes')
+                        result.update(id=record['id'], t6_id=record['id'], page_id=page,
+                                      assignee_id=record['assignee_id'], notes=record['notes'],
+                                      state=record['state'], history=record['history'])
+                    return Done(result={'job_order': result})
+                if verb == 'find':
+                    from t6.job_order import find_forms
+                    located = find_forms(jo_reader, self.people.registry, inputs)
+                    if isinstance(located, Refused):
+                        return located
+                    orders = located
+                else:
+                    orders = jo_reader.list(oldest_first=bool(inputs.no_project))
+                if verb == 'list':
+                    if inputs.no_project and inputs.project:
+                        return Refused(rule='input', reason='Give project or no_project, not both')
+                    orders = tuple(o for o in orders if (not inputs.project or same_project(o.project_id, inputs.project))
+                        and (not inputs.no_project or not o.project_id)
+                        and (not inputs.assignee or any(normalize_page_id(identity(p)) == normalize_page_id(identity(inputs.assignee)) for p in o.assigned_ids))
+                        and (not inputs.status_group or (is_active(o.status) if inputs.status_group == 'active' else status_group(o.status) == inputs.status_group)))
                 items = []
-                for note in notes:
-                    item = asdict(note)
-                    item['project_ids'] = [refs.identity(page) or page for page in note.project_ids]
-                    item['body'] = blocks(note.page_id) if inputs.include_body else []
-                    items.append(item)
-                return Done(result={'meeting_notes': items})
+                for order in orders:
+                    items.append(order_result(order))
+                return Done(result={'job_orders': items})
+            if noun == 'deliverable':
+                pages = refs.pages(inputs.project)
+                known = {d.page_id: d for page in pages for d in DeliverableReader(notion, self.data_sources['deliverables']).for_project(page)}
+                return Done(result={'candidates': [{'page_id': d.page_id, 'name': d.name, 'status': d.status, 'deliverable_class': d.deliverable_class} for d in known.values()]})
+            since = date.fromisoformat(inputs.since) if inputs.since else None
+            notes = [note_from_page(p) for p in notion.query_data_source(self.data_sources['meeting_notes']) if is_live(p)]
+            before = date.fromisoformat(inputs.before) if inputs.before else None
+            def matches_note(n: Any) -> bool:
+                day = n.meeting_date.date() if isinstance(n.meeting_date, datetime) else n.meeting_date
+                return bool((not inputs.project or any(same_project(p, inputs.project) for p in n.project_ids))
+                    and (since is None or (day is not None and day >= since))
+                    and (before is None or (day is not None and day < before))
+                    and (inputs.title is None or n.name == inputs.title)
+                    and (inputs.title_prefix is None or n.name.startswith(inputs.title_prefix))
+                    and (inputs.ready_to_send is None or (n.ready_to_send and n.sent_at is None) == inputs.ready_to_send))
+            notes = [n for n in notes if matches_note(n)]
+            if inputs.latest:
+                def meeting_day(n: Any) -> Any:
+                    return n.meeting_date.date() if isinstance(n.meeting_date, datetime) else n.meeting_date
+                dated = [n for n in notes if meeting_day(n) is not None]
+                notes = [max(dated, key=lambda n: (meeting_day(n), n.last_edited.timestamp() if n.last_edited else 0))] if dated else []
+            def blocks(parent: str) -> list[dict[str, Any]]:
+                result = []
+                for block in notion.list_block_children(parent):
+                    kind = block.get('type', '')
+                    content = block.get(kind) or {}
+                    parts = content.get('rich_text') or []
+                    text = ''.join(part.get('plain_text', (part.get('text') or {}).get('content', '')) for part in parts)
+                    spans = []
+                    for part in parts:
+                        annotations = part.get('annotations') or {}
+                        spans.append({'text': part.get('plain_text', (part.get('text') or {}).get('content', '')),
+                                      **{key: bool(annotations.get(key)) for key in ('bold', 'italic', 'underline', 'strikethrough', 'code')},
+                                      'url': part.get('href') or ((part.get('text') or {}).get('link') or {}).get('url')})
+                    result.append({'kind': kind, 'text': text, 'spans': spans,
+                                   'checked': content.get('checked') if kind == 'to_do' else None,
+                                   'children': blocks(block['id']) if block.get('has_children') else []})
+                return result
+            items = []
+            for note in notes:
+                item = asdict(note)
+                item['project_ids'] = [refs.identity(page) or page for page in note.project_ids]
+                item['body'] = blocks(note.page_id) if inputs.include_body else []
+                items.append(item)
+            return Done(result={'meeting_notes': items})
         except (KeyError, ValueError, OSError, NotionError):
             return Refused(rule='read', reason='Read failed; check the input and server configuration')
 
@@ -1185,27 +1209,27 @@ class VerbAPI:
             from pathlib import Path
             if (noun, verb) == ('jo', 'format'):
                 return Done(result=_format(inputs.file.read_text(encoding='utf-8'), date.fromisoformat(inputs.date) if inputs.date else None))
-            token = os.environ.get(TOKEN_VARIABLE)
-            if not token:
+            if not self._has_custom_source() and not os.environ.get(TOKEN_VARIABLE):
                 return Refused(rule='credentials', reason=f'set {TOKEN_VARIABLE}')
+            notion = self.notion_source
             sources = _read_data_sources(inputs.data_sources)
             result: Any
-            with self.open_notion(token) as client:
-                if (noun, verb) == ('jo', 'get'):
-                    result = _get(client, sources['job_orders'], inputs.ref)
-                elif (noun, verb) == ('person', 'find'):
-                    result = _contacts_find(client, sources['contacts'], inputs.mention, inputs.mentions, inputs.suggest, inputs.prefer_telegram)
-                    for found in result.get('results', [result]):
-                        for item in ([found['match']] if found['match'] else []) + found['candidates']:
-                            item['t6_id'] = self.people.registry.bound_entity('notion', item['id'])
-                elif (noun, verb) == ('project', 'resolve'):
-                    result = _projects_resolve(client, sources['projects'], inputs.text,
-                                               inputs.registry_db or Path(os.environ.get('T6_REGISTRY_DB', 't6-registry.sqlite')), inputs.in_text)
-                elif (noun, verb) == ('camera', 'get'):
-                    from t6.notion.cameras import get_cameras
+            if (noun, verb) == ('jo', 'get'):
+                result = _get(notion, sources['job_orders'], inputs.ref)
+            elif (noun, verb) == ('person', 'find'):
+                result = _contacts_find(notion, sources['contacts'], inputs.mention, inputs.mentions, inputs.suggest, inputs.prefer_telegram)
+                for found in result.get('results', [result]):
+                    for item in ([found['match']] if found['match'] else []) + found['candidates']:
+                        item['t6_id'] = self.people.registry.bound_entity('notion', item['id'])
+            elif (noun, verb) == ('project', 'resolve'):
+                result = _projects_resolve(notion, sources['projects'], inputs.text,
+                                           inputs.registry_db or Path(os.environ.get('T6_REGISTRY_DB', 't6-registry.sqlite')), inputs.in_text)
+            elif (noun, verb) == ('camera', 'get'):
+                from t6.notion.cameras import get_cameras
+                with notion.open_write_client() as client:
                     result = get_cameras(client, sources['cameras'], page_id=inputs.page_id)
-                else:
-                    return Refused(rule='verb', reason='Verb has no registered handler')
+            else:
+                return Refused(rule='verb', reason='Verb has no registered handler')
             return Done(result=result)
         except (OSError, ValueError, KeyError, ImportError) as error:
             return Refused(rule='read', reason=str(error))

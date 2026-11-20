@@ -18,6 +18,7 @@ from t6.cli import DEFAULT_REGISTRY_DB, REGISTRY_DB_VARIABLE, TOKEN_VARIABLE, _f
 if TYPE_CHECKING:
     from t6.domain import Contact, Project
     from t6.lookup import Candidate, Resolution
+    from t6.notion.source import NotionSource
     from t6.notion.sync import NotionClient
 
 JSON = dict[str, Any]
@@ -182,7 +183,7 @@ def _find_contacts(
 
 
 def _contacts_find(
-    client: NotionClient,
+    client: NotionSource | NotionClient,
     data_source_id: str,
     mention: str | None,
     mentions: Sequence[str] | None = None,
@@ -194,7 +195,13 @@ def _contacts_find(
     return _find_contacts(ContactReader(client, data_source_id).list(), _contact, mention, mentions, suggest, prefer_telegram)
 
 
-def _projects_resolve(client: NotionClient, data_source_id: str, text: str, registry_db: Path, in_text: bool = False) -> JSON:
+def _projects_resolve(
+    client: NotionSource | NotionClient,
+    data_source_id: str,
+    text: str,
+    registry_db: Path,
+    in_text: bool = False,
+) -> JSON:
     from t6.lookup import Index, Lookup
     from t6.notion.reads import ProjectReader
 
