@@ -18,6 +18,15 @@ from t6.llm.decisions import (
 )
 from t6.llm.policy import DataPolicy, Masking, Retention
 from t6.llm.result import Failed, Ok, Reason, Result, ScriptPhase, ScriptRun, Tokens, Trace
+from t6.llm.skill import (
+    OnError,
+    ScriptHook,
+    ScriptOutcome,
+    Skill,
+    SkillError,
+    ToolScript,
+    run_script,
+)
 from t6.llm.task import (
     DEFAULT_RATE_LIMIT_WAIT,
     DEFAULT_TIMEOUT,
@@ -63,6 +72,7 @@ __all__ = [
     "Message",
     "MissingSession",
     "Ok",
+    "OnError",
     "OpenAIChat",
     "OpenRouterDecisions",
     "Probabilities",
@@ -75,14 +85,20 @@ __all__ = [
     "Request",
     "Result",
     "Retention",
+    "ScriptHook",
+    "ScriptOutcome",
     "ScriptPhase",
     "ScriptRun",
+    "Skill",
+    "SkillError",
     "Task",
     "Tokens",
     "ToolCall",
+    "ToolScript",
     "ToolSpec",
     "Trace",
     "UnmaskedInput",
     "candidate_key",
     "run",
+    "run_script",
 ]
