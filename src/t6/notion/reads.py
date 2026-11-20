@@ -19,7 +19,7 @@ from t6.notion import codec
 from t6.domain import Contact, Deliverable, Project
 from t6.notion.generated import ContactsRow, DeliverablesRow, ProjectsRow, StudiosRow
 from t6.notion.model import NotionModel
-from t6.notion.source import Freshness, NotionSource, as_source
+from t6.notion.source import Freshness, NotionSource, as_source, last_read_from_mirror
 from t6.notion.sync import NotionClient
 
 JSON = dict[str, Any]
@@ -173,9 +173,16 @@ class DeliverableReader:
 
     def for_project(self, project_id: str, *, freshness: Freshness = "mirror") -> tuple[Deliverable, ...]:
         """The Deliverables related to the Project page `project_id`."""
+        query_filter = {"property": _key(DeliverablesRow, "projects"), "relation": {"contains": project_id}}
         pages = self._notion.query_data_source(
             self._source,
-            filter={"property": _key(DeliverablesRow, "projects"), "relation": {"contains": project_id}},
+            filter=query_filter,
             freshness=freshness,
         )
+        if not pages and freshness == "mirror" and last_read_from_mirror():
+            pages = self._notion.query_data_source(
+                self._source,
+                filter=query_filter,
+                freshness="live",
+            )
         return tuple(deliverable_from_row(DeliverablesRow.from_page(page)) for page in pages)

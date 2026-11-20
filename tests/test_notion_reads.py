@@ -349,6 +349,7 @@ class NotionSourceTests(unittest.TestCase):
         self.assertEqual(
             [call for call in source.calls if call[0] in ("retrieve_page", "list_block_children")],
             [
+                ("retrieve_page", page_id, "live"),
                 ("list_block_children", page_id, "live"),
                 ("retrieve_page", page_id, "live"),
                 ("list_block_children", page_id, "live"),

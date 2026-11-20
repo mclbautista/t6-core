@@ -89,6 +89,32 @@ class VerbAPI:
         source = getattr(self, '_notion_source', None)
         return source is not None and source is not getattr(self, '_default_notion_source', None)
 
+    def _queue_mirror_refresh(
+        self,
+        page_id: str | None,
+        *,
+        data_source_key: str | None = None,
+        data_source_id: str | None = None,
+    ) -> None:
+        if not page_id or not page_id.strip():
+            return
+        mirror = getattr(self, '_mirror', None) or getattr(getattr(self, '_notion_source', None), '_mirror', None)
+        if mirror is None:
+            return
+        import secrets
+        from t6.registry.core import normalize_page_id
+        norm = normalize_page_id(page_id)
+        if not norm:
+            return
+        target = self.tap_app._inside if self.tap_app is not None else self.queue
+        dedupe_key = f'notion.mirror_refresh:{norm}:{secrets.token_hex(8)}'
+        payload: dict[str, JsonValue] = {'page_id': page_id}
+        if data_source_key is not None:
+            payload['data_source_key'] = data_source_key
+        if data_source_id is not None:
+            payload['data_source_id'] = data_source_id
+        target.submit(MAIN_QUEUE, JobKind.NOTION_MIRROR_REFRESH.value, dedupe_key, payload)
+
     def _data_gaps(self) -> dict[str, JsonValue]:
         """Projects whose Notion row has no name: the page ids, never a name, for the operator to fix in Notion."""
         token = os.environ.get('T6_NOTION_TOKEN')
@@ -537,7 +563,10 @@ class VerbAPI:
         if isinstance(saved, Rejected):
             return Refused(rule='notion', reason=str(saved))
         if isinstance(saved, WriteAmbiguous):
+            if saved.page_id:
+                self._queue_mirror_refresh(saved.page_id, data_source_key='contacts', data_source_id=self.data_sources['contacts'])
             return Ambiguous(candidates=[{'pending': True, 'reason': str(saved), 'page_id': saved.page_id}])
+        self._queue_mirror_refresh(saved.page_id, data_source_key='contacts', data_source_id=self.data_sources['contacts'])
         outcome = write(inputs.confirm)
         if isinstance(outcome, Refused):  # the ID was taken between the check and the commit
             return Ambiguous(candidates=[{'pending': True, 'reason': f'The Contact was updated but the registry refused: {outcome.reason}', 'page_id': page}])
@@ -606,10 +635,13 @@ class VerbAPI:
                     db.execute('DELETE FROM verb_requests WHERE idempotency_key=?', (key,))
                 return Refused(rule='notion', reason=str(saved))
             if isinstance(saved, WriteAmbiguous):
+                if saved.page_id:
+                    self._queue_mirror_refresh(saved.page_id, data_source_key='contacts', data_source_id=source)
                 pending = {'pending': True, 'reason': str(saved), 'page_id': saved.page_id}
                 with registry._transaction() as db:
                     db.execute('UPDATE verb_requests SET result=? WHERE idempotency_key=?', (json.dumps(pending), key))
                 return Ambiguous(candidates=[pending])
+            self._queue_mirror_refresh(saved.page_id, data_source_key='contacts', data_source_id=source)
             with registry._transaction() as db:
                 if held(db):
                     pending = {'pending': True, 'reason': 'The Contacts page was created but the Telegram ID was taken meanwhile; register it with person add', 'page_id': saved.page_id}
@@ -687,8 +719,10 @@ class VerbAPI:
                 if isinstance(saved, WriteAmbiguous):
                     if saved.page_id:
                         audit('meeting_note_create', saved.page_id)
+                        self._queue_mirror_refresh(saved.page_id, data_source_key='meeting_notes', data_source_id=source)
                     return Ambiguous(candidates=[{'pending': True, 'reason': str(saved), 'page_id': saved.page_id}])
                 audit('meeting_note_create', saved.page_id)
+                self._queue_mirror_refresh(saved.page_id, data_source_key='meeting_notes', data_source_id=source)
                 return done(saved)
             page = notion.retrieve_page(inputs.note, freshness='live')
             if normalize_page_id((page.get('parent') or {}).get('data_source_id') or '') != normalize_page_id(source):
@@ -702,14 +736,17 @@ class VerbAPI:
                 if isinstance(saved, Rejected):
                     return Refused(rule='notion', reason=str(saved))
                 if isinstance(saved, WriteAmbiguous):
+                    self._queue_mirror_refresh(note.page_id, data_source_key='meeting_notes', data_source_id=source)
                     return Ambiguous(candidates=[{'pending': True, 'reason': str(saved), 'page_id': note.page_id}])
                 audit('meeting_note_sent', note.page_id)
+                self._queue_mirror_refresh(note.page_id, data_source_key='meeting_notes', data_source_id=source)
                 return done(saved)
             if note.sent_at is not None:
                 return Refused(rule='sent', reason='The note is already sent')
             if verb == 'trash':
                 notes.trash(note.page_id)
                 audit('meeting_note_trash', note.page_id)
+                self._queue_mirror_refresh(note.page_id, data_source_key='meeting_notes', data_source_id=source)
             else:
                 if page.get('in_trash') or page.get('archived'):
                     return Refused(rule='sent', reason='The note is in the trash')
@@ -717,6 +754,7 @@ class VerbAPI:
                     notes.append(note.page_id, notion_blocks(inputs.blocks))
                 finally:
                     audit('meeting_note_append', note.page_id)  # a refused later chunk leaves the earlier ones written
+                    self._queue_mirror_refresh(note.page_id, data_source_key='meeting_notes', data_source_id=source)
             return done(note_from_page(notion.retrieve_page(note.page_id, freshness='live')))
         except (ValueError, KeyError, OSError, NotionError) as error:
             return Refused(rule='input', reason=str(error))
@@ -751,6 +789,8 @@ class VerbAPI:
             results = []
             for facts_item, found in zip(facts, fleet.sync(facts, apply=nonce is not None), strict=True):
                 written = found.written
+                if nonce is not None and found.page_id and written is not None and not isinstance(written, Rejected):
+                    self._queue_mirror_refresh(found.page_id, data_source_key='bays', data_source_id=source)
                 results.append(MachineSyncResult(
                     name=found.name, status=found.status, page_id=found.page_id,
                     changes=[MachineFactChange(fact=change.fact, old=change.old, new=change.new) for change in found.changes],
@@ -798,6 +838,9 @@ class VerbAPI:
                         if result.written == 'saved' and result.page_id:
                             _audit(db, result.page_id, 'machine_edit', actor, self.people.registry._clock(),
                                    {change.fact: change.old for change in result.changes}, {change.fact: change.new for change in result.changes})
+                for result in results:
+                    if result.written == 'saved' and result.page_id:
+                        self._queue_mirror_refresh(result.page_id, data_source_key='bays', data_source_id=source)
             plan = {'machines': [result.model_dump(mode='json') for result in results]}
             return self.people.tokens.create('machine edit', actor, values, plan) if nonce is None else Done(result=plan)
         except (ValueError, KeyError, OSError, NotionError, FleetSafetyError) as error:
@@ -844,7 +887,10 @@ class VerbAPI:
                 db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps({'pending': True, 'reason': 'Notion write may have happened'})))
             saved = update_row(notion, CamerasRow, inputs.page_id, fields)
             if isinstance(saved, (Rejected, WriteAmbiguous)):
+                if isinstance(saved, WriteAmbiguous):
+                    self._queue_mirror_refresh(saved.page_id or inputs.page_id, data_source_key='cameras', data_source_id=source)
                 return Ambiguous(candidates=[{'reason': str(saved)}])
+            self._queue_mirror_refresh(saved.page_id, data_source_key='cameras', data_source_id=source)
             result = camera_to_json(saved)
             with self.people.registry._transaction() as db:
                 db.execute('UPDATE verb_requests SET result=? WHERE idempotency_key=?', (json.dumps(result), key))

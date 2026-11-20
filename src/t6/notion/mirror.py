@@ -13,6 +13,7 @@ import sqlite3
 import sys
 import time
 from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote
 
 from t6.registry.core import normalize_page_id
 
@@ -29,7 +30,7 @@ DEFAULT_POLL_SECONDS = 60.0
 DEFAULT_RESCAN_SECONDS = 1800.0
 OVERLAP_SECONDS = 60.0
 MIN_REQUEST_INTERVAL_SECONDS = 0.4
-MIRROR_PHASE_SOURCES: frozenset[str] = frozenset({"projects", "contacts"})
+MIRROR_PHASE_SOURCES: frozenset[str] = frozenset({"projects", "contacts", "job_orders", "deliverables"})
 
 __all__ = [
     "DEFAULT_MAX_AGE_SECONDS",
@@ -632,8 +633,170 @@ class MirrorWriter:
             raise
         return self.upsert_page(page, active_data_source_ids=active_data_source_ids)
 
+    def refresh_page(
+        self,
+        notion: NotionSource,
+        payload: Mapping[str, Any],
+        *,
+        active_data_source_ids: Collection[str] | None = None,
+    ) -> str:
+        """Fetch `page_id` live after an API verb Notion write and update or mark deleted in mirror."""
+        from t6.notion.errors import NotionError
+
+        raw_page_id = payload.get("page_id")
+        page_id = str(raw_page_id).strip() if raw_page_id is not None else ""
+        if not page_id:
+            return "ignored"
+        try:
+            page = notion.retrieve_page(page_id, freshness="live")
+        except NotionError as error:
+            if error.status == 404:
+                return self.mark_page_deleted(
+                    page_id,
+                    active_data_source_ids=active_data_source_ids,
+                )
+            raise
+        raw_key = payload.get("data_source_key")
+        source_key = str(raw_key) if isinstance(raw_key, str) else ""
+        return self.upsert_page(
+            page,
+            active_data_source_ids=active_data_source_ids,
+            source_key=source_key,
+        )
+
     def close(self) -> None:
         """No persistent connection is kept between operations."""
+
+
+def _matches_timestamp(raw_value: object, condition: Mapping[str, Any]) -> bool:
+    edited = _parse_iso(raw_value if isinstance(raw_value, str) else None)
+    if edited is None:
+        return False
+    checks: tuple[tuple[str, Callable[[datetime, datetime], bool]], ...] = (
+        ("on_or_after", lambda a, b: a >= b),
+        ("after", lambda a, b: a > b),
+        ("on_or_before", lambda a, b: a <= b),
+        ("before", lambda a, b: a < b),
+        ("equals", lambda a, b: a == b),
+    )
+    for op, compare in checks:
+        if op in condition:
+            bound = _parse_iso(condition[op] if isinstance(condition[op], str) else None)
+            if bound is None or not compare(edited, bound):
+                return False
+    return True
+
+
+def _find_property(page: Mapping[str, Any], prop_key: str) -> Mapping[str, Any]:
+    props = page.get("properties")
+    if not isinstance(props, Mapping):
+        return {}
+    direct = props.get(prop_key)
+    if isinstance(direct, Mapping):
+        return direct
+    wanted = unquote(prop_key)
+    for prop in props.values():
+        if isinstance(prop, Mapping) and unquote(str(prop.get("id", ""))) == wanted:
+            return prop
+    return {}
+
+
+def _matches_filter(page: Mapping[str, Any], query_filter: Mapping[str, Any] | None) -> bool:
+    if not query_filter:
+        return True
+    if "and" in query_filter:
+        parts = query_filter["and"]
+        return isinstance(parts, Sequence) and all(
+            isinstance(part, Mapping) and _matches_filter(page, part) for part in parts
+        )
+    if "or" in query_filter:
+        parts = query_filter["or"]
+        return isinstance(parts, Sequence) and any(
+            isinstance(part, Mapping) and _matches_filter(page, part) for part in parts
+        )
+    ts_kind = query_filter.get("timestamp")
+    if ts_kind in ("last_edited_time", "created_time") and isinstance(query_filter.get(ts_kind), Mapping):
+        return _matches_timestamp(page.get(ts_kind), query_filter[ts_kind])
+    prop_key = query_filter.get("property")
+    if not isinstance(prop_key, str):
+        return True
+    prop = _find_property(page, prop_key)
+    if "relation" in query_filter and isinstance(query_filter["relation"], Mapping):
+        rel_cond = query_filter["relation"]
+        items = prop.get("relation") or ()
+        if "contains" in rel_cond:
+            wanted_id = normalize_page_id(str(rel_cond["contains"]))
+            return any(
+                isinstance(item, Mapping) and normalize_page_id(str(item.get("id") or "")) == wanted_id
+                for item in items
+            )
+        if "is_empty" in rel_cond:
+            return (len(items) == 0) == bool(rel_cond["is_empty"])
+        if "is_not_empty" in rel_cond:
+            return (len(items) > 0) == bool(rel_cond["is_not_empty"])
+    for kind in ("select", "status", "rich_text", "title", "number", "checkbox"):
+        kind_cond = query_filter.get(kind)
+        if not isinstance(kind_cond, Mapping):
+            continue
+        raw_val = prop.get(kind)
+        value: Any = raw_val
+        if kind in ("select", "status"):
+            value = raw_val.get("name") if isinstance(raw_val, Mapping) else None
+        elif kind in ("rich_text", "title"):
+            value = "".join(
+                str(part.get("plain_text", "")) for part in (raw_val or ()) if isinstance(part, Mapping)
+            )
+        if "equals" in kind_cond:
+            return bool(value == kind_cond["equals"])
+        if "does_not_equal" in kind_cond:
+            return bool(value != kind_cond["does_not_equal"])
+        if kind in ("rich_text", "title"):
+            text = str(value or "")
+            if "contains" in kind_cond:
+                return str(kind_cond["contains"]) in text
+            if "starts_with" in kind_cond:
+                return text.startswith(str(kind_cond["starts_with"]))
+            if "ends_with" in kind_cond:
+                return text.endswith(str(kind_cond["ends_with"]))
+        if "is_empty" in kind_cond:
+            empty = value is None or value == ""
+            return empty == bool(kind_cond["is_empty"])
+        if "is_not_empty" in kind_cond:
+            empty = value is None or value == ""
+            return (not empty) == bool(kind_cond["is_not_empty"])
+    if "date" in query_filter and isinstance(query_filter["date"], Mapping):
+        date_cond = query_filter["date"]
+        date_val = prop.get("date")
+        has_start = isinstance(date_val, Mapping) and bool(date_val.get("start"))
+        if "is_empty" in date_cond:
+            return (not has_start) == bool(date_cond["is_empty"])
+        if "is_not_empty" in date_cond:
+            return has_start == bool(date_cond["is_not_empty"])
+    return True
+
+
+def _sort_pages(pages: list[JSON], sorts: Sequence[Mapping[str, Any]] | None) -> list[JSON] | None:
+    if not sorts:
+        return pages
+    for spec in reversed(sorts):
+        if not isinstance(spec, Mapping):
+            return None
+        field = spec.get("timestamp")
+        if field not in ("created_time", "last_edited_time"):
+            return None
+        direction = str(spec.get("direction", "ascending")).lower()
+        if direction not in ("ascending", "descending"):
+            return None
+        reverse = direction == "descending"
+        sentinel = float("-inf") if reverse else float("inf")
+
+        def sort_key(page: JSON, *, _field: str = str(field), _sentinel: float = sentinel) -> float:
+            raw = page.get(_field)
+            dt = _parse_iso(raw if isinstance(raw, str) else None)
+            return dt.timestamp() if dt is not None else _sentinel
+
+        pages.sort(key=sort_key, reverse=reverse)
+    return pages
 
 
 class MirrorReader:
@@ -687,8 +850,16 @@ class MirrorReader:
         max_age = self._max_age_for(ds_key, float(row[2]) if row[2] is not None else None)
         return (now - float(row[1])) <= max_age
 
-    def query_data_source(self, data_source_id: str) -> list[JSON] | None:
+    def query_data_source(
+        self,
+        data_source_id: str,
+        *,
+        filter: JSON | None = None,
+        sorts: list[JSON] | None = None,
+        page_size: int = 100,
+    ) -> list[JSON] | None:
         """Return live mirrored pages for `data_source_id`, or None when unavailable/not ready/stale."""
+        _ = page_size
         ds_key = normalize_page_id(data_source_id)
         if not self._is_enabled_ds(ds_key):
             return None
@@ -704,7 +875,9 @@ class MirrorReader:
                 "WHERE data_source_id = ? AND deleted = 0 AND archived = 0 ORDER BY rowid",
                 (ds_key,),
             ).fetchall()
-            return [json.loads(str(r[0])) for r in rows]
+            pages = [json.loads(str(r[0])) for r in rows]
+            matched = [page for page in pages if _matches_filter(page, filter)]
+            return _sort_pages(matched, sorts)
         except (sqlite3.Error, OSError, json.JSONDecodeError, ValueError):
             return None
         finally:

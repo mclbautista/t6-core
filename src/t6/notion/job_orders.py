@@ -22,7 +22,7 @@ from t6.notion.errors import NotionError
 from t6.notion.generated import JobOrdersRow
 from t6.notion.reads import is_live, page_edited
 from t6.notion.schema import load_snapshot
-from t6.notion.source import Freshness, NotionSource, as_source
+from t6.notion.source import Freshness, NotionSource, as_source, last_read_from_mirror
 from t6.notion.sync import NotionClient
 from t6.notion.writes import Ambiguous, Rejected, create_row
 from t6.privacy.withhold import withhold
@@ -82,14 +82,13 @@ class JobOrders:
 
     def find_by_telegram_key(self, telegram_key: str, *, freshness: Freshness = "mirror") -> JobOrder | None:
         """The Job Order whose Telegram Key is exactly `telegram_key`, or None. The first one, if several."""
-        rows = self._notion.query_data_source(
-            self._source,
-            filter={
-                "property": JobOrdersRow.notion_id("telegram_key") or JobOrdersRow.notion_name("telegram_key"),
-                "rich_text": {"equals": telegram_key},
-            },
-            freshness=freshness,
-        )
+        query_filter = {
+            "property": JobOrdersRow.notion_id("telegram_key") or JobOrdersRow.notion_name("telegram_key"),
+            "rich_text": {"equals": telegram_key},
+        }
+        rows = self._notion.query_data_source(self._source, filter=query_filter, freshness=freshness)
+        if not rows and freshness == "mirror" and last_read_from_mirror():
+            rows = self._notion.query_data_source(self._source, filter=query_filter, freshness="live")
         return self._read(rows[0]) if rows else None
 
     def find_all_by_telegram_key(self, telegram_key: str, *, freshness: Freshness = "mirror") -> tuple[JobOrder, ...]:
@@ -97,15 +96,24 @@ class JobOrders:
 
         More than one means the key was written twice; the caller decides what to do about it.
         """
+        query_filter = {
+            "property": JobOrdersRow.notion_id("telegram_key") or JobOrdersRow.notion_name("telegram_key"),
+            "rich_text": {"equals": telegram_key},
+        }
+        sorts = [{"timestamp": "created_time", "direction": "ascending"}]
         rows = self._notion.query_data_source(
             self._source,
-            filter={
-                "property": JobOrdersRow.notion_id("telegram_key") or JobOrdersRow.notion_name("telegram_key"),
-                "rich_text": {"equals": telegram_key},
-            },
-            sorts=[{"timestamp": "created_time", "direction": "ascending"}],
+            filter=query_filter,
+            sorts=sorts,
             freshness=freshness,
         )
+        if not rows and freshness == "mirror" and last_read_from_mirror():
+            rows = self._notion.query_data_source(
+                self._source,
+                filter=query_filter,
+                sorts=sorts,
+                freshness="live",
+            )
         return tuple(self._order(JobOrdersRow.from_page(page), page) for page in rows)
 
     def list(self, *, oldest_first: bool = False, freshness: Freshness = "mirror") -> tuple[JobOrder, ...]:
@@ -136,14 +144,13 @@ class JobOrders:
         if t6_id:
             from t6.notion.jo_projection import projection_ids
             t6_property, _ = projection_ids()
-        with self._notion.open_write_client() as client:
-            saved = create_row(
-                client,
-                JobOrdersRow,
-                self._source,
-                values,
-                extra_properties={t6_property: {"rich_text": [{"text": {"content": t6_id}}]}} if t6_id else None,
-            )
+        saved = create_row(
+            self._notion,
+            JobOrdersRow,
+            self._source,
+            values,
+            extra_properties={t6_property: {"rich_text": [{"text": {"content": t6_id}}]}} if t6_id else None,
+        )
         if isinstance(saved, (Rejected, Ambiguous)):
             return saved
         body = fields.get("source_text")

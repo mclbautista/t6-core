@@ -33,10 +33,14 @@ RAW_CLIENT_CALLABLES = frozenset({"open_notion", "NotionClient", "AsyncNotionCli
 # as `(relpath_under_src_t6, enclosing_function, call_name): "one-line reason"`.
 LIVE_READ_ALLOWLIST: dict[tuple[str, str, str], str] = {
     ("notion/writes.py", "_write", "retrieve_page"): "Confirm saved page properties immediately after create_page or update_page.",
+    ("notion/job_orders.py", "JobOrders.find_by_telegram_key", "query_data_source"): "Retry once live when mirrored telegram_key lookup misses.",
+    ("notion/job_orders.py", "JobOrders.find_all_by_telegram_key", "query_data_source"): "Retry once live when mirrored telegram_key lookup misses.",
     ("notion/job_orders.py", "JobOrders.create", "get"): "Confirm saved Job Order and body immediately after create.",
     ("notion/job_orders.py", "JobOrders.ensure_body", "list_block_children"): "Read live page block body before appending missing body.",
     ("notion/job_orders.py", "JobOrders._write_body", "list_block_children"): "Confirm appended paragraph blocks immediately after body write.",
     ("notion/job_orders.py", "JobOrders._read", "list_block_children"): "Read live page block body (block bodies are not mirrored).",
+    ("notion/reads.py", "DeliverableReader.for_project", "query_data_source"): "Retry once live when mirrored project deliverables lookup misses.",
+    ("job_order.py", "find_forms", "list"): "Retry once live when mirrored duplicate-key lookup misses.",
     ("notion/meeting_notes.py", "MeetingNotes.create", "retrieve_page"): "Confirm saved Meeting Note immediately after create and block append.",
     ("notion/meeting_notes.py", "MeetingNotes.mark_sent", "retrieve_page"): "Confirm Meeting Note immediately after mark_sent update.",
     ("notion/departments.py", "get_departments", "retrieve_data_source"): "Read live Department select options from Job Orders schema.",
@@ -72,6 +76,7 @@ LIVE_READ_ALLOWLIST: dict[tuple[str, str, str], str] = {
     ("notion/mirror.py", "MirrorSyncer.rescan_source", "retrieve_data_source"): "Full mirror rescan reads live Notion data source metadata.",
     ("notion/mirror.py", "MirrorSyncer.poll_source", "query_data_source"): "Incremental mirror poll queries live Notion changes since high-water mark.",
     ("notion/mirror.py", "MirrorWriter.handle_page_changed", "retrieve_page"): "Refresh latest Notion page properties on notion.page_changed webhook event.",
+    ("notion/mirror.py", "MirrorWriter.refresh_page", "retrieve_page"): "Refresh latest Notion page properties after API verb write.",
     ("server/verbs.py", "VerbAPI._dispatch", "PackageSpecReader"): "Read live Package Spec during deliverable.deliver.",
     ("server/verbs.py", "VerbAPI._meeting_notes", "retrieve_page"): "Verify live Meeting Note state before mutation and read back after write.",
     ("server/verbs.py", "VerbAPI._typed_read", "list"): "Retry once against live Notion when a mirrored read finds no match.",

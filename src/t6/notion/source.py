@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from contextvars import ContextVar
+import sys
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
@@ -43,6 +44,7 @@ class NotionSource:
         client: NotionClient | Callable[[], NotionClient | AbstractContextManager[NotionClient]],
         *,
         mirror: MirrorReader | None = None,
+        on_page_written: Callable[[JSON], None] | None = None,
     ) -> None:
         if callable(client):
             self._client: NotionClient | None = None
@@ -51,15 +53,37 @@ class NotionSource:
             self._client = client
             self._open_client = None
         self._mirror: MirrorReader | None = mirror
+        self._on_page_written: Callable[[JSON], None] | None = on_page_written
 
     @classmethod
-    def from_client(cls, client: NotionClient, *, mirror: MirrorReader | None = None) -> NotionSource:
+    def from_client(
+        cls,
+        client: NotionClient,
+        *,
+        mirror: MirrorReader | None = None,
+        on_page_written: Callable[[JSON], None] | None = None,
+    ) -> NotionSource:
         """Wrap an already-open `NotionClient` directly without closing it."""
         instance = cls.__new__(cls)
         instance._client = client
         instance._open_client = None
         instance._mirror = mirror
+        instance._on_page_written = on_page_written
         return instance
+
+    def record_written_page(self, page: JSON) -> None:
+        """Notify the optional write-through hook after a live Notion write, swallowing errors."""
+        callback = getattr(self, "_on_page_written", None)
+        if callback is None:
+            return
+        try:
+            callback(page)
+        except Exception as error:
+            print(
+                f"t6.notion: write-through mirror update failed ({type(error).__name__})",
+                file=sys.stderr,
+                flush=True,
+            )
 
     @contextmanager
     def _session(self) -> Iterator[NotionClient]:
@@ -97,8 +121,10 @@ class NotionSource:
         """Query a data source with `freshness` (`"mirror"` or `"live"`)."""
         _check_freshness(freshness)
         mirror: MirrorReader | None = getattr(self, "_mirror", None)
-        if freshness == "mirror" and mirror is not None and filter is None and sorts is None:
-            cached = mirror.query_data_source(data_source_id)
+        if freshness == "mirror" and mirror is not None:
+            cached = mirror.query_data_source(
+                data_source_id, filter=filter, sorts=sorts, page_size=page_size
+            )
             if cached is not None:
                 _last_read_source.set("mirror")
                 return cached
@@ -149,12 +175,16 @@ class NotionSource:
     def create_page(self, body: JSON) -> JSON:
         """Create a page via a live `NotionClient`."""
         with self.open_write_client() as client:
-            return client.create_page(body)
+            page = client.create_page(body)
+        self.record_written_page(page)
+        return page
 
     def update_page(self, page_id: str, body: JSON) -> JSON:
         """Update a page via a live `NotionClient`."""
         with self.open_write_client() as client:
-            return client.update_page(page_id, body)
+            page = client.update_page(page_id, body)
+        self.record_written_page(page)
+        return page
 
     def append_block_children(self, block_id: str, children: list[JSON]) -> list[JSON]:
         """Append child blocks via a live `NotionClient`."""

@@ -28,9 +28,9 @@ from t6.notion import (
     last_read_from_mirror,
     mirror_db_path,
 )
-from t6.notion.generated import ContactsRow, JobOrdersRow, ProjectsRow
-from t6.notion.reads import ContactReader, ProjectReader
-from t6.notion.testing import FakeNotion, rich_text, select, title, relation
+from t6.notion.generated import ContactsRow, DeliverablesRow, JobOrdersRow, ProjectsRow
+from t6.notion.reads import ContactReader, DeliverableReader, ProjectReader
+from t6.notion.testing import FakeNotion, checkbox, date, number, rich_text, select, title, relation
 from t6.person import People
 from t6.preview import PreviewTokens
 from t6.registry import ProjectRefs, Registered, Rotation, SqliteProjectRegistry
@@ -38,10 +38,25 @@ from t6.registry.core import normalize_page_id
 from t6.server.queue import JobQueue
 from t6.server.verbs import VerbAPI
 from t6.verbs import (
+    CameraEnrichInput,
+    DeliverableCandidatesInput,
     Done,
     JoFindInput,
+    JoGetInput,
+    JoListInput,
+    MachineEditInput,
+    MachineEditItem,
+    MachineFactsInput,
+    MachineSyncInput,
+    MeetingNotesAppendInput,
+    MeetingNotesCreateInput,
+    MeetingNotesMarkSentInput,
+    MeetingNotesTrashInput,
+    PersonCreateInput,
     PersonFindInput,
     PersonListInput,
+    PersonTelegramInput,
+    Preview,
     ProjectFlagsInput,
     ProjectGetInput,
     ProjectListInput,
@@ -53,6 +68,10 @@ from t6.verbs import (
 PROJECTS_DS = "ds-projects-0001"
 CONTACTS_DS = "ds-contacts-0002"
 JOB_ORDERS_DS = "ds-job-orders-0003"
+DELIVERABLES_DS = "ds-deliverables-0004"
+BAYS_DS = "ds-bays-0005"
+CAMERAS_DS = "ds-cameras-0006"
+MEETING_NOTES_DS = "ds-meeting-notes-0007"
 
 
 class StepClock:
@@ -223,7 +242,7 @@ class MirrorSyncAndReadTests(unittest.TestCase):
         )
 
     def _sources(self) -> dict[str, str]:
-        return {"projects": PROJECTS_DS, "contacts": CONTACTS_DS, "job_orders": JOB_ORDERS_DS}
+        return {"projects": PROJECTS_DS, "contacts": CONTACTS_DS, "job_orders": JOB_ORDERS_DS, "bays": BAYS_DS}
 
     def test_permissions_0600_and_wal_mode(self) -> None:
         writer = MirrorWriter(self.db_path)
@@ -248,6 +267,7 @@ class MirrorSyncAndReadTests(unittest.TestCase):
                 self.assertEqual(stat.S_IMODE(os.stat(side).st_mode), 0o600)
 
     def test_poll_and_rescan_sync_new_edited_archived_and_deleted_restored(self) -> None:
+        self.fake.add_snapshot_data_source(BAYS_DS, "bays")
         writer = MirrorWriter(self.db_path)
         syncer = MirrorSyncer(
             writer,
@@ -257,11 +277,12 @@ class MirrorSyncAndReadTests(unittest.TestCase):
             wall_clock=self.clock,
             sleep=self.clock.sleep,
         )
-        # First tick rescans projects and contacts only (job_orders stays unmirrored in #516).
+        # First tick rescans projects, contacts, and job_orders (bays stays unmirrored in #518).
         syncer.tick()
         self.assertIsNotNone(writer.state(PROJECTS_DS))
         self.assertIsNotNone(writer.state(CONTACTS_DS))
-        self.assertIsNone(writer.state(JOB_ORDERS_DS))
+        self.assertIsNotNone(writer.state(JOB_ORDERS_DS))
+        self.assertIsNone(writer.state(BAYS_DS))
 
         reader = MirrorReader(
             self.db_path,
@@ -1475,6 +1496,856 @@ class WebhookPageChangedMirrorTests(unittest.TestCase):
                 )
             )
         self.assertIsInstance(chained_result, dict)
+
+
+class JobOrdersAndDeliverablesMirrorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.clock = StepClock(1_760_000_000.0)
+        self.fake = _make_fake(clock=self.clock)
+        self.fake.add_snapshot_data_source(DELIVERABLES_DS, "deliverables")
+        self.fake.add_snapshot_data_source(BAYS_DS, "bays")
+        self.registry = SqliteProjectRegistry(Path(self.tmp.name) / "registry.sqlite", clock=self.clock)
+        self.mirror_path = Path(self.tmp.name) / "mirror.sqlite"
+
+        self.p1 = self.fake.add_page(
+            PROJECTS_DS,
+            {
+                ProjectsRow.notion_name("name"): title("Show Alpha"),
+                ProjectsRow.notion_name("project_code"): select("ALP"),
+            },
+        )
+        self.p2 = self.fake.add_page(
+            PROJECTS_DS,
+            {
+                ProjectsRow.notion_name("name"): title("Show Beta"),
+                ProjectsRow.notion_name("project_code"): select("BET"),
+            },
+        )
+        reg1 = self.registry.register(
+            actor="setup", idempotency_key="p1", notion_page_id=self.p1["id"], code="ALP", rotation=Rotation.IN
+        )
+        reg2 = self.registry.register(
+            actor="setup", idempotency_key="p2", notion_page_id=self.p2["id"], code="BET", rotation=Rotation.IN
+        )
+        assert isinstance(reg1, Registered) and isinstance(reg2, Registered)
+        self.p1_t6_id = reg1.project.id
+        self.p2_t6_id = reg2.project.id
+
+        self.jo1 = self.fake.add_page(
+            JOB_ORDERS_DS,
+            {
+                JobOrdersRow.notion_name("name"): title("Cut 1"),
+                JobOrdersRow.notion_name("jo_number"): rich_text("#101"),
+                JobOrdersRow.notion_name("projects"): relation(self.p1["id"]),
+                JobOrdersRow.notion_name("telegram_key"): rich_text("-100:1"),
+                JobOrdersRow.notion_name("status"): select("In progress"),
+            },
+        )
+        self.clock.advance(5.0)
+        self.jo1_dup = self.fake.add_page(
+            JOB_ORDERS_DS,
+            {
+                JobOrdersRow.notion_name("name"): title("Cut 1 Dup"),
+                JobOrdersRow.notion_name("jo_number"): rich_text("#102"),
+                JobOrdersRow.notion_name("projects"): relation(self.p1["id"]),
+                JobOrdersRow.notion_name("telegram_key"): rich_text("-100:1"),
+                JobOrdersRow.notion_name("status"): select("Pending"),
+            },
+        )
+        self.jo_archived = self.fake.add_page(
+            JOB_ORDERS_DS,
+            {
+                JobOrdersRow.notion_name("name"): title("Cut Archived"),
+                JobOrdersRow.notion_name("telegram_key"): rich_text("-100:99"),
+            },
+            archived=True,
+        )
+        self.d1 = self.fake.add_page(
+            DELIVERABLES_DS,
+            {
+                DeliverablesRow.notion_name("name"): title("EP01 Master"),
+                DeliverablesRow.notion_name("projects"): relation(self.p1["id"]),
+            },
+        )
+        self.d2 = self.fake.add_page(
+            DELIVERABLES_DS,
+            {
+                DeliverablesRow.notion_name("name"): title("EP02 Master"),
+                DeliverablesRow.notion_name("projects"): relation(self.p2["id"]),
+            },
+        )
+        self.d_trashed = self.fake.add_page(
+            DELIVERABLES_DS,
+            {
+                DeliverablesRow.notion_name("name"): title("EP99 Trashed"),
+                DeliverablesRow.notion_name("projects"): relation(self.p1["id"]),
+            },
+            in_trash=True,
+        )
+
+        self.writer = MirrorWriter(self.mirror_path, clock=self.clock)
+        self.sources = {
+            "projects": PROJECTS_DS,
+            "contacts": CONTACTS_DS,
+            "job_orders": JOB_ORDERS_DS,
+            "deliverables": DELIVERABLES_DS,
+            "bays": BAYS_DS,
+        }
+        self.syncer = MirrorSyncer(
+            self.writer,
+            NotionSource(self.fake.client),
+            self.sources,
+            min_request_interval=0.0,
+            clock=self.clock,
+            wall_clock=self.clock,
+            sleep=self.clock.sleep,
+        )
+        self.env = patch.dict(os.environ, {"T6_NOTION_TOKEN": "fake"})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def _api(self, mirror: MirrorReader | None) -> VerbAPI:
+        return VerbAPI(
+            People(self.registry, PreviewTokens("key")),
+            JobQueue(Path(self.tmp.name) / "queue.sqlite"),
+            {"secret": "watchdog"},
+            lambda _: self.fake.client(),
+            data_sources=self.sources,
+            mirror=mirror,
+        )
+
+    def test_mirror_reader_filters_and_sorts_match_notion_semantics(self) -> None:
+        self.syncer.tick()
+        reader = MirrorReader(self.mirror_path, clock=self.clock)
+
+        # Property ID (unquote) filter matching for Deliverables & Job Orders
+        deliv_proj_id = DeliverablesRow.notion_id("projects")
+        assert deliv_proj_id is not None
+        matched_deliv = reader.query_data_source(
+            DELIVERABLES_DS,
+            filter={"property": deliv_proj_id, "relation": {"contains": self.p1["id"].replace("-", "")}},
+        )
+        assert matched_deliv is not None
+        self.assertEqual([r["id"] for r in matched_deliv], [self.d1["id"]])
+
+        jo_key_id = JobOrdersRow.notion_id("telegram_key")
+        assert jo_key_id is not None
+        matched_jo = reader.query_data_source(
+            JOB_ORDERS_DS,
+            filter={"property": jo_key_id, "rich_text": {"equals": "-100:1"}},
+            sorts=[{"timestamp": "created_time", "direction": "ascending"}],
+        )
+        assert matched_jo is not None
+        self.assertEqual([r["id"] for r in matched_jo], [self.jo1["id"], self.jo1_dup["id"]])
+
+        # Property-name filters: title, select, status, checkbox, number, and, or
+        self.fake.add_snapshot_data_source("ds-custom-filter", "projects")
+        custom_ds = "ds-custom-filter"
+        p_a = {
+            "object": "page",
+            "id": "11111111-1111-1111-1111-111111111111",
+            "parent": {"type": "data_source_id", "data_source_id": custom_ds},
+            "archived": False,
+            "in_trash": False,
+            "created_time": "2026-11-20T10:00:00Z",
+            "last_edited_time": "2026-11-20T12:00:00Z",
+            "properties": {
+                "Name": title("Item A"),
+                "Project Code": select("AAA"),
+                "Status": {"type": "status", "status": {"name": "Active"}},
+                "Flag": checkbox(True),
+                "Eps": number(4),
+            },
+        }
+        p_b = {
+            "object": "page",
+            "id": "22222222-2222-2222-2222-222222222222",
+            "parent": {"type": "data_source_id", "data_source_id": custom_ds},
+            "archived": False,
+            "in_trash": False,
+            "created_time": "2026-11-20T09:00:00Z",
+            "last_edited_time": "2026-11-20T12:00:00Z",
+            "properties": {
+                "Name": title("Item B"),
+                "Project Code": select("BBB"),
+                "Status": {"type": "status", "status": {"name": "Hold"}},
+                "Flag": checkbox(False),
+                "Eps": number(8),
+            },
+        }
+        p_c = {
+            "object": "page",
+            "id": "33333333-3333-3333-3333-333333333333",
+            "parent": {"type": "data_source_id", "data_source_id": custom_ds},
+            "archived": False,
+            "in_trash": False,
+            "created_time": "2026-11-20T09:00:00Z",
+            "last_edited_time": "2026-11-20T11:00:00Z",
+            "properties": {
+                "Name": title("Item C"),
+                "Project Code": select("CCC"),
+                "Status": {"type": "status", "status": {"name": "Active"}},
+                "Flag": checkbox(True),
+                "Eps": number(8),
+            },
+        }
+        self.writer.replace_data_source(custom_ds, [p_a, p_b, p_c], synced_at=self.clock())
+
+        and_rows = reader.query_data_source(
+            custom_ds,
+            filter={
+                "and": [
+                    {"property": "Status", "status": {"equals": "Active"}},
+                    {"property": "Flag", "checkbox": {"equals": True}},
+                    {"property": "Eps", "number": {"equals": 8}},
+                ]
+            },
+        )
+        assert and_rows is not None
+        self.assertEqual([r["id"] for r in and_rows], [p_c["id"]])
+
+        or_rows = reader.query_data_source(
+            custom_ds,
+            filter={
+                "or": [
+                    {"property": "Name", "title": {"equals": "Item A"}},
+                    {"property": "Project Code", "select": {"equals": "BBB"}},
+                ]
+            },
+        )
+        assert or_rows is not None
+        self.assertEqual([r["id"] for r in or_rows], [p_a["id"], p_b["id"]])
+
+        # Sorts on created_time / last_edited_time preserve insertion order on ties
+        created_asc = reader.query_data_source(
+            custom_ds,
+            sorts=[{"timestamp": "created_time", "direction": "ascending"}],
+        )
+        assert created_asc is not None
+        self.assertEqual([r["id"] for r in created_asc], [p_b["id"], p_c["id"], p_a["id"]])
+
+        created_desc = reader.query_data_source(
+            custom_ds,
+            sorts=[{"timestamp": "created_time", "direction": "descending"}],
+        )
+        assert created_desc is not None
+        self.assertEqual([r["id"] for r in created_desc], [p_a["id"], p_b["id"], p_c["id"]])
+
+        edited_desc = reader.query_data_source(
+            custom_ds,
+            sorts=[{"timestamp": "last_edited_time", "direction": "descending"}],
+        )
+        assert edited_desc is not None
+        self.assertEqual([r["id"] for r in edited_desc], [p_a["id"], p_b["id"], p_c["id"]])
+
+    def test_jo_find_and_deliverable_candidates_parity_fallbacks_and_live_jo_get(self) -> None:
+        from t6.notion.job_orders import JobOrders
+
+        live_api = self._api(mirror=None)
+        reader = MirrorReader(self.mirror_path, max_age_seconds=300.0, clock=self.clock)
+        mirror_api = self._api(mirror=reader)
+
+        # 1. Not-ready mirror -> falls back to live (1 HTTP call, no extra live call on miss)
+        before = _count_notion_http(self.fake)
+        miss_not_ready = mirror_api._typed_read("jo", "find", JoFindInput(telegram_key="-999:0"))
+        self.assertIsInstance(miss_not_ready, Done)
+        self.assertFalse(last_read_from_mirror())
+        self.assertEqual(_count_notion_http(self.fake) - before, 1)
+
+        # Sync all 4 phase sources (bays stays unmirrored)
+        self.syncer.tick()
+        self.assertTrue(self.writer.state(JOB_ORDERS_DS) and self.writer.state(JOB_ORDERS_DS).ready)  # type: ignore[union-attr]
+        self.assertTrue(self.writer.state(DELIVERABLES_DS) and self.writer.state(DELIVERABLES_DS).ready)  # type: ignore[union-attr]
+        self.assertIsNone(self.writer.state(BAYS_DS))
+
+        # 2. Mirror hits: identical answers to live Notion with 0 live Notion HTTP calls
+        queries: tuple[Callable[[VerbAPI], Any], ...] = (
+            lambda api: api._typed_read("jo", "find", JoFindInput(telegram_key="-100:1")),
+            lambda api: api._typed_read("jo", "find", JoFindInput(chat_id="-100", message_id="1")),
+            lambda api: api._typed_read("jo", "find", JoFindInput(project=self.p1_t6_id, number="101")),
+            lambda api: api._typed_read("deliverable", "candidates", DeliverableCandidatesInput(project=self.p1_t6_id)),
+        )
+        for query_call in queries:
+            live_res = query_call(live_api)
+            before = _count_notion_http(self.fake)
+            mirror_res = query_call(mirror_api)
+            self.assertEqual(_count_notion_http(self.fake), before)
+            self.assertTrue(last_read_from_mirror())
+            assert isinstance(live_res, Done) and isinstance(mirror_res, Done)
+            self.assertEqual(mirror_res.result, live_res.result)
+
+        # 3. Retry-once-on-miss when new JO / Deliverable appears in live Notion after sync
+        self.clock.advance(5.0)
+        jo_new = self.fake.add_page(
+            JOB_ORDERS_DS,
+            {
+                JobOrdersRow.notion_name("name"): title("Cut New"),
+                JobOrdersRow.notion_name("jo_number"): rich_text("#205"),
+                JobOrdersRow.notion_name("projects"): relation(self.p1["id"]),
+                JobOrdersRow.notion_name("telegram_key"): rich_text("-100:205"),
+            },
+        )
+        d_new = self.fake.add_page(
+            DELIVERABLES_DS,
+            {
+                DeliverablesRow.notion_name("name"): title("EP03 Master"),
+                DeliverablesRow.notion_name("projects"): relation(self.p2["id"]),
+            },
+        )
+        # Clear p2's deliverables in mirror only? No, p2 already has d2; test on a third project with 0 in mirror
+        p3 = self.fake.add_page(PROJECTS_DS, {ProjectsRow.notion_name("name"): title("Show Gamma")})
+        d3 = self.fake.add_page(
+            DELIVERABLES_DS,
+            {
+                DeliverablesRow.notion_name("name"): title("EP04 Master"),
+                DeliverablesRow.notion_name("projects"): relation(p3["id"]),
+            },
+        )
+        self.assertIsNotNone(d_new)
+
+        before = _count_notion_http(self.fake)
+        found_new_jo = mirror_api._typed_read("jo", "find", JoFindInput(telegram_key="-100:205"))
+        self.assertEqual(_count_notion_http(self.fake) - before, 1)
+        assert isinstance(found_new_jo, Done)
+        self.assertEqual([o["page_id"] for o in found_new_jo.result["job_orders"]], [jo_new["id"]])
+
+        before = _count_notion_http(self.fake)
+        found_dup_jo = mirror_api._typed_read("jo", "find", JoFindInput(project=self.p1_t6_id, number="205"))
+        self.assertEqual(_count_notion_http(self.fake) - before, 1)
+        assert isinstance(found_dup_jo, Done)
+        self.assertEqual([o["page_id"] for o in found_dup_jo.result["job_orders"]], [jo_new["id"]])
+
+        before = _count_notion_http(self.fake)
+        found_new_deliv = mirror_api._typed_read("deliverable", "candidates", DeliverableCandidatesInput(project=p3["id"]))
+        self.assertEqual(_count_notion_http(self.fake) - before, 1)
+        assert isinstance(found_new_deliv, Done)
+        self.assertEqual([d["page_id"] for d in found_new_deliv.result["candidates"]], [d3["id"]])
+
+        # JobOrders.find_by_telegram_key also retries once on miss when mirror is active
+        source = NotionSource(self.fake.client, mirror=reader)
+        jo_reader = JobOrders(source, JOB_ORDERS_DS)
+        before = _count_notion_http(self.fake)
+        hit = jo_reader.find_by_telegram_key("-100:1")
+        self.assertIsNotNone(hit)
+        # 1 live call for list_block_children (body stays live), 0 for query_data_source
+        self.assertEqual(_count_notion_http(self.fake) - before, 1)
+
+        before = _count_notion_http(self.fake)
+        miss_retry_hit = jo_reader.find_by_telegram_key("-100:205")
+        self.assertIsNotNone(miss_retry_hit)
+        # 1 live query_data_source + 1 live list_block_children
+        self.assertEqual(_count_notion_http(self.fake) - before, 2)
+
+        # True miss retries live ONCE (1 HTTP call), and when mirror is OFF does 1 HTTP call (not 2)
+        before = _count_notion_http(self.fake)
+        self.assertIsNone(jo_reader.find_by_telegram_key("-100:does-not-exist"))
+        self.assertEqual(_count_notion_http(self.fake) - before, 1)
+
+        live_jo_reader = JobOrders(NotionSource(self.fake.client), JOB_ORDERS_DS)
+        before = _count_notion_http(self.fake)
+        self.assertIsNone(live_jo_reader.find_by_telegram_key("-100:does-not-exist"))
+        self.assertEqual(_count_notion_http(self.fake) - before, 1)
+
+        # 4. jo get ALWAYS stays live even when job_orders mirror is ready and fresh
+        self.fake.update_page(self.jo1["id"], {JobOrdersRow.notion_name("name"): title("Cut 1 Live Edit")})
+        before = _count_notion_http(self.fake)
+        got = mirror_api._typed_read("jo", "get", JoGetInput(ref=self.jo1["id"]))
+        self.assertGreaterEqual(_count_notion_http(self.fake) - before, 2)  # retrieve_page + list_block_children
+        assert isinstance(got, Done)
+        self.assertEqual(got.result["job_order"]["name"], "Cut 1 Live Edit")
+
+        # 5. Stale mirror (> max_age_seconds) falls back to live (1 HTTP call on miss)
+        self.clock.advance(301.0)
+        before = _count_notion_http(self.fake)
+        stale_miss = mirror_api._typed_read("jo", "find", JoFindInput(telegram_key="-999:stale"))
+        self.assertIsInstance(stale_miss, Done)
+        self.assertFalse(last_read_from_mirror())
+        self.assertEqual(_count_notion_http(self.fake) - before, 1)
+
+
+class WorkerWriteThroughMirrorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.clock = StepClock(1_760_000_000.0)
+        self.fake = _make_fake(clock=self.clock)
+        self.fake.add_snapshot_data_source(DELIVERABLES_DS, "deliverables")
+        self.db_path = Path(self.tmp.name) / "mirror.sqlite"
+        self.registry = SqliteProjectRegistry(Path(self.tmp.name) / "registry.sqlite", clock=self.clock)
+
+        self.p1 = self.fake.add_page(
+            PROJECTS_DS,
+            {
+                ProjectsRow.notion_name("name"): title("Show Alpha"),
+                ProjectsRow.notion_name("project_code"): select("ALP"),
+            },
+        )
+        reg = self.registry.register(
+            actor="setup", idempotency_key="p1", notion_page_id=self.p1["id"], code="ALP", rotation=Rotation.IN
+        )
+        assert isinstance(reg, Registered)
+        self.p1_t6_id = reg.project.id
+
+    def test_write_through_hook_swallows_errors_and_updates_mirror_after_jo_raise_without_poll(self) -> None:
+        from t6.job_order import JobOrderStore
+        from t6.server import Grant, ServerConfig, WebhookApp
+        from t6.worker.__main__ import WorkerSettings, configured_handlers
+        from t6.worker.client import WorkerJob
+
+        # 1. Verify record_written_page safely logs error class and never raises on write-through failure
+        def boom(_page: dict[str, Any]) -> None:
+            raise sqlite3.OperationalError("Sensitive Synthetic Title should not leak")
+
+        failing_source = NotionSource(self.fake.client, on_page_written=boom)
+        stderr_buf = io.StringIO()
+        with redirect_stderr(stderr_buf):
+            created = failing_source.create_page(
+                {"parent": {"data_source_id": JOB_ORDERS_DS}, "properties": {"Name": title("Cut Fail Hook")}}
+            )
+        self.assertTrue(created["id"])
+        self.assertIn("OperationalError", stderr_buf.getvalue())
+        self.assertNotIn("Sensitive Synthetic Title", stderr_buf.getvalue())
+
+        # 2. Seed initial mirror state (ready=1) via MirrorSyncer
+        writer = MirrorWriter(self.db_path, clock=self.clock)
+        syncer = MirrorSyncer(
+            writer,
+            NotionSource(self.fake.client),
+            {
+                "projects": PROJECTS_DS,
+                "contacts": CONTACTS_DS,
+                "job_orders": JOB_ORDERS_DS,
+                "deliverables": DELIVERABLES_DS,
+            },
+            min_request_interval=0.0,
+            clock=self.clock,
+            wall_clock=self.clock,
+            sleep=self.clock.sleep,
+        )
+        syncer.tick()
+
+        # 3. Raise a JO via JobOrderStore (outbox intent)
+        store = JobOrderStore(self.registry, PreviewTokens("secret"))
+        values = {
+            "fields": {
+                "project_id": self.p1["id"],
+                "name": "ALP - AE - JO #55",
+                "number": "#55",
+                "telegram_key": "-100:555",
+            }
+        }
+        preview = store.write("raise", values, actor="ana", idempotency_key="raise-55")
+        assert isinstance(preview, Preview)
+        raised = store.write("raise", values, actor="ana", idempotency_key="raise-55", confirm=preview.token)
+        assert isinstance(raised, Done)
+        intent_id = raised.result["sync_intent_id"]
+
+        # 4. Run main worker jo.sync handler WITH mirror write-through enabled (NO MirrorSyncer poll!)
+        worker_secret = "worker-secret"
+        app = WebhookApp(
+            JobQueue(Path(self.tmp.name) / "q.sqlite", self.clock),
+            ServerConfig(
+                grants=(
+                    Grant(
+                        worker_secret,
+                        claim=frozenset({"main"}),
+                        submit=frozenset({"main"}),
+                        registry_read=True,
+                        registry_sync=True,
+                        actor="main-worker",
+                    ),
+                )
+            ),
+            self.clock,
+            registry=self.registry,
+        )
+        transport = _InProcessTransport(app)
+        settings = WorkerSettings("http://server.invalid:8081", worker_secret, "main")
+
+        def open_fake_client(_token: str) -> Any:
+            client = self.fake.client()
+            orig_close = client.close
+            closed = False
+
+            def close_once() -> None:
+                nonlocal closed
+                if not closed:
+                    closed = True
+                    orig_close()
+
+            client.close = close_once  # type: ignore[method-assign]
+            self.addCleanup(close_once)
+            return client
+
+        env = {
+            "T6_NOTION_TOKEN": "fake",
+            "T6_NOTION_PROJECTS_DATA_SOURCE": PROJECTS_DS,
+            "T6_NOTION_JOB_ORDERS_DATA_SOURCE": JOB_ORDERS_DS,
+            "T6_NOTION_DELIVERABLES_DATA_SOURCE": DELIVERABLES_DS,
+            "T6_NOTION_MIRROR_DB": str(self.db_path),
+        }
+        with patch("t6.notion.NotionClient", side_effect=open_fake_client):
+            handlers = configured_handlers(env, settings, transport)
+        self.assertIn("notion.mirror_refresh", handlers["main"])
+
+        self.clock.advance(5.0)
+        sync_result = handlers["main"]["jo.sync"](
+            WorkerJob(
+                job_id=1,
+                queue="main",
+                kind="jo.sync",
+                dedupe_key="jo-sync-55",
+                payload={"intent_id": intent_id},
+                token="t",
+                attempt=1,
+            )
+        )
+        self.assertIsInstance(sync_result, dict)
+
+        # 5. Query jo find from MirrorReader immediately with ZERO live Notion HTTP calls!
+        reader = MirrorReader(self.db_path, clock=self.clock)
+        api = VerbAPI(
+            People(self.registry, PreviewTokens("secret")),
+            JobQueue(Path(self.tmp.name) / "api-q.sqlite"),
+            {"secret": "watchdog"},
+            lambda _: self.fake.client(),
+            data_sources={
+                "projects": PROJECTS_DS,
+                "contacts": CONTACTS_DS,
+                "job_orders": JOB_ORDERS_DS,
+                "deliverables": DELIVERABLES_DS,
+            },
+            mirror=reader,
+        )
+        before_http = _count_notion_http(self.fake)
+        with patch.dict(os.environ, {"T6_NOTION_TOKEN": "fake"}):
+            found = api._typed_read("jo", "find", JoFindInput(telegram_key="-100:555"))
+        self.assertEqual(_count_notion_http(self.fake), before_http)
+        self.assertTrue(last_read_from_mirror())
+        assert isinstance(found, Done)
+        self.assertEqual(len(found.result["job_orders"]), 1)
+        self.assertEqual(found.result["job_orders"][0]["t6_id"], raised.result["jo_id"])
+
+
+class ApiVerbRefreshMirrorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.clock = StepClock(1_760_000_000.0)
+        self.fake = _make_fake(clock=self.clock)
+        self.fake.add_snapshot_data_source(DELIVERABLES_DS, "deliverables")
+        self.fake.add_snapshot_data_source(BAYS_DS, "bays")
+        self.fake.add_snapshot_data_source(CAMERAS_DS, "cameras")
+        self.fake.add_snapshot_data_source(MEETING_NOTES_DS, "meeting_notes")
+        self.db_path = Path(self.tmp.name) / "mirror.sqlite"
+        self.registry = SqliteProjectRegistry(Path(self.tmp.name) / "registry.sqlite", clock=self.clock)
+
+        self.p1 = self.fake.add_page(PROJECTS_DS, {ProjectsRow.notion_name("name"): title("Show Alpha")})
+        reg_p = self.registry.register(actor="setup", idempotency_key="p1", notion_page_id=self.p1["id"], code="ALP", rotation=Rotation.IN)
+        assert isinstance(reg_p, Registered)
+        self.p1_t6_id = reg_p.project.id
+
+        self.c1 = self.fake.add_page(
+            CONTACTS_DS,
+            {ContactsRow.notion_name("name"): title("Ana Cruz"), ContactsRow.notion_name("telegram_handle"): rich_text("@ana")},
+        )
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES ('t6n_ana', 'staff', '[]', '[]', NULL, 0, 1)")
+            db.execute(
+                "INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, 't6n_ana', 1.0, 1)",
+                (normalize_page_id(self.c1["id"]),),
+            )
+        self.bay1 = self.fake.add_page(BAYS_DS, {"Name": title("Bay Alpha"), "Hostname": rich_text("Bay-Alpha"), "Username": rich_text("old")})
+        self.cam1 = self.fake.add_page(CAMERAS_DS, {"Name": title("Camera Alpha")})
+
+        self.writer = MirrorWriter(self.db_path, clock=self.clock)
+        self.sources = {
+            "projects": PROJECTS_DS,
+            "contacts": CONTACTS_DS,
+            "job_orders": JOB_ORDERS_DS,
+            "deliverables": DELIVERABLES_DS,
+            "bays": BAYS_DS,
+            "cameras": CAMERAS_DS,
+            "meeting_notes": MEETING_NOTES_DS,
+        }
+        MirrorSyncer(
+            self.writer,
+            NotionSource(self.fake.client),
+            self.sources,
+            min_request_interval=0.0,
+            clock=self.clock,
+            wall_clock=self.clock,
+            sleep=self.clock.sleep,
+        ).tick()
+
+    def _build_api(self, *, use_mirror: bool, with_tap_app: bool = True) -> tuple[VerbAPI, Any, Any]:
+        from t6.server import Grant, ServerConfig, WebhookApp
+        from t6.worker.internal_queue import InternalJobQueue
+
+        queue = JobQueue(Path(self.tmp.name) / "q.sqlite", self.clock)
+        inside = InternalJobQueue(self.registry) if with_tap_app else None
+        tap_app = (
+            WebhookApp(
+                queue,
+                ServerConfig(
+                    grants=(
+                        Grant(
+                            "worker-secret",
+                            claim=frozenset({"main"}),
+                            submit=frozenset({"main"}),
+                            registry_read=True,
+                            registry_sync=True,
+                            actor="main-worker",
+                        ),
+                    )
+                ),
+                self.clock,
+                registry=self.registry,
+                inside=inside,
+            )
+            if with_tap_app
+            else None
+        )
+        reader = MirrorReader(self.db_path, clock=self.clock) if use_mirror else None
+        api = VerbAPI(
+            People(
+                self.registry,
+                PreviewTokens("key"),
+                {"watchdog": frozenset({"operator", "fleet", "bays_edit", "coordinator", "minutes", "unmasked"})},
+            ),
+            queue,
+            {"api-secret": "watchdog"},
+            lambda _: self.fake.client(),
+            tap_app=tap_app,
+            data_sources=self.sources,
+            mirror=reader,
+        )
+        return api, inside, queue
+
+    def test_api_writes_queue_mirror_refresh_with_unique_keys_and_worker_updates_mirror(self) -> None:
+        from t6.domain.events import JobKind
+        from t6.server.http import make_server
+        from t6.client import Client
+        from t6.worker.__main__ import WorkerSettings, configured_handlers
+        from t6.worker.client import WorkerJob
+
+        env = patch.dict(os.environ, {"T6_NOTION_TOKEN": "fake", "T6_PREVIEW_SIGNING_KEY": "key"})
+        env.start()
+        self.addCleanup(env.stop)
+
+        # 1. With mirror=None, API writes must NOT queue notion.mirror_refresh
+        api_no_mirror, inside_off, queue_off = self._build_api(use_mirror=False, with_tap_app=True)
+        prev = api_no_mirror._person_set_telegram(
+            PersonTelegramInput(person_id="t6n_ana", telegram_id=1001, idempotency_key="tg-off"), "watchdog", self.c1["id"]
+        )
+        assert isinstance(prev, Preview)
+        done = api_no_mirror._person_set_telegram(
+            PersonTelegramInput(person_id="t6n_ana", telegram_id=1001, idempotency_key="tg-off", confirm=prev.token),
+            "watchdog",
+            self.c1["id"],
+        )
+        assert isinstance(done, Done)
+        self.assertEqual(inside_off.find(JobKind.NOTION_MIRROR_REFRESH.value), [])
+        self.assertEqual(queue_off.waiting("main"), [])
+
+        # 2. With mirror enabled + tap_app._inside, all 6 write sites queue notion.mirror_refresh
+        api, inside, _queue = self._build_api(use_mirror=True, with_tap_app=True)
+        import threading
+        server = make_server(("127.0.0.1", 0), api)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(thread.join)
+        self.addCleanup(server.shutdown)
+        client = Client(f"http://127.0.0.1:{server.server_port}", "api-secret")
+
+        # Site 1: _person_set_telegram (first edit)
+        self.clock.advance(5.0)
+        p_tg1 = client.person_set_telegram(PersonTelegramInput(person_id="t6n_ana", telegram_id=2001, idempotency_key="tg-1"))
+        assert isinstance(p_tg1, Preview)
+        self.assertIsInstance(
+            client.person_set_telegram(PersonTelegramInput(person_id="t6n_ana", telegram_id=2001, idempotency_key="tg-1", confirm=p_tg1.token)),
+            Done,
+        )
+        jobs = inside.find(JobKind.NOTION_MIRROR_REFRESH.value)
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(normalize_page_id(str(jobs[0].payload["page_id"])), normalize_page_id(self.c1["id"]))
+
+        # Repeat edit to the same page must queue a SECOND job (unique per-write dedupe key!)
+        self.clock.advance(5.0)
+        p_tg2 = client.person_set_telegram(PersonTelegramInput(person_id="t6n_ana", telegram_id=2002, idempotency_key="tg-2"))
+        assert isinstance(p_tg2, Preview)
+        self.assertIsInstance(
+            client.person_set_telegram(PersonTelegramInput(person_id="t6n_ana", telegram_id=2002, idempotency_key="tg-2", confirm=p_tg2.token)),
+            Done,
+        )
+        jobs = inside.find(JobKind.NOTION_MIRROR_REFRESH.value)
+        self.assertEqual(len(jobs), 2)
+        self.assertNotEqual(jobs[0].dedupe_key, jobs[1].dedupe_key)
+
+        # Worker processes notion.mirror_refresh -> Contact in mirror_pages has telegram_user_id=2002
+        settings = WorkerSettings("http://server.invalid:8081", "worker-secret", "main")
+        transport = _InProcessTransport(api.tap_app)
+
+        def open_fake_client(_token: str) -> Any:
+            c = self.fake.client()
+            orig_close = c.close
+            closed = False
+
+            def close_once() -> None:
+                nonlocal closed
+                if not closed:
+                    closed = True
+                    orig_close()
+
+            c.close = close_once  # type: ignore[method-assign]
+            self.addCleanup(close_once)
+            return c
+
+        with patch("t6.notion.NotionClient", side_effect=open_fake_client):
+            handlers = configured_handlers(
+                {
+                    "T6_NOTION_TOKEN": "fake",
+                    "T6_NOTION_PROJECTS_DATA_SOURCE": PROJECTS_DS,
+                    "T6_NOTION_CONTACTS_DATA_SOURCE": CONTACTS_DS,
+                    "T6_NOTION_MIRROR_DB": str(self.db_path),
+                },
+                settings,
+                transport,
+            )
+        refresh_handler = handlers["main"][JobKind.NOTION_MIRROR_REFRESH.value]
+        refresh_handler(
+            WorkerJob(
+                job_id=jobs[1].job_id,
+                queue="main",
+                kind=JobKind.NOTION_MIRROR_REFRESH.value,
+                dedupe_key=jobs[1].dedupe_key,
+                payload=dict(jobs[1].payload),
+                token="t",
+                attempt=1,
+            )
+        )
+        before_http = _count_notion_http(self.fake)
+        found_ana = api._typed_read("person", "find", PersonFindInput(mention="Ana Cruz"))
+        self.assertEqual(_count_notion_http(self.fake), before_http)
+        assert isinstance(found_ana, Done)
+        self.assertEqual(found_ana.result["match"]["telegram_user_id"], 2002)
+
+        # Site 2: _person_create
+        self.clock.advance(5.0)
+        p_new = client.person_create(PersonCreateInput(name="Ben Lim", kind="staff", telegram_id=3003, idempotency_key="pc-1"))
+        assert isinstance(p_new, Preview)
+        c_new_done = client.person_create(PersonCreateInput(name="Ben Lim", kind="staff", telegram_id=3003, idempotency_key="pc-1", confirm=p_new.token))
+        assert isinstance(c_new_done, Done)
+        new_contact_page = c_new_done.result["person"]["page_id"]
+        jobs = inside.find(JobKind.NOTION_MIRROR_REFRESH.value)
+        self.assertEqual(len(jobs), 3)
+        refresh_handler(
+            WorkerJob(
+                job_id=jobs[2].job_id,
+                queue="main",
+                kind=JobKind.NOTION_MIRROR_REFRESH.value,
+                dedupe_key=jobs[2].dedupe_key,
+                payload=dict(jobs[2].payload),
+                token="t",
+                attempt=1,
+            )
+        )
+        before_http = _count_notion_http(self.fake)
+        found_ben = api._typed_read("person", "find", PersonFindInput(mention="Ben Lim"))
+        self.assertEqual(_count_notion_http(self.fake), before_http)
+        assert isinstance(found_ben, Done)
+        self.assertEqual(found_ben.result["match"]["page_id"], new_contact_page)
+
+        # Site 3: _meeting_notes (create, append, mark-sent, trash)
+        mn_create = client.meeting_notes_create(MeetingNotesCreateInput(title="Weekly Sync", meeting_date="2026-11-20", project_ids=[self.p1_t6_id]))
+        assert isinstance(mn_create, Done)
+        mn_id = mn_create.result["meeting_note"]["page_id"]
+        self.assertEqual(len(inside.find(JobKind.NOTION_MIRROR_REFRESH.value)), 4)
+
+        self.assertIsInstance(client.meeting_notes_append(MeetingNotesAppendInput(note=mn_id, blocks=[])), Done)
+        self.assertEqual(len(inside.find(JobKind.NOTION_MIRROR_REFRESH.value)), 5)
+
+        self.assertIsInstance(client.meeting_notes_mark_sent(MeetingNotesMarkSentInput(note=mn_id)), Done)
+        self.assertEqual(len(inside.find(JobKind.NOTION_MIRROR_REFRESH.value)), 6)
+
+        mn_create2 = client.meeting_notes_create(MeetingNotesCreateInput(title="Weekly Sync 2", meeting_date="2026-11-20", project_ids=[self.p1_t6_id]))
+        assert isinstance(mn_create2, Done)
+        mn2_id = mn_create2.result["meeting_note"]["page_id"]
+        self.assertEqual(len(inside.find(JobKind.NOTION_MIRROR_REFRESH.value)), 7)
+        self.assertIsInstance(client.meeting_notes_trash(MeetingNotesTrashInput(note=mn2_id)), Done)
+        self.assertEqual(len(inside.find(JobKind.NOTION_MIRROR_REFRESH.value)), 8)
+
+        # Site 4: _machine (preview queues nothing; confirm queues refresh)
+        ms_in = MachineSyncInput(machines=[MachineFactsInput(names=["Bay-Alpha"], serial_number="SN-1")])
+        ms_prev = client.machine_sync(ms_in)
+        assert isinstance(ms_prev, Preview)
+        self.assertEqual(len(inside.find(JobKind.NOTION_MIRROR_REFRESH.value)), 8)
+        self.assertIsInstance(client.machine_sync(ms_in.model_copy(update={"confirm": ms_prev.token})), Done)
+        self.assertEqual(len(inside.find(JobKind.NOTION_MIRROR_REFRESH.value)), 9)
+
+        # Site 5: _machine_edit (preview queues nothing; confirm saved queues refresh)
+        me_in = MachineEditInput(machines=[MachineEditItem(names=["Bay-Alpha"], values={"username": "editor1"})])
+        me_prev = client.machine_edit(me_in)
+        assert isinstance(me_prev, Preview)
+        self.assertEqual(len(inside.find(JobKind.NOTION_MIRROR_REFRESH.value)), 9)
+        self.assertIsInstance(client.machine_edit(me_in.model_copy(update={"confirm": me_prev.token})), Done)
+        self.assertEqual(len(inside.find(JobKind.NOTION_MIRROR_REFRESH.value)), 10)
+
+        # Site 6: _camera_enrich
+        ce_in = CameraEnrichInput(page_id=self.cam1["id"], fields={"name": "Camera Alpha v2"}, idempotency_key="cam-1")
+        ce_prev = client.camera_enrich(ce_in)
+        assert isinstance(ce_prev, Preview)
+        self.assertIsInstance(client.camera_enrich(ce_in.model_copy(update={"confirm": ce_prev.token})), Done)
+        self.assertEqual(len(inside.find(JobKind.NOTION_MIRROR_REFRESH.value)), 11)
+
+        # Worker refresh respects monotonic guard & marks deleted on 404
+        reader = MirrorReader(self.db_path, clock=self.clock)
+        self.fake.update_page(
+            self.c1["id"],
+            {ContactsRow.notion_name("name"): title("Ana Stale")},
+            last_edited_time="2020-01-01T00:00:00Z",
+        )
+        stale_res = refresh_handler(
+            WorkerJob(
+                job_id=99,
+                queue="main",
+                kind=JobKind.NOTION_MIRROR_REFRESH.value,
+                dedupe_key="refresh-stale",
+                payload={"page_id": self.c1["id"]},
+                token="t",
+                attempt=1,
+            )
+        )
+        self.assertEqual(stale_res, {"outcome": "stale_ignored"})
+        self.assertEqual(ContactReader(NotionSource(self.fake.client, mirror=reader), CONTACTS_DS).get(self.c1["id"]).name, "Ana Cruz")
+
+        self.fake.delete_page(self.c1["id"])
+        del_res = refresh_handler(
+            WorkerJob(
+                job_id=100,
+                queue="main",
+                kind=JobKind.NOTION_MIRROR_REFRESH.value,
+                dedupe_key="refresh-404",
+                payload={"page_id": self.c1["id"]},
+                token="t",
+                attempt=1,
+            )
+        )
+        self.assertEqual(del_res, {"outcome": "deleted"})
+        self.assertIsNone(reader.retrieve_page(self.c1["id"]))
+
+        # Fallback queue when tap_app is None
+        api_no_tap, _inside_none, fallback_queue = self._build_api(use_mirror=True, with_tap_app=False)
+        ce2 = api_no_tap._camera_enrich(CameraEnrichInput(page_id=self.cam1["id"], fields={"name": "Camera Fallback"}, idempotency_key="cam-fb"), "watchdog")
+        assert isinstance(ce2, Preview)
+        self.assertIsInstance(
+            api_no_tap._camera_enrich(CameraEnrichInput(page_id=self.cam1["id"], fields={"name": "Camera Fallback"}, idempotency_key="cam-fb", confirm=ce2.token), "watchdog"),
+            Done,
+        )
+        self.assertEqual([j.kind for j in fallback_queue.waiting("main")], [JobKind.NOTION_MIRROR_REFRESH.value])
 
 
 if __name__ == "__main__":

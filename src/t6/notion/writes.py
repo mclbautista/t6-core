@@ -115,6 +115,7 @@ def _write(
         page = notion.retrieve_page(page_id, freshness="live")
     except NotionError as error:
         return Ambiguous("readback_failed", str(error), page_id)
+    notion.record_written_page(page)
     mismatched = tuple(
         attribute for attribute, value in values.items() if not _saved(model, attribute, value, page)
     )

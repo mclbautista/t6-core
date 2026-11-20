@@ -12,7 +12,7 @@ import signal
 import sys
 import threading
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.error import URLError
 
 if TYPE_CHECKING:
@@ -151,11 +151,31 @@ def configured_handlers(
     token, projects = environ.get("T6_NOTION_TOKEN"), environ.get("T6_NOTION_PROJECTS_DATA_SOURCE")
     job_orders = environ.get("T6_NOTION_JOB_ORDERS_DATA_SOURCE")
     deliverables = environ.get('T6_NOTION_DELIVERABLES_DATA_SOURCE')
+    mirror_writer = None
+    active_mirror_ds_ids: tuple[str, ...] = ()
+    on_page_written: Callable[[dict[str, Any]], None] | None = None
+    if token:
+        from t6.notion import MIRROR_PHASE_SOURCES, MirrorWriter, mirror_db_path
+
+        mirror_path = mirror_db_path(environ)
+        if mirror_path is not None:
+            configs = mirror_data_sources_from_env(environ)
+            active_mirror = {key: cfg for key, cfg in configs.items() if key in MIRROR_PHASE_SOURCES}
+            if active_mirror:
+                mirror_writer = MirrorWriter(mirror_path)
+                active_mirror_ds_ids = tuple(cfg.id for cfg in active_mirror.values())
+                writer_ref = mirror_writer
+                ds_ids_ref = active_mirror_ds_ids
+
+                def write_through(page: dict[str, Any]) -> None:
+                    writer_ref.upsert_page(page, active_data_source_ids=ds_ids_ref)
+
+                on_page_written = write_through
     notion = None
     if token and (projects or job_orders or deliverables):
         from t6.notion import NotionClient, NotionSource
 
-        notion = NotionSource.from_client(NotionClient(token))
+        notion = NotionSource.from_client(NotionClient(token), on_page_written=on_page_written)
     if notion and projects:
         from t6.notion.projection import ProjectProjection
         from t6.worker.registry import RegistryClient
@@ -194,40 +214,48 @@ def configured_handlers(
                     return deliverable_projection.reconcile(job)
                 return result
             handlers['notion.page_changed'] = reconcile_deliverable
-    if token:
-        from t6.notion import MIRROR_PHASE_SOURCES, MirrorWriter, NotionClient, NotionSource, mirror_db_path
+    if token and mirror_writer is not None:
+        from t6.notion import NotionClient, NotionSource
 
-        mirror_path = mirror_db_path(environ)
-        if mirror_path is not None:
-            configs = mirror_data_sources_from_env(environ)
-            active_mirror = {key: cfg for key, cfg in configs.items() if key in MIRROR_PHASE_SOURCES}
-            if active_mirror:
-                mirror_writer = MirrorWriter(mirror_path)
-                active_mirror_ds_ids = tuple(cfg.id for cfg in active_mirror.values())
-                notion_token = token
-                mirror_notion = notion if notion is not None else NotionSource(lambda: NotionClient(notion_token))
-                existing_reconcile = handlers.get(JobKind.NOTION_PAGE_CHANGED.value)
+        notion_token = token
+        mirror_notion = (
+            notion
+            if notion is not None
+            else NotionSource(lambda: NotionClient(notion_token), on_page_written=on_page_written)
+        )
+        existing_reconcile = handlers.get(JobKind.NOTION_PAGE_CHANGED.value)
+        active_writer = mirror_writer
+        active_ds_ids = active_mirror_ds_ids
 
-                def mirror_page_changed(job: WorkerJob) -> JsonValue:
-                    try:
-                        mirror_outcome = mirror_writer.handle_page_changed(
-                            mirror_notion,
-                            job.payload,
-                            active_data_source_ids=active_mirror_ds_ids,
-                        )
-                    except Exception as error:
-                        event_type = job.payload.get("event_type") or job.payload.get("type")
-                        print(
-                            f"t6.worker: mirror page_changed failed ({type(error).__name__}) event_type={event_type}",
-                            file=sys.stderr,
-                            flush=True,
-                        )
-                        mirror_outcome = "error"
-                    if existing_reconcile is not None:
-                        return existing_reconcile(job)
-                    return {"outcome": mirror_outcome}
+        def mirror_page_changed(job: WorkerJob) -> JsonValue:
+            try:
+                mirror_outcome = active_writer.handle_page_changed(
+                    mirror_notion,
+                    job.payload,
+                    active_data_source_ids=active_ds_ids,
+                )
+            except Exception as error:
+                event_type = job.payload.get("event_type") or job.payload.get("type")
+                print(
+                    f"t6.worker: mirror page_changed failed ({type(error).__name__}) event_type={event_type}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                mirror_outcome = "error"
+            if existing_reconcile is not None:
+                return existing_reconcile(job)
+            return {"outcome": mirror_outcome}
 
-                handlers[JobKind.NOTION_PAGE_CHANGED.value] = mirror_page_changed
+        def mirror_refresh(job: WorkerJob) -> JsonValue:
+            mirror_outcome = active_writer.refresh_page(
+                mirror_notion,
+                job.payload,
+                active_data_source_ids=active_ds_ids,
+            )
+            return {"outcome": mirror_outcome}
+
+        handlers[JobKind.NOTION_PAGE_CHANGED.value] = mirror_page_changed
+        handlers[JobKind.NOTION_MIRROR_REFRESH.value] = mirror_refresh
     if gateway_url and gateway_secret:
         chat = _whole_number(environ, "T6_REVIEW_CHAT", required=True)
         topic = _whole_number(environ, "T6_REVIEW_TOPIC", required=False)
