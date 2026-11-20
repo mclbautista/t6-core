@@ -1,23 +1,25 @@
-"""`machine list` and `machine sync` through the HTTP client and the fake Notion."""
+"""`machine list`, `machine sync` and `machine edit` through the HTTP client and the fake Notion."""
+import json
 import os
 import tempfile
 import threading
 import unittest
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import patch
 
 import httpx
 
 from t6.client import Client
 from t6.domain import Ring
-from t6.notion.testing import FakeNotion, date, rich_text, select, title
+from t6.notion.testing import FakeNotion, checkbox, date, rich_text, select, title
 from t6.person import People
 from t6.preview import PreviewTokens
 from t6.registry.sqlite import SqliteProjectRegistry
 from t6.server.http import make_server
 from t6.server.queue import JobQueue
 from t6.server.verbs import VerbAPI
-from t6.verbs import CameraEnrichInput, Done, MachineFactsInput, MachineListInput, MachineSyncInput, Preview, Refused
+from t6.verbs import CameraEnrichInput, Done, MachineEditInput, MachineEditItem, MachineFactsInput, MachineListInput, MachineSyncInput, Preview, Refused
 
 BAYS = "bays"
 
@@ -35,10 +37,10 @@ class MachineVerbTests(unittest.TestCase):
         self.notion.add_snapshot_data_source("cameras", "cameras")
         self.camera = self.notion.add_page("cameras", {"Name": title("Camera One")})
         registry = SqliteProjectRegistry(self.tmp.name + "/registry")
-        grants = {"munki": frozenset({"fleet"})}
+        grants = {"munki": frozenset({"fleet"}), "watchdog": frozenset({"bays_edit"})}
         self.api = VerbAPI(
             People(registry, PreviewTokens("key"), grants), JobQueue(self.tmp.name + "/queue"),
-            {"munki-secret": "munki", "reports-secret": "reports"}, lambda _: self.notion.client(),
+            {"munki-secret": "munki", "reports-secret": "reports", "editor-secret": "watchdog"}, lambda _: self.notion.client(),
             data_sources={BAYS: BAYS, "cameras": "cameras"},
         )
         env = patch.dict(os.environ, {"T6_NOTION_TOKEN": "fake", "T6_PREVIEW_SIGNING_KEY": "key"})
@@ -52,6 +54,8 @@ class MachineVerbTests(unittest.TestCase):
         self.addCleanup(self.server.shutdown)
         url = f"http://127.0.0.1:{self.server.server_port}"
         self.munki, self.reports = Client(url, "munki-secret"), Client(url, "reports-secret")
+        self.editor = Client(url, "editor-secret")
+        self.registry = registry
 
     def bay(self, name: str = "Bay 1", host: str | None = "Bay-1", **facts: str | None) -> str:
         columns = {"Serial Number": "serial", "Munki Manifest": "manifest", "Ring": "ring", "OS Version": "os"}
@@ -72,6 +76,19 @@ class MachineVerbTests(unittest.TestCase):
     def apply(self, *machines: MachineFactsInput) -> Done:
         preview = self.preview(*machines)
         done = self.munki.machine_sync(MachineSyncInput(machines=list(machines), confirm=preview.token))
+        assert isinstance(done, Done), done
+        return done
+
+    def edit(self, *items: tuple[list[str], dict[str, Any]]) -> MachineEditInput:
+        return MachineEditInput(machines=[MachineEditItem(names=names, values=values) for names, values in items])
+
+    def edit_preview(self, inputs: MachineEditInput) -> Preview:
+        preview = self.editor.machine_edit(inputs)
+        assert isinstance(preview, Preview), preview
+        return preview
+
+    def edit_apply(self, inputs: MachineEditInput) -> Done:
+        done = self.editor.machine_edit(inputs.model_copy(update={"confirm": self.edit_preview(inputs).token}))
         assert isinstance(done, Done), done
         return done
 
@@ -180,6 +197,89 @@ class MachineVerbTests(unittest.TestCase):
         refused = self.munki.camera_enrich(CameraEnrichInput(page_id=self.camera["id"], fields={"name": "Updated"}))
         assert isinstance(refused, Refused)
         self.assertEqual(refused.reason, "needs operator")
+
+    def test_edit_previews_old_and_new_per_row_and_writes_nothing(self) -> None:
+        page = self.notion.add_page(BAYS, {"Name": title("Bay 1"), "Hostname": rich_text("Bay-1"), "Username": rich_text("old")})
+        preview = self.edit_preview(self.edit((["Bay-1"], {"username": "new", "has_paragon": True})))
+        (item,) = preview.plan["machines"]
+        self.assertEqual((item["status"], item["page_id"]), ("matched", str(page["id"])))
+        self.assertEqual(item["changes"], [{"fact": "username", "old": "old", "new": "new"}, {"fact": "has_paragon", "old": None, "new": True}])
+        self.assertEqual(self.patches(), 0)
+
+    def test_edit_confirm_writes_audits_and_a_second_run_changes_nothing(self) -> None:
+        page = str(self.notion.add_page(BAYS, {"Name": title("Bay 1"), "Hostname": rich_text("Bay-1"), "Username": rich_text("old")})["id"])
+        inputs = self.edit((["Bay-1"], {"username": "new", "has_paragon": True, "lan_ip_address": "10.0.0.5"}))
+        done = self.edit_apply(inputs)
+        self.assertEqual(done.result["machines"][0]["written"], "saved")
+        self.assertEqual(self.row(page, "Username")["rich_text"][0]["plain_text"], "new")  # type: ignore[index]
+        self.assertEqual(self.row(page, "Has Paragon")["checkbox"], True)  # type: ignore[index]
+        with self.registry._transaction() as db:
+            (row,) = db.execute("SELECT project_id, actor, before, after FROM audit WHERE action = 'machine_edit'").fetchall()
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM activity WHERE action = 'machine_edit'").fetchone()[0], 1)
+        self.assertEqual((row[0], row[1]), (page, "watchdog"))
+        self.assertEqual(json.loads(row[2]), {"username": "old", "has_paragon": None, "lan_ip_address": None})
+        self.assertEqual(json.loads(row[3]), {"username": "new", "has_paragon": True, "lan_ip_address": "10.0.0.5"})
+        before = self.patches()
+        again = self.edit_preview(inputs)
+        self.assertEqual(again.plan["machines"][0]["changes"], [])
+        self.assertEqual(self.patches(), before)
+
+    def test_edit_refuses_a_property_not_on_the_list_and_the_whole_call_fails(self) -> None:
+        self.bay("Bay 1", "Bay-1")
+        self.bay("Bay 2", "Bay-2")
+        cases: list[dict[str, Any]] = [{"serial_number": "S1"}, {"name": "Renamed"}, {"ring": "pilot"}, {"related_to_tasks_property": []}]
+        for values in cases:
+            refused = self.editor.machine_edit(self.edit((["Bay-1"], {"username": "ok"}), (["Bay-2"], values)))
+            assert isinstance(refused, Refused)
+            self.assertEqual(refused.rule, "input")
+            self.assertIn("not editable", refused.reason)
+        self.assertEqual(self.patches(), 0)
+
+    def test_edit_refuses_a_value_of_the_wrong_type_with_the_reason(self) -> None:
+        self.bay("Bay 1", "Bay-1")
+        wrong: list[dict[str, Any]] = [{"has_paragon": "yes"}, {"username": True}, {"username": 5}]
+        for values in wrong:
+            refused = self.editor.machine_edit(self.edit((["Bay-1"], values)))
+            assert isinstance(refused, Refused)
+            self.assertIn("takes a", refused.reason)
+
+    def test_edit_blank_and_left_out_values_mean_no_change(self) -> None:
+        page = self.notion.add_page(BAYS, {"Name": title("Bay 1"), "Hostname": rich_text("Bay-1"), "Username": rich_text("keep"), "Has Paragon": checkbox(True)})
+        done = self.edit_apply(self.edit((["Bay-1"], {"username": "", "adobe_email": None, "has_paragon": None})))
+        self.assertEqual(done.result["machines"][0]["changes"], [])
+        self.assertEqual(self.patches(), 0)
+        self.assertEqual(self.row(str(page["id"]), "Username")["rich_text"][0]["plain_text"], "keep")  # type: ignore[index]
+
+    def test_edit_skips_unmatched_and_ambiguous_rows_and_writes_nothing_for_them(self) -> None:
+        self.bay("Bay 1", "Bay-1")
+        self.bay("Bay 1 copy", "bay-1")
+        done = self.edit_apply(self.edit((["Bay-1"], {"username": "a"}), (["Nowhere"], {"username": "b"})))
+        self.assertEqual([m["status"] for m in done.result["machines"]], ["ambiguous", "unmatched"])
+        self.assertEqual(self.patches(), 0)
+
+    def test_edit_needs_bays_edit_not_fleet_or_reader(self) -> None:
+        self.bay()
+        inputs = self.edit((["Bay-1"], {"username": "a"}))
+        for client in (self.munki, self.reports):
+            refused = client.machine_edit(inputs)
+            assert isinstance(refused, Refused)
+            self.assertEqual((refused.rule, refused.reason), ("permission", "needs bays_edit"))
+        refused = self.editor.machine_sync(MachineSyncInput(machines=[MachineFactsInput(names=["Bay-1"], serial_number="S1")]))
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.reason, "needs fleet")
+
+    def test_edit_preview_token_works_once_and_only_for_its_edits(self) -> None:
+        self.bay()
+        inputs = self.edit((["Bay-1"], {"username": "a"}))
+        token = self.edit_preview(inputs).token
+        other = self.editor.machine_edit(self.edit((["Bay-1"], {"username": "b"})).model_copy(update={"confirm": token}))
+        assert isinstance(other, Refused)
+        self.assertEqual(other.rule, "token_mismatch")
+        confirmed = inputs.model_copy(update={"confirm": token})
+        self.assertIsInstance(self.editor.machine_edit(confirmed), Done)
+        used = self.editor.machine_edit(confirmed)
+        assert isinstance(used, Refused)
+        self.assertEqual(used.rule, "token_used")
 
     def test_a_ring_that_is_not_a_ring_is_refused_at_the_boundary(self) -> None:
         with self.assertRaises(ValueError):

@@ -428,6 +428,14 @@ Manifest, Ring, Munki Client Version, Last Check-in and OS Version.
   not the Bays of the registry that Bookings use (`t6b_`, #421). **`machine sync`** is the Bays
   write-back as a verb: it previews each Machine's matched row and each fact's old and new value,
   then on confirm writes them. It needs the `fleet` permission, which grants nothing else.
+- **`machine edit`** edits other Bays properties through the API, so an app never holds a Notion token
+  or a Bays property name. Only the owner-approved list is editable: LAN IP Address, Hostname, Device
+  UIID, Has Paragon, Adobe email, Username, Avid System ID, Avid Activation ID, OS Version and
+  Paragon License (#531). A property not on it, or a value of the wrong type, fails the whole call.
+  It previews each matched row's old and new values and writes on confirm; a blank or left-out value
+  means no change, and nothing is cleared. Each applied row is audited (`machine_edit`, with old and
+  new values). It needs the `bays_edit` permission, which grants nothing else. Hostname is also a
+  row match key, so a caller finds the row by its current name and the new Hostname applies after.
 - **Bays write-back**: a machine matches a row by its names against the row's
   Hostname and Name, ignoring case, spaces and ARD's `-NNN` suffix. It writes
   only to one unique row, never creates a row, never clears a fact, and is a

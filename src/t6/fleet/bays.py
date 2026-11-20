@@ -16,6 +16,11 @@ Rules:
   written from a stale observation (see `is_stale`).
 - A write that Notion refuses or cannot confirm is reported as the typed
   `Rejected` or `Ambiguous` result; no retry.
+
+`Fleet.edit()` edits the other Bays properties on the same rules, limited to the
+owner-approved `EDITABLE` allowlist. A property not on it, or a value of the wrong
+type, fails the whole call before any row is read or written. A left-out or blank
+value means no change; nothing is cleared.
 """
 
 from __future__ import annotations
@@ -57,6 +62,22 @@ OBSERVED: frozenset[str] = frozenset({"munki_client_version", "last_check_in", "
 """The facts that come from observing the machine, and so go stale."""
 
 
+EDITABLE: dict[str, type] = {
+    "lan_ip_address": str,
+    "hostname": str,
+    "device_uiid": str,
+    "has_paragon": bool,
+    "adobe_email": str,
+    "username": str,
+    "avid_system_id": str,
+    "avid_activation_id": str,
+    "os_version": str,
+    "paragon_license": str,
+}
+"""The Bays properties `Fleet.edit` may change (approved by Cyril on t6-core#531), as `BaysRow`
+attributes with the type of value each takes. None are clearable."""
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MachineFacts:
     """What is known about one machine. `names` are the names it goes by (hostname, computer name).
@@ -88,10 +109,41 @@ class MachineFacts:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class MachineEdit:
+    """Edits to one machine's Bays row. `names` find the row as in `MachineFacts`; `values` are
+    `EDITABLE` properties. A None or blank value means no change."""
+
+    names: tuple[str, ...]
+    values: dict[str, Any]
+
+    def __post_init__(self) -> None:
+        if not any(name.strip() for name in self.names):
+            raise ValueError("a machine needs at least one name")
+        unlisted = sorted(set(self.values) - set(EDITABLE))
+        if unlisted:
+            raise ValueError(f"not editable: {', '.join(unlisted)}; editable: {', '.join(EDITABLE)}")
+        for prop, value in self.values.items():
+            if value is not None and type(value) is not EDITABLE[prop]:
+                raise ValueError(f"{prop} takes a {EDITABLE[prop].__name__}, not {value!r}")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class FactChange:
     fact: str
     old: Any
     new: Any
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class EditResult:
+    """What `Fleet.edit` did for one machine: `status` as in `SyncResult`, the `changes` it needs, and
+    `written` (None on a dry run or when nothing changed, else the saved Machine, `Rejected` or `Ambiguous`)."""
+
+    name: str
+    status: Literal["matched", "unmatched", "ambiguous", "changed"]
+    page_id: str | None = None
+    changes: tuple[FactChange, ...] = ()
+    written: Machine | Rejected | Ambiguous | None = field(default=None)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -143,15 +195,7 @@ class Fleet:
         self, facts: Sequence[MachineFacts], *, apply: bool = False, now: datetime | None = None
     ) -> tuple[SyncResult, ...]:
         """Plan facts and optionally write them; raise FleetSafetyError for unsafe schema or pages."""
-        expected = [
-            {"name": f.metadata[NAME_KEY], "type": f.metadata[TYPE_KEY], "id": f.metadata.get(ID_KEY)}
-            for f in fields(BaysRow)
-            if f.name in FACTS
-        ]
-        live = self._client.retrieve_data_source(self._source).get("properties") or {}
-        drift = diff_properties(expected, live)
-        if drift["removed"] or drift["changed"]:
-            raise FleetSafetyError(f"unsafe Bays schema: missing {drift['removed']}, changed {drift['changed']}")
+        self._check_schema(FACTS)
         now = now or datetime.now().astimezone()
         pages = self._pages()
         rows = [(page, BaysRow.from_page(page)) for page in pages]
@@ -169,8 +213,49 @@ class Fleet:
             results.append(self._plan(name, machine, found[0], apply, now))
         return tuple(results)
 
+    def edit(self, edits: Sequence[MachineEdit], *, apply: bool = False) -> tuple[EditResult, ...]:
+        """Plan edits and optionally write them; raise FleetSafetyError for unsafe schema or pages."""
+        self._check_schema(sorted({prop for edit in edits for prop in edit.values}))
+        rows = [(page, BaysRow.from_page(page)) for page in self._pages()]
+        matches = [self._rows_for(edit, rows) for edit in edits]
+        claims: dict[str, int] = {}
+        for found in matches:
+            for page, _ in found:
+                claims[str(page["id"])] = claims.get(str(page["id"]), 0) + 1
+        results = []
+        for edit, found in zip(edits, matches, strict=True):
+            name = edit.names[0]
+            if len(found) != 1 or claims[str(found[0][0]["id"])] > 1:
+                results.append(EditResult(name=name, status="ambiguous" if found else "unmatched"))
+                continue
+            page, row = found[0]
+            changes = tuple(
+                FactChange(fact=prop, old=getattr(row, prop), new=value)
+                for prop, value in edit.values.items()
+                if value is not None and value != "" and not _same(getattr(row, prop), value)
+            )
+            written = None
+            if apply and changes:
+                if self._moved(page, row):
+                    results.append(EditResult(name=name, status="changed", page_id=row.page_id, changes=changes))
+                    continue
+                written = self._write(row.page_id, {change.fact: change.new for change in changes})
+            results.append(EditResult(name=name, status="matched", page_id=row.page_id, changes=changes, written=written))
+        return tuple(results)
+
+    def _check_schema(self, attributes: Sequence[str]) -> None:
+        expected = [
+            {"name": f.metadata[NAME_KEY], "type": f.metadata[TYPE_KEY], "id": f.metadata.get(ID_KEY)}
+            for f in fields(BaysRow)
+            if f.name in attributes
+        ]
+        live = self._client.retrieve_data_source(self._source).get("properties") or {}
+        drift = diff_properties(expected, live)
+        if drift["removed"] or drift["changed"]:
+            raise FleetSafetyError(f"unsafe Bays schema: missing {drift['removed']}, changed {drift['changed']}")
+
     @staticmethod
-    def _rows_for(machine: MachineFacts, rows: list[tuple[JSON, BaysRow]]) -> list[tuple[JSON, BaysRow]]:
+    def _rows_for(machine: MachineFacts | MachineEdit, rows: list[tuple[JSON, BaysRow]]) -> list[tuple[JSON, BaysRow]]:
         keys = {match_key(name) for name in machine.names if name.strip()}
         return [
             (page, row)

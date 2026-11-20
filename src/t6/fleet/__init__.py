@@ -2,13 +2,13 @@
 
 - `t6.fleet.rules`: rings, role groups, the manifest chain, machine name
   matching and observation staleness. No I/O.
-- `Fleet`: read Bays as `t6.domain.Machine` and write the fleet facts (dry run
-  by default; never creates a row).
+- `Fleet`: read Bays as `t6.domain.Machine` and write the fleet facts, and edit the
+  other approved Bays properties (dry run by default; never creates a row).
 
 munki-repo keeps catalogs and manifests and will call this through a thin `t6` CLI.
 """
 
-from t6.fleet.bays import FactChange, Fleet, FleetSafetyError, MachineFacts, SyncResult
+from t6.fleet.bays import EDITABLE, EditResult, FactChange, Fleet, FleetSafetyError, MachineEdit, MachineFacts, SyncResult
 from t6.fleet.rules import (
     MAX_OBSERVATION_AGE,
     RINGS,
@@ -23,13 +23,16 @@ from t6.fleet.rules import (
 )
 
 __all__ = [
+    "EDITABLE",
     "MAX_OBSERVATION_AGE",
     "RINGS",
     "ROLE_GROUPS",
     "SITE_MANIFESTS",
+    "EditResult",
     "FactChange",
     "Fleet",
     "FleetSafetyError",
+    "MachineEdit",
     "MachineFacts",
     "ManifestChainError",
     "SyncResult",

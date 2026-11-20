@@ -349,6 +349,9 @@ class VerbAPI:
             # The reply holds the note's title and attendee names, so it is masked like `meeting-notes list`.
             if isinstance(outcome, Done) and not self._reads_unmasked(actor):
                 outcome = self._masked_outcome(outcome)
+        elif (entry.noun, entry.verb) == ('machine', 'edit'):
+            refusal = self.people.authorize(actor, entry.role)
+            outcome = refusal or self._machine_edit(inputs, actor)
         elif entry.noun == 'machine':
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._machine(entry.verb, inputs, actor)
@@ -727,6 +730,47 @@ class VerbAPI:
                         detail=str(written) if isinstance(written, (Rejected, WriteAmbiguous)) else None))
                 plan = {'machines': [result.model_dump(mode='json') for result in results]}
                 return self.people.tokens.create('machine sync', actor, values, plan) if nonce is None else Done(result=plan)
+        except (ValueError, KeyError, OSError, NotionError, FleetSafetyError) as error:
+            return Refused(rule='input', reason=str(error))
+
+    def _machine_edit(self, inputs: Any, actor: str) -> Any:
+        """`machine edit` previews each row's old and new values, then on confirm writes them and audits each applied row (`t6.fleet`)."""
+        from t6.fleet import Fleet, FleetSafetyError, MachineEdit
+        from t6.notion import NotionError
+        from t6.notion.writes import Ambiguous as WriteAmbiguous, Rejected
+        from t6.verbs import MachineEditResult, MachineFactChange
+        if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+            return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+        try:
+            source = self.data_sources['bays']
+            token = os.environ['T6_NOTION_TOKEN']
+            edits = [MachineEdit(names=tuple(machine.names), values=machine.values) for machine in inputs.machines]  # refuses an unlisted property or a wrong type before any read
+            values = inputs.model_dump(mode='json', exclude={'confirm'})
+            nonce = self.people.tokens.verify(inputs.confirm, 'machine edit', actor, values) if inputs.confirm else None
+            if isinstance(nonce, Refused):
+                return nonce
+            with self.people.registry._transaction() as db:
+                if nonce and db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce=?', (nonce,)).fetchone():
+                    return Refused(rule='token_used', reason='Preview token has already been used')
+                if nonce:
+                    db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
+            results = []
+            with self.open_notion(token) as client:
+                for found in Fleet(client, source).edit(edits, apply=nonce is not None):
+                    written = found.written
+                    results.append(MachineEditResult(
+                        name=found.name, status=found.status, page_id=found.page_id,
+                        changes=[MachineFactChange(fact=change.fact, old=change.old, new=change.new) for change in found.changes],
+                        written=None if written is None else 'rejected' if isinstance(written, Rejected) else 'ambiguous' if isinstance(written, WriteAmbiguous) else 'saved',
+                        detail=str(written) if isinstance(written, (Rejected, WriteAmbiguous)) else None))
+            if nonce is not None:
+                with self.people.registry._transaction() as db:
+                    for result in results:
+                        if result.written == 'saved' and result.page_id:
+                            _audit(db, result.page_id, 'machine_edit', actor, self.people.registry._clock(),
+                                   {change.fact: change.old for change in result.changes}, {change.fact: change.new for change in result.changes})
+            plan = {'machines': [result.model_dump(mode='json') for result in results]}
+            return self.people.tokens.create('machine edit', actor, values, plan) if nonce is None else Done(result=plan)
         except (ValueError, KeyError, OSError, NotionError, FleetSafetyError) as error:
             return Refused(rule='input', reason=str(error))
 
