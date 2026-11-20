@@ -50,9 +50,9 @@ _FORBIDDEN_ENV_KEYS = frozenset({
     "T6_TAP_SECRET",
     "T6_FRAMEIO_WEBHOOK_SECRET",
     "T6_NOTION_WEBHOOK_TOKEN",
-    "T6_GOOGLE_CHANNEL_TOKEN",
     "T6_GATEWAY_SECRET",
 })
+_FORBIDDEN_ENV_PREFIXES = ("GOOGLE_", "T6_GOOGLE_")
 
 _T6_KEYS = frozenset({"references", "output_schema", "max_turns", "env", "pre", "tools", "post"})
 _HOOK_KEYS = frozenset({"name", "script", "timeout", "on_error"})
@@ -493,6 +493,10 @@ def _parse_tools(raw: object, *, root: Path) -> tuple[ToolScript, ...]:
     return tuple(tools)
 
 
+def _is_forbidden_env(key: str, blocked: frozenset[str]) -> bool:
+    return key in blocked or key.startswith(_FORBIDDEN_ENV_PREFIXES)
+
+
 def _build_script_env(
     root: Path,
     *,
@@ -503,15 +507,16 @@ def _build_script_env(
     blocked = _FORBIDDEN_ENV_KEYS | frozenset(blocked_env)
     env: dict[str, str] = {}
     for key in _BASE_ENV_KEYS:
-        if key not in blocked and key in os.environ:
+        if not _is_forbidden_env(key, blocked) and key in os.environ:
             env[key] = os.environ[key]
     env["SKILL_DIR"] = str(root)
     source: Mapping[str, str] = os.environ if allowed_env is None else allowed_env
     for key in env_names:
-        if key not in blocked and key in source:
+        if not _is_forbidden_env(key, blocked) and key in source:
             env[key] = source[key]
-    for key in blocked:
-        env.pop(key, None)
+    for key in list(env):
+        if _is_forbidden_env(key, blocked):
+            del env[key]
     return env
 
 
