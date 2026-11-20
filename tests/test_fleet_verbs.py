@@ -5,6 +5,7 @@ import tempfile
 import threading
 import unittest
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import patch
 
 import httpx
@@ -78,7 +79,7 @@ class MachineVerbTests(unittest.TestCase):
         assert isinstance(done, Done), done
         return done
 
-    def edit(self, *items: tuple[list[str], dict]) -> MachineEditInput:
+    def edit(self, *items: tuple[list[str], dict[str, Any]]) -> MachineEditInput:
         return MachineEditInput(machines=[MachineEditItem(names=names, values=values) for names, values in items])
 
     def edit_preview(self, inputs: MachineEditInput) -> Preview:
@@ -226,7 +227,8 @@ class MachineVerbTests(unittest.TestCase):
     def test_edit_refuses_a_property_not_on_the_list_and_the_whole_call_fails(self) -> None:
         self.bay("Bay 1", "Bay-1")
         self.bay("Bay 2", "Bay-2")
-        for values in ({"serial_number": "S1"}, {"name": "Renamed"}, {"ring": "pilot"}, {"related_to_tasks_property": []}):
+        cases: list[dict[str, Any]] = [{"serial_number": "S1"}, {"name": "Renamed"}, {"ring": "pilot"}, {"related_to_tasks_property": []}]
+        for values in cases:
             refused = self.editor.machine_edit(self.edit((["Bay-1"], {"username": "ok"}), (["Bay-2"], values)))
             assert isinstance(refused, Refused)
             self.assertEqual(refused.rule, "input")
@@ -235,7 +237,8 @@ class MachineVerbTests(unittest.TestCase):
 
     def test_edit_refuses_a_value_of_the_wrong_type_with_the_reason(self) -> None:
         self.bay("Bay 1", "Bay-1")
-        for values in ({"has_paragon": "yes"}, {"username": True}, {"username": 5}):
+        wrong: list[dict[str, Any]] = [{"has_paragon": "yes"}, {"username": True}, {"username": 5}]
+        for values in wrong:
             refused = self.editor.machine_edit(self.edit((["Bay-1"], values)))
             assert isinstance(refused, Refused)
             self.assertIn("takes a", refused.reason)

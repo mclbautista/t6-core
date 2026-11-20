@@ -766,7 +766,7 @@ class VerbAPI:
             if nonce is not None:
                 with self.people.registry._transaction() as db:
                     for result in results:
-                        if result.written == 'saved':
+                        if result.written == 'saved' and result.page_id:
                             _audit(db, result.page_id, 'machine_edit', actor, self.people.registry._clock(),
                                    {change.fact: change.old for change in result.changes}, {change.fact: change.new for change in result.changes})
             plan = {'machines': [result.model_dump(mode='json') for result in results]}
