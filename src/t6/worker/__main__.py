@@ -12,7 +12,12 @@ import signal
 import sys
 import threading
 import time
+from typing import TYPE_CHECKING
 from urllib.error import URLError
+
+if TYPE_CHECKING:
+    from t6.cli import DataSourceConfig
+    from t6.notion.mirror import MirrorSyncer
 
 from t6.domain.events import JobKind, JsonValue
 from t6.frameio.readapi import ReadApi
@@ -401,6 +406,48 @@ def sharing_calendar_handlers(environ: Mapping[str, str]) -> dict[str, Handler]:
         raise ConfigError(str(error)) from error
 
 
+def mirror_data_sources_from_env(environ: Mapping[str, str]) -> dict[str, DataSourceConfig]:
+    """Load configured data source IDs and max-age settings for the main worker's Notion mirror."""
+    from t6.cli import DataSourceConfig, read_data_source_configs
+
+    source_path = (environ.get("T6_READ_DATA_SOURCES") or "").strip()
+    configs: dict[str, DataSourceConfig] = read_data_source_configs(Path(source_path)) if source_path else {}
+    for key, env_name in (
+        ("projects", "T6_NOTION_PROJECTS_DATA_SOURCE"),
+        ("contacts", "T6_NOTION_CONTACTS_DATA_SOURCE"),
+        ("job_orders", "T6_NOTION_JOB_ORDERS_DATA_SOURCE"),
+        ("deliverables", "T6_NOTION_DELIVERABLES_DATA_SOURCE"),
+    ):
+        value = (environ.get(env_name) or "").strip()
+        if value:
+            prev = configs.get(key)
+            configs[key] = (
+                DataSourceConfig(id=value, max_age_seconds=prev.max_age_seconds)
+                if prev is not None
+                else DataSourceConfig(id=value)
+            )
+    return configs
+
+
+def mirror_syncer_from_env(environ: Mapping[str, str]) -> MirrorSyncer | None:
+    """Create the main worker's `MirrorSyncer`, or None if mirror is disabled/unconfigured."""
+    from t6.notion import MIRROR_PHASE_SOURCES, MirrorSyncer, MirrorWriter, NotionClient, NotionSource, mirror_db_path
+
+    path = mirror_db_path(environ)
+    if path is None:
+        return None
+    token = environ.get("T6_NOTION_TOKEN")
+    if not token:
+        return None
+    configs = mirror_data_sources_from_env(environ)
+    active = {key: cfg for key, cfg in configs.items() if key in MIRROR_PHASE_SOURCES}
+    if not active:
+        return None
+    writer = MirrorWriter(path)
+    notion = NotionSource(lambda: NotionClient(token))
+    return MirrorSyncer(writer, notion, active, enabled_sources=MIRROR_PHASE_SOURCES)
+
+
 def review_media_links(environ: Mapping[str, str], registry: MediaLinks) -> MediaLinks:
     """Where the review message reads Media locations: the t6 database when `T6_DATABASE` is set.
 
@@ -679,6 +726,19 @@ def main(
             except (OSError, URLError, GatewayRejected):
                 pass  # Retry on the next worker poll.
         tick = linked_tick
+    if settings.queue == "main":
+        mirror_syncer = mirror_syncer_from_env(environ)
+        if mirror_syncer is not None:
+            if tick is not None:
+                prev_tick = tick
+
+                def combined_tick() -> None:
+                    prev_tick()
+                    mirror_syncer.tick()
+
+                tick = combined_tick
+            else:
+                tick = mirror_syncer.tick
     if read_api is not None:
         threading.Thread(target=read_api.serve_forever, daemon=True).start()
     try:

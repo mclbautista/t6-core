@@ -15,17 +15,36 @@
 
 from t6.notion.client import BASE_URL, NOTION_VERSION, AsyncNotionClient, RetryPolicy
 from t6.notion.errors import NotionError
-from t6.notion.source import Freshness, NotionSource, as_source
+from t6.notion.mirror import (
+    DEFAULT_MAX_AGE_SECONDS,
+    MIRROR_PHASE_SOURCES,
+    MirrorReader,
+    MirrorSourceState,
+    MirrorSyncer,
+    MirrorWriter,
+    mirror_db_path,
+    mirror_enabled,
+)
+from t6.notion.source import Freshness, NotionSource, as_source, last_read_from_mirror
 from t6.notion.sync import NotionClient
 
 __all__ = [
     "BASE_URL",
+    "DEFAULT_MAX_AGE_SECONDS",
+    "MIRROR_PHASE_SOURCES",
     "NOTION_VERSION",
     "AsyncNotionClient",
     "Freshness",
+    "MirrorReader",
+    "MirrorSourceState",
+    "MirrorSyncer",
+    "MirrorWriter",
     "NotionClient",
     "NotionError",
     "NotionSource",
     "RetryPolicy",
     "as_source",
+    "last_read_from_mirror",
+    "mirror_db_path",
+    "mirror_enabled",
 ]

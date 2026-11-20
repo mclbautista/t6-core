@@ -4,15 +4,24 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
+    from t6.notion.mirror import MirrorReader
     from t6.notion.sync import NotionClient
 
 JSON = dict[str, Any]
 Freshness = Literal["mirror", "live"]
 
-__all__ = ["Freshness", "NotionSource", "as_source"]
+__all__ = ["Freshness", "NotionSource", "as_source", "last_read_from_mirror"]
+
+_last_read_source: ContextVar[str | None] = ContextVar("notion_last_read_source", default=None)
+
+
+def last_read_from_mirror() -> bool:
+    """Whether the most recent `NotionSource` read in this context was answered from the local mirror."""
+    return _last_read_source.get() == "mirror"
 
 
 def _check_freshness(freshness: Freshness) -> None:
@@ -25,12 +34,15 @@ class NotionSource:
 
     Wraps either an already-open `NotionClient` (called directly without closing it)
     or a zero-arg factory `Callable[[], NotionClient]` (opened and closed per call).
-    In #513 both `"mirror"` and `"live"` read live Notion.
+    When `mirror` is supplied, `"mirror"` reads hit the local SQLite mirror first and
+    fall back silently to live Notion when unavailable, not ready, stale, or missing.
     """
 
     def __init__(
         self,
         client: NotionClient | Callable[[], NotionClient | AbstractContextManager[NotionClient]],
+        *,
+        mirror: MirrorReader | None = None,
     ) -> None:
         if callable(client):
             self._client: NotionClient | None = None
@@ -38,13 +50,15 @@ class NotionSource:
         else:
             self._client = client
             self._open_client = None
+        self._mirror: MirrorReader | None = mirror
 
     @classmethod
-    def from_client(cls, client: NotionClient) -> NotionSource:
+    def from_client(cls, client: NotionClient, *, mirror: MirrorReader | None = None) -> NotionSource:
         """Wrap an already-open `NotionClient` directly without closing it."""
         instance = cls.__new__(cls)
         instance._client = client
         instance._open_client = None
+        instance._mirror = mirror
         return instance
 
     @contextmanager
@@ -82,6 +96,13 @@ class NotionSource:
     ) -> list[JSON]:
         """Query a data source with `freshness` (`"mirror"` or `"live"`)."""
         _check_freshness(freshness)
+        mirror: MirrorReader | None = getattr(self, "_mirror", None)
+        if freshness == "mirror" and mirror is not None and filter is None and sorts is None:
+            cached = mirror.query_data_source(data_source_id)
+            if cached is not None:
+                _last_read_source.set("mirror")
+                return cached
+        _last_read_source.set("live")
         with self._session() as client:
             return client.query_data_source(
                 data_source_id, filter=filter, sorts=sorts, page_size=page_size
@@ -90,6 +111,13 @@ class NotionSource:
     def retrieve_page(self, page_id: str, *, freshness: Freshness = "mirror") -> JSON:
         """Retrieve a page with `freshness` (`"mirror"` or `"live"`)."""
         _check_freshness(freshness)
+        mirror: MirrorReader | None = getattr(self, "_mirror", None)
+        if freshness == "mirror" and mirror is not None:
+            cached = mirror.retrieve_page(page_id)
+            if cached is not None:
+                _last_read_source.set("mirror")
+                return cached
+        _last_read_source.set("live")
         with self._session() as client:
             return client.retrieve_page(page_id)
 
@@ -98,6 +126,7 @@ class NotionSource:
     ) -> JSON:
         """Retrieve a data source schema/metadata with `freshness` (`"mirror"` or `"live"`)."""
         _check_freshness(freshness)
+        _last_read_source.set("live")
         with self._session() as client:
             return client.retrieve_data_source(data_source_id)
 
@@ -106,12 +135,14 @@ class NotionSource:
     ) -> list[JSON]:
         """List direct child blocks of `block_id` (`"live"` by default)."""
         _check_freshness(freshness)
+        _last_read_source.set("live")
         with self._session() as client:
             return client.list_block_children(block_id, page_size=page_size)
 
     def retrieve_user(self, user_id: str, *, freshness: Freshness = "live") -> JSON:
         """Retrieve a Notion user (`"live"` by default)."""
         _check_freshness(freshness)
+        _last_read_source.set("live")
         with self._session() as client:
             return client.retrieve_user(user_id)
 

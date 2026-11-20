@@ -12,9 +12,10 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from importlib.metadata import version
-from typing import TYPE_CHECKING, Any, Callable, Mapping, cast
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence, cast
 
 if TYPE_CHECKING:
+    from t6.notion.mirror import MirrorReader
     from t6.notion.source import NotionSource
 
 from t6.domain.events import JobKind, JsonValue
@@ -40,7 +41,7 @@ class VerbAPI:
                  translate_enabled: bool = False, frameio_timeout: float = 60.0,
                  frameio_queue: Any = None, concern_observe_closes: bool = False,
                  request_log: Callable[[str], None] | None = None, privacy_list: PrivacyList | None = None,
-                 notion_source: NotionSource | None = None) -> None:
+                 notion_source: NotionSource | None = None, mirror: MirrorReader | None = None) -> None:
         import math
         if not math.isfinite(transcribe_rate) or transcribe_rate < 0:
             raise ValueError('Transcription rate must be finite and non-negative')
@@ -50,6 +51,7 @@ class VerbAPI:
         self.people, self.queue, self.secrets, self.open_notion = people, queue, dict(secrets), open_notion
         self._notion_source: NotionSource | None = notion_source
         self._default_notion_source: NotionSource | None = None
+        self._mirror: MirrorReader | None = mirror
         self.tap_app = tap_app
         self.llm_service = llm_service
         self.data_sources = dict(data_sources or {})
@@ -71,7 +73,10 @@ class VerbAPI:
         source = getattr(self, '_notion_source', None)
         if source is None:
             from t6.notion.source import NotionSource
-            source = NotionSource(lambda: self.open_notion(os.environ.get('T6_NOTION_TOKEN', '')))
+            source = NotionSource(
+                lambda: self.open_notion(os.environ.get('T6_NOTION_TOKEN', '')),
+                mirror=getattr(self, '_mirror', None),
+            )
             self._notion_source = source
             self._default_notion_source = source
         return source
@@ -908,13 +913,13 @@ class VerbAPI:
     def _typed_read(self, noun: str, verb: str, inputs: Any) -> Any:
         from datetime import date, datetime
         from dataclasses import asdict, replace
-        from t6.notion import NotionError
+        from t6.notion import NotionError, last_read_from_mirror
         from t6.notion.reads import ProjectReader, DeliverableReader, is_live
         from t6.notion.job_orders import JobOrders
         from t6.notion.meeting_notes import note_from_page
         from t6.domain.job_order_rules import status_group, is_active, is_done, health_flags
         from t6.domain import project_rules
-        from t6.registry import ProjectRefs
+        from t6.registry import ProjectRefs, RegistryError
         from t6.registry.core import normalize_page_id
         from t6.cli import TOKEN_VARIABLE
         if (noun, verb) == ('concern', 'list'):
@@ -958,18 +963,58 @@ class VerbAPI:
             if refs.same(a, b):
                 return True
             return a is not None and refs.identity(a) is None and refs.identity(b) is None and normalize_page_id(a) == normalize_page_id(b)
-        def project_result(project: Any) -> Any:
-            project = refs.identified(project)
-            def ids(pages: tuple[str, ...]) -> tuple[str, ...]:
-                return tuple(identity(page) for page in pages)
+        def batch_project_results(raw_projects: Sequence[Any]) -> list[Any]:
+            if not raw_projects:
+                return []
             with self.people.registry._transaction() as db:
-                roles = tuple(dict(person_id=r[0], role=r[1]) for r in db.execute('SELECT person_id, role FROM project_person_roles WHERE project_id = ? ORDER BY person_id, role', (project.t6_id,)))
-            return replace(project, project_roles=roles, editor_ids=ids(project.editor_ids),
-                           assistant_editor_ids=ids(project.assistant_editor_ids),
-                           online_editor_ids=ids(project.online_editor_ids), colorist_ids=ids(project.colorist_ids),
-                           sound_tech_ids=ids(project.sound_tech_ids), post_coordinator_ids=ids(project.post_coordinator_ids),
-                           director_ids=ids(project.director_ids), cinematographer_ids=ids(project.cinematographer_ids),
-                           prod_coor_supe_ids=ids(project.prod_coor_supe_ids))
+                notion_bindings: dict[str, str] = {
+                    normalize_page_id(str(row[0])): str(row[1])
+                    for row in db.execute("SELECT page_id, project_id FROM bindings WHERE system = 'notion'").fetchall()
+                }
+                registered_projects: dict[str, tuple[str | None, str]] = {
+                    str(row[0]): (None if row[1] is None else str(row[1]), str(row[2]))
+                    for row in db.execute('SELECT id, code, rotation FROM projects').fetchall()
+                }
+                roles_by_project: dict[str, list[dict[str, str]]] = {}
+                for proj_id, person_id, role in db.execute(
+                    'SELECT project_id, person_id, role FROM project_person_roles ORDER BY project_id, person_id, role'
+                ).fetchall():
+                    roles_by_project.setdefault(str(proj_id), []).append({'person_id': str(person_id), 'role': str(role)})
+
+            def batch_identity(page: str) -> str:
+                key = normalize_page_id(page)
+                if not key:
+                    raise RegistryError('notion_page_id must not be blank')
+                return notion_bindings.get(key) or page
+
+            def ids(pages: tuple[str, ...]) -> tuple[str, ...]:
+                return tuple(batch_identity(page) for page in pages)
+
+            batched: list[Any] = []
+            for project in raw_projects:
+                ref = project.page_id.strip()
+                reg_id = ref if ref.startswith('t6p_') else (notion_bindings.get(normalize_page_id(ref)) if ref else None)
+                reg_info = registered_projects.get(reg_id) if reg_id is not None else None
+                if reg_info is not None:
+                    reg_code, reg_rotation = reg_info
+                    project = replace(project, t6_id=reg_id, rotation=reg_rotation, project_code=reg_code)
+                roles = tuple(roles_by_project.get(project.t6_id, ())) if project.t6_id is not None else ()
+                batched.append(
+                    replace(
+                        project,
+                        project_roles=roles,
+                        editor_ids=ids(project.editor_ids),
+                        assistant_editor_ids=ids(project.assistant_editor_ids),
+                        online_editor_ids=ids(project.online_editor_ids),
+                        colorist_ids=ids(project.colorist_ids),
+                        sound_tech_ids=ids(project.sound_tech_ids),
+                        post_coordinator_ids=ids(project.post_coordinator_ids),
+                        director_ids=ids(project.director_ids),
+                        cinematographer_ids=ids(project.cinematographer_ids),
+                        prod_coor_supe_ids=ids(project.prod_coor_supe_ids),
+                    )
+                )
+            return batched
         def read_project(project: Any) -> Any:
             from dataclasses import fields
             from t6.verbs import ReadProject
@@ -1000,16 +1045,43 @@ class VerbAPI:
                     item['t6_id'] = self.people.registry.bound_entity('notion', c.page_id)
                     return item
                 if verb == 'list':
-                    people = [contact(c) for c in contact_reader.list()]
-                    kinds: dict[str, str] = {}
-                    if inputs.kind:
-                        with self.people.registry._transaction() as db:
-                            kinds = dict(db.execute('SELECT id, kind FROM persons').fetchall())
-                    return Done(result={'people': [c for c in people if (inputs.registered is None or (c['t6_id'] is not None) == inputs.registered)
-                                                   and (inputs.kind is None or kinds.get(c['t6_id']) == inputs.kind)]})
+                    raw_contacts = contact_reader.list()
+                    with self.people.registry._transaction() as db:
+                        contact_bindings: dict[str, str] = {
+                            normalize_page_id(str(row[0])): str(row[1])
+                            for row in db.execute("SELECT page_id, project_id FROM bindings WHERE system = 'notion'").fetchall()
+                        }
+                        kinds: dict[str, str] = (
+                            {str(r[0]): str(r[1]) for r in db.execute('SELECT id, kind FROM persons').fetchall()}
+                            if inputs.kind
+                            else {}
+                        )
+                    people = []
+                    for c in raw_contacts:
+                        key = normalize_page_id(c.page_id)
+                        if not key:
+                            raise RegistryError('notion_page_id must not be blank')
+                        item = asdict(c)
+                        item['t6_id'] = contact_bindings.get(key)
+                        if (inputs.registered is None or (item['t6_id'] is not None) == inputs.registered) and (
+                            inputs.kind is None or kinds.get(item['t6_id'] or '') == inputs.kind
+                        ):
+                            people.append(item)
+                    return Done(result={'people': people})
                 if verb == 'find':
                     try:
-                        return Done(result=_find_contacts(contact_reader.list(), contact, inputs.mention, inputs.mentions, inputs.suggest, inputs.prefer_telegram))
+                        contacts = contact_reader.list()
+                        used_mirror = last_read_from_mirror()
+                        found_contacts = _find_contacts(contacts, contact, inputs.mention, inputs.mentions, inputs.suggest, inputs.prefer_telegram)
+                        missing_match = (
+                            any(entry['match'] is None for entry in found_contacts['results'])
+                            if 'results' in found_contacts
+                            else found_contacts['match'] is None
+                        )
+                        if used_mirror and missing_match:
+                            contacts = contact_reader.list(freshness='live')
+                            found_contacts = _find_contacts(contacts, contact, inputs.mention, inputs.mentions, inputs.suggest, inputs.prefer_telegram)
+                        return Done(result=found_contacts)
                     except ValueError as error:
                         return Refused(rule='input', reason=str(error))
                 person = self.people.get(identity(inputs.person_id))
@@ -1038,7 +1110,9 @@ class VerbAPI:
                 cameras = get_cameras(notion, self.data_sources['cameras'], page_id=inputs.page_id)
                 return Done(result={'cameras': [{'page_id': c['id'], 'name': c['name'] or '', 'tags': c['tags']} for c in cameras]})
             if noun == 'project':
-                projects = [project_result(p) for p in ProjectReader(notion, self.data_sources['projects']).list()]
+                project_reader = ProjectReader(notion, self.data_sources['projects'])
+                projects = batch_project_results(project_reader.list())
+                used_mirror = last_read_from_mirror()
                 def flags_of(project: Any, stated_dates: Mapping[str, Any]) -> dict[str, Any]:
                     from dataclasses import replace
                     from t6.domain.project_rules import date_flags, date_sanity, health_missing, missing_roles
@@ -1055,17 +1129,30 @@ class VerbAPI:
                               for kind, first, second, first_date, second_date in date_sanity({name: getattr(judged, name) for name in ('playdate', 'submission_deadline', 'archival_deadline')})]
                     return {'flags': flags, 'missing_roles': list(missing_roles(project)), 'sanity': sanity}
                 if verb == 'flags' and inputs.projects:
-                    by_page = {p.page_id.replace('-', '').lower(): p for p in projects}
-                    several = []
-                    for item in inputs.projects:
-                        pages = refs.pages(item.project)
-                        found = by_page.get((pages[0] if pages else item.project).replace('-', '').lower())
-                        several.append({'project': item.project, 'found': True, **flags_of(found, item.stated)} if found else {'project': item.project, 'found': False})
+                    def build_flags(items: Sequence[Any]) -> list[dict[str, Any]]:
+                        by_page = {p.page_id.replace('-', '').lower(): p for p in items}
+                        several_items: list[dict[str, Any]] = []
+                        for item in inputs.projects:
+                            pages = refs.pages(item.project)
+                            found_proj = by_page.get((pages[0] if pages else item.project).replace('-', '').lower())
+                            several_items.append({'project': item.project, 'found': True, **flags_of(found_proj, item.stated)} if found_proj else {'project': item.project, 'found': False})
+                        return several_items
+
+                    several = build_flags(projects)
+                    if used_mirror and any(not item['found'] for item in several):
+                        projects = batch_project_results(project_reader.list(freshness='live'))
+                        several = build_flags(projects)
                     return Done(result={'projects': several})
                 if verb in ('get', 'notes', 'flags'):
-                    pages = refs.pages(inputs.project)
-                    active = (pages[0] if pages else inputs.project).replace('-', '').lower()
-                    project = next((p for p in projects if p.page_id.replace('-', '').lower() == active), None)
+                    def find_single(items: Sequence[Any]) -> Any:
+                        pages = refs.pages(inputs.project)
+                        active = (pages[0] if pages else inputs.project).replace('-', '').lower()
+                        return next((p for p in items if p.page_id.replace('-', '').lower() == active), None)
+
+                    project = find_single(projects)
+                    if project is None and used_mirror:
+                        projects = batch_project_results(project_reader.list(freshness='live'))
+                        project = find_single(projects)
                     if verb == 'notes' and project:
                         from t6.pm_notes import dated_lines
                         from t6.domain.studio_time import MANILA
@@ -1076,13 +1163,20 @@ class VerbAPI:
                 if verb == 'resolve':
                     from t6.lookup import Index, Lookup
                     from t6.cli_studio import _resolution
-                    lookup = Lookup(Index(projects=tuple(projects)))
-                    if inputs.in_text:
-                        found = lookup.project_in_text(inputs.text)
-                    else:
-                        found = lookup.project(inputs.text)
-                        if found.entity is None and not found.candidates:
-                            found = lookup.project(None, name=inputs.text)
+
+                    def resolve_in(items: Sequence[Any]) -> Any:
+                        lookup = Lookup(Index(projects=tuple(items)))
+                        if inputs.in_text:
+                            return lookup.project_in_text(inputs.text)
+                        resolved = lookup.project(inputs.text)
+                        if resolved.entity is None and not resolved.candidates:
+                            resolved = lookup.project(None, name=inputs.text)
+                        return resolved
+
+                    found = resolve_in(projects)
+                    if found.entity is None and used_mirror:
+                        projects = batch_project_results(project_reader.list(freshness='live'))
+                        found = resolve_in(projects)
                     return Done(result=_resolution(found, asdict))
                 return Done(result={'projects': [read_project(p) for p in projects if (inputs.rotation is None or p.rotation == inputs.rotation)
                             and (inputs.status is None or p.status == inputs.status)

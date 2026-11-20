@@ -9,6 +9,7 @@ that could not be registered, a classification that was refused), or when
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from datetime import date
 import getpass
 import hashlib
@@ -18,6 +19,7 @@ import os
 import sqlite3
 from importlib import resources
 from importlib.metadata import version
+import math
 from pathlib import Path
 import sys
 from typing import TYPE_CHECKING, Any
@@ -49,13 +51,54 @@ def _fail(message: str, status: int = 2) -> int:
     return status
 
 
-def _read_data_sources(path: Path) -> dict[str, str]:
-    data_sources: Any = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data_sources, dict) or not all(
-        isinstance(value, str) for value in data_sources.values()
-    ):
+DEFAULT_MIRROR_MAX_AGE_SECONDS = 300.0
+
+
+@dataclass(frozen=True, slots=True)
+class DataSourceConfig:
+    """Configured Notion data source ID and optional mirror max-age override."""
+
+    id: str
+    max_age_seconds: float = DEFAULT_MIRROR_MAX_AGE_SECONDS
+
+
+def read_data_source_configs(path: Path) -> dict[str, DataSourceConfig]:
+    """Read `--data-sources` JSON mapping database key to string ID or `{id, max_age_seconds}`."""
+    raw: Any = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
         raise ValueError("--data-sources must be a JSON object of database key to data source ID")
-    return data_sources
+    configs: dict[str, DataSourceConfig] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError("--data-sources keys must be non-empty strings")
+        if isinstance(value, str):
+            configs[key] = DataSourceConfig(id=value)
+        elif isinstance(value, dict):
+            extra = set(value) - {"id", "max_age_seconds"}
+            if extra:
+                raise ValueError(f"--data-sources entry {key!r} has unexpected keys: {sorted(extra)}")
+            ds_id = value.get("id")
+            if not isinstance(ds_id, str) or not ds_id:
+                raise ValueError(f"--data-sources entry {key!r} must have a string 'id'")
+            max_age_raw = value.get("max_age_seconds")
+            if max_age_raw is None:
+                configs[key] = DataSourceConfig(id=ds_id)
+            elif (
+                isinstance(max_age_raw, bool)
+                or not isinstance(max_age_raw, (int, float))
+                or not math.isfinite(float(max_age_raw))
+                or float(max_age_raw) <= 0
+            ):
+                raise ValueError(f"--data-sources entry {key!r} max_age_seconds must be a positive number")
+            else:
+                configs[key] = DataSourceConfig(id=ds_id, max_age_seconds=float(max_age_raw))
+        else:
+            raise ValueError("--data-sources must be a JSON object of database key to data source ID")
+    return configs
+
+
+def _read_data_sources(path: Path) -> dict[str, str]:
+    return {key: cfg.id for key, cfg in read_data_source_configs(path).items()}
 
 
 def _cameras(
