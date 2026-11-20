@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from contextlib import closing
+from collections.abc import Callable, Mapping
+from contextlib import closing, redirect_stderr
 from dataclasses import replace
 from datetime import datetime, timezone
+import io
 import json
 import os
 from pathlib import Path
@@ -874,6 +875,606 @@ class VerbMirrorAndBatchingTests(unittest.TestCase):
         assert isinstance(listed, Done)
         self.assertEqual(len(listed.result["people"]), 400)
         self.assertEqual(_count_notion_http(self.fake), before_http)
+
+
+class _InProcessTransport:
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    def send(
+        self, method: str, path: str, headers: Mapping[str, str], body: bytes
+    ) -> tuple[int, dict[str, Any]]:
+        from t6.server import Request
+
+        answer = self.app.tailnet(Request(method, path, dict(headers), body))
+        return answer.status, json.loads(json.dumps(dict(answer.body)))
+
+
+class WebhookPageChangedMirrorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db_path = Path(self.tmp.name) / "mirror.sqlite"
+        self.clock = StepClock(1_760_000_000.0)
+        self.fake = _make_fake(clock=self.clock)
+        self.other_ds = "ds-other-9999"
+        self.fake.add_data_source(self.other_ds)
+        self.writer = MirrorWriter(self.db_path, clock=self.clock)
+        self.p1 = self.fake.add_page(
+            PROJECTS_DS,
+            {
+                ProjectsRow.notion_name("name"): title("Show Alpha"),
+                ProjectsRow.notion_name("project_code"): select("ALP"),
+            },
+        )
+        self.c1 = self.fake.add_page(
+            CONTACTS_DS,
+            {
+                ContactsRow.notion_name("name"): title("Ana Cruz"),
+                ContactsRow.notion_name("telegram_handle"): rich_text("@ana"),
+            },
+        )
+        self.syncer = MirrorSyncer(
+            self.writer,
+            NotionSource(self.fake.client),
+            {"projects": PROJECTS_DS, "contacts": CONTACTS_DS},
+            min_request_interval=0.0,
+            clock=self.clock,
+            wall_clock=self.clock,
+            sleep=self.clock.sleep,
+        )
+        self.syncer.tick()
+        self.reader = MirrorReader(
+            self.db_path,
+            clock=self.clock,
+            enabled_data_sources=[PROJECTS_DS, CONTACTS_DS],
+        )
+        self.source = NotionSource(self.fake.client, mirror=self.reader)
+        self.live_source = NotionSource(self.fake.client)
+
+    def _row(self, page_id: str) -> tuple[str, int, int, str] | None:
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            row = conn.execute(
+                "SELECT last_edited_time, archived, deleted, raw_json FROM mirror_pages WHERE page_id = ?",
+                (normalize_page_id(page_id),),
+            ).fetchone()
+            if row is None:
+                return None
+            return (str(row[0]), int(row[1]), int(row[2]), str(row[3]))
+
+    def test_webhook_lifecycle_created_updated_deleted_undeleted_and_variants(self) -> None:
+        active = (PROJECTS_DS, CONTACTS_DS)
+
+        # 1. page.created adds new mirrored project immediately
+        self.clock.advance(5.0)
+        p2 = self.fake.add_page(
+            PROJECTS_DS,
+            {
+                ProjectsRow.notion_name("name"): title("Show Beta"),
+                ProjectsRow.notion_name("project_code"): select("BET"),
+            },
+        )
+        outcome = self.writer.handle_page_changed(
+            self.live_source,
+            {
+                "page_id": p2["id"],
+                "event_id": "evt-1",
+                "event_type": "page.created",
+                "updated_properties": [],
+                "timestamp": p2["last_edited_time"],
+            },
+            active_data_source_ids=active,
+        )
+        self.assertEqual(outcome, "upserted")
+        self.assertEqual(
+            {p.name for p in ProjectReader(self.source, PROJECTS_DS).list()},
+            {"Show Alpha", "Show Beta"},
+        )
+        state = self.writer.state(PROJECTS_DS)
+        assert state is not None
+        self.assertEqual(state.row_count, 2)
+
+        # 2. page.properties_updated updates mirrored row
+        self.clock.advance(5.0)
+        self.fake.update_page(
+            p2["id"],
+            {ProjectsRow.notion_name("name"): title("Show Beta v2")},
+        )
+        outcome = self.writer.handle_page_changed(
+            self.live_source,
+            {
+                "page_id": p2["id"],
+                "event_id": "evt-2",
+                "event_type": "page.properties_updated",
+                "updated_properties": ["title"],
+                "timestamp": self.fake.page(p2["id"])["last_edited_time"],
+            },
+            active_data_source_ids=active,
+        )
+        self.assertEqual(outcome, "upserted")
+        self.assertEqual(ProjectReader(self.source, PROJECTS_DS).get(p2["id"]).name, "Show Beta v2")
+
+        # 3. page.deleted marks row deleted=1 and hides it from MirrorReader
+        self.clock.advance(5.0)
+        delete_ts = self.fake._now_iso()
+        self.fake.update_page(p2["id"], in_trash=True, last_edited_time=delete_ts)
+        outcome = self.writer.handle_page_changed(
+            self.live_source,
+            {
+                "page_id": p2["id"],
+                "event_id": "evt-3",
+                "event_type": "page.deleted",
+                "timestamp": delete_ts,
+            },
+            active_data_source_ids=active,
+        )
+        self.assertEqual(outcome, "deleted")
+        row_after_delete = self._row(p2["id"])
+        assert row_after_delete is not None
+        self.assertEqual(row_after_delete[2], 1)
+        self.assertIsNone(self.reader.retrieve_page(p2["id"]))
+        state = self.writer.state(PROJECTS_DS)
+        assert state is not None
+        self.assertEqual(state.row_count, 1)
+
+        # 4. page.undeleted restores row (deleted=0)
+        self.clock.advance(5.0)
+        restore_ts = self.fake._now_iso()
+        self.fake.update_page(
+            p2["id"],
+            {ProjectsRow.notion_name("name"): title("Show Beta Restored")},
+            in_trash=False,
+            last_edited_time=restore_ts,
+        )
+        outcome = self.writer.handle_page_changed(
+            self.live_source,
+            {
+                "page_id": p2["id"],
+                "event_id": "evt-4",
+                "event_type": "page.undeleted",
+                "timestamp": restore_ts,
+            },
+            active_data_source_ids=active,
+        )
+        self.assertEqual(outcome, "upserted")
+        self.assertEqual(
+            ProjectReader(self.source, PROJECTS_DS).get(p2["id"]).name,
+            "Show Beta Restored",
+        )
+        state = self.writer.state(PROJECTS_DS)
+        assert state is not None
+        self.assertEqual(state.row_count, 2)
+
+        # 5. reconcile, raw Notion envelope, and legacy typeless payloads also update mirror
+        self.clock.advance(5.0)
+        self.fake.update_page(p2["id"], {ProjectsRow.notion_name("name"): title("Show Beta Reconciled")})
+        self.assertEqual(
+            self.writer.handle_page_changed(
+                self.live_source,
+                {"page_id": p2["id"], "event_type": "reconcile"},
+                active_data_source_ids=active,
+            ),
+            "upserted",
+        )
+        self.assertEqual(ProjectReader(self.source, PROJECTS_DS).get(p2["id"]).name, "Show Beta Reconciled")
+
+        self.clock.advance(5.0)
+        self.fake.update_page(p2["id"], {ProjectsRow.notion_name("name"): title("Show Beta Raw")})
+        self.assertEqual(
+            self.writer.handle_page_changed(
+                self.live_source,
+                {
+                    "id": "raw-1",
+                    "type": "page.properties_updated",
+                    "timestamp": self.fake.page(p2["id"])["last_edited_time"],
+                    "entity": {"id": p2["id"], "type": "page"},
+                },
+                active_data_source_ids=active,
+            ),
+            "upserted",
+        )
+        self.assertEqual(ProjectReader(self.source, PROJECTS_DS).get(p2["id"]).name, "Show Beta Raw")
+
+        self.clock.advance(5.0)
+        self.fake.update_page(p2["id"], {ProjectsRow.notion_name("name"): title("Show Beta Typeless")})
+        self.assertEqual(
+            self.writer.handle_page_changed(
+                self.live_source,
+                {"page_id": p2["id"], "updated_properties": []},
+                active_data_source_ids=active,
+            ),
+            "upserted",
+        )
+        self.assertEqual(ProjectReader(self.source, PROJECTS_DS).get(p2["id"]).name, "Show Beta Typeless")
+
+        # 6. archived=True sets both archived=1 and deleted=1
+        self.clock.advance(5.0)
+        self.fake.update_page(p2["id"], archived=True)
+        self.assertEqual(
+            self.writer.handle_page_changed(
+                self.live_source,
+                {"page_id": p2["id"], "event_type": "page.properties_updated"},
+                active_data_source_ids=active,
+            ),
+            "upserted",
+        )
+        archived_row = self._row(p2["id"])
+        assert archived_row is not None
+        self.assertEqual((archived_row[1], archived_row[2]), (1, 1))
+        self.assertIsNone(self.reader.retrieve_page(p2["id"]))
+
+        # 7. Hard-deleted 404 on live retrieve marks mirrored row deleted=1
+        self.fake.delete_page(self.c1["id"])
+        self.assertEqual(
+            self.writer.handle_page_changed(
+                self.live_source,
+                {"page_id": self.c1["id"], "event_type": "page.properties_updated"},
+                active_data_source_ids=active,
+            ),
+            "deleted",
+        )
+        deleted_c1 = self._row(self.c1["id"])
+        assert deleted_c1 is not None
+        self.assertEqual(deleted_c1[2], 1)
+
+        # 8. parent.database_id fallback works in upsert_page
+        db_page: dict[str, Any] = {
+            "object": "page",
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "parent": {"type": "database_id", "database_id": PROJECTS_DS},
+            "archived": False,
+            "in_trash": False,
+            "last_edited_time": "2026-11-20T10:00:00Z",
+            "properties": {ProjectsRow.notion_name("name"): title("Show Via DB Parent")},
+        }
+        self.assertEqual(self.writer.upsert_page(db_page, active_data_source_ids=active), "upserted")
+        self.assertIsNotNone(self.reader.retrieve_page(str(db_page["id"])))
+
+    def test_monotonic_guard_handles_out_of_order_z_vs_ms_and_late_deleted(self) -> None:
+        active = (PROJECTS_DS, CONTACTS_DS)
+        page_id = self.p1["id"]
+
+        # Seed stored row with ".999Z" (later in the same second than "Z")
+        newer_page = {
+            **self.fake.page(page_id),
+            "last_edited_time": "2026-11-20T10:00:00.999Z",
+            "properties": {
+                **self.fake.page(page_id)["properties"],
+                ProjectsRow.notion_name("name"): title("Show Newer 999ms"),
+            },
+        }
+        self.assertEqual(self.writer.upsert_page(newer_page, active_data_source_ids=active), "upserted")
+
+        # Older event ending in "Z" (000ms) is greater in ASCII ("Z" > ".") but older by datetime!
+        older_page_z = {
+            **self.fake.page(page_id),
+            "last_edited_time": "2026-11-20T10:00:00Z",
+            "properties": {
+                **self.fake.page(page_id)["properties"],
+                ProjectsRow.notion_name("name"): title("Show Stale 000ms"),
+            },
+        }
+        self.assertEqual(self.writer.upsert_page(older_page_z, active_data_source_ids=active), "stale_ignored")
+        self.assertEqual(ProjectReader(self.source, PROJECTS_DS).get(page_id).name, "Show Newer 999ms")
+
+        # Repeated identical timestamp (>=) with offset normalization updates cleanly
+        same_ts_offset = {
+            **newer_page,
+            "last_edited_time": "2026-11-20T10:00:00.999+00:00",
+            "properties": {
+                **newer_page["properties"],
+                ProjectsRow.notion_name("name"): title("Show Same Instant Updated"),
+            },
+        }
+        self.assertEqual(self.writer.upsert_page(same_ts_offset, active_data_source_ids=active), "upserted")
+        self.assertEqual(ProjectReader(self.source, PROJECTS_DS).get(page_id).name, "Show Same Instant Updated")
+
+        # Late page.deleted ("10:00:00Z") arriving after page.undeleted ("10:00:00.999Z") must NOT clobber!
+        before_http = _count_notion_http(self.fake)
+        del_outcome = self.writer.handle_page_changed(
+            self.live_source,
+            {
+                "page_id": page_id,
+                "event_type": "page.deleted",
+                "timestamp": "2026-11-20T10:00:00Z",
+            },
+            active_data_source_ids=active,
+        )
+        self.assertEqual(del_outcome, "stale_ignored")
+        self.assertEqual(_count_notion_http(self.fake), before_http)
+        row = self._row(page_id)
+        assert row is not None
+        self.assertEqual(row[2], 0)
+        self.assertEqual(ProjectReader(self.source, PROJECTS_DS).get(page_id).name, "Show Same Instant Updated")
+
+        # Out-of-order older page.properties_updated via handle_page_changed does not overwrite newer state
+        self.fake.update_page(
+            page_id,
+            {ProjectsRow.notion_name("name"): title("Show Old Notion State")},
+            last_edited_time="2026-11-20T09:59:59Z",
+        )
+        self.assertEqual(
+            self.writer.handle_page_changed(
+                self.live_source,
+                {"page_id": page_id, "event_type": "page.properties_updated"},
+                active_data_source_ids=active,
+            ),
+            "stale_ignored",
+        )
+        self.assertEqual(ProjectReader(self.source, PROJECTS_DS).get(page_id).name, "Show Same Instant Updated")
+
+    def test_page_outside_mirrored_data_sources_leaves_mirror_untouched(self) -> None:
+        active = (PROJECTS_DS, CONTACTS_DS)
+        unmirrored_jo = self.fake.add_page(
+            JOB_ORDERS_DS,
+            {JobOrdersRow.notion_name("name"): title("JO Unmirrored")},
+        )
+        other_page = self.fake.add_page(self.other_ds, {})
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            before_count = int(conn.execute("SELECT COUNT(*) FROM mirror_pages").fetchone()[0])
+
+        self.assertEqual(
+            self.writer.handle_page_changed(
+                self.live_source,
+                {"page_id": unmirrored_jo["id"], "event_type": "page.created"},
+                active_data_source_ids=active,
+            ),
+            "not_mirrored",
+        )
+        self.assertEqual(
+            self.writer.handle_page_changed(
+                self.live_source,
+                {"page_id": other_page["id"], "event_type": "page.properties_updated"},
+                active_data_source_ids=active,
+            ),
+            "not_mirrored",
+        )
+        self.assertEqual(
+            self.writer.handle_page_changed(
+                self.live_source,
+                {"page_id": other_page["id"], "event_type": "page.deleted"},
+                active_data_source_ids=active,
+            ),
+            "not_mirrored",
+        )
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            after_count = int(conn.execute("SELECT COUNT(*) FROM mirror_pages").fetchone()[0])
+        self.assertEqual(after_count, before_count)
+        self.assertIsNone(self.writer.state(JOB_ORDERS_DS))
+        self.assertIsNone(self.writer.state(self.other_ds))
+
+    def test_worker_configured_handlers_updates_mirror_and_isolates_failures(self) -> None:
+        from t6.notion.projection import ROTATION, T6_ID
+        from t6.server import Grant, ServerConfig, WebhookApp
+        from t6.worker.__main__ import WorkerSettings, configured_handlers
+        from t6.worker.client import WorkerJob
+
+        self.fake.add_property(PROJECTS_DS, T6_ID, "rich_text")
+        self.fake.add_property(PROJECTS_DS, ROTATION, "select")
+        reg = SqliteProjectRegistry(Path(self.tmp.name) / "worker-reg.sqlite", clock=self.clock)
+        worker_secret = "worker-secret"
+        app = WebhookApp(
+            JobQueue(Path(self.tmp.name) / "worker-q.sqlite", self.clock),
+            ServerConfig(
+                grants=(
+                    Grant(
+                        worker_secret,
+                        claim=frozenset({"main"}),
+                        submit=frozenset({"main"}),
+                        registry_read=True,
+                        registry_sync=True,
+                        actor="main-worker",
+                    ),
+                )
+            ),
+            self.clock,
+            registry=reg,
+        )
+        created = reg.register(
+            actor="setup",
+            idempotency_key="reg-p1",
+            notion_page_id=self.p1["id"],
+            code="ALP",
+            rotation=Rotation.IN,
+        )
+        assert isinstance(created, Registered)
+        transport = _InProcessTransport(app)
+        settings = WorkerSettings("http://server.invalid:8081", worker_secret, "main")
+
+        def open_fake_client(_token: str) -> Any:
+            client = self.fake.client()
+            orig_close = client.close
+            closed = False
+
+            def close_once() -> None:
+                nonlocal closed
+                if not closed:
+                    closed = True
+                    orig_close()
+
+            client.close = close_once  # type: ignore[method-assign]
+            self.addCleanup(close_once)
+            return client
+
+        # Off-switch / unset mirror DB creates no mirror file and wraps nothing
+        off_db = Path(self.tmp.name) / "off-mirror.sqlite"
+        with patch("t6.notion.NotionClient", side_effect=open_fake_client):
+            off_handlers = configured_handlers(
+                {
+                    "T6_NOTION_TOKEN": "fake",
+                    "T6_NOTION_PROJECTS_DATA_SOURCE": PROJECTS_DS,
+                    "T6_NOTION_MIRROR": "0",
+                    "T6_NOTION_MIRROR_DB": str(off_db),
+                },
+                settings,
+                transport,
+            )
+        self.assertEqual(set(off_handlers["main"]), {"registry.sync", "notion.page_changed", "project.status_sync"})
+        self.assertFalse(off_db.exists())
+
+        # Enabled mirror wraps notion.page_changed, updates mirror AND still runs ProjectProjection
+        env = {
+            "T6_NOTION_TOKEN": "fake",
+            "T6_NOTION_PROJECTS_DATA_SOURCE": PROJECTS_DS,
+            "T6_NOTION_CONTACTS_DATA_SOURCE": CONTACTS_DS,
+            "T6_NOTION_MIRROR_DB": str(self.db_path),
+        }
+        with patch("t6.notion.NotionClient", side_effect=open_fake_client):
+            handlers = configured_handlers(env, settings, transport)
+        handlers["main"]["registry.sync"](
+            WorkerJob(
+                job_id=0,
+                queue="main",
+                kind="registry.sync",
+                dedupe_key="sync-p1",
+                payload={"project_id": created.project.id, "revision": 1},
+                token="t",
+                attempt=1,
+            )
+        )
+        page_changed = handlers["main"]["notion.page_changed"]
+
+        self.clock.advance(5.0)
+        self.fake.update_page(
+            self.p1["id"],
+            {
+                ProjectsRow.notion_name("name"): title("Show Alpha Webhook"),
+                ProjectsRow.notion_name("project_code"): select("HACK"),
+            },
+        )
+        job = WorkerJob(
+            job_id=1,
+            queue="main",
+            kind="notion.page_changed",
+            dedupe_key="evt-w1",
+            payload={
+                "page_id": self.p1["id"],
+                "event_id": "evt-w1",
+                "event_type": "page.properties_updated",
+                "updated_properties": [],
+                "timestamp": self.fake.page(self.p1["id"])["last_edited_time"],
+            },
+            token="t",
+            attempt=1,
+        )
+        result = page_changed(job)
+        self.assertIsInstance(result, dict)
+        # Mirror was updated with latest page title
+        self.assertEqual(ProjectReader(self.source, PROJECTS_DS).get(self.p1["id"]).name, "Show Alpha Webhook")
+        # ProjectProjection still ran and recorded projection conflict + restored Project Code
+        self.assertEqual(len(reg.review_items()), 1)
+
+        # Mirror error is isolated: ProjectProjection still runs, and logs never leak page titles/messages
+        self.clock.advance(5.0)
+        self.fake.update_page(
+            self.p1["id"],
+            {
+                ProjectsRow.notion_name("name"): title("Sensitive Synthetic Title"),
+                ProjectsRow.notion_name("project_code"): select("ALP"),
+            },
+        )
+        stderr_buf = io.StringIO()
+        with patch.object(
+            MirrorWriter,
+            "handle_page_changed",
+            side_effect=RuntimeError("Sensitive Synthetic Title secret body"),
+        ):
+            with redirect_stderr(stderr_buf):
+                isolated_result = page_changed(
+                    WorkerJob(
+                        job_id=2,
+                        queue="main",
+                        kind="notion.page_changed",
+                        dedupe_key="evt-w2",
+                        payload={
+                            "page_id": self.p1["id"],
+                            "event_id": "evt-w2",
+                            "event_type": "page.properties_updated",
+                            "updated_properties": [],
+                        },
+                        token="t",
+                        attempt=1,
+                    )
+                )
+        self.assertIsInstance(isolated_result, dict)
+        logged = stderr_buf.getvalue()
+        self.assertIn("RuntimeError", logged)
+        self.assertIn("page.properties_updated", logged)
+        self.assertNotIn("Sensitive Synthetic Title", logged)
+        self.assertNotIn("secret body", logged)
+        # ProjectProjection still resolved the conflict on the second webhook
+        self.assertEqual(reg.review_items(), ())
+
+        # Also works when mirror data sources come from T6_READ_DATA_SOURCES without T6_NOTION_PROJECTS_DATA_SOURCE,
+        # and when JobOrderProjection / DeliverableProjection are chained in configured_handlers.
+        ds_file = Path(self.tmp.name) / "data-sources.json"
+        ds_file.write_text(json.dumps({"contacts": CONTACTS_DS}), encoding="utf-8")
+        with patch("t6.notion.NotionClient", side_effect=open_fake_client):
+            ds_only_handlers = configured_handlers(
+                {
+                    "T6_NOTION_TOKEN": "fake",
+                    "T6_READ_DATA_SOURCES": str(ds_file),
+                    "T6_NOTION_MIRROR_DB": str(self.db_path),
+                },
+                settings,
+                transport,
+            )
+        self.assertIn("notion.page_changed", ds_only_handlers["main"])
+        self.clock.advance(5.0)
+        c2 = self.fake.add_page(
+            CONTACTS_DS,
+            {ContactsRow.notion_name("name"): title("Ben Lim")},
+        )
+        ds_outcome = ds_only_handlers["main"]["notion.page_changed"](
+            WorkerJob(
+                job_id=3,
+                queue="main",
+                kind="notion.page_changed",
+                dedupe_key="evt-w3",
+                payload={"page_id": c2["id"], "event_type": "page.created"},
+                token="t",
+                attempt=1,
+            )
+        )
+        self.assertEqual(ds_outcome, {"outcome": "upserted"})
+        self.assertEqual(ContactReader(self.source, CONTACTS_DS).get(c2["id"]).name, "Ben Lim")
+
+        # Chained ProjectProjection -> JobOrderProjection -> DeliverableProjection stays intact even if mirror errors
+        self.fake.add_snapshot_data_source(JOB_ORDERS_DS, "job_orders")
+        deliverables_ds = "ds-deliverables-0004"
+        self.fake.add_snapshot_data_source(deliverables_ds, "deliverables")
+        deliv_page = self.fake.add_page(deliverables_ds, {})
+        with patch("t6.notion.NotionClient", side_effect=open_fake_client):
+            chained_handlers = configured_handlers(
+                {
+                    "T6_NOTION_TOKEN": "fake",
+                    "T6_NOTION_PROJECTS_DATA_SOURCE": PROJECTS_DS,
+                    "T6_NOTION_JOB_ORDERS_DATA_SOURCE": JOB_ORDERS_DS,
+                    "T6_NOTION_DELIVERABLES_DATA_SOURCE": deliverables_ds,
+                    "T6_NOTION_MIRROR_DB": str(self.db_path),
+                },
+                settings,
+                transport,
+            )
+        with (
+            patch.object(MirrorWriter, "handle_page_changed", side_effect=OSError("disk error")),
+            patch("t6.notion.deliverable_projection.projection_id", return_value="T6 ID"),
+            redirect_stderr(io.StringIO()),
+        ):
+            chained_result = chained_handlers["main"]["notion.page_changed"](
+                WorkerJob(
+                    job_id=4,
+                    queue="main",
+                    kind="notion.page_changed",
+                    dedupe_key="evt-w4",
+                    payload={"page_id": deliv_page["id"], "event_type": "page.properties_updated"},
+                    token="t",
+                    attempt=1,
+                )
+            )
+        self.assertIsInstance(chained_result, dict)
 
 
 if __name__ == "__main__":

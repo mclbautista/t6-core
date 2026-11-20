@@ -121,7 +121,7 @@ def _parse_iso(value: str | None) -> datetime | None:
     text = value.strip()
     if not text:
         return None
-    if text.endswith("Z"):
+    if text.endswith(("Z", "z")):
         text = text[:-1] + "+00:00"
     try:
         parsed = datetime.fromisoformat(text)
@@ -431,6 +431,206 @@ class MirrorWriter:
 
         count: int = self._run_with_rebuild(write)
         return count
+
+    def upsert_page(
+        self,
+        page: Mapping[str, Any],
+        *,
+        active_data_source_ids: Collection[str] | None = None,
+        synced_at: float | None = None,
+        source_key: str = "",
+    ) -> str:
+        """Upsert a single mirrored page if it belongs to an active data source and passes monotonic guard."""
+        parent = page.get("parent")
+        raw_ds = ""
+        if isinstance(parent, Mapping):
+            raw_ds = str(parent.get("data_source_id") or parent.get("database_id") or "")
+        ds_key = normalize_page_id(raw_ds)
+        if not ds_key:
+            return "not_mirrored"
+        if active_data_source_ids is not None:
+            allowed = {normalize_page_id(ds) for ds in active_data_source_ids if ds}
+            if ds_key not in allowed:
+                return "not_mirrored"
+        page_id = normalize_page_id(str(page.get("id") or ""))
+        if not page_id:
+            return "ignored"
+        edited = str(page.get("last_edited_time") or "")
+        new_ts = _parse_iso(edited)
+        ts = self._clock() if synced_at is None else synced_at
+
+        def write(db: sqlite3.Connection) -> str:
+            existing_page = db.execute(
+                "SELECT last_edited_time FROM mirror_pages WHERE data_source_id = ? AND page_id = ?",
+                (ds_key, page_id),
+            ).fetchone()
+            if existing_page is not None:
+                stored_ts = _parse_iso(str(existing_page[0]) if existing_page[0] is not None else None)
+                if stored_ts is not None and new_ts is not None and new_ts < stored_ts:
+                    return "stale_ignored"
+            archived = 1 if page.get("archived") else 0
+            deleted = 1 if (page.get("in_trash") or page.get("archived")) else 0
+            db.execute(
+                "INSERT INTO mirror_pages (data_source_id, page_id, last_edited_time, archived, deleted, raw_json, synced_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(data_source_id, page_id) DO UPDATE SET "
+                "last_edited_time = excluded.last_edited_time, "
+                "archived = excluded.archived, "
+                "deleted = excluded.deleted, "
+                "raw_json = excluded.raw_json, "
+                "synced_at = excluded.synced_at",
+                (ds_key, page_id, edited, archived, deleted, json.dumps(dict(page), ensure_ascii=False), ts),
+            )
+            live_count = int(
+                db.execute(
+                    "SELECT COUNT(*) FROM mirror_pages WHERE data_source_id = ? AND deleted = 0 AND archived = 0",
+                    (ds_key,),
+                ).fetchone()[0]
+            )
+            existing_state = db.execute(
+                "SELECT source_key, high_water_mark, last_full_rescan_at, ready, max_age_seconds, source_json "
+                "FROM mirror_state WHERE data_source_id = ?",
+                (ds_key,),
+            ).fetchone()
+            hwm = _max_iso(str(existing_state[1]) if existing_state and existing_state[1] else None, edited)
+            key = source_key or (str(existing_state[0]) if existing_state else "")
+            last_rescan = existing_state[2] if existing_state else None
+            ready = int(existing_state[3]) if existing_state else 0
+            max_age = existing_state[4] if existing_state else None
+            source_json = existing_state[5] if existing_state else None
+            db.execute(
+                "INSERT INTO mirror_state (data_source_id, source_key, high_water_mark, last_sync_at, "
+                "last_full_rescan_at, row_count, ready, max_age_seconds, source_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(data_source_id) DO UPDATE SET "
+                "source_key = excluded.source_key, "
+                "high_water_mark = excluded.high_water_mark, "
+                "last_sync_at = excluded.last_sync_at, "
+                "row_count = excluded.row_count",
+                (ds_key, key, hwm, ts, last_rescan, live_count, ready, max_age, source_json),
+            )
+            return "upserted"
+
+        outcome: str = self._run_with_rebuild(write)
+        return outcome
+
+    def mark_page_deleted(
+        self,
+        page_id: str,
+        *,
+        timestamp: str | None = None,
+        data_source_id: str | None = None,
+        active_data_source_ids: Collection[str] | None = None,
+        synced_at: float | None = None,
+    ) -> str:
+        """Mark existing mirrored rows for `page_id` as deleted unless a newer `last_edited_time` is stored."""
+        p_key = normalize_page_id(page_id)
+        if not p_key:
+            return "not_mirrored"
+        ds_filter = normalize_page_id(data_source_id) if data_source_id else None
+        allowed = (
+            {normalize_page_id(ds) for ds in active_data_source_ids if ds}
+            if active_data_source_ids is not None
+            else None
+        )
+        event_ts = _parse_iso(timestamp)
+        ts = self._clock() if synced_at is None else synced_at
+
+        def write(db: sqlite3.Connection) -> str:
+            if ds_filter:
+                rows = db.execute(
+                    "SELECT data_source_id, last_edited_time FROM mirror_pages WHERE data_source_id = ? AND page_id = ?",
+                    (ds_filter, p_key),
+                ).fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT data_source_id, last_edited_time FROM mirror_pages WHERE page_id = ?",
+                    (p_key,),
+                ).fetchall()
+            if allowed is not None:
+                rows = [row for row in rows if str(row[0]) in allowed]
+            if not rows:
+                return "not_mirrored"
+            updated = 0
+            for row in rows:
+                ds_key = str(row[0])
+                stored_raw = str(row[1] or "")
+                stored_ts = _parse_iso(stored_raw)
+                if event_ts is not None and stored_ts is not None and event_ts < stored_ts:
+                    continue
+                new_edited = stored_raw
+                if timestamp and event_ts is not None and (stored_ts is None or event_ts > stored_ts):
+                    new_edited = timestamp
+                db.execute(
+                    "UPDATE mirror_pages SET deleted = 1, last_edited_time = ?, synced_at = ? "
+                    "WHERE data_source_id = ? AND page_id = ?",
+                    (new_edited, ts, ds_key, p_key),
+                )
+                live_count = int(
+                    db.execute(
+                        "SELECT COUNT(*) FROM mirror_pages WHERE data_source_id = ? AND deleted = 0 AND archived = 0",
+                        (ds_key,),
+                    ).fetchone()[0]
+                )
+                existing_state = db.execute(
+                    "SELECT high_water_mark FROM mirror_state WHERE data_source_id = ?",
+                    (ds_key,),
+                ).fetchone()
+                if existing_state is not None:
+                    hwm = _max_iso(str(existing_state[0]) if existing_state[0] else None, new_edited or None)
+                    db.execute(
+                        "UPDATE mirror_state SET high_water_mark = ?, last_sync_at = ?, row_count = ? "
+                        "WHERE data_source_id = ?",
+                        (hwm, ts, live_count, ds_key),
+                    )
+                updated += 1
+            return "deleted" if updated > 0 else "stale_ignored"
+
+        outcome: str = self._run_with_rebuild(write)
+        return outcome
+
+    def handle_page_changed(
+        self,
+        notion: NotionSource,
+        payload: Mapping[str, Any],
+        *,
+        active_data_source_ids: Collection[str] | None = None,
+    ) -> str:
+        """Apply a `notion.page_changed` webhook/reconcile payload to the mirror."""
+        from t6.notion.errors import NotionError
+
+        raw_page_id = payload.get("page_id")
+        if not raw_page_id and isinstance(payload.get("entity"), Mapping):
+            raw_page_id = payload["entity"].get("id")
+        page_id = str(raw_page_id).strip() if raw_page_id is not None else ""
+        if not page_id:
+            return "ignored"
+        raw_event_type = payload.get("event_type") or payload.get("type")
+        event_type = (
+            str(raw_event_type).strip()
+            if isinstance(raw_event_type, str) and raw_event_type.strip()
+            else None
+        )
+        raw_ts = payload.get("timestamp")
+        event_ts = str(raw_ts).strip() if isinstance(raw_ts, str) and raw_ts.strip() else None
+
+        if event_type == "page.deleted":
+            return self.mark_page_deleted(
+                page_id,
+                timestamp=event_ts,
+                active_data_source_ids=active_data_source_ids,
+            )
+        try:
+            page = notion.retrieve_page(page_id, freshness="live")
+        except NotionError as error:
+            if error.status == 404:
+                return self.mark_page_deleted(
+                    page_id,
+                    timestamp=event_ts,
+                    active_data_source_ids=active_data_source_ids,
+                )
+            raise
+        return self.upsert_page(page, active_data_source_ids=active_data_source_ids)
 
     def close(self) -> None:
         """No persistent connection is kept between operations."""

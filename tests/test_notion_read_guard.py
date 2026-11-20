@@ -71,6 +71,7 @@ LIVE_READ_ALLOWLIST: dict[tuple[str, str, str], str] = {
     ("notion/mirror.py", "MirrorSyncer.rescan_source", "query_data_source"): "Full mirror rescan reads live Notion data source rows.",
     ("notion/mirror.py", "MirrorSyncer.rescan_source", "retrieve_data_source"): "Full mirror rescan reads live Notion data source metadata.",
     ("notion/mirror.py", "MirrorSyncer.poll_source", "query_data_source"): "Incremental mirror poll queries live Notion changes since high-water mark.",
+    ("notion/mirror.py", "MirrorWriter.handle_page_changed", "retrieve_page"): "Refresh latest Notion page properties on notion.page_changed webhook event.",
     ("server/verbs.py", "VerbAPI._dispatch", "PackageSpecReader"): "Read live Package Spec during deliverable.deliver.",
     ("server/verbs.py", "VerbAPI._meeting_notes", "retrieve_page"): "Verify live Meeting Note state before mutation and read back after write.",
     ("server/verbs.py", "VerbAPI._typed_read", "list"): "Retry once against live Notion when a mirrored read finds no match.",

@@ -194,6 +194,40 @@ def configured_handlers(
                     return deliverable_projection.reconcile(job)
                 return result
             handlers['notion.page_changed'] = reconcile_deliverable
+    if token:
+        from t6.notion import MIRROR_PHASE_SOURCES, MirrorWriter, NotionClient, NotionSource, mirror_db_path
+
+        mirror_path = mirror_db_path(environ)
+        if mirror_path is not None:
+            configs = mirror_data_sources_from_env(environ)
+            active_mirror = {key: cfg for key, cfg in configs.items() if key in MIRROR_PHASE_SOURCES}
+            if active_mirror:
+                mirror_writer = MirrorWriter(mirror_path)
+                active_mirror_ds_ids = tuple(cfg.id for cfg in active_mirror.values())
+                notion_token = token
+                mirror_notion = notion if notion is not None else NotionSource(lambda: NotionClient(notion_token))
+                existing_reconcile = handlers.get(JobKind.NOTION_PAGE_CHANGED.value)
+
+                def mirror_page_changed(job: WorkerJob) -> JsonValue:
+                    try:
+                        mirror_outcome = mirror_writer.handle_page_changed(
+                            mirror_notion,
+                            job.payload,
+                            active_data_source_ids=active_mirror_ds_ids,
+                        )
+                    except Exception as error:
+                        event_type = job.payload.get("event_type") or job.payload.get("type")
+                        print(
+                            f"t6.worker: mirror page_changed failed ({type(error).__name__}) event_type={event_type}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        mirror_outcome = "error"
+                    if existing_reconcile is not None:
+                        return existing_reconcile(job)
+                    return {"outcome": mirror_outcome}
+
+                handlers[JobKind.NOTION_PAGE_CHANGED.value] = mirror_page_changed
     if gateway_url and gateway_secret:
         chat = _whole_number(environ, "T6_REVIEW_CHAT", required=True)
         topic = _whole_number(environ, "T6_REVIEW_TOPIC", required=False)
