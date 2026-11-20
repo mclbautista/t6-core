@@ -23,15 +23,43 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Literal, Protocol, TypedDict
+from typing import Any, Literal, NotRequired, Protocol, TypedDict
 
 from t6.llm.policy import RETENTIONS, Retention
 from t6.llm.result import Tokens
 
 
 class Message(TypedDict):
-    role: Literal["system", "user", "assistant"]
+    role: Literal["system", "user", "assistant", "tool"]
     content: str
+    tool_call_id: NotRequired[str]
+    tool_calls: NotRequired[list[dict[str, Any]]]
+
+
+@dataclasses.dataclass(frozen=True)
+class ToolSpec:
+    """One callable tool declaration offered to a chat provider."""
+
+    name: str
+    description: str
+    parameters: Mapping[str, Any] = dataclasses.field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.parameters, dict):
+            object.__setattr__(self, "parameters", dict(self.parameters))
+
+
+@dataclasses.dataclass(frozen=True)
+class ToolCall:
+    """One tool invocation requested by a chat provider."""
+
+    id: str
+    name: str
+    arguments: Mapping[str, Any] = dataclasses.field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.arguments, dict):
+            object.__setattr__(self, "arguments", dict(self.arguments))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -61,6 +89,7 @@ class Completion:
     content: str | None
     model: str
     tokens: Tokens = Tokens()
+    tool_calls: tuple[ToolCall, ...] = ()
 
 
 class ProviderTimeout(Exception):
@@ -106,7 +135,14 @@ class Provider(Protocol):
     @property
     def retention(self) -> Retention: ...
 
-    def complete(self, request: Request, *, timeout: float, zdr: bool = False) -> Completion: ...
+    def complete(
+        self,
+        request: Request,
+        *,
+        timeout: float,
+        zdr: bool = False,
+        tools: Sequence[ToolSpec] = (),
+    ) -> Completion: ...
 
 
 # (url, headers, body, timeout) -> response body. Raises urllib or socket errors.
@@ -186,10 +222,29 @@ class OpenAIChat:
         provider._temperature = temperature
         return provider
 
-    def complete(self, request: Request, *, timeout: float, zdr: bool = False) -> Completion:
+    def complete(
+        self,
+        request: Request,
+        *,
+        timeout: float,
+        zdr: bool = False,
+        tools: Sequence[ToolSpec] = (),
+    ) -> Completion:
         if isinstance(request, DecisionsRequest):
             raise TypeError("OpenAIChat sends chat messages; use OpenRouterDecisions for a DecisionsRequest")
         payload: dict[str, Any] = {"model": self._model, "messages": list(request)}
+        if tools:
+            payload["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": dict(tool.parameters),
+                    },
+                }
+                for tool in tools
+            ]
         if self._temperature is not None:
             payload["temperature"] = self._temperature
         if self._json_mode:
@@ -201,6 +256,38 @@ class OpenAIChat:
         return _completion(raw, self._model)
 
 
+def _parse_tool_calls(raw_calls: object) -> tuple[ToolCall, ...]:
+    if raw_calls is None:
+        return ()
+    if not isinstance(raw_calls, list):
+        raise ProviderError("unreadable provider response")
+    parsed: list[ToolCall] = []
+    for entry in raw_calls:
+        if not isinstance(entry, dict):
+            raise ProviderError("unreadable provider response")
+        call_type = entry.get("type")
+        if call_type is not None and call_type != "function":
+            raise ProviderError("unreadable provider response")
+        call_id = entry.get("id")
+        function = entry.get("function")
+        if not isinstance(call_id, str) or not call_id or not isinstance(function, dict):
+            raise ProviderError("unreadable provider response")
+        name = function.get("name")
+        raw_args = function.get("arguments", "{}")
+        if not isinstance(name, str) or not name:
+            raise ProviderError("unreadable provider response")
+        if isinstance(raw_args, str):
+            args_obj: object = json.loads(raw_args) if raw_args.strip() else {}
+        elif isinstance(raw_args, dict):
+            args_obj = raw_args
+        else:
+            raise ProviderError("unreadable provider response")
+        if not isinstance(args_obj, dict):
+            raise ProviderError("unreadable provider response")
+        parsed.append(ToolCall(id=call_id, name=name, arguments=args_obj))
+    return tuple(parsed)
+
+
 def _completion(raw: bytes, requested_model: str) -> Completion:
     try:
         body = json.loads(raw)
@@ -208,6 +295,7 @@ def _completion(raw: bytes, requested_model: str) -> Completion:
             raise ProviderError("provider returned an error body")
         message = body["choices"][0]["message"]
         content = message.get("content")
+        tool_calls = _parse_tool_calls(message.get("tool_calls"))
         usage = body.get("usage") or {}
         tokens = Tokens(*(int(value) if value is not None else None
                           for value in (usage.get("prompt_tokens"), usage.get("completion_tokens"))))
@@ -218,4 +306,4 @@ def _completion(raw: bytes, requested_model: str) -> Completion:
         raise ProviderError("unreadable provider response") from None
     if content is not None and not isinstance(content, str):
         raise ProviderError("unreadable provider response")
-    return Completion(content=content, model=str(model), tokens=tokens)
+    return Completion(content=content, model=str(model), tokens=tokens, tool_calls=tool_calls)

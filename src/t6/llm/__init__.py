@@ -17,7 +17,7 @@ from t6.llm.decisions import (
     candidate_key,
 )
 from t6.llm.policy import DataPolicy, Masking, Retention
-from t6.llm.result import Failed, Ok, Reason, Result, Tokens, Trace
+from t6.llm.result import Failed, Ok, Reason, Result, ScriptPhase, ScriptRun, Tokens, Trace
 from t6.llm.task import (
     DEFAULT_RATE_LIMIT_WAIT,
     DEFAULT_TIMEOUT,
@@ -38,6 +38,8 @@ from t6.llm.transport import (
     ProviderTimeout,
     RateLimited,
     Request,
+    ToolCall,
+    ToolSpec,
 )
 
 __all__ = [
@@ -73,8 +75,12 @@ __all__ = [
     "Request",
     "Result",
     "Retention",
+    "ScriptPhase",
+    "ScriptRun",
     "Task",
     "Tokens",
+    "ToolCall",
+    "ToolSpec",
     "Trace",
     "UnmaskedInput",
     "candidate_key",

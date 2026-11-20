@@ -16,7 +16,21 @@ Reason = Literal[
     "unresolved_placeholder",
     "leak",
     "policy",
+    "script_error",
+    "max_turns_exceeded",
 ]
+
+ScriptPhase = Literal["pre", "tool", "post"]
+
+
+@dataclasses.dataclass(frozen=True)
+class ScriptRun:
+    """Metadata for one script execution. Holds no stdin or stdout text."""
+
+    name: str
+    phase: ScriptPhase
+    exit_code: int
+    duration_ms: int
 
 
 @dataclasses.dataclass(frozen=True)
@@ -32,6 +46,13 @@ class Tokens:
             return None
         return self.prompt + self.completion
 
+    def add(self, other: Tokens) -> Tokens:
+        """Combine token counts across turns; unknown (``None``) counts propagate."""
+        return Tokens(
+            None if self.prompt is None or other.prompt is None else self.prompt + other.prompt,
+            None if self.completion is None or other.completion is None else self.completion + other.completion,
+        )
+
 
 @dataclasses.dataclass(frozen=True)
 class Trace:
@@ -45,6 +66,10 @@ class Trace:
     tokens: Tokens
     latency_ms: int
     repaired: bool = False
+    skill_name: str | None = None
+    skill_hash: str | None = None
+    turns: int = 1
+    script_runs: tuple[ScriptRun, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)
