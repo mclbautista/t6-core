@@ -19,7 +19,7 @@ class LLMExample(BaseModel):
 class LLMRunInput(BaseModel):
     task_name: str = Field(min_length=1, max_length=200)
     prompt_template: str
-    output_schema: dict[str, Any]
+    output_schema: dict[str, Any] | None = None
     input_text: str
     masking_preset: Literal['names', 'strict']
     model_hint: str | None = None
@@ -30,6 +30,7 @@ class LLMRunInput(BaseModel):
     repair_quotes: bool = False
     restore: Literal['whole', 'per_field'] = 'whole'
     dry_run: bool = False
+    skill: str | None = None
 
 
 class LLMRunOutput(BaseModel):
@@ -46,6 +47,10 @@ class LLMRunOutput(BaseModel):
     unresolved: list[str] = []
     masked_output: Any = None
     dry_run: bool = False
+    skill: str | None = None
+    skill_hash: str | None = None
+    turns: int = 1
+    script_runs: list[dict[str, Any]] = []
 
 
 
