@@ -1760,6 +1760,40 @@ class MachineSyncOutput(BaseModel):
     machines: list[MachineSyncResult]
 
 
+class MachineEditItem(BaseModel):
+    """Edits to one Machine's Bays row. `names` find the row as in `MachineFactsInput`. `values` holds
+    properties from the editable list; a property not on it, or a value of the wrong type, fails the call.
+    A left-out or blank value means no change. Nothing is cleared."""
+
+    names: list[str]
+    values: dict[str, Any]
+
+    @field_validator("names")
+    @classmethod
+    def _named(cls, names: list[str]) -> list[str]:
+        if not any(name.strip() for name in names):
+            raise ValueError("a machine needs at least one name")
+        return names
+
+
+class MachineEditInput(BaseModel):
+    machines: list[MachineEditItem]
+    confirm: str | None = None
+
+
+class MachineEditResult(BaseModel):
+    name: str
+    status: Literal["matched", "unmatched", "ambiguous", "changed"]
+    page_id: str | None = None
+    changes: list[MachineFactChange] = []
+    written: Literal["saved", "rejected", "ambiguous"] | None = None
+    detail: str | None = None
+
+
+class MachineEditOutput(BaseModel):
+    machines: list[MachineEditResult]
+
+
 def api_read(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
     return Refused(rule="api", reason="Reads run on the t6 API")
 
@@ -2558,6 +2592,7 @@ VERBS = (
     Verb("person", "add", "Register a Person", (), PersonAddInput, PersonWriteOutput, "operator", "A page belongs to one Person.", person_write),
     Verb("machine", "list", "List the Machines and their fleet facts", (), MachineListInput, MachineListOutput, "reader", "Read the Bays rows as Machines.", api_read, read_only=True),
     Verb("machine", "sync", "Write fleet facts to the Machines' Bays rows", (), MachineSyncInput, MachineSyncOutput, "fleet", "Preview each Machine's row and old and new facts, then confirm. Never creates a row.", api_write),
+    Verb("machine", "edit", "Edit other Bays properties on the Machines' rows", (), MachineEditInput, MachineEditOutput, "bays_edit", "Preview each Machine's row and old and new values for the editable properties, then confirm. Never creates a row; nothing is cleared.", api_write),
     Verb("person", "create", "Create a Contact and register the Person", (), PersonCreateInput, PersonCreateOutput, "operator", "For someone with no Contacts page yet; an active Person uniquely holds a Telegram ID.", api_write),
     Verb("person", "rebind", "Bind a replacement Contacts page", (), PersonRebindInput, PersonWriteOutput, "operator", "A page belongs to one Person.", person_write),
     Verb("person", "set-telegram", "Set a Person Telegram ID", (), PersonTelegramInput, PersonWriteOutput, "operator", "An active Person uniquely holds a Telegram ID.", person_write),
@@ -3069,9 +3104,9 @@ def add_parsers(commands: Any) -> None:
             parser.add_argument('--at', type=datetime.fromisoformat, metavar='ISO', help='When it was sent, with a UTC offset (default: now, Manila)')
             parser.set_defaults(registered_verb=entry)
             continue
-        if entry.input_model is MachineSyncInput:
+        if entry.input_model in (MachineSyncInput, MachineEditInput):
             parser.add_argument('--machine', dest='machines', action='append', type=json.loads, required=True, metavar='JSON',
-                                help='One Machine\'s facts as a JSON object; repeat for more')
+                                help='One Machine as a JSON object (its facts, or names and values for an edit); repeat for more')
             parser.add_argument('--confirm')
             parser.set_defaults(registered_verb=entry)
             continue

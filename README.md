@@ -739,6 +739,11 @@ typed `Rejected` or `Ambiguous` failure. `t6.fleet.rules` has `match_key`,
 `role_group`, `manifest_chain` and `is_stale`. Run `t6 admin snapshot` once so
 the Ring options are kept by ID.
 
+`Fleet.edit()` edits the other Bays properties the owner approved (`t6.fleet.EDITABLE`), on the
+same rules: a dry run unless applied, one unique row, never a created row. A property not on the
+list, or a value of the wrong type, fails the whole call. A blank or left-out value means no
+change; nothing is cleared.
+
 ## Optional extras
 
 Install only the adapters an application needs, for example
@@ -2014,11 +2019,11 @@ to that ID. Named services have the `reader` role by default. To grant additiona
 set `T6_API_SERVICE_PERMISSIONS` to a JSON object mapping service names to role
 lists, for example `{"worker":["operator"],"reports":["coordinator"]}`.
 Valid additional roles are `operator`, `coordinator`, `bookings`, `drives`,
-`llm`, `unmasked`, `fleet`, `minutes` and `admin`; admin includes operator. `unmasked` lets a
+`llm`, `unmasked`, `fleet`, `bays_edit`, `minutes` and `admin`; admin includes operator. `unmasked` lets a
 caller read real client names (read replies are otherwise masked) and grants
 nothing else; the `mcp` service stays masked. `fleet` allows `machine sync` and
 nothing else (`machine list` needs only `reader`; for example
-`{"munki":["fleet"]}`). Grants apply to every secret bound to
+`{"munki":["fleet"]}`). `bays_edit` allows `machine edit` and nothing else. Grants apply to every secret bound to
 that service. Gateway requests carrying `X-Telegram-User-Id` use the resolved
 Person's permissions instead of the gateway's grants. `GET /health` reports the
 package version, database schema version and job counts by state.

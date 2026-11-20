@@ -137,7 +137,7 @@ which do not become reads merely because the old code used a Notion client.
 | reports #116 | Project data source description for leave and upcoming notices | `studio notices` |
 | reports #116 | `link_timelines()` | `external-link find`, now answered from Media locations (kind `instagantt-project`); `media list` is the replacement |
 | reports #116 | Meeting Notes create, append, trash and mark sent | Writes: `meeting-notes create`, `append`, `trash` and `mark-sent` (permission `minutes`). |
-| [munki #17](https://github.com/mclbautista/t6-munki-repo/pull/17) | Imports `t6.notion.writes` result types; its `Fleet.sync()` performs Bays matching and writes internally | No direct `t6.notion` read call in the draft. Fleet sync is a write: `machine sync` (permission `fleet`); `machine list` reads the Machines. |
+| [munki #17](https://github.com/mclbautista/t6-munki-repo/pull/17) | Imports `t6.notion.writes` result types; its `Fleet.sync()` performs Bays matching and writes internally | No direct `t6.notion` read call in the draft. Fleet sync is a write: `machine sync` (permission `fleet`); `machine list` reads the Machines. Other Bays properties: `machine edit` (permission `bays_edit`). |
 
 The registry also exposes `project get`, `project resolve`, `person find` and
 `camera get` for the apps and other clients.
