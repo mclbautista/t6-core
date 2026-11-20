@@ -6,7 +6,22 @@ import unittest
 import urllib.error
 from email.message import Message as Headers
 
-from t6.llm import OpenAIChat, ProviderError, ProviderTimeout, Tokens
+from t6.llm import (
+    Choice,
+    DecisionsRequest,
+    Message,
+    OpenAIChat,
+    OpenRouterDecisions,
+    ProviderError,
+    ProviderTimeout,
+    ScriptPhase,
+    ScriptRun,
+    Tokens,
+    ToolCall,
+    ToolSpec,
+    Trace,
+)
+from t6.llm.testing import FakeProvider
 
 
 class Recorder:
@@ -99,9 +114,6 @@ class OpenAIChatTests(unittest.TestCase):
                 provider(Recorder(raw)).complete([], timeout=1)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 class MissingUsageTests(unittest.TestCase):
     def test_missing_usage_is_unknown(self) -> None:
         from t6.llm.transport import _completion
@@ -115,3 +127,204 @@ class MissingUsageTests(unittest.TestCase):
         result = _completion(b'{"choices":[{"message":{"content":"{}"}}],"usage":{"prompt_tokens":0}}', 'model')
         self.assertEqual(result.tokens.prompt, 0)
         self.assertIsNone(result.tokens.completion)
+
+
+class ToolCallingTransportTests(unittest.TestCase):
+    def test_openai_chat_serializes_tools_and_omits_when_empty(self) -> None:
+        send = Recorder(body())
+        spec = ToolSpec(
+            name="lookup_person",
+            description="Look up person metadata.",
+            parameters={"type": "object", "properties": {"who": {"type": "string"}}, "required": ["who"]},
+        )
+        chat = provider(send)
+        chat.complete([{"role": "user", "content": "[person 1]"}], timeout=5, tools=[spec])
+        chat.complete([{"role": "user", "content": "plain"}], timeout=5)
+
+        first_payload = send.requests[0][2]
+        second_payload = send.requests[1][2]
+        self.assertEqual(
+            first_payload["tools"],
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "lookup_person",
+                        "description": "Look up person metadata.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"who": {"type": "string"}},
+                            "required": ["who"],
+                        },
+                    },
+                }
+            ],
+        )
+        self.assertNotIn("tools", second_payload)
+
+    def test_openai_chat_sends_assistant_tool_calls_and_tool_role_messages(self) -> None:
+        send = Recorder(body())
+        messages: list[Message] = [
+            {"role": "user", "content": "[person 1]"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_1", "type": "function", "function": {"name": "lookup", "arguments": '{"who": "[person 1]"}'}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": '{"role": "editor"}'},
+        ]
+        provider(send).complete(messages, timeout=3)
+        self.assertEqual(send.requests[0][2]["messages"], messages)
+
+    def test_openai_chat_parses_tool_calls(self) -> None:
+        raw = json.dumps(
+            {
+                "model": "deepseek-chat",
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {"name": "lookup", "arguments": '{"who": "[person 1]"}'},
+                                },
+                                {
+                                    "id": "call_2",
+                                    "type": "function",
+                                    "function": {"name": "ping", "arguments": ""},
+                                },
+                            ],
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 6},
+            }
+        ).encode()
+        completion = provider(Recorder(raw)).complete([], timeout=1)
+        self.assertIsNone(completion.content)
+        self.assertEqual(
+            completion.tool_calls,
+            (
+                ToolCall(id="call_1", name="lookup", arguments={"who": "[person 1]"}),
+                ToolCall(id="call_2", name="ping", arguments={}),
+            ),
+        )
+
+    def test_openai_chat_rejects_malformed_tool_calls(self) -> None:
+        bad_tool_calls: list[object] = [
+            "not-a-list",
+            ["not-a-dict"],
+            [{"id": "c1", "type": "code_interpreter", "function": {"name": "f", "arguments": "{}"}}],
+            [{"id": "", "type": "function", "function": {"name": "f", "arguments": "{}"}}],
+            [{"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{bad"}}],
+            [{"id": "c1", "type": "function", "function": {"name": "f", "arguments": "[1, 2]"}}],
+            [{"id": "c1", "type": "function", "function": {"name": "f", "arguments": 5}}],
+        ]
+        for bad in bad_tool_calls:
+            raw = json.dumps(
+                {"model": "m", "choices": [{"message": {"role": "assistant", "content": None, "tool_calls": bad}}]}
+            ).encode()
+            with self.subTest(bad=bad), self.assertRaises(ProviderError):
+                provider(Recorder(raw)).complete([], timeout=1)
+
+    def test_openrouter_decisions_rejects_non_empty_tools(self) -> None:
+        send = Recorder(b"")
+        decisions = OpenRouterDecisions(api_key="test-key", send=send)
+        req = DecisionsRequest(state={"s": "x"}, questions={"c0": Choice("Q?", {"match": "a", "maybe": "b", "no": "c"})})
+        tool = ToolSpec("lookup", "Lookup", {"type": "object"})
+        with self.assertRaises(TypeError):
+            decisions.complete(req, timeout=1, tools=[tool])
+        self.assertEqual(send.requests, [])
+
+
+class FakeProviderToolTests(unittest.TestCase):
+    def test_fake_provider_tool_call_and_call_tools(self) -> None:
+        spec = ToolSpec("lookup", "Look up", {"type": "object", "properties": {"id": {"type": "string"}}})
+        fake = (
+            FakeProvider("m1")
+            .tool_call("lookup", {"id": "[id 1]"}, prompt_tokens=11, completion_tokens=4)
+            .tool_call("ping", call_id="custom_id", content="calling ping", model="m2")
+            .reply('{"done": true}', prompt_tokens=5, completion_tokens=2)
+        )
+        first = fake.complete([{"role": "user", "content": "hi"}], timeout=5, zdr=True, tools=[spec])
+        second = fake.complete([{"role": "user", "content": "next"}], timeout=5, tools=[spec])
+        third = fake.complete([{"role": "user", "content": "end"}], timeout=5)
+
+        self.assertIsNone(first.content)
+        self.assertEqual(first.tool_calls, (ToolCall(id="call_1", name="lookup", arguments={"id": "[id 1]"}),))
+        self.assertEqual(first.tokens, Tokens(11, 4))
+        self.assertEqual(second.content, "calling ping")
+        self.assertEqual(second.model, "m2")
+        self.assertEqual(second.tool_calls, (ToolCall(id="custom_id", name="ping", arguments={}),))
+        self.assertEqual(third.content, '{"done": true}')
+        self.assertEqual(third.tool_calls, ())
+
+        self.assertEqual(fake.calls[0].tools, (spec,))
+        self.assertEqual(fake.calls[1].tools, (spec,))
+        self.assertEqual(fake.calls[2].tools, ())
+
+    def test_fake_provider_tool_calls_accepts_sequence_or_varargs(self) -> None:
+        c1 = ToolCall("c1", "a", {"x": 1})
+        c2 = ToolCall("c2", "b", {"y": 2})
+        fake = FakeProvider().tool_calls([c1, c2], prompt_tokens=3).tool_calls(c1, c2, completion_tokens=4)
+
+        first = fake.complete([], timeout=1)
+        second = fake.complete([], timeout=1)
+        self.assertEqual(first.tool_calls, (c1, c2))
+        self.assertEqual(first.tokens, Tokens(3, 0))
+        self.assertEqual(second.tool_calls, (c1, c2))
+        self.assertEqual(second.tokens, Tokens(0, 4))
+
+    def test_fake_provider_decisions_rejects_tools(self) -> None:
+        fake = FakeProvider().decisions(
+            {
+                "model": "jev",
+                "answers": {"c0": {"type": "choice", "choice": "match", "probabilities": {"match": 1, "maybe": 0, "no": 0}}},
+            }
+        )
+        req = DecisionsRequest({}, {"c0": Choice("Q?", {"match": "a", "maybe": "b", "no": "c"})})
+        with self.assertRaises(TypeError):
+            fake.complete(req, timeout=1, tools=[ToolSpec("t", "d", {})])
+
+
+class ResultMetadataTests(unittest.TestCase):
+    def test_tokens_add(self) -> None:
+        self.assertEqual(Tokens(10, 5).add(Tokens(20, 3)), Tokens(30, 8))
+        self.assertEqual(Tokens().add(Tokens(7, 2)), Tokens(7, 2))
+        self.assertEqual(Tokens().add(Tokens(None, 2)), Tokens(None, 2))
+        self.assertIsNone(Tokens().add(Tokens(None, 2)).total)
+        self.assertEqual(Tokens(10, 5).add(Tokens(None, None)), Tokens(None, None))
+
+    def test_trace_defaults_and_skill_metadata(self) -> None:
+        legacy = Trace("tag", "model", Tokens(1, 2), 42)
+        self.assertFalse(legacy.repaired)
+        self.assertIsNone(legacy.skill_name)
+        self.assertIsNone(legacy.skill_hash)
+        self.assertEqual(legacy.turns, 1)
+        self.assertEqual(legacy.script_runs, ())
+
+        phase: ScriptPhase = "pre"
+        run_meta = ScriptRun(name="normalize", phase=phase, exit_code=0, duration_ms=15)
+        skilled = Trace(
+            "tag",
+            "model",
+            Tokens(10, 5),
+            100,
+            skill_name="my-skill",
+            skill_hash="abc123",
+            turns=3,
+            script_runs=(run_meta,),
+        )
+        self.assertEqual(skilled.skill_name, "my-skill")
+        self.assertEqual(skilled.skill_hash, "abc123")
+        self.assertEqual(skilled.turns, 3)
+        self.assertEqual(skilled.script_runs, (run_meta,))
+
+
+if __name__ == "__main__":
+    unittest.main()

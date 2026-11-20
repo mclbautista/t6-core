@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import dataclasses
 from collections import deque
+from collections.abc import Mapping, Sequence
+from typing import Any, overload
 
 from t6.llm.decisions import read_reply
 from t6.llm.policy import Retention
@@ -38,6 +40,8 @@ from t6.llm.transport import (
     ProviderTimeout,
     RateLimited,
     Request,
+    ToolCall,
+    ToolSpec,
 )
 
 
@@ -47,6 +51,7 @@ class Call:
     timeout: float
     zdr: bool = False
     """True when the task's policy is ``zdr_enforced``."""
+    tools: tuple[ToolSpec, ...] = ()
 
     @property
     def messages(self) -> tuple[Message, ...]:
@@ -69,6 +74,7 @@ class FakeProvider:
         self._model = model
         self._retention: Retention = retention
         self._script: deque[Completion | _DecisionsBody | Exception] = deque()
+        self._call_seq: int = 0
         self.calls: list[Call] = []
 
     @property
@@ -89,6 +95,77 @@ class FakeProvider:
     ) -> FakeProvider:
         """Queue a reply. ``content`` may be malformed JSON, empty, ``None`` or placeholder-mangled."""
         self._script.append(Completion(content, model or self._model, Tokens(prompt_tokens, completion_tokens)))
+        return self
+
+    def tool_call(
+        self,
+        name: str,
+        arguments: Mapping[str, Any] | None = None,
+        *,
+        call_id: str | None = None,
+        content: str | None = None,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        model: str | None = None,
+    ) -> FakeProvider:
+        """Queue a reply requesting a single tool call."""
+        if call_id is None:
+            self._call_seq += 1
+            call_id = f"call_{self._call_seq}"
+        return self.tool_calls(
+            (ToolCall(id=call_id, name=name, arguments=dict(arguments or {})),),
+            content=content,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            model=model,
+        )
+
+    @overload
+    def tool_calls(
+        self,
+        calls: Sequence[ToolCall],
+        *,
+        content: str | None = None,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        model: str | None = None,
+    ) -> FakeProvider: ...
+
+    @overload
+    def tool_calls(
+        self,
+        calls: ToolCall,
+        *more: ToolCall,
+        content: str | None = None,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        model: str | None = None,
+    ) -> FakeProvider: ...
+
+    def tool_calls(
+        self,
+        calls: ToolCall | Sequence[ToolCall],
+        *more: ToolCall,
+        content: str | None = None,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        model: str | None = None,
+    ) -> FakeProvider:
+        """Queue a reply requesting one or more tool calls."""
+        if isinstance(calls, ToolCall):
+            items: tuple[ToolCall, ...] = (calls, *more)
+        elif more:
+            raise TypeError("pass either a sequence of ToolCall or positional ToolCall arguments")
+        else:
+            items = tuple(calls)
+        self._script.append(
+            Completion(
+                content,
+                model or self._model,
+                Tokens(prompt_tokens, completion_tokens),
+                tool_calls=items,
+            )
+        )
         return self
 
     def decisions(self, body: object) -> FakeProvider:
@@ -116,10 +193,18 @@ class FakeProvider:
         """Scripted steps not used yet."""
         return len(self._script)
 
-    def complete(self, request: Request, *, timeout: float, zdr: bool = False) -> Completion:
+    def complete(
+        self,
+        request: Request,
+        *,
+        timeout: float,
+        zdr: bool = False,
+        tools: Sequence[ToolSpec] = (),
+    ) -> Completion:
         if not isinstance(request, DecisionsRequest):
             request = tuple(request)
-        self.calls.append(Call(request, timeout, zdr))
+        tool_tuple = tuple(tools)
+        self.calls.append(Call(request, timeout, zdr, tool_tuple))
         if not self._script:
             raise AssertionError("FakeProvider has no scripted reply left")
         step = self._script.popleft()
@@ -128,6 +213,8 @@ class FakeProvider:
         if isinstance(step, _DecisionsBody):
             if not isinstance(request, DecisionsRequest):
                 raise TypeError("a Decisions reply was scripted but the task sent chat messages")
+            if tool_tuple:
+                raise TypeError("Decisions requests do not support tools")
             return read_reply(step.body, request, requested_model=step.requested_model)
         if isinstance(request, DecisionsRequest):
             raise TypeError("a chat reply was scripted but the task sent a DecisionsRequest")

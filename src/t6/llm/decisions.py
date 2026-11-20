@@ -29,6 +29,7 @@ from t6.llm.transport import (
     ProviderError,
     Request,
     Send,
+    ToolSpec,
     _post,
     _urlopen,
 )
@@ -156,7 +157,16 @@ class OpenRouterDecisions:
     def retention(self) -> Retention:
         return self._retention
 
-    def complete(self, request: Request, *, timeout: float, zdr: bool = False) -> Completion:
+    def complete(
+        self,
+        request: Request,
+        *,
+        timeout: float,
+        zdr: bool = False,
+        tools: Sequence[ToolSpec] = (),
+    ) -> Completion:
+        if tools:
+            raise TypeError("OpenRouterDecisions does not support tools; use OpenAIChat for tool-calling")
         if not isinstance(request, DecisionsRequest):
             raise TypeError("OpenRouterDecisions sends a DecisionsRequest; use OpenAIChat for chat messages")
         headers = {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
