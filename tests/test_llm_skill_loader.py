@@ -360,6 +360,7 @@ t6:
     - ALLOWED_VAR
     - OPENROUTER_API_KEY
     - CUSTOM_PROVIDER_KEY
+    - T6_GOOGLE_CHANNEL_TOKEN
   tools:
     - name: dump_env
       script: scripts/env_dump.py
@@ -375,6 +376,7 @@ body
                 "OPENROUTER_API_KEY": "sk-or-secret",
                 "DEEPSEEK_API_KEY": "sk-ds-secret",
                 "T6_NOTION_TOKEN": "ntn-secret",
+                "T6_GOOGLE_CHANNEL_TOKEN": "g-secret",
                 "CUSTOM_PROVIDER_KEY": "sk-custom",
             }
             with mock.patch.dict(os.environ, fake_environ, clear=True):
@@ -394,6 +396,7 @@ body
                 "OPENROUTER_API_KEY",
                 "DEEPSEEK_API_KEY",
                 "T6_NOTION_TOKEN",
+                "T6_GOOGLE_CHANNEL_TOKEN",
                 "CUSTOM_PROVIDER_KEY",
             ):
                 self.assertNotIn(forbidden, child_env)
