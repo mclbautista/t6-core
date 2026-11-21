@@ -8,6 +8,7 @@ from t6.fleet import (
     ROLE_GROUPS,
     Fleet,
     FleetSafetyError,
+    MachineEdit,
     MachineFacts,
     ManifestChainError,
     SyncResult,
@@ -363,12 +364,29 @@ class SyncTests(unittest.TestCase):
 
     def test_two_matching_rows_are_ambiguous(self) -> None:
         fake = live_bays()
-        add_bay(fake, name="Bay 1", host="Bay-1")
-        add_bay(fake, name="Bay 1 copy", host="bay-1-200")
+        add_bay(fake, name="Bay one", host="Bay-1-100")
+        add_bay(fake, name="Bay one copy", host="bay-1-200")
         with fake.client() as client:
             (result,) = Fleet(client, BAYS).sync([facts("Bay-1", serial_number="S1")], apply=True, now=NOW)
         self.assertEqual(result.status, "ambiguous")
         self.assertEqual(patches(fake), 0)
+
+    def test_an_exact_name_wins_over_rows_that_only_match_after_the_ard_suffix_rule(self) -> None:
+        fake = live_bays()
+        wanted = add_bay(fake, name="Deco 203", host=None)
+        add_bay(fake, name="Deco 202", host=None)
+        add_bay(fake, name="Deco 204", host=None)
+        with fake.client() as client:
+            (result,) = Fleet(client, BAYS).sync([facts("Deco 203", serial_number="S1")], now=NOW)
+        self.assertEqual((result.status, result.page_id), ("matched", wanted))
+
+    def test_an_exact_name_wins_for_edits_too(self) -> None:
+        fake = live_bays()
+        wanted = add_bay(fake, name="Deco 203", host=None)
+        add_bay(fake, name="Deco 202", host=None)
+        with fake.client() as client:
+            (result,) = Fleet(client, BAYS).edit([MachineEdit(names=("deco-203",), values={"username": "u"})])
+        self.assertEqual((result.status, result.page_id), ("matched", wanted))
 
     def test_a_row_claimed_by_two_machines_is_written_for_neither(self) -> None:
         fake = live_bays()

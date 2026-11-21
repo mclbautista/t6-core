@@ -437,7 +437,7 @@ Manifest, Ring, Munki Client Version, Last Check-in and OS Version.
   new values). It needs the `bays_edit` permission, which grants nothing else. Hostname is also a
   row match key, so a caller finds the row by its current name and the new Hostname applies after.
 - **Bays write-back**: a machine matches a row by its names against the row's
-  Hostname and Name, ignoring case, spaces and ARD's `-NNN` suffix. It writes
+  Hostname and Name, ignoring case and spaces; a row with exactly that name wins, and ARD's `-NNN` suffix is ignored only when no row has it. It writes
   only to one unique row, never creates a row, never clears a fact, and is a
   dry run unless applied.
 - **Staleness**: an observation older than 3600 seconds, or with no time, is

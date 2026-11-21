@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Fixed
+
+- `machine sync` and `machine edit` no longer treat `Deco 203` as `Deco 202`: a row with exactly the machine's name (case and spaces folded) now wins, and ARD's `-NNN` suffix is ignored only when no row has the exact name. Found by the live `machine edit` test on 0.6.13, where every `Deco NNN` row matched every other.
+
 ## [0.6.13] - 2026-11-20
 
 `machine edit` edits approved Bays properties (#531). No migration: the schema stays at 46.
