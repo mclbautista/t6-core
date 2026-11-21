@@ -14,6 +14,7 @@ from t6.notion import codec
 from t6.notion.models import ExternalLinksProperties
 from t6.notion.generated import DeliverablesRow, JobOrdersRow
 from t6.notion.models import project_from_page
+from t6.notion.source import NotionSource, as_source
 from t6.notion.sync import NotionClient
 from t6.registry import normalize_page_id
 from t6.registry.migration import LegacyProject
@@ -24,7 +25,7 @@ JSON = dict[str, Any]
 
 
 def read_legacy_projects(
-    client: NotionClient, data_sources: Mapping[str, str]
+    source: NotionSource | NotionClient, data_sources: Mapping[str, str]
 ) -> tuple[list[LegacyProject], list[str]]:
     """Every Project page, with how many rows of each kind point at it.
 
@@ -35,6 +36,7 @@ def read_legacy_projects(
     """
     if "projects" not in data_sources:
         raise ValueError("data sources need a 'projects' entry")
+    notion = as_source(source)
     counts: dict[str, Counter[str]] = {}
     not_counted: list[str] = []
     readers: dict[str, Callable[[JSON], tuple[str, ...]]] = {
@@ -43,17 +45,17 @@ def read_legacy_projects(
         "external_links": lambda row: codec.relation((row.get("properties") or {}).get(ExternalLinksProperties.PROJECTS)),
     }
     for kind, read in readers.items():
-        source = data_sources.get(kind)
-        if not source:
+        source_id = data_sources.get(kind)
+        if not source_id:
             not_counted.append(kind)
             continue
         found: Counter[str] = Counter()
-        for row in client.query_data_source(source):
+        for row in notion.query_data_source(source_id, freshness="live"):
             for page in set(normalize_page_id(p) for p in read(row)):
                 found[page] += 1
         counts[kind] = found
     projects: list[LegacyProject] = []
-    for row in client.query_data_source(data_sources["projects"]):
+    for row in notion.query_data_source(data_sources["projects"], freshness="live"):
         project = project_from_page(row)
         page = normalize_page_id(project.page_id)
         references = {kind: found[page] for kind, found in counts.items()}

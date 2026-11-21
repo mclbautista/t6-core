@@ -4,15 +4,16 @@ from __future__ import annotations
 from uuid import UUID
 
 from t6.google.calendar import CalendarError
-from t6.notion import NotionClient, NotionError
+from t6.notion import NotionClient, NotionError, NotionSource, as_source
 from t6.notion.reads import ContactReader, ProjectReader
 from t6.registry.sqlite import SqliteProjectRegistry
 
 
 class NotionNames:
-    def __init__(self, registry: SqliteProjectRegistry, client: NotionClient) -> None:
+    def __init__(self, registry: SqliteProjectRegistry, source: NotionSource | NotionClient) -> None:
         self._registry = registry
-        self._projects, self._people = ProjectReader(client, ''), ContactReader(client, '')
+        notion = as_source(source)
+        self._projects, self._people = ProjectReader(notion, ''), ContactReader(notion, '')
 
     def _page(self, entity: str) -> str:
         with self._registry._transaction() as db:

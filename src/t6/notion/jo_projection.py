@@ -12,6 +12,7 @@ from t6.registry import normalize_page_id
 from urllib.parse import unquote
 from t6.notion.job_orders import JobOrders
 from t6.notion.model import encode
+from t6.notion.source import NotionSource, as_source
 from t6.notion.sync import NotionClient
 from t6.notion.writes import Ambiguous, Rejected
 from t6.worker.client import WorkerJob
@@ -28,15 +29,15 @@ def projection_ids() -> tuple[str, str]:
 
 
 class JobOrderProjection:
-    def __init__(self, notion: NotionClient, registry: RegistryClient, data_source: str) -> None:
-        self.notion, self.registry, self.data_source = notion, registry, data_source
+    def __init__(self, notion: NotionSource | NotionClient, registry: RegistryClient, data_source: str) -> None:
+        self.notion, self.registry, self.data_source = as_source(notion), registry, data_source
 
     def handlers(self) -> dict[str, Handler]:
         return {'jo.sync': self.sync, 'notion.page_changed': self.reconcile}
 
     def reconcile(self, job: WorkerJob) -> JsonValue:
         page_id = str(job.payload['page_id'])
-        page = self.notion.retrieve_page(page_id)
+        page = self.notion.retrieve_page(page_id, freshness='live')
         parent = page.get('parent') or {}
         if normalize_page_id(str(parent.get('data_source_id', ''))) != normalize_page_id(self.data_source):
             return {'outcome': 'not_a_job_order_page'}
@@ -65,7 +66,7 @@ class JobOrderProjection:
         jo_id = state['jo_id']
         page = state['page_id']
         if not page and state['operation'] == 'create':
-            matches = self.notion.query_data_source(self.data_source, filter={'property': t6_id, 'rich_text': {'equals': jo_id}})
+            matches = self.notion.query_data_source(self.data_source, filter={'property': t6_id, 'rich_text': {'equals': jo_id}}, freshness='live')
             if len(matches) > 1:
                 self.registry.report_jo_sync(intent_id, error='Multiple Notion pages have this T6 ID')
                 raise Refused('Multiple Notion pages have this T6 ID')
@@ -90,7 +91,7 @@ class JobOrderProjection:
                     self.registry.report_jo_sync(intent_id, error=str(saved))
                     raise Refused(f'Notion create needs review: {saved}')
                 if isinstance(saved, Ambiguous):
-                    found = self.notion.query_data_source(self.data_source, filter={'property': t6_id, 'rich_text': {'equals': jo_id}})
+                    found = self.notion.query_data_source(self.data_source, filter={'property': t6_id, 'rich_text': {'equals': jo_id}}, freshness='live')
                     if len(found) != 1:
                         self.registry.report_jo_sync(intent_id, error=str(saved))
                         raise Refused(f'Notion create needs review: {saved}')
@@ -106,7 +107,7 @@ class JobOrderProjection:
                 self.registry.report_jo_sync(intent_id, page_id=page, error=str(failure))
                 raise Refused(f'Notion body needs review: {failure}')
         properties: dict[str, Any] = {t6_id: {'rich_text': [{'text': {'content': jo_id}}]}}
-        seen_status = JobOrdersRow.from_page(self.notion.retrieve_page(page)).status
+        seen_status = JobOrdersRow.from_page(self.notion.retrieve_page(page, freshness='live')).status
         seen_value = str(seen_status) if seen_status else None
         if 'status' in state['payload']:
             allowed = self.registry.projection(page, {'jo_status': seen_value}).get('allowed', {})

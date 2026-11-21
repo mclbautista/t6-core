@@ -125,6 +125,8 @@ class JobKind(str, Enum):
     NOTION_PAGE_CHANGED = "notion.page_changed"
     """A Notion page changed. A Notion webhook names the changed properties, not
     their new values, so a worker reads the page to find the current state."""
+    NOTION_MIRROR_REFRESH = "notion.mirror_refresh"
+    """An API verb wrote to a Notion page; the main worker refreshes the local mirror."""
     JO_SYNC = "jo.sync"
     REGISTRY_SYNC = "registry.sync"
     """A Project changed in the registry. A worker shows its current state in Notion."""
