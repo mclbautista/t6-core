@@ -80,3 +80,24 @@ class PrivacyListTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class LLMServiceLiveRegistryTests(unittest.TestCase):
+    def test_a_name_added_to_the_file_is_masked_in_the_next_llm_run_without_a_restart(self) -> None:
+        from t6.llm.testing import FakeProvider
+        from t6.server.llm import LLMService
+        with tempfile.TemporaryDirectory() as tmp:
+            file = Path(tmp) / 'privacy_registry.json'
+            file.write_text(json.dumps({'people': [{'name': 'Ana Cruz'}], 'projects': [], 'ids': []}), encoding='utf-8')
+            _, registry = read_config_from_env({'T6_READ_PRIVACY_REGISTRY': str(file)})
+            assert registry is not None
+            names = PrivacyList(str(file), registry)
+            service = LLMService({'fake': FakeProvider()}, 'fake', names.current)
+            self.assertEqual([p.name for p in service.registry.people], ['Ana Cruz'])
+            file.write_text(json.dumps({'people': [{'name': 'Ana Cruz'}], 'projects': [{'name': 'Show A', 'code': 'SHA'}], 'ids': []}), encoding='utf-8')
+            os.utime(file, ns=(2_000_000_000, 2_000_000_000))
+            self.assertEqual([p.name for p in service.registry.projects], ['Show A'])
+            file.write_text('not json', encoding='utf-8')
+            os.utime(file, ns=(3_000_000_000, 3_000_000_000))
+            self.assertEqual([p.name for p in service.registry.projects], ['Show A'])  # last good list stays
+            self.assertTrue(names.status()['reload_failed'])

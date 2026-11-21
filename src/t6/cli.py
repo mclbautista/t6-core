@@ -250,7 +250,7 @@ def _migrate_bays(args: argparse.Namespace, open_notion: Callable[..., Any]) -> 
 def _privacy_registry(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
     import re
     from t6.notion import NotionError
-    from t6.notion.reads import ProjectReader, StudioReader
+    from t6.notion.reads import ContactReader, ProjectReader, StudioReader
     token = os.environ.get(TOKEN_VARIABLE)
     if not token:
         return _fail(f"set {TOKEN_VARIABLE} to a Notion integration token")
@@ -260,11 +260,28 @@ def _privacy_registry(args: argparse.Namespace, open_notion: Callable[..., Any])
             return _fail("--data-sources needs 'studios' and 'projects' entries")
         with open_notion(token) as client:
             studios = StudioReader(client, sources["studios"]).names()
-            projects = tuple(project.name for project in ProjectReader(client, sources["projects"]).list())
-        names = list(dict.fromkeys(" ".join(name.split()) for name in (*studios, *projects) if name.strip()))
-        text = json.dumps(names, ensure_ascii=False)
+            projects = ProjectReader(client, sources["projects"]).list()
+            contacts = ContactReader(client, sources["contacts"]).list() if sources.get("contacts") else ()
+
+        def clean(name: str) -> str:
+            return " ".join(name.split())
+
+        people: dict[str, dict[str, Any]] = {clean(name): {"name": clean(name)} for name in studios if name.strip()}
+        for contact in contacts:
+            if contact.name.strip() and clean(contact.name) not in people:
+                people[clean(contact.name)] = {"name": clean(contact.name), "aliases": [clean(a) for a in contact.aliases if a.strip()],
+                                               "handles": [contact.telegram_handle] if contact.telegram_handle else []}
+        shows: dict[str, dict[str, Any]] = {}
+        for project in projects:
+            if project.name.strip() and clean(project.name) not in shows:
+                shows[clean(project.name)] = {"name": clean(project.name), **({"code": project.project_code} if project.project_code else {})}
+        payload = {"people": list(people.values()), "projects": list(shows.values()), "ids": []}
+        names = [*people, *shows]
+        text = json.dumps(payload, ensure_ascii=False)
         if args.output:
-            args.output.write_text(text + "\n", encoding="utf-8")
+            temporary = args.output.with_name(args.output.name + ".tmp")
+            temporary.write_text(text + "\n", encoding="utf-8")
+            os.replace(temporary, args.output)  # a reader never sees half a file
         else:
             print(text)
     except (OSError, ValueError, NotionError) as error:
@@ -776,13 +793,13 @@ def main(
     for queue_parser in (queue_failed, queue_dismiss):
         queue_parser.add_argument("--queue-db", type=Path, default=queue_db_default, metavar="FILE", help="the edge queue file; default T6_QUEUE_DB")
     privacy_registry = admin_commands.add_parser(
-        "privacy-registry", help="Build the client-name file that masked reads use (T6_READ_PRIVACY_REGISTRY)",
-        description="Run in the API container. Reads every Studio name and alias, then every Project name, and writes them as a "
-        "JSON array (to --output, or to stdout). Prints only counts to stderr.")
+        "privacy-registry", help="Build privacy_registry.json, the names that masked reads and LLM calls hide (T6_READ_PRIVACY_REGISTRY)",
+        description="Run in the API container. Reads every Studio name and alias, every Contact (when 'contacts' is a data source) and every Project, and writes "
+        "{people, projects, ids} as JSON (to --output, atomically, or to stdout). Prints only counts to stderr.")
     privacy_registry.add_argument("--data-sources", type=Path, default=os.environ.get("T6_READ_DATA_SOURCES"),
                                   required="T6_READ_DATA_SOURCES" not in os.environ,
                                   help="JSON object of database key to data source ID, with 'studios' and 'projects'; default T6_READ_DATA_SOURCES")
-    privacy_registry.add_argument("--output", type=Path, help="write the array to this file instead of stdout")
+    privacy_registry.add_argument("--output", type=Path, help="write the file here (atomically) instead of stdout")
     drive = admin_commands.add_parser("drive", help="Drive administration")
     drive_commands = drive.add_subparsers(dest="drive_command", required=True)
 

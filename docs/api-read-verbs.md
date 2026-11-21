@@ -9,33 +9,51 @@ Notion data source IDs. Configure only the sources the deployment uses.
 `T6_NOTION_TOKEN` is also set on the API host. Neither source IDs nor Notion
 filters are accepted in read requests.
 
-Set `T6_READ_PRIVACY_REGISTRY` to a server-side JSON array of client names and
-aliases, for example `["Example Client", "Example Co"]`. Keep it current: the
-API can mask only names in this list. For a reader with neither the `operator`
-nor the `unmasked` permission, the API replaces registered names consistently
-throughout each read response. Callers with either see the original data;
-`unmasked` grants nothing else, so a service such as `reports` can read real
-names without the write verbs `operator` opens. The MCP server stays masked.
+Set `T6_READ_PRIVACY_REGISTRY` to the path of `privacy_registry.json`, one
+server-side file for both masked reads and LLM calls (`/v1/llm/run`, `decide`,
+`filter`):
+
+```json
+{
+  "people": [{"name": "Ana Cruz", "aliases": ["Ana"], "handles": ["@ana"]}, "Client Corp"],
+  "projects": [{"name": "Show A", "code": "SHA"}],
+  "ids": []
+}
+```
+
+`people` and `projects` entries are a plain name or an object; `ids` are
+strings to hide whole. The first format, a JSON array of client names such as
+`["Client Corp"]`, still loads. Keep the file current: the API can mask only
+names in it. For a reader with neither the `operator` nor the `unmasked`
+permission, the API replaces registered names consistently throughout each
+read response. Callers with either see the original data; `unmasked` grants
+nothing else, so a service such as `reports` can read real names without the
+write verbs `operator` opens. The MCP server stays masked.
 Reads containing names fail closed for masked callers if the registry file is not configured;
-use an explicit empty array if there are no names to mask.
+use `{"people": [], "projects": [], "ids": []}` if there are no names to mask.
 
 Build the file with `t6 admin privacy-registry`, run inside the API container
 (it reads Notion directly, with the API's `T6_NOTION_TOKEN`, and
 `--data-sources` defaults to `T6_READ_DATA_SOURCES`, which must name `studios`
-and `projects`):
+and `projects`; add `contacts` to hide Contacts too):
 
 ```
-t6 admin privacy-registry --output /path/to/privacy-registry.json
+t6 admin privacy-registry --output /path/to/privacy_registry.json
 ```
 
-The array holds each Studio name, then its aliases, then every Project name,
-with spaces collapsed, blanks dropped and repeats kept once. Without `--output`
-it prints the array to stdout. Only counts go to stderr. The API reads the file
-at start and again when the file changes (a new modification time or size), so a
-rebuild needs no restart: rebuild the file on a schedule. A file that cannot be
-read (missing, not JSON, not an array of names) keeps the last good list in use
+Each Studio name and alias, then each Contact (name, aliases, Telegram handle),
+becomes a person; each Project becomes a project with its code. Spaces are
+collapsed, blanks dropped and repeats kept once. Without `--output` it prints
+the JSON to stdout; with it, the file is written to a temporary name and renamed,
+so the API never reads half a file. Only counts go to stderr. The API reads the
+file at start and again when the file changes (a new modification time or size)
+for masked reads and for every LLM call, so a rebuild needs no restart. A file that
+cannot be read (missing, not JSON, wrong shape) keeps the last good list in use
 and logs one line, `t6.server: read privacy registry not reloaded (<error type>)`.
-`t6 health` shows the list under `api.privacy_registry`: `names` in use,
+The LLM service shares this file when the API starts with `T6_READ_PRIVACY_REGISTRY`
+set; the `privacy_registry` entry in `T6_LLM_CONFIG` is then not used.
+`t6 health` shows the list under `api.privacy_registry`: `names` in use (people
+and projects),
 `age_seconds` of the file they came from, and `reload_failed` (a later file was
 refused). A Project or Studio added after the last rebuild is not masked until the
 next rebuild; a growing `age_seconds` is the sign that the rebuild has stopped.
