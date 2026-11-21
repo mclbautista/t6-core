@@ -153,7 +153,7 @@ class JoCommandTests(unittest.TestCase):
         self.assertEqual((status, json.loads(out)["deadline"], json.loads(out)["source"]), (0, "2026-11-12T22:00:00+08:00", "shift"))
 
     def test_an_unreadable_deadline_is_a_finding_not_a_guess(self) -> None:
-        _, out, _ = self.run_command(["deadline", "tomorrow"], sources=False)
+        _, out, _ = self.run_command(["deadline", "next week"], sources=False)
         result = json.loads(out)
         self.assertEqual((result["deadline"], [f["code"] for f in result["findings"]]), (None, ["deadline_unparsed"]))
 

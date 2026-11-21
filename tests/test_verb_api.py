@@ -439,6 +439,17 @@ class VerbAPITests(unittest.TestCase):
             stored = json.loads(db.execute('SELECT fields FROM job_orders WHERE id = ?', (done['result']['jo_id'],)).fetchone()[0])
         self.assertEqual((stored['number'], stored['department'], stored['telegram_key']), ('#062', 'TOC', '-100123:456'))
 
+    def test_job_order_raise_resolves_tomorrow_like_the_deadline_rule(self) -> None:
+        _, project, person, _ = self.message_setup()
+        base = {'posted_at': '2026-11-12T09:00:00+08:00', 'chat_id': '-100123', 'message_id': '20', 'project': project,
+                'header_text': 'ORC - TO - JO #8', 'deadline_text': 'tomorrow'}
+        with patch.dict(os.environ, {'T6_NOTION_TOKEN': 'secret'}):
+            preview, _ = self.raise_from_message({**base, 'assignees': [person]})
+            self.assertEqual((preview['plan']['deadline'], preview['plan']['deadline_source']), ('2026-11-13T22:00:00+08:00', 'shift'))
+            preview, _ = self.raise_from_message({**base, 'message_id': '21', 'assignees': []})
+            self.assertEqual((preview['plan']['deadline'], preview['plan']['deadline_source']), ('2026-11-13T23:59:00+08:00', 'fallback'))
+            self.assertEqual([f['code'] for f in preview['plan']['deadline_findings']], ['shift_fallback'])
+
     def test_job_order_raise_from_a_message_findings_fallbacks_and_refusals(self) -> None:
         _, project, person, _ = self.message_setup()
         base = {'posted_at': '2026-11-12T09:00:00+08:00', 'chat_id': '-100123', 'message_id': '9', 'project': project}

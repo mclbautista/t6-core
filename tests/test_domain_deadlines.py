@@ -238,10 +238,34 @@ class DeadlineRuleTests(unittest.TestCase):
         self.assertEqual(result.deadline, at(9, 2, 0))
 
     def test_unsupported_relative_words_fail_closed(self) -> None:
-        for raw in ["tomorrow 3pm", "tomorrow", "next week", "13pm", "Feb 30"]:
+        for raw in ["next week", "13pm", "Feb 30", "tomorrow maybe", "tomorrow Sep 5", "tomorrow tonight"]:
             result = resolve_deadline(raw, at(9, 1, 10))
             self.assertIsNone(result.deadline, raw)
             self.assertEqual(codes(result), ["deadline_unparsed"], raw)
+
+    def test_tomorrow_resolves_to_the_next_day_end_of_shift(self) -> None:
+        p = at(9, 1, 10)
+        self.check_tomorrow("tomorrow", p, at(9, 2, 19), DAY, "shift")
+        self.check_tomorrow("Tomorrow end of shift", p, at(9, 2, 19), DAY, "shift")
+        self.check_tomorrow("tomorrow", p, at(9, 3, 5), NIGHT, "shift")
+
+    def test_tomorrow_without_a_shift_falls_back_to_2359(self) -> None:
+        result = resolve_deadline("tomorrow", at(9, 1, 10), FLEX)
+        self.assertEqual((result.deadline, result.source, codes(result)), (at(9, 2, 23, 59), "fallback", ["shift_fallback"]))
+        result = resolve_deadline("tomorrow", at(9, 1, 10))
+        self.assertEqual((result.deadline, result.source, codes(result)), (at(9, 2, 23, 59), "fallback", ["shift_fallback"]))
+
+    def test_tomorrow_uses_the_manila_date_of_the_posting(self) -> None:
+        posted = datetime.fromisoformat("2026-09-01T17:00:00+00:00")  # 2026-09-02 01:00 Manila
+        self.check_tomorrow("tomorrow", posted, at(9, 3, 19), DAY, "shift")
+
+    def test_tomorrow_with_a_clock_time_is_stated(self) -> None:
+        self.check_tomorrow("tomorrow 5pm", at(9, 1, 10), at(9, 2, 17), DAY, "stated")
+        self.check_tomorrow("tomorrow 12:00 AM", at(9, 1, 10), at(9, 2, 0), DAY, "stated")
+
+    def check_tomorrow(self, raw: str, posted: datetime, expected: datetime, shifts: Sequence[Contact], source: str) -> None:
+        result = resolve_deadline(raw, posted, shifts)
+        self.assertEqual((result.deadline, result.source, codes(result)), (expected, source, []), raw)
 
     def test_output_carries_manila_offset(self) -> None:
         result = resolve_deadline("Sep 26", datetime.fromisoformat("2026-09-22T02:00:00+00:00"))

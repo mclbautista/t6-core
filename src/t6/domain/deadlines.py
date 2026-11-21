@@ -11,7 +11,10 @@ component implicitly. Rules:
 - a missing year takes the closest year; an explicit year is honoured;
 - hedges (`if keri`, `kung ...`, parentheses) and fillers are stripped;
 - a deadline before the posting time is kept and flagged `deadline_past`;
-- anything else, including `tomorrow`, is `deadline_unparsed`, never a guess.
+- `tomorrow` is the day after posting (Manila), then follows the same rules: a
+  stated time is used as is, otherwise the end of shift that day, else 23:59
+  with a fallback finding; it never combines with a stated date or `today`;
+- anything else is `deadline_unparsed`, never a guess.
 
 Ported from the JO watchdog's `deadline.py`, with its tests as contract tests.
 """
@@ -58,6 +61,7 @@ _WEEKDAY = re.compile(
 )
 _SHIFT = re.compile(r"\b(end of shift|within shift|asap)\b", re.IGNORECASE)
 _DAY_END = re.compile(r"\b(tonight|today|within the day)\b", re.IGNORECASE)
+_TOMORROW = re.compile(r"\btomorrow\b", re.IGNORECASE)
 _BARE_PM = re.compile(r"\bpm\b", re.IGNORECASE)
 
 _PARENTHETICAL = re.compile(r"\([^)]*\)?")
@@ -197,6 +201,15 @@ def deadline(
         text = text[: date_match.start()] + " " + text[date_match.end() :]
     text = _WEEKDAY.sub(" ", text)
 
+    relative = False
+    tomorrow_match = _TOMORROW.search(text)
+    if tomorrow_match:
+        # `tomorrow` plus a stated date or `today` contradict each other.
+        if stated is not None or _DAY_END.search(text):
+            return _unparsed(original)
+        stated, relative = posted_at.date() + timedelta(days=1), True
+        text = _TOMORROW.sub(" ", text)
+
     at: time | None = None
     time_match = _TIME.search(text)
     if time_match:
@@ -215,7 +228,7 @@ def deadline(
     source: DeadlineSource
     if at is not None:
         when, source = _at(stated or posted_at.date(), at), "stated"
-    elif shift_match:
+    elif shift_match or relative:
         shift = person.get("shift") if person else None
         if shift:
             end = time.fromisoformat(shift["end"])
@@ -237,8 +250,8 @@ def deadline(
     else:
         return _unparsed(original)
 
-    if stated is None and re.sub(r"[\s/,.\-]+", "", _leftover(text)):
-        # Without a date, unrecognised words could change the day (`tomorrow`).
+    if (stated is None or relative) and re.sub(r"[\s/,.\-]+", "", _leftover(text)):
+        # Without a stated date, unrecognised words could change the day.
         return _unparsed(original)
 
     if when < posted_at:
