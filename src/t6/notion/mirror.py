@@ -11,9 +11,11 @@ import os
 from pathlib import Path
 import sqlite3
 import sys
+import threading
 import time
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
+import weakref
 
 from t6.notion.client import RequestPacer
 from t6.registry.core import normalize_page_id
@@ -152,17 +154,46 @@ def _is_archived(page: Mapping[str, Any]) -> bool:
     return bool(page.get("archived") or page.get("in_trash"))
 
 
+def _close_anchor_holder(holder: list[sqlite3.Connection | None]) -> None:
+    conn = holder[0]
+    holder[0] = None
+    if conn is not None:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+
+
 class MirrorWriter:
     """Owner-only (`0o600`) SQLite WAL writer for mirrored Notion data sources and pages."""
 
     def __init__(self, path: str | Path, *, clock: Callable[[], float] = time.time) -> None:
         self._path = Path(path)
         self._clock = clock
+        self._lock = threading.RLock()
+        self._closed = False
+        self._anchor_holder: list[sqlite3.Connection | None] = [None]
+        self._anchor_conn: sqlite3.Connection | None = None
+        self._finalizer = weakref.finalize(self, _close_anchor_holder, self._anchor_holder)
         self._ensure_ready()
 
     @property
     def path(self) -> Path:
         return self._path
+
+    def _close_anchor(self) -> None:
+        self._anchor_conn = None
+        _close_anchor_holder(self._anchor_holder)
+
+    def _set_anchor(self, conn: sqlite3.Connection) -> None:
+        prev = self._anchor_holder[0]
+        if prev is not None and prev is not conn:
+            try:
+                prev.close()
+            except sqlite3.Error:
+                pass
+        self._anchor_holder[0] = conn
+        self._anchor_conn = conn
 
     def _ensure_permissions(self) -> None:
         for candidate in (self._path, Path(f"{self._path}-wal"), Path(f"{self._path}-shm")):
@@ -176,75 +207,107 @@ class MirrorWriter:
         os.chmod(self._path, 0o600)
 
     def _rebuild(self) -> None:
-        for candidate in (self._path, Path(f"{self._path}-wal"), Path(f"{self._path}-shm")):
-            candidate.unlink(missing_ok=True)
-        self._create_empty_file()
-        conn = sqlite3.connect(str(self._path), timeout=30, isolation_level=None)
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.executescript(_SCHEMA_SQL)
-        finally:
-            conn.close()
-        self._ensure_permissions()
-
-    def _open_verified(self) -> sqlite3.Connection:
-        if not self._path.exists() or self._path.stat().st_size == 0:
-            self._rebuild()
-        for attempt in range(2):
-            conn: sqlite3.Connection | None = None
+        with self._lock:
+            self._close_anchor()
+            for candidate in (self._path, Path(f"{self._path}-wal"), Path(f"{self._path}-shm")):
+                candidate.unlink(missing_ok=True)
+            self._create_empty_file()
+            conn = sqlite3.connect(
+                str(self._path),
+                timeout=30,
+                isolation_level=None,
+                check_same_thread=False,
+            )
             try:
-                conn = sqlite3.connect(str(self._path), timeout=30, isolation_level=None)
                 conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute("PRAGMA synchronous=NORMAL")
-                check = conn.execute("PRAGMA quick_check(1)").fetchone()
-                if check is None or check[0] != "ok":
-                    raise sqlite3.DatabaseError("mirror quick_check failed")
-                tables = {
-                    row[0]
-                    for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
-                }
-                if not {"mirror_pages", "mirror_state"}.issubset(tables):
-                    raise sqlite3.DatabaseError("mirror schema missing")
-                self._ensure_permissions()
-                return conn
-            except (sqlite3.DatabaseError, OSError):
-                if conn is not None:
-                    conn.close()
-                if attempt == 1:
-                    raise
+                conn.executescript(_SCHEMA_SQL)
+                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            except BaseException:
+                conn.close()
+                raise
+            if self._closed:
+                conn.close()
+            else:
+                self._set_anchor(conn)
+            self._ensure_permissions()
+
+    def _open_verified(self) -> sqlite3.Connection:
+        with self._lock:
+            if not self._path.exists() or self._path.stat().st_size == 0:
                 self._rebuild()
-        raise RuntimeError("unreachable")
+            for attempt in range(2):
+                conn: sqlite3.Connection | None = None
+                try:
+                    conn = sqlite3.connect(
+                        str(self._path),
+                        timeout=30,
+                        isolation_level=None,
+                        check_same_thread=False,
+                    )
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    conn.execute("PRAGMA synchronous=NORMAL")
+                    check = conn.execute("PRAGMA quick_check(1)").fetchone()
+                    if check is None or check[0] != "ok":
+                        raise sqlite3.DatabaseError("mirror quick_check failed")
+                    tables = {
+                        row[0]
+                        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+                    }
+                    if not {"mirror_pages", "mirror_state"}.issubset(tables):
+                        raise sqlite3.DatabaseError("mirror schema missing")
+                    self._ensure_permissions()
+                    return conn
+                except (sqlite3.DatabaseError, OSError):
+                    if conn is not None:
+                        conn.close()
+                    if attempt == 1:
+                        raise
+                    self._rebuild()
+            raise RuntimeError("unreachable")
 
     def _ensure_ready(self) -> None:
-        conn = self._open_verified()
-        conn.close()
+        with self._lock:
+            conn = self._open_verified()
+            if self._closed:
+                conn.close()
+            else:
+                self._set_anchor(conn)
+            self._ensure_permissions()
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
-        conn = self._open_verified()
-        try:
-            conn.execute("BEGIN IMMEDIATE")
+        with self._lock:
+            conn = self._open_verified()
+            if not self._closed and self._anchor_conn is None:
+                anchor = self._open_verified()
+                self._set_anchor(anchor)
             try:
-                yield conn
-            except BaseException:
-                conn.execute("ROLLBACK")
-                raise
-            conn.execute("COMMIT")
-        finally:
-            conn.close()
-        self._ensure_permissions()
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    yield conn
+                except BaseException:
+                    conn.execute("ROLLBACK")
+                    raise
+                conn.execute("COMMIT")
+                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            finally:
+                try:
+                    conn.close()
+                finally:
+                    self._ensure_permissions()
 
     def _run_with_rebuild(self, operation: Callable[[sqlite3.Connection], Any]) -> Any:
-        for attempt in range(2):
-            try:
-                with self._transaction() as db:
-                    return operation(db)
-            except (sqlite3.DatabaseError, OSError):
-                if attempt == 1:
-                    raise
-                self._rebuild()
-        raise RuntimeError("unreachable")
+        with self._lock:
+            for attempt in range(2):
+                try:
+                    with self._transaction() as db:
+                        return operation(db)
+                except (sqlite3.DatabaseError, OSError):
+                    if attempt == 1:
+                        raise
+                    self._rebuild()
+            raise RuntimeError("unreachable")
 
     def state(self, data_source_id: str) -> MirrorSourceState | None:
         """Return stored sync metadata for `data_source_id`, or None if never synced."""
@@ -360,9 +423,9 @@ class MirrorWriter:
                 (ds_key,),
             ).fetchone()
             seen_ids: set[str] = set()
+            live_ids: set[str] = set()
             hwm: str | None = None
-            rows: list[tuple[str, str, str, int, int, str, float]] = []
-            expected_live = 0
+            dedup_rows: dict[str, tuple[str, str, str, int, int, str, float]] = {}
             for page in pages:
                 page_id = normalize_page_id(str(page["id"]))
                 seen_ids.add(page_id)
@@ -371,8 +434,20 @@ class MirrorWriter:
                 archived = 1 if _is_archived(page) else 0
                 deleted = 1 if page.get("in_trash") else 0
                 if not archived and not deleted:
-                    expected_live += 1
-                rows.append((ds_key, page_id, edited, archived, deleted, json.dumps(page, ensure_ascii=False), ts))
+                    live_ids.add(page_id)
+                else:
+                    live_ids.discard(page_id)
+                dedup_rows[page_id] = (
+                    ds_key,
+                    page_id,
+                    edited,
+                    archived,
+                    deleted,
+                    json.dumps(page, ensure_ascii=False),
+                    ts,
+                )
+            rows = list(dedup_rows.values())
+            expected_live = len(live_ids)
             if rows:
                 db.executemany(
                     "INSERT INTO mirror_pages (data_source_id, page_id, last_edited_time, archived, deleted, raw_json, synced_at) "
@@ -665,7 +740,16 @@ class MirrorWriter:
         )
 
     def close(self) -> None:
-        """No persistent connection is kept between operations."""
+        """Close the persistent WAL anchor connection."""
+        with self._lock:
+            self._closed = True
+            self._close_anchor()
+
+    def __enter__(self) -> MirrorWriter:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
 
 
 def _matches_timestamp(raw_value: object, condition: Mapping[str, Any]) -> bool:
@@ -701,28 +785,61 @@ def _find_property(page: Mapping[str, Any], prop_key: str) -> Mapping[str, Any]:
     return {}
 
 
-def _matches_filter(page: Mapping[str, Any], query_filter: Mapping[str, Any] | None) -> bool:
+_TIMESTAMP_OPS = frozenset({"on_or_after", "after", "on_or_before", "before", "equals"})
+_LIST_PROP_OPS = frozenset({"contains", "does_not_contain", "is_empty", "is_not_empty"})
+_COMMON_SCALAR_OPS = frozenset({"equals", "does_not_equal", "is_empty", "is_not_empty"})
+_TEXT_OPS = _COMMON_SCALAR_OPS | frozenset({"contains", "does_not_contain", "starts_with", "ends_with"})
+_NUMBER_OPS = _COMMON_SCALAR_OPS | frozenset(
+    {"greater_than", "less_than", "greater_than_or_equal_to", "less_than_or_equal_to"}
+)
+_DATE_OPS = _TIMESTAMP_OPS | frozenset({"is_empty", "is_not_empty"})
+
+
+def _matches_filter(page: Mapping[str, Any], query_filter: Mapping[str, Any] | None) -> bool | None:
     if not query_filter:
         return True
     if "and" in query_filter:
         parts = query_filter["and"]
-        return isinstance(parts, Sequence) and all(
-            isinstance(part, Mapping) and _matches_filter(page, part) for part in parts
-        )
+        if not isinstance(parts, Sequence) or isinstance(parts, (str, bytes)):
+            return None
+        matched = True
+        for part in parts:
+            if not isinstance(part, Mapping):
+                return None
+            res = _matches_filter(page, part)
+            if res is None:
+                return None
+            if not res:
+                matched = False
+        return matched
     if "or" in query_filter:
         parts = query_filter["or"]
-        return isinstance(parts, Sequence) and any(
-            isinstance(part, Mapping) and _matches_filter(page, part) for part in parts
-        )
+        if not isinstance(parts, Sequence) or isinstance(parts, (str, bytes)):
+            return None
+        matched = False
+        for part in parts:
+            if not isinstance(part, Mapping):
+                return None
+            res = _matches_filter(page, part)
+            if res is None:
+                return None
+            if res:
+                matched = True
+        return matched
     ts_kind = query_filter.get("timestamp")
     if ts_kind in ("last_edited_time", "created_time") and isinstance(query_filter.get(ts_kind), Mapping):
-        return _matches_timestamp(page.get(ts_kind), query_filter[ts_kind])
+        ts_cond = query_filter[ts_kind]
+        if not ts_cond or not set(ts_cond).issubset(_TIMESTAMP_OPS):
+            return None
+        return _matches_timestamp(page.get(ts_kind), ts_cond)
     prop_key = query_filter.get("property")
-    if not isinstance(prop_key, str):
-        return True
+    if not isinstance(prop_key, str) or not prop_key:
+        return None
     prop = _find_property(page, prop_key)
     if "relation" in query_filter and isinstance(query_filter["relation"], Mapping):
         rel_cond = query_filter["relation"]
+        if not rel_cond or not set(rel_cond).issubset(_LIST_PROP_OPS):
+            return None
         items = prop.get("relation") or ()
         rel_ids = {
             normalize_page_id(str(item.get("id") or ""))
@@ -740,6 +857,8 @@ def _matches_filter(page: Mapping[str, Any], query_filter: Mapping[str, Any] | N
         return True
     if "multi_select" in query_filter and isinstance(query_filter["multi_select"], Mapping):
         ms_cond = query_filter["multi_select"]
+        if not ms_cond or not set(ms_cond).issubset(_LIST_PROP_OPS):
+            return None
         raw_items = prop.get("multi_select") or ()
         names = [
             str(item.get("name"))
@@ -759,6 +878,13 @@ def _matches_filter(page: Mapping[str, Any], query_filter: Mapping[str, Any] | N
         kind_cond = query_filter.get(kind)
         if not isinstance(kind_cond, Mapping):
             continue
+        allowed_ops = (
+            _TEXT_OPS
+            if kind in ("rich_text", "title")
+            else (_NUMBER_OPS if kind == "number" else _COMMON_SCALAR_OPS)
+        )
+        if not kind_cond or not set(kind_cond).issubset(allowed_ops):
+            return None
         raw_val = prop.get(kind)
         value: Any = raw_val
         if kind in ("select", "status"):
@@ -807,6 +933,8 @@ def _matches_filter(page: Mapping[str, Any], query_filter: Mapping[str, Any] | N
         return True
     if "date" in query_filter and isinstance(query_filter["date"], Mapping):
         date_cond = query_filter["date"]
+        if not date_cond or not set(date_cond).issubset(_DATE_OPS):
+            return None
         date_val = prop.get("date")
         start = date_val.get("start") if isinstance(date_val, Mapping) else None
         has_start = isinstance(start, str) and bool(start.strip())
@@ -818,7 +946,7 @@ def _matches_filter(page: Mapping[str, Any], query_filter: Mapping[str, Any] | N
             if not has_start or not _matches_timestamp(start, date_cond):
                 return False
         return True
-    return True
+    return None
 
 
 def _sort_pages(pages: list[JSON], sorts: Sequence[Mapping[str, Any]] | None) -> list[JSON] | None:
@@ -922,7 +1050,15 @@ class MirrorReader:
                 (ds_key,),
             ).fetchall()
             pages = [json.loads(str(r[0])) for r in rows]
-            matched = [page for page in pages if _matches_filter(page, filter)]
+            if filter and not pages and _matches_filter({}, filter) is None:
+                return None
+            matched: list[JSON] = []
+            for page in pages:
+                verdict = _matches_filter(page, filter)
+                if verdict is None:
+                    return None
+                if verdict:
+                    matched.append(page)
             return _sort_pages(matched, sorts)
         except (sqlite3.Error, OSError, json.JSONDecodeError, ValueError):
             return None

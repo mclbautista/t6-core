@@ -247,6 +247,7 @@ class MirrorSyncAndReadTests(unittest.TestCase):
 
     def test_permissions_0600_and_wal_mode(self) -> None:
         writer = MirrorWriter(self.db_path)
+        self.addCleanup(writer.close)
         self.assertTrue(self.db_path.exists())
         self.assertEqual(stat.S_IMODE(os.stat(self.db_path).st_mode), 0o600)
         with closing(sqlite3.connect(self.db_path)) as conn:
@@ -264,12 +265,13 @@ class MirrorSyncAndReadTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(os.stat(self.db_path).st_mode), 0o600)
         for suffix in ("-wal", "-shm"):
             side = Path(f"{self.db_path}{suffix}")
-            if side.exists():
-                self.assertEqual(stat.S_IMODE(os.stat(side).st_mode), 0o600)
+            self.assertTrue(side.exists())
+            self.assertEqual(stat.S_IMODE(os.stat(side).st_mode), 0o600)
 
     def test_poll_and_rescan_sync_new_edited_archived_and_deleted_restored(self) -> None:
         self.fake.add_snapshot_data_source(BAYS_DS, "bays")
         writer = MirrorWriter(self.db_path)
+        self.addCleanup(writer.close)
         syncer = MirrorSyncer(
             writer,
             NotionSource(self.fake.client),
@@ -361,6 +363,7 @@ class MirrorSyncAndReadTests(unittest.TestCase):
     def test_pacing_keeps_requests_below_3_per_second_and_staggers_rescans(self) -> None:
         self.fake.add_snapshot_data_source(BAYS_DS, "bays")
         writer = MirrorWriter(self.db_path)
+        self.addCleanup(writer.close)
         syncer = MirrorSyncer(
             writer,
             NotionSource(self.fake.client),
@@ -413,6 +416,7 @@ class MirrorSyncAndReadTests(unittest.TestCase):
     def test_fallbacks_not_ready_stale_and_live_bypass(self) -> None:
         # 1. Not ready -> live fallback
         writer = MirrorWriter(self.db_path)
+        self.addCleanup(writer.close)
         reader = MirrorReader(self.db_path, max_age_seconds=300.0, clock=self.clock)
         source = NotionSource(self.fake.client, mirror=reader)
         before = _count_notion_http(self.fake)
@@ -452,6 +456,7 @@ class MirrorSyncAndReadTests(unittest.TestCase):
 
     def test_self_healing_rebuild_on_empty_and_corrupt_files_while_reads_fall_back(self) -> None:
         writer = MirrorWriter(self.db_path)
+        self.addCleanup(writer.close)
         syncer = MirrorSyncer(
             writer,
             NotionSource(self.fake.client),
@@ -528,6 +533,7 @@ class MirrorSyncAndReadTests(unittest.TestCase):
         from t6.server.__main__ import mirror_reader_from_env
 
         writer = MirrorWriter(self.db_path, clock=self.clock)
+        self.addCleanup(writer.close)
         syncer = MirrorSyncer(
             writer,
             NotionSource(self.fake.client),
@@ -549,6 +555,109 @@ class MirrorSyncAndReadTests(unittest.TestCase):
         self.clock.advance(90.0)
         self.assertIsNone(reader.query_data_source(PROJECTS_DS))
         self.assertIsNotNone(reader.query_data_source(CONTACTS_DS))
+
+    def test_readonly_directory_mirror_reads_succeed_while_writer_active_and_fallback_after_close(self) -> None:
+        mirror_dir = Path(self.tmp.name) / "ro_mirror"
+        mirror_dir.mkdir(mode=0o700)
+        db_path = mirror_dir / "mirror.sqlite"
+        writer = MirrorWriter(db_path, clock=self.clock)
+        self.addCleanup(writer.close)
+
+        source_meta = {"object": "data_source", "id": PROJECTS_DS, "title": [{"plain_text": "Projects"}]}
+        writer.replace_data_source(
+            PROJECTS_DS,
+            [self.p1],
+            synced_at=self.clock(),
+            source_key="projects",
+            source_meta=source_meta,
+        )
+        reader = MirrorReader(db_path, clock=self.clock)
+        source = NotionSource(self.fake.client, mirror=reader)
+
+        os.chmod(mirror_dir, 0o555)
+        try:
+            self.assertTrue(Path(f"{db_path}-wal").exists())
+            self.assertTrue(Path(f"{db_path}-shm").exists())
+
+            rows = reader.query_data_source(PROJECTS_DS)
+            self.assertIsNotNone(rows)
+            assert rows is not None
+            self.assertEqual([r["id"] for r in rows], [self.p1["id"]])
+
+            page = reader.retrieve_page(self.p1["id"])
+            self.assertIsNotNone(page)
+            assert page is not None
+            self.assertEqual(page["id"], self.p1["id"])
+
+            meta = reader.retrieve_data_source(PROJECTS_DS)
+            self.assertEqual(meta, source_meta)
+
+            # Repeated MirrorWriter operations while active keep WAL/SHM alive and readable in 0o555 dir
+            self.clock.advance(5.0)
+            p2 = self.fake.add_page(
+                PROJECTS_DS,
+                {
+                    ProjectsRow.notion_name("name"): title("Project Beta"),
+                    ProjectsRow.notion_name("project_code"): select("BET"),
+                },
+            )
+            self.assertEqual(
+                writer.upsert_page(p2, active_data_source_ids=(PROJECTS_DS,), synced_at=self.clock()),
+                "upserted",
+            )
+            rows_after_upsert = reader.query_data_source(PROJECTS_DS)
+            self.assertIsNotNone(rows_after_upsert)
+            assert rows_after_upsert is not None
+            self.assertEqual({r["id"] for r in rows_after_upsert}, {self.p1["id"], p2["id"]})
+            self.assertIsNotNone(reader.retrieve_page(p2["id"]))
+
+            self.clock.advance(5.0)
+            self.assertEqual(
+                writer.replace_data_source(
+                    PROJECTS_DS,
+                    [self.p1, p2],
+                    synced_at=self.clock(),
+                    source_key="projects",
+                    source_meta=source_meta,
+                ),
+                2,
+            )
+            self.assertEqual(len(reader.query_data_source(PROJECTS_DS) or []), 2)
+            self.assertEqual(reader.retrieve_data_source(PROJECTS_DS), source_meta)
+        finally:
+            os.chmod(mirror_dir, 0o700)
+
+        # Closing MirrorWriter unlinks -wal/-shm; on a 0o555 dir MirrorReader safely returns None (live fallback)
+        writer.close()
+        self.assertFalse(Path(f"{db_path}-wal").exists())
+        self.assertFalse(Path(f"{db_path}-shm").exists())
+
+        os.chmod(mirror_dir, 0o555)
+        try:
+            self.assertIsNone(reader.query_data_source(PROJECTS_DS))
+            self.assertIsNone(reader.retrieve_page(self.p1["id"]))
+            self.assertIsNone(reader.retrieve_data_source(PROJECTS_DS))
+
+            before_http = _count_notion_http(self.fake)
+            self.assertEqual(len(ProjectReader(source, PROJECTS_DS).list()), 2)
+            self.assertFalse(last_read_from_mirror())
+            self.assertEqual(_count_notion_http(self.fake) - before_http, 1)
+        finally:
+            os.chmod(mirror_dir, 0o700)
+
+    def test_replace_data_source_deduplicates_duplicate_page_ids(self) -> None:
+        with MirrorWriter(self.db_path, clock=self.clock) as writer:
+            p1_v2 = {**self.p1, "last_edited_time": "2026-11-21T00:00:00Z"}
+            count = writer.replace_data_source(
+                PROJECTS_DS,
+                [self.p1, p1_v2],
+                synced_at=self.clock(),
+                source_key="projects",
+            )
+            self.assertEqual(count, 1)
+            state = writer.state(PROJECTS_DS)
+            assert state is not None
+            self.assertEqual(state.row_count, 1)
 
 
 class VerbMirrorAndBatchingTests(unittest.TestCase):
@@ -589,6 +698,7 @@ class VerbMirrorAndBatchingTests(unittest.TestCase):
         self.p1_t6_id = reg.project.id
 
         writer = MirrorWriter(self.mirror_path)
+        self.addCleanup(writer.close)
         syncer = MirrorSyncer(
             writer,
             NotionSource(self.fake.client),
@@ -705,14 +815,15 @@ class VerbMirrorAndBatchingTests(unittest.TestCase):
                 ProjectsRow.notion_name("editors"): relation("   "),
             },
         )
-        MirrorSyncer(
-            MirrorWriter(self.mirror_path),
-            NotionSource(self.fake.client),
-            {"projects": PROJECTS_DS, "contacts": CONTACTS_DS},
-            clock=self.clock,
-            wall_clock=self.clock,
-            sleep=self.clock.sleep,
-        ).rescan_source("projects")
+        with MirrorWriter(self.mirror_path) as blank_writer:
+            MirrorSyncer(
+                blank_writer,
+                NotionSource(self.fake.client),
+                {"projects": PROJECTS_DS, "contacts": CONTACTS_DS},
+                clock=self.clock,
+                wall_clock=self.clock,
+                sleep=self.clock.sleep,
+            ).rescan_source("projects")
         res = self.api._typed_read("project", "resolve", ProjectResolveInput(text="Blank Rel"))
         self.assertIsInstance(res, Refused)
         assert isinstance(res, Refused)
@@ -800,14 +911,15 @@ class VerbMirrorAndBatchingTests(unittest.TestCase):
         expected = {p.page_id: unbatched(p) for p in raw}
 
         # Resync mirror and compare VerbAPI output
-        MirrorSyncer(
-            MirrorWriter(self.mirror_path),
-            NotionSource(self.fake.client),
-            {"projects": PROJECTS_DS, "contacts": CONTACTS_DS},
-            clock=self.clock,
-            wall_clock=self.clock,
-            sleep=self.clock.sleep,
-        ).rescan_source("projects")
+        with MirrorWriter(self.mirror_path) as blank_writer:
+            MirrorSyncer(
+                blank_writer,
+                NotionSource(self.fake.client),
+                {"projects": PROJECTS_DS, "contacts": CONTACTS_DS},
+                clock=self.clock,
+                wall_clock=self.clock,
+                sleep=self.clock.sleep,
+            ).rescan_source("projects")
 
         listed = self.api._typed_read("project", "list", ProjectListInput())
         assert isinstance(listed, Done)
@@ -863,6 +975,7 @@ class VerbMirrorAndBatchingTests(unittest.TestCase):
                 )
 
         writer = MirrorWriter(self.mirror_path)
+        self.addCleanup(writer.close)
         syncer = MirrorSyncer(
             writer,
             NotionSource(self.fake.client),
@@ -928,6 +1041,7 @@ class WebhookPageChangedMirrorTests(unittest.TestCase):
         self.other_ds = "ds-other-9999"
         self.fake.add_data_source(self.other_ds)
         self.writer = MirrorWriter(self.db_path, clock=self.clock)
+        self.addCleanup(self.writer.close)
         self.p1 = self.fake.add_page(
             PROJECTS_DS,
             {
@@ -1593,6 +1707,7 @@ class JobOrdersAndDeliverablesMirrorTests(unittest.TestCase):
         )
 
         self.writer = MirrorWriter(self.mirror_path, clock=self.clock)
+        self.addCleanup(self.writer.close)
         self.sources = {
             "projects": PROJECTS_DS,
             "contacts": CONTACTS_DS,
@@ -1918,6 +2033,7 @@ class WorkerWriteThroughMirrorTests(unittest.TestCase):
 
         # 2. Seed initial mirror state (ready=1) via MirrorSyncer
         writer = MirrorWriter(self.db_path, clock=self.clock)
+        self.addCleanup(writer.close)
         syncer = MirrorSyncer(
             writer,
             NotionSource(self.fake.client),
@@ -2069,6 +2185,7 @@ class ApiVerbRefreshMirrorTests(unittest.TestCase):
         self.cam1 = self.fake.add_page(CAMERAS_DS, {"Name": title("Camera Alpha")})
 
         self.writer = MirrorWriter(self.db_path, clock=self.clock)
+        self.addCleanup(self.writer.close)
         self.sources = {
             "projects": PROJECTS_DS,
             "contacts": CONTACTS_DS,
@@ -2628,6 +2745,7 @@ class AllSourcesGenericMirrorTests(unittest.TestCase):
         with patch("t6.notion.NotionClient", side_effect=open_fake_client):
             syncer = mirror_syncer_from_env(env)
         assert syncer is not None
+        self.addCleanup(syncer._writer.close)
         syncer._clock = self.clock
         syncer._wall_clock = self.clock
         syncer._sleep = self.clock.sleep
@@ -2812,6 +2930,7 @@ class AllSourcesGenericMirrorTests(unittest.TestCase):
             },
         ]
         writer = MirrorWriter(self.mirror_path, clock=self.clock)
+        self.addCleanup(writer.close)
         writer.replace_data_source(ds, rows, synced_at=self.clock())
         reader = MirrorReader(self.mirror_path, clock=self.clock)
 
@@ -2864,6 +2983,40 @@ class AllSourcesGenericMirrorTests(unittest.TestCase):
             [rows[0]["id"]],
         )
 
+    def test_unsupported_filter_falls_back_to_live_notion(self) -> None:
+        ds = self.ds_ids["synthetic_extra"]
+        with MirrorWriter(self.mirror_path, clock=self.clock) as writer:
+            writer.replace_data_source(ds, [self.extra_page], synced_at=self.clock(), source_key="synthetic_extra")
+        reader = MirrorReader(self.mirror_path, clock=self.clock)
+        source = NotionSource(self.fake.client, mirror=reader)
+
+        unsupported_people = {"property": "Owner", "people": {"contains": "user-1"}}
+        self.assertIsNone(reader.query_data_source(ds, filter=unsupported_people))
+        self.assertIsNone(
+            reader.query_data_source(
+                ds,
+                filter={
+                    "and": [
+                        {"property": "Name", "title": {"equals": "Synthetic Row 1"}},
+                        unsupported_people,
+                    ]
+                },
+            )
+        )
+        self.assertIsNone(
+            reader.query_data_source(
+                ds,
+                filter={"timestamp": "last_edited_time", "last_edited_time": {"past_week": {}}},
+            )
+        )
+
+        # NotionSource falls back to live Notion instead of returning unfiltered mirror rows
+        before_http = _count_notion_http(self.fake)
+        live_rows = source.query_data_source(ds, filter=unsupported_people)
+        self.assertFalse(last_read_from_mirror())
+        self.assertEqual(_count_notion_http(self.fake) - before_http, 1)
+        self.assertEqual([r["id"] for r in live_rows], [self.extra_page["id"]])
+
     def test_staggered_1800s_rescan_pacing_with_multipage_pagination_across_10_sources(self) -> None:
         from t6.notion import RequestPacer
 
@@ -2886,6 +3039,7 @@ class AllSourcesGenericMirrorTests(unittest.TestCase):
 
         pacer = RequestPacer(0.4, clock=self.clock, sleep=self.clock.sleep)
         writer = MirrorWriter(self.mirror_path, clock=self.clock)
+        self.addCleanup(writer.close)
         syncer = MirrorSyncer(
             writer,
             NotionSource(lambda: self.fake.client(pacer=pacer), pacer=pacer),
@@ -3011,6 +3165,71 @@ class AllSourcesGenericMirrorTests(unittest.TestCase):
         self.assertEqual(rc2, 0)
         mock_linked_tick.assert_called_once()
         self.assertIsNotNone(MirrorReader(mirror_path_2, clock=self.clock).query_data_source(BAYS_DS))
+
+    def test_worker_main_shares_single_mirror_writer_and_closes_on_shutdown(self) -> None:
+        from t6.worker import __main__ as worker_main
+
+        cfg_path = Path(self.tmp.name) / "single-writer-sources.json"
+        cfg_path.write_text(json.dumps({"bays": BAYS_DS}), encoding="utf-8")
+
+        def open_fake_client(_token: str) -> Any:
+            c = self.fake.client()
+            orig_close = c.close
+            closed = False
+
+            def close_once() -> None:
+                nonlocal closed
+                if not closed:
+                    closed = True
+                    orig_close()
+
+            c.close = close_once  # type: ignore[method-assign]
+            self.addCleanup(close_once)
+            return c
+
+        created_writers: list[MirrorWriter] = []
+        closed_flags: list[bool] = []
+        orig_init = MirrorWriter.__init__
+        orig_close = MirrorWriter.close
+
+        def spy_init(self_w: MirrorWriter, path: str | Path, *, clock: Any = time.time) -> None:
+            orig_init(self_w, path, clock=clock)
+            created_writers.append(self_w)
+
+        def spy_close(self_w: MirrorWriter) -> None:
+            closed_flags.append(True)
+            orig_close(self_w)
+
+        def fake_serve(worker: Any, stop: Any, poll_seconds: float, tick: Any = None, **kwargs: Any) -> None:
+            if tick is not None:
+                tick()
+            # While main-worker serve() is running, WAL & SHM stay open via single shared writer
+            self.assertEqual(len(created_writers), 1)
+            self.assertEqual(len(closed_flags), 0)
+            self.assertTrue(Path(f"{self.mirror_path}-wal").exists())
+            self.assertTrue(Path(f"{self.mirror_path}-shm").exists())
+            stop.set()
+
+        env = {
+            "T6_SERVER_URL": "http://127.0.0.1:8081",
+            "T6_WORKER_SECRET": "sec",
+            "T6_WORKER_QUEUE": "main",
+            "T6_NOTION_TOKEN": "fake",
+            "T6_READ_DATA_SOURCES": str(cfg_path),
+            "T6_NOTION_MIRROR_DB": str(self.mirror_path),
+        }
+        with (
+            patch("t6.notion.NotionClient", side_effect=open_fake_client),
+            patch.object(MirrorWriter, "__init__", spy_init),
+            patch.object(MirrorWriter, "close", spy_close),
+            patch.object(worker_main, "serve", side_effect=fake_serve),
+        ):
+            rc = worker_main.main(environ=env, transport=_InProcessTransport(None))
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(created_writers), 1)
+        self.assertEqual(len(closed_flags), 1)
+        self.assertFalse(Path(f"{self.mirror_path}-wal").exists())
+        self.assertFalse(Path(f"{self.mirror_path}-shm").exists())
 
 
 if __name__ == "__main__":
