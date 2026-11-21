@@ -9,6 +9,7 @@ import sys
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
+    from t6.notion.client import RequestPacer
     from t6.notion.mirror import MirrorReader
     from t6.notion.sync import NotionClient
 
@@ -45,6 +46,7 @@ class NotionSource:
         *,
         mirror: MirrorReader | None = None,
         on_page_written: Callable[[JSON], None] | None = None,
+        pacer: RequestPacer | None = None,
     ) -> None:
         if callable(client):
             self._client: NotionClient | None = None
@@ -54,6 +56,7 @@ class NotionSource:
             self._open_client = None
         self._mirror: MirrorReader | None = mirror
         self._on_page_written: Callable[[JSON], None] | None = on_page_written
+        self._pacer: RequestPacer | None = pacer
 
     @classmethod
     def from_client(
@@ -62,6 +65,7 @@ class NotionSource:
         *,
         mirror: MirrorReader | None = None,
         on_page_written: Callable[[JSON], None] | None = None,
+        pacer: RequestPacer | None = None,
     ) -> NotionSource:
         """Wrap an already-open `NotionClient` directly without closing it."""
         instance = cls.__new__(cls)
@@ -69,6 +73,7 @@ class NotionSource:
         instance._open_client = None
         instance._mirror = mirror
         instance._on_page_written = on_page_written
+        instance._pacer = pacer
         return instance
 
     def record_written_page(self, page: JSON) -> None:
@@ -85,18 +90,30 @@ class NotionSource:
                 flush=True,
             )
 
+    def _attach_pacer(self, client: NotionClient) -> None:
+        pacer: RequestPacer | None = getattr(self, "_pacer", None)
+        if pacer is None:
+            return
+        from t6.notion.sync import NotionClient
+
+        if isinstance(client, NotionClient):
+            client.set_pacer(pacer)
+
     @contextmanager
     def _session(self) -> Iterator[NotionClient]:
         if self._client is not None:
+            self._attach_pacer(self._client)
             yield self._client
             return
         assert self._open_client is not None
         opened = self._open_client()
         if isinstance(opened, AbstractContextManager):
             with opened as client:
+                self._attach_pacer(client)
                 yield client
             return
         try:
+            self._attach_pacer(opened)
             yield opened
         finally:
             close = getattr(opened, "close", None)
@@ -152,6 +169,12 @@ class NotionSource:
     ) -> JSON:
         """Retrieve a data source schema/metadata with `freshness` (`"mirror"` or `"live"`)."""
         _check_freshness(freshness)
+        mirror: MirrorReader | None = getattr(self, "_mirror", None)
+        if freshness == "mirror" and mirror is not None:
+            cached = mirror.retrieve_data_source(data_source_id)
+            if cached is not None:
+                _last_read_source.set("mirror")
+                return cached
         _last_read_source.set("live")
         with self._session() as client:
             return client.retrieve_data_source(data_source_id)

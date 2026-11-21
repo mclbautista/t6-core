@@ -155,15 +155,14 @@ def configured_handlers(
     active_mirror_ds_ids: tuple[str, ...] = ()
     on_page_written: Callable[[dict[str, Any]], None] | None = None
     if token:
-        from t6.notion import MIRROR_PHASE_SOURCES, MirrorWriter, mirror_db_path
+        from t6.notion import MirrorWriter, mirror_db_path
 
         mirror_path = mirror_db_path(environ)
         if mirror_path is not None:
             configs = mirror_data_sources_from_env(environ)
-            active_mirror = {key: cfg for key, cfg in configs.items() if key in MIRROR_PHASE_SOURCES}
-            if active_mirror:
+            if configs:
                 mirror_writer = MirrorWriter(mirror_path)
-                active_mirror_ds_ids = tuple(cfg.id for cfg in active_mirror.values())
+                active_mirror_ds_ids = tuple(cfg.id for cfg in configs.values())
                 writer_ref = mirror_writer
                 ds_ids_ref = active_mirror_ds_ids
 
@@ -470,30 +469,34 @@ def sharing_calendar_handlers(environ: Mapping[str, str]) -> dict[str, Handler]:
 
 def mirror_data_sources_from_env(environ: Mapping[str, str]) -> dict[str, DataSourceConfig]:
     """Load configured data source IDs and max-age settings for the main worker's Notion mirror."""
-    from t6.cli import DataSourceConfig, read_data_source_configs
+    from t6.cli import DataSourceConfig
+    from t6.server.verbs import read_data_source_configs_from_env
 
-    source_path = (environ.get("T6_READ_DATA_SOURCES") or "").strip()
-    configs: dict[str, DataSourceConfig] = read_data_source_configs(Path(source_path)) if source_path else {}
+    configs: dict[str, DataSourceConfig] = read_data_source_configs_from_env(environ)
     for key, env_name in (
         ("projects", "T6_NOTION_PROJECTS_DATA_SOURCE"),
         ("contacts", "T6_NOTION_CONTACTS_DATA_SOURCE"),
         ("job_orders", "T6_NOTION_JOB_ORDERS_DATA_SOURCE"),
         ("deliverables", "T6_NOTION_DELIVERABLES_DATA_SOURCE"),
     ):
-        value = (environ.get(env_name) or "").strip()
-        if value:
-            prev = configs.get(key)
-            configs[key] = (
-                DataSourceConfig(id=value, max_age_seconds=prev.max_age_seconds)
-                if prev is not None
-                else DataSourceConfig(id=value)
-            )
+        if key not in configs:
+            value = (environ.get(env_name) or "").strip()
+            if value:
+                configs[key] = DataSourceConfig(id=value)
     return configs
 
 
 def mirror_syncer_from_env(environ: Mapping[str, str]) -> MirrorSyncer | None:
     """Create the main worker's `MirrorSyncer`, or None if mirror is disabled/unconfigured."""
-    from t6.notion import MIRROR_PHASE_SOURCES, MirrorSyncer, MirrorWriter, NotionClient, NotionSource, mirror_db_path
+    from t6.notion import (
+        MIN_REQUEST_INTERVAL_SECONDS,
+        MirrorSyncer,
+        MirrorWriter,
+        NotionClient,
+        NotionSource,
+        RequestPacer,
+        mirror_db_path,
+    )
 
     path = mirror_db_path(environ)
     if path is None:
@@ -502,12 +505,12 @@ def mirror_syncer_from_env(environ: Mapping[str, str]) -> MirrorSyncer | None:
     if not token:
         return None
     configs = mirror_data_sources_from_env(environ)
-    active = {key: cfg for key, cfg in configs.items() if key in MIRROR_PHASE_SOURCES}
-    if not active:
+    if not configs:
         return None
+    pacer = RequestPacer(MIN_REQUEST_INTERVAL_SECONDS)
     writer = MirrorWriter(path)
-    notion = NotionSource(lambda: NotionClient(token))
-    return MirrorSyncer(writer, notion, active, enabled_sources=MIRROR_PHASE_SOURCES)
+    notion = NotionSource(lambda: NotionClient(token), pacer=pacer)
+    return MirrorSyncer(writer, notion, configs, enabled_sources=None, pacer=pacer)
 
 
 def review_media_links(environ: Mapping[str, str], registry: MediaLinks) -> MediaLinks:
@@ -791,16 +794,26 @@ def main(
     if settings.queue == "main":
         mirror_syncer = mirror_syncer_from_env(environ)
         if mirror_syncer is not None:
+            def run_mirror_tick() -> None:
+                try:
+                    mirror_syncer.tick()
+                except Exception as error:
+                    print(
+                        f"t6.worker: mirror tick failed ({type(error).__name__})",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+
             if tick is not None:
                 prev_tick = tick
 
                 def combined_tick() -> None:
                     prev_tick()
-                    mirror_syncer.tick()
+                    run_mirror_tick()
 
                 tick = combined_tick
             else:
-                tick = mirror_syncer.tick
+                tick = run_mirror_tick
     if read_api is not None:
         threading.Thread(target=read_api.serve_forever, daemon=True).start()
     try:

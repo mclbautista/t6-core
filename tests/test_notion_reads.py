@@ -420,7 +420,7 @@ class NotionSourceTests(unittest.TestCase):
 
         source.calls.clear()
         self.assertIn("AE", [d.name for d in get_departments(source, JOB_ORDERS)])
-        self.assertEqual(source.calls, [("retrieve_data_source", JOB_ORDERS, "live")])
+        self.assertEqual(source.calls, [("retrieve_data_source", JOB_ORDERS, "mirror")])
 
         source.calls.clear()
         notes = MeetingNotes(source, "ds-meeting-notes")
@@ -448,12 +448,14 @@ class NotionSourceTests(unittest.TestCase):
 
         source.calls.clear()
         self.assertEqual(len(read_swing_drives(source, "ds-swing")), 1)
+        self.assertEqual(len(read_swing_drives(source, "ds-swing", freshness="live")), 1)
         self.assertEqual(len(read_external_links_once_for_migration(source, "ds-links")), 1)
         legacy_projects, _ = read_legacy_projects(source, {"projects": PROJECTS})
         self.assertEqual(len(legacy_projects), 1)
         self.assertEqual(
             source.calls,
             [
+                ("query_data_source", "ds-swing", "mirror"),
                 ("query_data_source", "ds-swing", "live"),
                 ("query_data_source", "ds-links", "live"),
                 ("query_data_source", PROJECTS, "live"),

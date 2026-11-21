@@ -15,6 +15,7 @@ import time
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
 
+from t6.notion.client import RequestPacer
 from t6.registry.core import normalize_page_id
 
 if TYPE_CHECKING:
@@ -30,7 +31,6 @@ DEFAULT_POLL_SECONDS = 60.0
 DEFAULT_RESCAN_SECONDS = 1800.0
 OVERLAP_SECONDS = 60.0
 MIN_REQUEST_INTERVAL_SECONDS = 0.4
-MIRROR_PHASE_SOURCES: frozenset[str] = frozenset({"projects", "contacts", "job_orders", "deliverables"})
 
 __all__ = [
     "DEFAULT_MAX_AGE_SECONDS",
@@ -39,12 +39,12 @@ __all__ = [
     "MIN_REQUEST_INTERVAL_SECONDS",
     "MIRROR_DB_ENV",
     "MIRROR_ENABLED_ENV",
-    "MIRROR_PHASE_SOURCES",
     "OVERLAP_SECONDS",
     "MirrorReader",
     "MirrorSourceState",
     "MirrorSyncer",
     "MirrorWriter",
+    "RequestPacer",
     "mirror_db_path",
     "mirror_enabled",
 ]
@@ -724,16 +724,37 @@ def _matches_filter(page: Mapping[str, Any], query_filter: Mapping[str, Any] | N
     if "relation" in query_filter and isinstance(query_filter["relation"], Mapping):
         rel_cond = query_filter["relation"]
         items = prop.get("relation") or ()
-        if "contains" in rel_cond:
-            wanted_id = normalize_page_id(str(rel_cond["contains"]))
-            return any(
-                isinstance(item, Mapping) and normalize_page_id(str(item.get("id") or "")) == wanted_id
-                for item in items
-            )
-        if "is_empty" in rel_cond:
-            return (len(items) == 0) == bool(rel_cond["is_empty"])
-        if "is_not_empty" in rel_cond:
-            return (len(items) > 0) == bool(rel_cond["is_not_empty"])
+        rel_ids = {
+            normalize_page_id(str(item.get("id") or ""))
+            for item in items
+            if isinstance(item, Mapping) and item.get("id")
+        }
+        if "contains" in rel_cond and normalize_page_id(str(rel_cond["contains"])) not in rel_ids:
+            return False
+        if "does_not_contain" in rel_cond and normalize_page_id(str(rel_cond["does_not_contain"])) in rel_ids:
+            return False
+        if "is_empty" in rel_cond and (len(items) == 0) != bool(rel_cond["is_empty"]):
+            return False
+        if "is_not_empty" in rel_cond and (len(items) > 0) != bool(rel_cond["is_not_empty"]):
+            return False
+        return True
+    if "multi_select" in query_filter and isinstance(query_filter["multi_select"], Mapping):
+        ms_cond = query_filter["multi_select"]
+        raw_items = prop.get("multi_select") or ()
+        names = [
+            str(item.get("name"))
+            for item in raw_items
+            if isinstance(item, Mapping) and item.get("name") is not None
+        ]
+        if "contains" in ms_cond and str(ms_cond["contains"]) not in names:
+            return False
+        if "does_not_contain" in ms_cond and str(ms_cond["does_not_contain"]) in names:
+            return False
+        if "is_empty" in ms_cond and (len(names) == 0) != bool(ms_cond["is_empty"]):
+            return False
+        if "is_not_empty" in ms_cond and (len(names) > 0) != bool(ms_cond["is_not_empty"]):
+            return False
+        return True
     for kind in ("select", "status", "rich_text", "title", "number", "checkbox"):
         kind_cond = query_filter.get(kind)
         if not isinstance(kind_cond, Mapping):
@@ -746,32 +767,57 @@ def _matches_filter(page: Mapping[str, Any], query_filter: Mapping[str, Any] | N
             value = "".join(
                 str(part.get("plain_text", "")) for part in (raw_val or ()) if isinstance(part, Mapping)
             )
-        if "equals" in kind_cond:
-            return bool(value == kind_cond["equals"])
-        if "does_not_equal" in kind_cond:
-            return bool(value != kind_cond["does_not_equal"])
+        if "equals" in kind_cond and value != kind_cond["equals"]:
+            return False
+        if "does_not_equal" in kind_cond and value == kind_cond["does_not_equal"]:
+            return False
         if kind in ("rich_text", "title"):
             text = str(value or "")
-            if "contains" in kind_cond:
-                return str(kind_cond["contains"]) in text
-            if "starts_with" in kind_cond:
-                return text.startswith(str(kind_cond["starts_with"]))
-            if "ends_with" in kind_cond:
-                return text.endswith(str(kind_cond["ends_with"]))
-        if "is_empty" in kind_cond:
-            empty = value is None or value == ""
-            return empty == bool(kind_cond["is_empty"])
-        if "is_not_empty" in kind_cond:
-            empty = value is None or value == ""
-            return (not empty) == bool(kind_cond["is_not_empty"])
+            if "contains" in kind_cond and str(kind_cond["contains"]) not in text:
+                return False
+            if "does_not_contain" in kind_cond and str(kind_cond["does_not_contain"]) in text:
+                return False
+            if "starts_with" in kind_cond and not text.startswith(str(kind_cond["starts_with"])):
+                return False
+            if "ends_with" in kind_cond and not text.endswith(str(kind_cond["ends_with"])):
+                return False
+        if kind == "number":
+            number_preds: tuple[tuple[str, Callable[[float, float], bool]], ...] = (
+                ("greater_than", lambda a, b: a > b),
+                ("less_than", lambda a, b: a < b),
+                ("greater_than_or_equal_to", lambda a, b: a >= b),
+                ("less_than_or_equal_to", lambda a, b: a <= b),
+            )
+            for op, pred in number_preds:
+                if op in kind_cond:
+                    if not isinstance(value, (int, float)) or isinstance(value, bool):
+                        return False
+                    bound = kind_cond[op]
+                    if (
+                        not isinstance(bound, (int, float))
+                        or isinstance(bound, bool)
+                        or not pred(float(value), float(bound))
+                    ):
+                        return False
+        empty = value is None or value == ""
+        if "is_empty" in kind_cond and empty != bool(kind_cond["is_empty"]):
+            return False
+        if "is_not_empty" in kind_cond and (not empty) != bool(kind_cond["is_not_empty"]):
+            return False
+        return True
     if "date" in query_filter and isinstance(query_filter["date"], Mapping):
         date_cond = query_filter["date"]
         date_val = prop.get("date")
-        has_start = isinstance(date_val, Mapping) and bool(date_val.get("start"))
-        if "is_empty" in date_cond:
-            return (not has_start) == bool(date_cond["is_empty"])
-        if "is_not_empty" in date_cond:
-            return has_start == bool(date_cond["is_not_empty"])
+        start = date_val.get("start") if isinstance(date_val, Mapping) else None
+        has_start = isinstance(start, str) and bool(start.strip())
+        if "is_empty" in date_cond and (not has_start) != bool(date_cond["is_empty"]):
+            return False
+        if "is_not_empty" in date_cond and has_start != bool(date_cond["is_not_empty"]):
+            return False
+        if any(op in date_cond for op in ("equals", "before", "after", "on_or_before", "on_or_after")):
+            if not has_start or not _matches_timestamp(start, date_cond):
+                return False
+        return True
     return True
 
 
@@ -914,6 +960,35 @@ class MirrorReader:
             if conn is not None:
                 conn.close()
 
+    def retrieve_data_source(self, data_source_id: str) -> JSON | None:
+        """Return mirrored data source metadata JSON for `data_source_id`, or None when unavailable/not ready/stale."""
+        ds_key = normalize_page_id(data_source_id)
+        if not self._is_enabled_ds(ds_key):
+            return None
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = self._open_ro()
+            if conn is None:
+                return None
+            row = conn.execute(
+                "SELECT ready, last_sync_at, max_age_seconds, source_json FROM mirror_state WHERE data_source_id = ?",
+                (ds_key,),
+            ).fetchone()
+            if row is None or not row[0] or row[1] is None or not row[3]:
+                return None
+            max_age = self._max_age_for(ds_key, float(row[2]) if row[2] is not None else None)
+            if (self._clock() - float(row[1])) > max_age:
+                return None
+            meta = json.loads(str(row[3]))
+            if not isinstance(meta, dict):
+                return None
+            return meta
+        except (sqlite3.Error, OSError, json.JSONDecodeError, ValueError):
+            return None
+        finally:
+            if conn is not None:
+                conn.close()
+
 
 @dataclass(frozen=True, slots=True)
 class _SourceEntry:
@@ -927,7 +1002,7 @@ def _normalize_sources(
     enabled_sources: Collection[str] | None,
 ) -> dict[str, _SourceEntry]:
     result: dict[str, _SourceEntry] = {}
-    for key, value in data_sources.items():
+    for key, value in sorted(data_sources.items(), key=lambda item: item[0]):
         if enabled_sources is not None and key not in enabled_sources:
             continue
         if isinstance(value, str):
@@ -954,17 +1029,18 @@ class MirrorSyncer:
         notion: NotionSource | NotionClient,
         data_sources: Mapping[str, Any],
         *,
-        enabled_sources: Collection[str] | None = MIRROR_PHASE_SOURCES,
+        enabled_sources: Collection[str] | None = None,
         poll_interval: float = DEFAULT_POLL_SECONDS,
         rescan_interval: float = DEFAULT_RESCAN_SECONDS,
         overlap_seconds: float = OVERLAP_SECONDS,
         min_request_interval: float = MIN_REQUEST_INTERVAL_SECONDS,
+        pacer: RequestPacer | None = None,
         clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
         log: Callable[[str], None] | None = None,
     ) -> None:
-        from t6.notion.source import as_source
+        from t6.notion.source import NotionSource, as_source
 
         self._writer = writer
         self._notion = as_source(notion)
@@ -977,19 +1053,15 @@ class MirrorSyncer:
         self._wall_clock = wall_clock
         self._sleep = sleep
         self._log = log or (lambda line: print(line, file=sys.stderr, flush=True))
-        self._last_request_at: float | None = None
+        self._pacer = pacer if pacer is not None else RequestPacer(self._min_request_interval, clock=clock, sleep=sleep)
+        if type(self._notion) is NotionSource and getattr(self._notion, "_pacer", None) is None:
+            self._notion._pacer = self._pacer
         self._last_poll_at: dict[str, float] = {}
         self._next_rescan_at: dict[str, float] = {}
 
     def _pace(self) -> None:
-        if self._min_request_interval <= 0:
-            self._last_request_at = self._clock()
-            return
-        if self._last_request_at is not None:
-            elapsed = self._clock() - self._last_request_at
-            if elapsed < self._min_request_interval:
-                self._sleep(self._min_request_interval - elapsed)
-        self._last_request_at = self._clock()
+        if getattr(self._notion, "_pacer", None) is not self._pacer:
+            self._pacer.wait()
 
     def _entry(self, source_key: str) -> _SourceEntry:
         if source_key not in self._sources:

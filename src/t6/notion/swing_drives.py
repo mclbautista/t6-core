@@ -17,7 +17,7 @@ from typing import Any, Final
 
 from t6.notion import codec
 from t6.notion.reads import is_live
-from t6.notion.source import NotionSource, as_source
+from t6.notion.source import Freshness, NotionSource, as_source
 from t6.notion.sync import NotionClient
 
 JSON = dict[str, Any]
@@ -38,11 +38,16 @@ class SwingDrivesProperties:
 _P = SwingDrivesProperties
 
 
-def read_swing_drives(source: NotionSource | NotionClient, data_source_id: str) -> list[JSON]:
+def read_swing_drives(
+    source: NotionSource | NotionClient,
+    data_source_id: str,
+    *,
+    freshness: Freshness = "mirror",
+) -> list[JSON]:
     """Every live Swing Drives row as plain facts, keyed by its page ID."""
     notion = as_source(source)
     rows = []
-    for page in notion.query_data_source(data_source_id, freshness="live"):
+    for page in notion.query_data_source(data_source_id, freshness=freshness):
         if not is_live(page):
             continue
         props = page.get("properties") or {}

@@ -20,8 +20,15 @@ from t6.server.http import serve
 from t6.server.queue import JobQueue
 from t6.server.routes import load_routes
 from t6.server.llm import service_from_env
-from t6.server.verbs import VerbAPI, secrets_from_env, service_permissions_from_env, read_config_from_env, PrivacyList
-from t6.cli import DataSourceConfig, _open_notion, read_data_source_configs
+from t6.server.verbs import (
+    PrivacyList,
+    VerbAPI,
+    read_config_from_env,
+    read_data_source_configs_from_env,
+    secrets_from_env,
+    service_permissions_from_env,
+)
+from t6.cli import DataSourceConfig, _open_notion
 from t6.server.http import make_server
 import threading
 
@@ -36,16 +43,18 @@ if TYPE_CHECKING:
 
 
 def mirror_reader_from_env(
-    environ: Mapping[str, str], source_configs: Mapping[str, DataSourceConfig]
+    environ: Mapping[str, str], source_configs: Mapping[str, DataSourceConfig] | None = None
 ) -> MirrorReader | None:
-    """Build a read-only `MirrorReader` for enabled sources when the mirror is active."""
-    from t6.notion import MIRROR_PHASE_SOURCES, MirrorReader, mirror_db_path
+    """Build a read-only `MirrorReader` for all configured sources when the mirror is active."""
+    from t6.notion import MirrorReader, mirror_db_path
 
     path = mirror_db_path(environ)
     if path is None:
         return None
+    if source_configs is None:
+        source_configs = read_data_source_configs_from_env(environ)
     max_ages = {cfg.id: cfg.max_age_seconds for cfg in source_configs.values()}
-    enabled = [source_configs[key].id for key in MIRROR_PHASE_SOURCES if key in source_configs]
+    enabled = [cfg.id for cfg in source_configs.values()]
     return MirrorReader(path, max_age_seconds=max_ages, enabled_data_sources=enabled)
 
 
@@ -107,8 +116,7 @@ def main() -> int:
     ), registry=registry, operator=operator, inside=inside)
     if registry is not None:
         sources, privacy_registry = read_config_from_env(environ)
-        source_path = environ.get("T6_READ_DATA_SOURCES")
-        source_configs = read_data_source_configs(Path(source_path)) if source_path else {}
+        source_configs = read_data_source_configs_from_env(environ)
         mirror = mirror_reader_from_env(environ, source_configs)
         privacy_list = PrivacyList(environ['T6_READ_PRIVACY_REGISTRY'], privacy_registry, lambda line: print(line, file=sys.stderr, flush=True)) if privacy_registry is not None else None
         frameio_queue = None

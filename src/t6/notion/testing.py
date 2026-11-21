@@ -41,7 +41,7 @@ from typing import Any
 
 import httpx
 
-from t6.notion.client import NOTION_VERSION, AsyncNotionClient, RetryPolicy
+from t6.notion.client import NOTION_VERSION, AsyncNotionClient, RequestPacer, RetryPolicy
 from t6.notion import named
 from t6.notion.models import ExternalLinksProperties as xl
 from t6.notion.models import ProjectsProperties as p
@@ -257,17 +257,25 @@ class FakeNotion:
     # Clients wired to this fake
 
     def async_client(
-        self, *, notion_version: str = NOTION_VERSION, retry: RetryPolicy | None = None
+        self,
+        *,
+        notion_version: str = NOTION_VERSION,
+        retry: RetryPolicy | None = None,
+        pacer: RequestPacer | None = None,
     ) -> AsyncNotionClient:
         return AsyncNotionClient(
-            "fake-token", notion_version=notion_version, retry=retry, transport=self.transport
+            "fake-token", notion_version=notion_version, retry=retry, transport=self.transport, pacer=pacer
         )
 
     def client(
-        self, *, notion_version: str = NOTION_VERSION, retry: RetryPolicy | None = None
+        self,
+        *,
+        notion_version: str = NOTION_VERSION,
+        retry: RetryPolicy | None = None,
+        pacer: RequestPacer | None = None,
     ) -> NotionClient:
         return NotionClient(
-            "fake-token", notion_version=notion_version, retry=retry, transport=self.transport
+            "fake-token", notion_version=notion_version, retry=retry, transport=self.transport, pacer=pacer
         )
 
     # HTTP

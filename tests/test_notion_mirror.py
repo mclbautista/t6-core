@@ -30,7 +30,7 @@ from t6.notion import (
 )
 from t6.notion.generated import ContactsRow, DeliverablesRow, JobOrdersRow, ProjectsRow
 from t6.notion.reads import ContactReader, DeliverableReader, ProjectReader
-from t6.notion.testing import FakeNotion, checkbox, date, number, rich_text, select, title, relation
+from t6.notion.testing import FakeNotion, checkbox, date, multi_select, number, rich_text, select, title, relation
 from t6.person import People
 from t6.preview import PreviewTokens
 from t6.registry import ProjectRefs, Registered, Rotation, SqliteProjectRegistry
@@ -219,6 +219,7 @@ class MirrorSyncAndReadTests(unittest.TestCase):
         self.db_path = Path(self.tmp.name) / "mirror.sqlite"
         self.clock = StepClock(1_760_000_000.0)
         self.fake = _make_fake(clock=self.clock)
+        self.fake.add_snapshot_data_source(BAYS_DS, "bays")
         self.p1 = self.fake.add_page(
             PROJECTS_DS,
             {
@@ -277,12 +278,12 @@ class MirrorSyncAndReadTests(unittest.TestCase):
             wall_clock=self.clock,
             sleep=self.clock.sleep,
         )
-        # First tick rescans projects, contacts, and job_orders (bays stays unmirrored in #518).
+        # First tick rescans all configured sources generically (#519).
         syncer.tick()
         self.assertIsNotNone(writer.state(PROJECTS_DS))
         self.assertIsNotNone(writer.state(CONTACTS_DS))
         self.assertIsNotNone(writer.state(JOB_ORDERS_DS))
-        self.assertIsNone(writer.state(BAYS_DS))
+        self.assertIsNotNone(writer.state(BAYS_DS))
 
         reader = MirrorReader(
             self.db_path,
@@ -337,9 +338,9 @@ class MirrorSyncAndReadTests(unittest.TestCase):
             {"Project Alpha", "Project Beta"},
         )
 
-        # Hard-deleted page disappears after full rescan (staggered 30m+ across 2 sources).
+        # Hard-deleted page disappears after full rescan (staggered across 4 sources: projects is at +3150s).
         self.fake.delete_page(p2["id"])
-        self.clock.advance(1850.0)
+        self.clock.advance(3200.0)
         syncer.tick()
         self.assertEqual([p.name for p in ProjectReader(source, PROJECTS_DS).list()], ["Project Alpha"])
         self.assertIsNone(reader.retrieve_page(p2["id"]))
@@ -358,6 +359,7 @@ class MirrorSyncAndReadTests(unittest.TestCase):
         )
 
     def test_pacing_keeps_requests_below_3_per_second_and_staggers_rescans(self) -> None:
+        self.fake.add_snapshot_data_source(BAYS_DS, "bays")
         writer = MirrorWriter(self.db_path)
         syncer = MirrorSyncer(
             writer,
@@ -396,13 +398,16 @@ class MirrorSyncAndReadTests(unittest.TestCase):
             self.assertGreaterEqual(b - a, 0.4 - 1e-9)
         self.assertIsNotNone(orig_query)
 
-        # At t=1805s, only projects rescans (contacts is staggered to 2700s).
+        # Sorted deterministically by source_key: bays (0s), contacts (450s), job_orders (900s), projects (1350s).
+        # At t=1805s, only bays rescans while the others wait for their staggered rescan windows.
         req_times.clear()
         self.clock.advance(1805.0)
         syncer.tick()
+        bays_state = writer.state(BAYS_DS)
         proj_state = writer.state(PROJECTS_DS)
         cont_state = writer.state(CONTACTS_DS)
-        assert proj_state is not None and cont_state is not None
+        assert bays_state is not None and proj_state is not None and cont_state is not None
+        self.assertGreater(bays_state.last_full_rescan_at or 0.0, proj_state.last_full_rescan_at or 0.0)
         self.assertGreater(proj_state.last_full_rescan_at or 0.0, cont_state.last_full_rescan_at or 0.0)
 
     def test_fallbacks_not_ready_stale_and_live_bypass(self) -> None:
@@ -552,6 +557,7 @@ class VerbMirrorAndBatchingTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.clock = StepClock(1_760_000_000.0)
         self.fake = _make_fake(clock=self.clock)
+        self.fake.add_snapshot_data_source(BAYS_DS, "bays")
         self.registry = SqliteProjectRegistry(Path(self.tmp.name) / "registry.sqlite", clock=self.clock)
         self.mirror_path = Path(self.tmp.name) / "mirror.sqlite"
 
@@ -918,6 +924,7 @@ class WebhookPageChangedMirrorTests(unittest.TestCase):
         self.db_path = Path(self.tmp.name) / "mirror.sqlite"
         self.clock = StepClock(1_760_000_000.0)
         self.fake = _make_fake(clock=self.clock)
+        self.fake.add_snapshot_data_source(BAYS_DS, "bays")
         self.other_ds = "ds-other-9999"
         self.fake.add_data_source(self.other_ds)
         self.writer = MirrorWriter(self.db_path, clock=self.clock)
@@ -1754,11 +1761,11 @@ class JobOrdersAndDeliverablesMirrorTests(unittest.TestCase):
         self.assertFalse(last_read_from_mirror())
         self.assertEqual(_count_notion_http(self.fake) - before, 1)
 
-        # Sync all 4 phase sources (bays stays unmirrored)
+        # Sync all configured sources generically
         self.syncer.tick()
         self.assertTrue(self.writer.state(JOB_ORDERS_DS) and self.writer.state(JOB_ORDERS_DS).ready)  # type: ignore[union-attr]
         self.assertTrue(self.writer.state(DELIVERABLES_DS) and self.writer.state(DELIVERABLES_DS).ready)  # type: ignore[union-attr]
-        self.assertIsNone(self.writer.state(BAYS_DS))
+        self.assertTrue(self.writer.state(BAYS_DS) and self.writer.state(BAYS_DS).ready)  # type: ignore[union-attr]
 
         # 2. Mirror hits: identical answers to live Notion with 0 live Notion HTTP calls
         queries: tuple[Callable[[VerbAPI], Any], ...] = (
@@ -1871,6 +1878,7 @@ class WorkerWriteThroughMirrorTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.clock = StepClock(1_760_000_000.0)
         self.fake = _make_fake(clock=self.clock)
+        self.fake.add_snapshot_data_source(BAYS_DS, "bays")
         self.fake.add_snapshot_data_source(DELIVERABLES_DS, "deliverables")
         self.db_path = Path(self.tmp.name) / "mirror.sqlite"
         self.registry = SqliteProjectRegistry(Path(self.tmp.name) / "registry.sqlite", clock=self.clock)
@@ -2284,7 +2292,32 @@ class ApiVerbRefreshMirrorTests(unittest.TestCase):
         assert isinstance(ms_prev, Preview)
         self.assertEqual(len(inside.find(JobKind.NOTION_MIRROR_REFRESH.value)), 8)
         self.assertIsInstance(client.machine_sync(ms_in.model_copy(update={"confirm": ms_prev.token})), Done)
-        self.assertEqual(len(inside.find(JobKind.NOTION_MIRROR_REFRESH.value)), 9)
+        jobs = inside.find(JobKind.NOTION_MIRROR_REFRESH.value)
+        self.assertEqual(len(jobs), 9)
+        # Process the bays refresh job before Site 5 edits the same bay row so mirror reflects SN-1
+        ds_cfg_file = Path(self.tmp.name) / "refresh-sources.json"
+        ds_cfg_file.write_text(json.dumps(self.sources), encoding="utf-8")
+        with patch("t6.notion.NotionClient", side_effect=open_fake_client):
+            all_handlers = configured_handlers(
+                {
+                    "T6_NOTION_TOKEN": "fake",
+                    "T6_READ_DATA_SOURCES": str(ds_cfg_file),
+                    "T6_NOTION_MIRROR_DB": str(self.db_path),
+                },
+                settings,
+                transport,
+            )
+        all_handlers["main"][JobKind.NOTION_MIRROR_REFRESH.value](
+            WorkerJob(
+                job_id=jobs[8].job_id,
+                queue="main",
+                kind=JobKind.NOTION_MIRROR_REFRESH.value,
+                dedupe_key=jobs[8].dedupe_key,
+                payload=dict(jobs[8].payload),
+                token="t",
+                attempt=1,
+            )
+        )
 
         # Site 5: _machine_edit (preview queues nothing; confirm saved queues refresh)
         me_in = MachineEditInput(machines=[MachineEditItem(names=["Bay-Alpha"], values={"username": "editor1"})])
@@ -2346,6 +2379,638 @@ class ApiVerbRefreshMirrorTests(unittest.TestCase):
             Done,
         )
         self.assertEqual([j.kind for j in fallback_queue.waiting("main")], [JobKind.NOTION_MIRROR_REFRESH.value])
+
+
+class AllSourcesGenericMirrorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.clock = StepClock(1_760_000_000.0)
+        self.fake = _make_fake(clock=self.clock)
+        self.fake.add_snapshot_data_source(BAYS_DS, "bays")
+        self.mirror_path = Path(self.tmp.name) / "mirror.sqlite"
+        self.registry = SqliteProjectRegistry(Path(self.tmp.name) / "registry.sqlite", clock=self.clock)
+
+        self.ds_ids: dict[str, str] = {
+            "projects": PROJECTS_DS,
+            "contacts": CONTACTS_DS,
+            "job_orders": JOB_ORDERS_DS,
+            "deliverables": DELIVERABLES_DS,
+            "meeting_notes": MEETING_NOTES_DS,
+            "swing_drives": "ds-swing-0008",
+            "bays": BAYS_DS,
+            "cameras": CAMERAS_DS,
+            "studios": "ds-studios-0009",
+            "package_specs": "ds-package-specs-0010",
+            "synthetic_extra": "ds-synthetic-0011",
+        }
+        for key, ds_id in self.ds_ids.items():
+            if ds_id not in (PROJECTS_DS, CONTACTS_DS, JOB_ORDERS_DS):
+                if key == "synthetic_extra":
+                    self.fake.add_data_source(ds_id)
+                else:
+                    self.fake.add_snapshot_data_source(ds_id, key)
+
+        self.fake.add_option(JOB_ORDERS_DS, "Department", "AE")
+        self.fake.add_option(JOB_ORDERS_DS, "Department", "VFX")
+        self.fake.add_option(JOB_ORDERS_DS, "Department", "MISC")
+        self.fake._data_sources[PROJECTS_DS]["description"] = [
+            {"plain_text": "Studio ", "annotations": {"bold": False}},
+            {"plain_text": "Notice", "annotations": {"bold": True}},
+        ]
+
+        # Seed rows in all 11 data sources (synthetic names only)
+        self.studio_page = self.fake.add_page(
+            self.ds_ids["studios"],
+            {"Name": title("Client Corp"), "Aliases": multi_select("CC")},
+        )
+        self.proj_page = self.fake.add_page(
+            PROJECTS_DS,
+            {
+                ProjectsRow.notion_name("name"): title("Show Alpha"),
+                ProjectsRow.notion_name("project_code"): select("ALP"),
+                ProjectsRow.notion_name("studio"): relation(self.studio_page["id"]),
+            },
+        )
+        reg = self.registry.register(
+            actor="setup", idempotency_key="reg-alp", notion_page_id=self.proj_page["id"], code="ALP", rotation=Rotation.IN
+        )
+        assert isinstance(reg, Registered)
+        self.proj_t6_id = reg.project.id
+
+        self.contact_page = self.fake.add_page(
+            CONTACTS_DS,
+            {ContactsRow.notion_name("name"): title("Ana Cruz"), ContactsRow.notion_name("telegram_handle"): rich_text("@ana")},
+        )
+        self.jo_page = self.fake.add_page(
+            JOB_ORDERS_DS,
+            {
+                JobOrdersRow.notion_name("name"): title("Cut 1"),
+                JobOrdersRow.notion_name("projects"): relation(self.proj_page["id"]),
+                JobOrdersRow.notion_name("telegram_key"): rich_text("-100:1"),
+            },
+        )
+        self.fake._children[self.jo_page["id"]] = [
+            {"object": "block", "id": "blk-jo-1", "type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "JO body line"}]}}
+        ]
+        self.deliv_page = self.fake.add_page(
+            DELIVERABLES_DS,
+            {
+                DeliverablesRow.notion_name("name"): title("EP01 Master"),
+                DeliverablesRow.notion_name("projects"): relation(self.proj_page["id"]),
+            },
+        )
+        self.mn_ready = self.fake.add_page(
+            MEETING_NOTES_DS,
+            {
+                "Name": title("Weekly Sync - Show Alpha"),
+                "Meeting Date": date("2026-11-20"),
+                "Project": relation(self.proj_page["id"]),
+                "Ready to send": checkbox(True),
+                "Sent at": date(None),
+            },
+        )
+        self.fake._children[self.mn_ready["id"]] = [
+            {"object": "block", "id": "blk-mn-1", "type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "Live note body"}]}}
+        ]
+        self.mn_sent = self.fake.add_page(
+            MEETING_NOTES_DS,
+            {
+                "Name": title("Weekly Sync - Sent"),
+                "Meeting Date": date("2026-11-19"),
+                "Project": relation(self.proj_page["id"]),
+                "Ready to send": checkbox(True),
+                "Sent at": date("2026-11-19T12:00:00Z"),
+            },
+        )
+        self.swing_page = self.fake.add_page(
+            self.ds_ids["swing_drives"],
+            {
+                "Name": title("Swing Drive 01"),
+                "In Use": checkbox(True),
+                "Last Moved": date("2026-11-18"),
+                "Collaborator": relation(self.contact_page["id"]),
+                "Format ": select("APFS"),
+                "HD Type": {"type": "multi_select", "multi_select": [{"name": "SSD"}]},
+                "Short Notes": rich_text("Case A"),
+            },
+        )
+        self.bay_page = self.fake.add_page(
+            BAYS_DS,
+            {"Name": title("Bay Alpha"), "Hostname": rich_text("Bay-Alpha"), "Ring": select("production")},
+        )
+        self.cam_page = self.fake.add_page(
+            CAMERAS_DS,
+            {"Name": title("Camera Alpha"), "Tags": {"type": "multi_select", "multi_select": [{"name": "4K"}]}},
+        )
+        self.spec_page = self.fake.add_page(
+            self.ds_ids["package_specs"],
+            {
+                "Name": title("Delivery Spec"),
+                "Package kind": rich_text("delivery"),
+                "Version": rich_text("1.0"),
+                "Advisory items": rich_text("Check audio"),
+                "Blocking items": rich_text("Check frame rate"),
+            },
+        )
+        self.extra_page = self.fake.add_page(
+            self.ds_ids["synthetic_extra"],
+            {"Name": title("Synthetic Row 1")},
+        )
+
+    def test_read_data_source_configs_from_env_and_worker_merge(self) -> None:
+        from t6.server.verbs import read_config_from_env, read_data_source_configs_from_env
+        from t6.worker.__main__ import mirror_data_sources_from_env
+
+        cfg_path = Path(self.tmp.name) / "data-sources.json"
+        cfg_path.write_text(
+            json.dumps(
+                {
+                    "projects": {"id": PROJECTS_DS, "max_age_seconds": 600},
+                    "contacts": CONTACTS_DS,
+                    "synthetic_extra": {"id": self.ds_ids["synthetic_extra"], "max_age_seconds": 120},
+                }
+            ),
+            encoding="utf-8",
+        )
+        env = {"T6_READ_DATA_SOURCES": str(cfg_path)}
+        configs = read_data_source_configs_from_env(env)
+        self.assertEqual(
+            configs,
+            {
+                "projects": DataSourceConfig(id=PROJECTS_DS, max_age_seconds=600.0),
+                "contacts": DataSourceConfig(id=CONTACTS_DS, max_age_seconds=300.0),
+                "synthetic_extra": DataSourceConfig(id=self.ds_ids["synthetic_extra"], max_age_seconds=120.0),
+            },
+        )
+        legacy_sources, privacy = read_config_from_env(env)
+        self.assertEqual(
+            legacy_sources,
+            {
+                "projects": PROJECTS_DS,
+                "contacts": CONTACTS_DS,
+                "synthetic_extra": self.ds_ids["synthetic_extra"],
+            },
+        )
+        self.assertIsNone(privacy)
+        self.assertEqual(read_data_source_configs_from_env({}), {})
+
+        # Worker merges legacy env vars only if NOT already present in T6_READ_DATA_SOURCES
+        merged = mirror_data_sources_from_env(
+            {
+                "T6_READ_DATA_SOURCES": str(cfg_path),
+                "T6_NOTION_PROJECTS_DATA_SOURCE": "ds-legacy-override-ignored",
+                "T6_NOTION_JOB_ORDERS_DATA_SOURCE": JOB_ORDERS_DS,
+                "T6_NOTION_DELIVERABLES_DATA_SOURCE": DELIVERABLES_DS,
+            }
+        )
+        self.assertEqual(merged["projects"], DataSourceConfig(id=PROJECTS_DS, max_age_seconds=600.0))
+        self.assertEqual(merged["job_orders"], DataSourceConfig(id=JOB_ORDERS_DS, max_age_seconds=300.0))
+        self.assertEqual(merged["deliverables"], DataSourceConfig(id=DELIVERABLES_DS, max_age_seconds=300.0))
+        self.assertEqual(merged["synthetic_extra"], DataSourceConfig(id=self.ds_ids["synthetic_extra"], max_age_seconds=120.0))
+
+        # Validation rejects invalid max_age_seconds, unknown keys, and blank IDs
+        for bad in (
+            {"projects": ""},
+            {"projects": "   "},
+            {"projects": {"id": ""}},
+            {"projects": {"id": PROJECTS_DS, "max_age_seconds": 0}},
+            {"projects": {"id": PROJECTS_DS, "max_age_seconds": -1}},
+            {"projects": {"id": PROJECTS_DS, "max_age_seconds": None}},
+            {"projects": {"id": PROJECTS_DS, "max_age_seconds": float("nan")}},
+            {"projects": {"id": PROJECTS_DS, "unknown_key": 1}},
+        ):
+            cfg_path.write_text(json.dumps(bad, allow_nan=True), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                read_data_source_configs(cfg_path)
+
+    def test_all_10_sources_plus_extra_sync_read_from_mirror_and_bodies_stay_live(self) -> None:
+        from t6.fleet.bays import Fleet
+        from t6.notion.cameras import get_cameras
+        from t6.notion.departments import get_departments
+        from t6.notion.job_orders import JobOrders
+        from t6.notion.meeting_notes import MeetingNotes
+        from t6.notion.package_specs import PackageSpecReader
+        from t6.notion.reads import StudioReader
+        from t6.notion.swing_drives import read_swing_drives
+        from t6.server.__main__ import mirror_reader_from_env
+        from t6.server.verbs import read_data_source_configs_from_env
+        from t6.verbs import DepartmentsInput, MeetingNotesListInput, StudioNoticesInput
+        from t6.worker.__main__ import mirror_syncer_from_env
+
+        cfg_path = Path(self.tmp.name) / "data-sources.json"
+        raw_cfg: dict[str, Any] = {k: v for k, v in self.ds_ids.items()}
+        raw_cfg["cameras"] = {"id": CAMERAS_DS, "max_age_seconds": 60}
+        raw_cfg["bays"] = {"id": BAYS_DS, "max_age_seconds": 600}
+        cfg_path.write_text(json.dumps(raw_cfg), encoding="utf-8")
+
+        env = {
+            "T6_NOTION_TOKEN": "fake",
+            "T6_READ_DATA_SOURCES": str(cfg_path),
+            "T6_NOTION_MIRROR_DB": str(self.mirror_path),
+        }
+
+        def open_fake_client(_token: str) -> Any:
+            client = self.fake.client()
+            orig_close = client.close
+            closed = False
+
+            def close_once() -> None:
+                nonlocal closed
+                if not closed:
+                    closed = True
+                    orig_close()
+
+            client.close = close_once  # type: ignore[method-assign]
+            self.addCleanup(close_once)
+            return client
+
+        with patch("t6.notion.NotionClient", side_effect=open_fake_client):
+            syncer = mirror_syncer_from_env(env)
+        assert syncer is not None
+        syncer._clock = self.clock
+        syncer._wall_clock = self.clock
+        syncer._sleep = self.clock.sleep
+        syncer.tick()
+
+        # All 11 configured data sources (10 studio + 1 synthetic extra) are ready with source_json & max_age_seconds
+        for key, ds_id in self.ds_ids.items():
+            state = syncer._writer.state(ds_id)
+            assert state is not None, f"missing mirror state for {key}"
+            self.assertTrue(state.ready, f"not ready: {key}")
+            self.assertIsNotNone(state.source_json, f"missing source_json for {key}")
+        self.assertEqual(syncer._writer.state(CAMERAS_DS).max_age_seconds, 60.0)  # type: ignore[union-attr]
+        self.assertEqual(syncer._writer.state(BAYS_DS).max_age_seconds, 600.0)  # type: ignore[union-attr]
+
+        source_configs = read_data_source_configs_from_env(env)
+        reader = mirror_reader_from_env(env, source_configs)
+        assert reader is not None
+        reader._clock = self.clock
+        live_source = NotionSource(self.fake.client)
+        mirror_source = NotionSource(self.fake.client, mirror=reader)
+
+        api = VerbAPI(
+            People(self.registry, PreviewTokens("key")),
+            JobQueue(Path(self.tmp.name) / "queue.sqlite"),
+            {"secret": "watchdog"},
+            lambda _: self.fake.client(),
+            data_sources=self.ds_ids,
+            mirror=reader,
+        )
+
+        # Every reader answers identically from mirror with 0 HTTP calls
+        with patch.dict(os.environ, {"T6_NOTION_TOKEN": "fake"}):
+            before = _count_notion_http(self.fake)
+
+            self.assertEqual([p.name for p in ProjectReader(mirror_source, PROJECTS_DS).list()], ["Show Alpha"])
+            self.assertTrue(last_read_from_mirror())
+            self.assertEqual([c.name for c in ContactReader(mirror_source, CONTACTS_DS).list()], ["Ana Cruz"])
+            self.assertTrue(last_read_from_mirror())
+            self.assertEqual(len(JobOrders(mirror_source, JOB_ORDERS_DS).list()), 1)
+            self.assertTrue(last_read_from_mirror())
+            self.assertEqual(
+                [d.name for d in DeliverableReader(mirror_source, DELIVERABLES_DS).for_project(self.proj_page["id"])],
+                ["EP01 Master"],
+            )
+            self.assertTrue(last_read_from_mirror())
+
+            mn_reader = MeetingNotes(mirror_source, MEETING_NOTES_DS)
+            self.assertEqual(len(mn_reader.with_title("Weekly Sync - Show Alpha")), 1)
+            self.assertTrue(last_read_from_mirror())
+            self.assertEqual(len(mn_reader.with_title_prefix("Weekly Sync")), 2)
+            self.assertTrue(last_read_from_mirror())
+            self.assertEqual([n.name for n in mn_reader.ready_to_send()], ["Weekly Sync - Show Alpha"])
+            self.assertTrue(last_read_from_mirror())
+
+            self.assertEqual(
+                read_swing_drives(mirror_source, self.ds_ids["swing_drives"]),
+                read_swing_drives(live_source, self.ds_ids["swing_drives"]),
+            )
+            # Only live_source made 1 HTTP call; mirror_source made 0
+            self.assertEqual(_count_notion_http(self.fake) - before, 1)
+
+            before = _count_notion_http(self.fake)
+            self.assertEqual([m.name for m in Fleet(mirror_source, BAYS_DS).machines()], ["Bay Alpha"])
+            self.assertTrue(last_read_from_mirror())
+            self.assertEqual([c["name"] for c in get_cameras(mirror_source, CAMERAS_DS)], ["Camera Alpha"])
+            self.assertTrue(last_read_from_mirror())
+            self.assertEqual(StudioReader(mirror_source, self.ds_ids["studios"]).names(), ("Client Corp", "CC"))
+            self.assertTrue(last_read_from_mirror())
+            self.assertEqual(len(PackageSpecReader(mirror_source, self.ds_ids["package_specs"]).find("delivery")), 1)
+            self.assertTrue(last_read_from_mirror())
+            self.assertEqual(
+                [d.name for d in get_departments(mirror_source, JOB_ORDERS_DS)],
+                ["TOC", "AE", "OE", "COOR", "COLOR", "VFX", "SOUND", "ADMIN"],
+            )
+            self.assertTrue(last_read_from_mirror())
+
+            # Synthetic 11th source queries and metadata work via config only
+            extra_rows = mirror_source.query_data_source(self.ds_ids["synthetic_extra"])
+            self.assertEqual([r["id"] for r in extra_rows], [self.extra_page["id"]])
+            self.assertTrue(last_read_from_mirror())
+            extra_meta = mirror_source.retrieve_data_source(self.ds_ids["synthetic_extra"])
+            self.assertEqual(extra_meta["id"], self.ds_ids["synthetic_extra"])
+            self.assertTrue(last_read_from_mirror())
+
+            # VerbAPI studio notices & departments use mirror retrieve_data_source (0 HTTP calls)
+            notices = api._typed_read("studio", "notices", StudioNoticesInput())
+            self.assertIsInstance(notices, Done)
+            depts = api._typed_read("departments", "", DepartmentsInput())
+            self.assertIsInstance(depts, Done)
+            assert isinstance(depts, Done)
+            self.assertEqual(
+                [d["name"] for d in depts.result["departments"]],
+                ["TOC", "AE", "OE", "COOR", "COLOR", "VFX", "SOUND", "ADMIN"],
+            )
+
+            # Meeting Notes list without body uses 0 HTTP calls
+            mn_no_body = api._typed_read("meeting-notes", "list", MeetingNotesListInput(include_body=False))
+            self.assertIsInstance(mn_no_body, Done)
+            self.assertEqual(_count_notion_http(self.fake), before)
+
+            # Page bodies (list_block_children) ALWAYS stay live!
+            before_body = _count_notion_http(self.fake)
+            mn_with_body = api._typed_read(
+                "meeting-notes", "list", MeetingNotesListInput(title="Weekly Sync - Show Alpha", include_body=True)
+            )
+            self.assertIsInstance(mn_with_body, Done)
+            assert isinstance(mn_with_body, Done)
+            self.assertEqual(mn_with_body.result["meeting_notes"][0]["body"][0]["text"], "Live note body")
+            self.assertEqual(_count_notion_http(self.fake) - before_body, 1)
+            self.assertEqual(self.fake.requests[-1].url.path, f"/v1/blocks/{self.mn_ready['id']}/children")
+
+            before_jo_body = _count_notion_http(self.fake)
+            jo_got = JobOrders(mirror_source, JOB_ORDERS_DS).get(self.jo_page["id"])
+            self.assertEqual(jo_got.source_text, "JO body line")
+            self.assertEqual(_count_notion_http(self.fake) - before_jo_body, 1)
+            self.assertEqual(self.fake.requests[-1].url.path, f"/v1/blocks/{self.jo_page['id']}/children")
+
+        # Per-source max_age_seconds: advance 90s -> cameras (max_age=60) falls back to live, bays (max_age=600) stays mirror!
+        self.clock.advance(90.0)
+        before_cam = _count_notion_http(self.fake)
+        self.assertEqual([c["name"] for c in get_cameras(mirror_source, CAMERAS_DS)], ["Camera Alpha"])
+        self.assertFalse(last_read_from_mirror())
+        self.assertEqual(_count_notion_http(self.fake) - before_cam, 1)
+
+        before_bay = _count_notion_http(self.fake)
+        self.assertEqual([m.name for m in Fleet(mirror_source, BAYS_DS).machines()], ["Bay Alpha"])
+        self.assertTrue(last_read_from_mirror())
+        self.assertEqual(_count_notion_http(self.fake), before_bay)
+
+        # retrieve_data_source freshness="live" bypasses mirror, and stale/missing source_json falls back to live
+        before_ds = _count_notion_http(self.fake)
+        self.assertEqual(mirror_source.retrieve_data_source(BAYS_DS, freshness="live")["id"], BAYS_DS)
+        self.assertFalse(last_read_from_mirror())
+        self.assertEqual(_count_notion_http(self.fake) - before_ds, 1)
+
+        with closing(sqlite3.connect(self.mirror_path)) as conn:
+            conn.execute(
+                "UPDATE mirror_state SET source_json = NULL WHERE data_source_id = ?",
+                (normalize_page_id(BAYS_DS),),
+            )
+            conn.commit()
+        before_null_meta = _count_notion_http(self.fake)
+        self.assertEqual(mirror_source.retrieve_data_source(BAYS_DS)["id"], BAYS_DS)
+        self.assertFalse(last_read_from_mirror())
+        self.assertEqual(_count_notion_http(self.fake) - before_null_meta, 1)
+
+    def test_mirror_reader_full_filter_operators(self) -> None:
+        ds = self.ds_ids["synthetic_extra"]
+        self.fake.add_data_source(ds)
+        rows = [
+            {
+                "object": "page",
+                "id": "aaaaaaaa-0000-0000-0000-000000000001",
+                "parent": {"type": "data_source_id", "data_source_id": ds},
+                "archived": False,
+                "in_trash": False,
+                "properties": {
+                    "Name": title("Alpha Project One"),
+                    "Notes": rich_text("prefix-middle-suffix"),
+                    "EmptyText": rich_text(""),
+                    "Status": select("Active"),
+                    "Tags": {"type": "multi_select", "multi_select": [{"name": "4K"}, {"name": "RAW"}]},
+                    "Due": date("2026-11-20"),
+                    "Count": number(10),
+                },
+            },
+            {
+                "object": "page",
+                "id": "aaaaaaaa-0000-0000-0000-000000000002",
+                "parent": {"type": "data_source_id", "data_source_id": ds},
+                "archived": False,
+                "in_trash": False,
+                "properties": {
+                    "Name": title("Beta Project Two"),
+                    "Notes": rich_text("other"),
+                    "EmptyText": rich_text("filled"),
+                    "Status": select("Paused"),
+                    "Tags": {"type": "multi_select", "multi_select": []},
+                    "Due": date("2026-11-25"),
+                    "Count": number(3),
+                },
+            },
+        ]
+        writer = MirrorWriter(self.mirror_path, clock=self.clock)
+        writer.replace_data_source(ds, rows, synced_at=self.clock())
+        reader = MirrorReader(self.mirror_path, clock=self.clock)
+
+        self.assertEqual(
+            [r["id"] for r in (reader.query_data_source(ds, filter={"property": "Name", "title": {"starts_with": "Alpha"}}) or [])],
+            [rows[0]["id"]],
+        )
+        self.assertEqual(
+            [r["id"] for r in (reader.query_data_source(ds, filter={"property": "Notes", "rich_text": {"ends_with": "suffix"}}) or [])],
+            [rows[0]["id"]],
+        )
+        self.assertEqual(
+            [r["id"] for r in (reader.query_data_source(ds, filter={"property": "Notes", "rich_text": {"contains": "middle"}}) or [])],
+            [rows[0]["id"]],
+        )
+        self.assertEqual(
+            [r["id"] for r in (reader.query_data_source(ds, filter={"property": "EmptyText", "rich_text": {"is_empty": True}}) or [])],
+            [rows[0]["id"]],
+        )
+        self.assertEqual(
+            [r["id"] for r in (reader.query_data_source(ds, filter={"property": "EmptyText", "rich_text": {"is_not_empty": True}}) or [])],
+            [rows[1]["id"]],
+        )
+        self.assertEqual(
+            [r["id"] for r in (reader.query_data_source(ds, filter={"property": "Status", "select": {"does_not_equal": "Active"}}) or [])],
+            [rows[1]["id"]],
+        )
+        self.assertEqual(
+            [r["id"] for r in (reader.query_data_source(ds, filter={"property": "Tags", "multi_select": {"contains": "RAW"}}) or [])],
+            [rows[0]["id"]],
+        )
+        self.assertEqual(
+            [r["id"] for r in (reader.query_data_source(ds, filter={"property": "Tags", "multi_select": {"is_empty": True}}) or [])],
+            [rows[1]["id"]],
+        )
+        self.assertEqual(
+            [r["id"] for r in (reader.query_data_source(ds, filter={"property": "Tags", "multi_select": {"is_not_empty": True}}) or [])],
+            [rows[0]["id"]],
+        )
+        self.assertEqual(
+            [r["id"] for r in (reader.query_data_source(ds, filter={"property": "Due", "date": {"on_or_after": "2026-11-22"}}) or [])],
+            [rows[1]["id"]],
+        )
+        self.assertEqual(
+            [r["id"] for r in (reader.query_data_source(ds, filter={"property": "Due", "date": {"before": "2026-11-22"}}) or [])],
+            [rows[0]["id"]],
+        )
+        self.assertEqual(
+            [r["id"] for r in (reader.query_data_source(ds, filter={"property": "Due", "date": {"equals": "2026-11-20"}}) or [])],
+            [rows[0]["id"]],
+        )
+
+    def test_staggered_1800s_rescan_pacing_with_multipage_pagination_across_10_sources(self) -> None:
+        from t6.notion import RequestPacer
+
+        # Seed >100 rows (250 rows -> 3 paginated POST requests) in projects to exercise iter_data_source pacing
+        for i in range(250):
+            self.fake.add_page(PROJECTS_DS, {ProjectsRow.notion_name("name"): title(f"Show Paginated {i:03d}")})
+
+        studio_10 = {k: v for k, v in self.ds_ids.items() if k != "synthetic_extra"}
+        request_timestamps: list[float] = []
+        orig_handle = self.fake._handle
+
+        def recording_handle(request: Any) -> Any:
+            request_timestamps.append(self.clock())
+            return orig_handle(request)
+
+        self.fake._handle = recording_handle  # type: ignore[method-assign]
+        import httpx
+
+        self.fake.transport = httpx.MockTransport(self.fake._handle)
+
+        pacer = RequestPacer(0.4, clock=self.clock, sleep=self.clock.sleep)
+        writer = MirrorWriter(self.mirror_path, clock=self.clock)
+        syncer = MirrorSyncer(
+            writer,
+            NotionSource(lambda: self.fake.client(pacer=pacer), pacer=pacer),
+            studio_10,
+            min_request_interval=0.4,
+            pacer=pacer,
+            clock=self.clock,
+            wall_clock=self.clock,
+            sleep=self.clock.sleep,
+        )
+
+        # Cold start rescans all 10 sources (including 3 paginated requests for projects + retrieve_data_source each)
+        syncer.tick()
+        self.assertGreaterEqual(len(request_timestamps), 22)
+        for t1, t2 in zip(request_timestamps, request_timestamps[1:]):
+            self.assertGreaterEqual(t2 - t1, 0.4 - 1e-9)
+        # Verify consecutive requests are >= 0.4s apart and sustained rate stays strictly < 3 req/s
+        for idx, ts in enumerate(request_timestamps):
+            in_window = sum(1 for other in request_timestamps[idx:] if other - ts < 1.0 - 1e-9)
+            self.assertLessEqual(in_window, 3)
+        for t0, t3 in zip(request_timestamps, request_timestamps[3:]):
+            self.assertGreater(t3 - t0, 1.0)
+
+        # Verify rescans are staggered across 1800s (10 sources -> 180s spacing) in sorted source_key order
+        sorted_keys = sorted(studio_10)
+        initial_rescans = {
+            k: writer.state(studio_10[k]).last_full_rescan_at for k in sorted_keys  # type: ignore[union-attr]
+        }
+        # Advance to 1850s: only index 0 (bays) has rescanned again; index 1 (cameras, +180s) through 9 have not
+        self.clock.advance(1850.0)
+        syncer.tick()
+        self.assertGreater(
+            writer.state(studio_10[sorted_keys[0]]).last_full_rescan_at or 0.0,  # type: ignore[union-attr]
+            initial_rescans[sorted_keys[0]] or 0.0,
+        )
+        for later_key in sorted_keys[1:]:
+            self.assertEqual(
+                writer.state(studio_10[later_key]).last_full_rescan_at,  # type: ignore[union-attr]
+                initial_rescans[later_key],
+                f"{later_key} rescanned too early",
+            )
+
+        # Advance another 200s (total +2050s): index 1 (cameras, due at +1980s) rescans, index 2 (contacts, +2160s) has not
+        self.clock.advance(200.0)
+        syncer.tick()
+        self.assertGreater(
+            writer.state(studio_10[sorted_keys[1]]).last_full_rescan_at or 0.0,  # type: ignore[union-attr]
+            initial_rescans[sorted_keys[1]] or 0.0,
+        )
+        self.assertEqual(
+            writer.state(studio_10[sorted_keys[2]]).last_full_rescan_at,  # type: ignore[union-attr]
+            initial_rescans[sorted_keys[2]],
+        )
+
+    def test_worker_main_runs_mirror_tick_with_and_without_linked_tick(self) -> None:
+        from t6.worker import __main__ as worker_main
+
+        cfg_path = Path(self.tmp.name) / "data-sources.json"
+        cfg_path.write_text(json.dumps({"bays": BAYS_DS}), encoding="utf-8")
+
+        def open_fake_client(_token: str) -> Any:
+            c = self.fake.client()
+            orig_close = c.close
+            closed = False
+
+            def close_once() -> None:
+                nonlocal closed
+                if not closed:
+                    closed = True
+                    orig_close()
+
+            c.close = close_once  # type: ignore[method-assign]
+            self.addCleanup(close_once)
+            return c
+
+        # 1. Without linked_tick (no T6_GATEWAY_URL / T6_DATABASE): mirror_tick still runs!
+        seen_ticks: list[Any] = []
+
+        def fake_serve(worker: Any, stop: Any, poll_seconds: float, tick: Any = None, **kwargs: Any) -> None:
+            seen_ticks.append(tick)
+            if tick is not None:
+                tick()
+            stop.set()
+
+        env_no_gateway = {
+            "T6_SERVER_URL": "http://127.0.0.1:8081",
+            "T6_WORKER_SECRET": "sec",
+            "T6_WORKER_QUEUE": "main",
+            "T6_NOTION_TOKEN": "fake",
+            "T6_READ_DATA_SOURCES": str(cfg_path),
+            "T6_NOTION_MIRROR_DB": str(self.mirror_path),
+        }
+        with (
+            patch("t6.notion.NotionClient", side_effect=open_fake_client),
+            patch.object(worker_main, "serve", side_effect=fake_serve),
+        ):
+            rc = worker_main.main(environ=env_no_gateway, transport=_InProcessTransport(None))
+        self.assertEqual(rc, 0)
+        self.assertIsNotNone(seen_ticks[0])
+        reader = MirrorReader(self.mirror_path, clock=self.clock)
+        self.assertIsNotNone(reader.query_data_source(BAYS_DS))
+
+        # 2. With linked_tick configured: both linked.tick and mirror_syncer.tick run
+        seen_ticks.clear()
+        reg_path = Path(self.tmp.name) / "worker-linked.sqlite"
+        SqliteProjectRegistry(reg_path, clock=self.clock)
+        mirror_path_2 = Path(self.tmp.name) / "mirror2.sqlite"
+        env_with_gateway = {
+            **env_no_gateway,
+            "T6_NOTION_MIRROR_DB": str(mirror_path_2),
+            "T6_DATABASE": str(reg_path),
+            "T6_API_URL": "http://127.0.0.1:8081",
+            "T6_GATEWAY_URL": "http://127.0.0.1:8082",
+            "T6_GATEWAY_SECRET": "gw-sec",
+            "T6_REVIEW_CHAT": "12345",
+        }
+        with (
+            patch("t6.notion.NotionClient", side_effect=open_fake_client),
+            patch.object(worker_main, "serve", side_effect=fake_serve),
+            patch("t6.worker.linked_chats.LinkedChats.tick") as mock_linked_tick,
+        ):
+            rc2 = worker_main.main(environ=env_with_gateway, transport=_InProcessTransport(None))
+        self.assertEqual(rc2, 0)
+        mock_linked_tick.assert_called_once()
+        self.assertIsNotNone(MirrorReader(mirror_path_2, clock=self.clock).query_data_source(BAYS_DS))
 
 
 if __name__ == "__main__":

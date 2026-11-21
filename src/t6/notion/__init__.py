@@ -13,11 +13,11 @@
 - `t6.notion.testing`: an in-memory fake Notion for tests.
 """
 
-from t6.notion.client import BASE_URL, NOTION_VERSION, AsyncNotionClient, RetryPolicy
+from t6.notion.client import BASE_URL, NOTION_VERSION, AsyncNotionClient, RequestPacer, RetryPolicy
 from t6.notion.errors import NotionError
 from t6.notion.mirror import (
     DEFAULT_MAX_AGE_SECONDS,
-    MIRROR_PHASE_SOURCES,
+    MIN_REQUEST_INTERVAL_SECONDS,
     MirrorReader,
     MirrorSourceState,
     MirrorSyncer,
@@ -31,7 +31,7 @@ from t6.notion.sync import NotionClient
 __all__ = [
     "BASE_URL",
     "DEFAULT_MAX_AGE_SECONDS",
-    "MIRROR_PHASE_SOURCES",
+    "MIN_REQUEST_INTERVAL_SECONDS",
     "NOTION_VERSION",
     "AsyncNotionClient",
     "Freshness",
@@ -42,6 +42,7 @@ __all__ = [
     "NotionClient",
     "NotionError",
     "NotionSource",
+    "RequestPacer",
     "RetryPolicy",
     "as_source",
     "last_read_from_mirror",

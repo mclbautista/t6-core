@@ -15,6 +15,7 @@ from importlib.metadata import version
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence, cast
 
 if TYPE_CHECKING:
+    from t6.cli import DataSourceConfig
     from t6.notion.mirror import MirrorReader
     from t6.notion.source import NotionSource
 
@@ -1624,6 +1625,14 @@ class PrivacyList:
         with self._lock:
             age = None if self._loaded is None else max(0, round(self._clock() - self._loaded[0] / 1e9))
             return {'names': self._names, 'age_seconds': age, 'reload_failed': self._failed}
+
+
+def read_data_source_configs_from_env(environ: Mapping[str, str]) -> dict[str, DataSourceConfig]:
+    """Load API-owned Notion data source configs (ID and optional `max_age_seconds`) from `T6_READ_DATA_SOURCES`."""
+    from t6.cli import read_data_source_configs
+
+    source_path = (environ.get('T6_READ_DATA_SOURCES') or '').strip()
+    return read_data_source_configs(Path(source_path)) if source_path else {}
 
 
 def read_config_from_env(environ: Mapping[str, str]) -> tuple[dict[str, str], PrivacyRegistry | None]:

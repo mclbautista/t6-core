@@ -69,29 +69,31 @@ def read_data_source_configs(path: Path) -> dict[str, DataSourceConfig]:
         raise ValueError("--data-sources must be a JSON object of database key to data source ID")
     configs: dict[str, DataSourceConfig] = {}
     for key, value in raw.items():
-        if not isinstance(key, str) or not key:
+        if not isinstance(key, str) or not key.strip():
             raise ValueError("--data-sources keys must be non-empty strings")
         if isinstance(value, str):
+            if not value.strip():
+                raise ValueError(f"--data-sources entry {key!r} must be a non-empty string")
             configs[key] = DataSourceConfig(id=value)
         elif isinstance(value, dict):
             extra = set(value) - {"id", "max_age_seconds"}
             if extra:
                 raise ValueError(f"--data-sources entry {key!r} has unexpected keys: {sorted(extra)}")
             ds_id = value.get("id")
-            if not isinstance(ds_id, str) or not ds_id:
+            if not isinstance(ds_id, str) or not ds_id.strip():
                 raise ValueError(f"--data-sources entry {key!r} must have a string 'id'")
-            max_age_raw = value.get("max_age_seconds")
-            if max_age_raw is None:
-                configs[key] = DataSourceConfig(id=ds_id)
-            elif (
-                isinstance(max_age_raw, bool)
-                or not isinstance(max_age_raw, (int, float))
-                or not math.isfinite(float(max_age_raw))
-                or float(max_age_raw) <= 0
-            ):
-                raise ValueError(f"--data-sources entry {key!r} max_age_seconds must be a positive number")
-            else:
+            if "max_age_seconds" in value:
+                max_age_raw = value["max_age_seconds"]
+                if (
+                    isinstance(max_age_raw, bool)
+                    or not isinstance(max_age_raw, (int, float))
+                    or not math.isfinite(float(max_age_raw))
+                    or float(max_age_raw) <= 0
+                ):
+                    raise ValueError(f"--data-sources entry {key!r} max_age_seconds must be a positive number")
                 configs[key] = DataSourceConfig(id=ds_id, max_age_seconds=float(max_age_raw))
+            else:
+                configs[key] = DataSourceConfig(id=ds_id)
         else:
             raise ValueError("--data-sources must be a JSON object of database key to data source ID")
     return configs
@@ -529,7 +531,7 @@ def _import_swing(args: argparse.Namespace, open_notion: Callable[..., Any]) -> 
         if not data_source:
             return _fail("--data-sources has no 'swing_drives' entry")
         notion = _notion_source(open_notion, token)
-        rows = read_swing_drives(notion, data_source)
+        rows = read_swing_drives(notion, data_source, freshness="live")
         digest = json.loads(args.preview.read_text(encoding="utf-8"))["digest"] if args.apply else None
         report = import_swing_drives(rows, SqliteDriveStore(SqliteProjectRegistry(args.registry_db)), apply=args.apply, digest=digest)
     except (OSError, ValueError, KeyError, NotionError) as error:

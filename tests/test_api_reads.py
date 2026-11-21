@@ -1490,7 +1490,7 @@ class ReadTests(unittest.TestCase):
 
         calls.clear()
         self.assertIsInstance(operator.departments(DepartmentsInput()), Done)
-        self.assertEqual(calls, [('retrieve_data_source', 'job_orders', 'live')])
+        self.assertEqual(calls, [('retrieve_data_source', 'job_orders', 'mirror')])
 
         calls.clear()
         self.assertIsInstance(operator.camera_get(CameraGetInput()), Done)
