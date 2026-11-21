@@ -637,6 +637,7 @@ def main(
         internal_client = InternalQueueClient(InternalJobQueue(environ["T6_DATABASE"]))
     if internal_client is not None and settings.queue == "main":
         from t6.concern import ConcernStore
+        from t6.concern_scan import ConcernScanner
         from t6.preview import PreviewTokens
         from t6.registry.sqlite import SqliteProjectRegistry
 
@@ -650,7 +651,7 @@ def main(
             project = job.payload.get('project')
             if not isinstance(project, str):
                 raise ValueError('Invalid Concern close payload')
-            concerns.apply_pending(project)
+            ConcernScanner(concerns).apply_pending(project)
             return True
         from t6.frameio.share_views import DeliveryShareViews, share_viewed_handler
 
