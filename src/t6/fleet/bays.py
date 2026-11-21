@@ -7,7 +7,8 @@ typed write (`t6.notion.writes`).
 
 Rules:
 - A machine matches a row by its names against the row's Hostname and Name,
-  ignoring case, spaces and ARD's `-NNN` suffix (`match_key`). A machine that
+  ignoring case and spaces. A row with exactly that name wins; only when none has
+  it is ARD's `-NNN` suffix ignored too (`match_key`). A machine that
   matches no row, or more than one, or a row that two machines match, is
   skipped. A row is never created.
 - It is a dry run unless `apply=True`. A fact that is unknown (None) is left
@@ -31,7 +32,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from t6.domain import Machine, Ring
-from t6.fleet.rules import RINGS, is_stale, match_key
+from t6.fleet.rules import RINGS, exact_key, is_stale, match_key
 from t6.notion import named
 from t6.notion.errors import NotionError
 from t6.notion.generated import BaysRow
@@ -256,12 +257,17 @@ class Fleet:
 
     @staticmethod
     def _rows_for(machine: MachineFacts | MachineEdit, rows: list[tuple[JSON, BaysRow]]) -> list[tuple[JSON, BaysRow]]:
-        keys = {match_key(name) for name in machine.names if name.strip()}
-        return [
-            (page, row)
-            for page, row in rows
-            if any(match_key(value) in keys for value in (row.hostname, row.name) if value)
-        ]
+        # An exact name (case and spaces folded) wins over the ARD suffix rule, so `Deco 203` is not also `Deco 202`.
+        for key in (exact_key, match_key):
+            keys = {key(name) for name in machine.names if name.strip()}
+            found = [
+                (page, row)
+                for page, row in rows
+                if any(key(value) in keys for value in (row.hostname, row.name) if value)
+            ]
+            if found:
+                return found
+        return []
 
     def _plan(
         self, name: str, machine: MachineFacts, found: tuple[JSON, BaysRow], apply: bool, now: datetime
