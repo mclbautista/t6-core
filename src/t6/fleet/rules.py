@@ -53,6 +53,11 @@ class ManifestChainError(ValueError):
     """A manifest chain cannot be resolved: a manifest is missing or includes itself."""
 
 
+def exact_key(name: str) -> str:
+    """`match_key` without the ARD suffix: case, spaces and underscores are not identity, digits are."""
+    return re.sub(r"-+", "-", name.strip().lower().replace(" ", "-").replace("_", "-"))
+
+
 def match_key(name: str) -> str:
     """A key to compare machine names: case, spaces and ARD's numeric suffix are not identity.
 
@@ -60,8 +65,7 @@ def match_key(name: str) -> str:
     and some names have spaces where the manifest has hyphens (`303B iMac`, `303B-iMac`).
     Use the key for matching only; report the source's own spelling.
     """
-    folded = re.sub(r"-+", "-", name.strip().lower().replace(" ", "-").replace("_", "-"))
-    return _ARD_SUFFIX.sub("", folded)
+    return _ARD_SUFFIX.sub("", exact_key(name))
 
 
 def role_group(included_manifests: Sequence[str]) -> str | None:
