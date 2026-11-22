@@ -4,6 +4,16 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.17] - 2026-11-22
+
+Fewer Notion calls when a Job Order is raised and read back (#512), and planner bitrate fixes. No migration: the schema stays at 48.
+
+### Changed
+
+- `jo.sync` create makes 6 Notion calls instead of 10: the new `JobOrders.insert` creates and checks the row and body without the final full read, and the projection takes JO Status from that row and skips `ensure_body` after its own create (#591).
+- `jo get` with a page builds the Job Order from the page it retrieved for the parent check: 2 Notion calls instead of 3 (#592).
+- OCF Drive Planner: missing bitrates are filled and unsupported modes dropped (#24).
+
 ## [0.6.16] - 2026-11-22
 
 Timeline stamps by code, the Resolve worker, and the bay scanner reader and drift report. Migration 48 takes the schema from 47 to 48 (Timeline stamp state, `replaces` and `resolve_uuid`); it is not forward-only.
