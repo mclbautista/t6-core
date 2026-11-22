@@ -1362,9 +1362,10 @@ class VerbAPI:
                         return Refused(rule='job_order', reason='Job Order has no active Notion page')
                     if len(page) == 32:
                         page = str(UUID(page))
-                    if (notion.retrieve_page(page, freshness='live').get('parent') or {}).get('data_source_id') != self.data_sources['job_orders']:
+                    page_json = notion.retrieve_page(page, freshness='live')
+                    if (page_json.get('parent') or {}).get('data_source_id') != self.data_sources['job_orders']:
                         return Refused(rule='job_order', reason='Job Order not found')
-                    order = jo_reader.get(page, freshness='live')
+                    order = jo_reader.from_page(page_json)  # one retrieve, not two (#592)
                     result = order_result(order)
                     if record:
                         result['notion_notes'] = result.get('notes')
