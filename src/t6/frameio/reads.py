@@ -30,6 +30,7 @@ from t6.frameio.model import (
     FileLocation,
     FrameioFile,
     FrameioProject,
+    GUEST_ID,
     ResolvedComment,
     ShareLink,
     Version,
@@ -39,6 +40,7 @@ from t6.frameio.model import (
     clip_remaining_seconds,
     format_timecode,
 )
+from t6.frameio.share_page import PageFetch, guest_name
 from t6.media_links import MediaLinks
 from t6.frameio.requests import (
     Approvals,
@@ -98,7 +100,9 @@ class FrameioReads:
         share_scan_limit: int = SHARE_SCAN_LIMIT,
         clock: Callable[[], float] = time.monotonic,
         workspace_id: str | None = None,
+        page_fetch: PageFetch | None = None,
     ) -> None:
+        self._page_fetch = page_fetch
         self._workspace_id = workspace_id
         self._api = api
         self._links = links
@@ -334,7 +338,25 @@ class FrameioReads:
             updates["comment_timecode"] = format_timecode(comment.frame / frame_rate)
             if duration is not None:
                 updates["remaining_seconds"] = clip_remaining_seconds(duration, frame_rate, comment.frame)
+        if comment.author_id == GUEST_ID and (name := self._guest_name(request, comment)) is not None:
+            updates["author_name"] = name
         return comment if not updates else replace(comment, **updates)  # type: ignore[arg-type]
+
+    def _guest_name(self, request: ResolveComment, comment: ResolvedComment) -> str | None:
+        """A guest's name from the public share page that holds the file; None on any failure, so the comment keeps `GUEST_NAME`."""
+        if self._page_fetch is None:
+            return None
+        try:
+            now = self._now()
+            for share in self.share_links(request.frameio_project_id):
+                if share.url is None or not share.live(now) or not share.file_ids or comment.file_id not in share.file_ids:
+                    continue
+                page = self._page_fetch(share.url)
+                if page is not None and (name := guest_name(page, comment.id)) is not None:
+                    return name
+        except Exception:  # noqa: BLE001 - never lose or delay the comment for a name
+            return None
+        return None
 
     def _clip_metadata(self, account_id: str, file_id: str) -> tuple[float | None, float | None]:
         """The file's `Duration` (seconds) and `Frame Rate` (fps), or None when missing or unreadable."""
