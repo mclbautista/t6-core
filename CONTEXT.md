@@ -138,7 +138,10 @@ Resolve worker; no person types it. This is the one Resolve write T6 makes
 `t6t_` ID (the same one for the same key), and the confirm records exactly it
 as **pending** and queues a `resolve.stamp` job. The Resolve worker writes the
 marker and reads it back; a success marks the Timeline **stamped** (verified),
-and a failure leaves it pending with the reason. A Timeline that already
+and a failure marks it **failed** with the reason (`queue failed` shows the
+job). Linking a failed Timeline again (new key) queues it again. `timeline list`
+shows each Timeline's stamp state. Timelines linked before T6 wrote stamps
+count as stamped. A Timeline that already
 carries a stamp is not given a new one (pass `--stamp`), except that at confirm a timeline
 carrying exactly the stamp the preview showed is accepted; a retried confirm with the same key returns the first result. `timeline list` refuses a
 Project that is not registered.
@@ -157,8 +160,9 @@ Project that is not registered.
 - **One Timeline per stamp.** Linking a stamp already linked to another Project
   or Resolve project is refused, and so is a stamp found on two timelines of the
   Resolve project (a duplicate keeps the same stamp). The fix is re-stamping
-  by code: the copy that is not the canonical Timeline gets a new `t6t_` ID
-  through a previewed verb, and the Resolve worker writes it. Linking the same stamp again for the same Resolve project
+  by code: `timeline restamp` (previewed) gives the copy that is not the
+  canonical Timeline a new `t6t_` ID, records it as a pending Timeline, and the
+  Resolve worker replaces the stamp on it. Linking the same stamp again for the same Resolve project
   records nothing new, whatever the name now is.
 - A Resolve unique id is not the key: it changes on duplicate and import.
 - A **Version** may name its source Timeline (`version add --timeline`); the

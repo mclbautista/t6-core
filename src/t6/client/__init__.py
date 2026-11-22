@@ -15,7 +15,7 @@ from t6.verbs import (
     Ambiguous, Done, NeedsPerson, Outcome, Preview, Refused,
     AbangRequestInput, AbangCancelInput, AbangAcceptInput,
     VersionAddInput, VersionLockInput, VersionFindInput, VersionGetInput,
-    MediaLinkInput, MediaUnlinkInput, TimelineLinkInput, TimelineListInput, FrameioProjectInput, MediaListInput, MediaMigrateInput,
+    MediaLinkInput, MediaUnlinkInput, TimelineLinkInput, TimelineRestampInput, TimelineListInput, FrameioProjectInput, MediaListInput, MediaMigrateInput,
     TranscriptCreateInput, TranscriptGetInput, TranscriptSpeakersInput, TranscriptTranslateInput,
     DriveReceiveInput, DriveReleaseInput, DriveReturnInput, DriveRetireInput, DriveAssignInput, DriveUnassignInput,
     DriveAddInput, DriveEditInput, DrivePromoteSerialInput, DriveListInput, DriveGetInput, DriveFindInput, DriveCatalogSnapshotInput, DriveCatalogSnapshotsInput, DriveCatalogDiffInput, DriveCatalogAtInput, DriveShipmentsInput, DriveShipmentInput, DriveExceptionsInput,
@@ -223,6 +223,9 @@ class Client:
 
     def timeline_link(self, inputs: TimelineLinkInput) -> Result:
         return self.call('timeline', 'link', inputs)
+
+    def timeline_restamp(self, inputs: TimelineRestampInput) -> Result:
+        return self.call('timeline', 'restamp', inputs)
 
     def timeline_list(self, inputs: TimelineListInput) -> Result:
         return self.call('timeline', 'list', inputs)
