@@ -212,7 +212,7 @@ closed, oldest first, optionally for one `project`. Each item holds `id`,
 `project_id`, `owner_id`, `waiting_on`, `text`, `source`, `anchor`, `as_of`,
 `opened_at`, `evidence_at`, `state`, `settles_id`, `age_seconds` and `chronic`
 (open longer than 28 days). Exactly one of `raise_at_psr` and `open` must be
-true, else rule `input`; the `raise_at_psr` reply is unchanged. `text`, like
+true, else rule `input`. `raise_at_psr` lists every Concern that is neither closed nor snoozed, oldest last evidence first; each item holds `id`, `project_id`, `owner_id`, `waiting_on`, `age_seconds` and `evidence_at` (the time of its last evidence). Age never decides inclusion. `text`, like
 `waiting_on` and `anchor`, is masked for a caller without real-name access, so a
 caller that renders names needs the `unmasked` permission and the `reader` role.
 

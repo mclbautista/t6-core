@@ -284,7 +284,7 @@ class ReadTests(unittest.TestCase):
         with patch.dict(os.environ, {'T6_PREVIEW_SIGNING_KEY': 'key'}):
             self.assertIsInstance(raised(owner), Preview)
 
-    def test_raise_at_psr_lists_quiet_concerns_only_and_is_masked_for_a_service(self) -> None:
+    def test_raise_at_psr_lists_open_concerns_only_and_is_masked_for_a_service(self) -> None:
         from t6.registry import Registered
         from t6.verbs import ConcernListInput
         page = self.notion.add_page('projects', {'Name': title('Psr')})
@@ -292,13 +292,13 @@ class ReadTests(unittest.TestCase):
         assert isinstance(project, Registered)
         owner = 't6n_' + '1' * 32
         with self.registry._transaction() as db:
-            for concern, state, opened in (('t6c_old_open', 'open', 0.0), ('t6c_quiet', 'quiet', 0.0), ('t6c_expired', 'expired', 0.0)):
+            for concern, state, opened in (('t6c_old_open', 'open', 0.0), ('t6c_snoozed', 'snoozed', 0.0), ('t6c_closed', 'closed', 0.0)):
                 db.execute("INSERT INTO concerns (id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state) VALUES (?, ?, ?, 'Client Corp', 'Waiting on Client Corp', '2026-11-01', ?, 0, ?)", (concern, project.project.id, owner, opened, state))
         listed = self.client.concern_list(ConcernListInput(raise_at_psr=True, project=project.project.id))
         assert isinstance(listed, Done)
-        self.assertEqual([c['id'] for c in listed.result['concerns']], ['t6c_quiet'])
+        self.assertEqual([c['id'] for c in listed.result['concerns']], ['t6c_old_open'])
         row = listed.result['concerns'][0]
-        self.assertEqual((row['label'], row['owner_id']), ('no news for 2 weeks', owner))
+        self.assertEqual((row['evidence_at'], row['owner_id']), (0, owner))
         self.assertNotIn('Client Corp', str(row))
         self.assertIsInstance(self.client.concern_list(ConcernListInput(project=project.project.id)), Refused)
 
@@ -345,14 +345,14 @@ class ReadTests(unittest.TestCase):
             assert isinstance(refused, Refused)
             self.assertEqual(refused.rule, 'input')
 
-    def test_raise_at_psr_reply_keeps_exactly_its_old_shape(self) -> None:
+    def test_raise_at_psr_reply_shape(self) -> None:
         from t6.verbs import ConcernListInput
         project = self.seed_concerns()
         listed = Client(self.client.base_url, 'unmasked-secret').concern_list(ConcernListInput(raise_at_psr=True, project=project))
         assert isinstance(listed, Done)
         row = listed.result['concerns'][0]
-        self.assertEqual(sorted(row), ['age_seconds', 'id', 'label', 'owner_id', 'project_id', 'waiting_on'])
-        self.assertEqual((row['id'], row['owner_id'], row['waiting_on'], row['label']), ('t6c_old', None, '', 'no news for 2 weeks'))
+        self.assertEqual(sorted(row), ['age_seconds', 'evidence_at', 'id', 'owner_id', 'project_id', 'waiting_on'])
+        self.assertEqual((row['id'], row['owner_id'], row['waiting_on'], row['evidence_at']), ('t6c_mid', None, '', 0))
 
     def test_concern_text_is_masked_for_a_service_without_real_name_access(self) -> None:
         from t6.verbs import ConcernGetInput, ConcernListInput
