@@ -28,7 +28,7 @@ the facts that [ADR 0008](../adr/0008-bay-scanner-boundary.md) marks "(confirm i
 | Name | `SM_Project.ProjectName`, equal to the directory name in all 12. |
 | Modified time | `SM_Project.LastModTimeInSecs` (unix seconds). Timelines have `ModTimeInSecs` and `CreateTimeInSecs`. |
 | Timeline count | `count(*)` of `Sm2Timeline` in `Project.db`. The cache's `numTimelines` was stale for 1 of 11, so the cache is not a source. |
-| Timeline stamps (`t6t_`) | Not found in any of 1,379,776 blobs (zlib blobs also inflated and searched). This bay probably holds no stamped timeline, so this proves nothing; [#579](https://github.com/mclbautista/t6-core/issues/579) settles stamp readability with a known stamped project. Marker data sits in blobs, as on the project server ([#185](resolve-marker-custom-data.md)). |
+| Timeline stamps (`t6t_`) | Not found in any of 1,379,776 blobs (zlib blobs also inflated and searched). This bay probably holds no stamped timeline, so this proves nothing. [#579](https://github.com/mclbautista/t6-core/issues/579) used the scripting API only, so blob readability needs a kept stamped control project (owner approval). Marker data sits in blobs, as on the project server ([#185](resolve-marker-custom-data.md)). |
 | Tailnet | **Not on the tailnet.** No `tailscale` command, app, daemon or `100.x` interface. |
 
 ## What this means for ADR 0008

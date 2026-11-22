@@ -94,9 +94,12 @@ otherwise.
    says so.
 
 7. **Timeline stamps: only if readable.** Per `docs/research/resolve-marker-custom-data.md`,
-   markers sit in binary blobs on the project server. Whether a stamp can be
-   read without Resolve is tested once, in #579, and not again here. If it
-   cannot, #381 does not use the scanner. Stamps are written by the Resolve
+   markers sit in binary blobs on the project server and on bays (#374).
+   #579 proved stamps through the scripting API only, so whether a stamp is
+   readable inside a disk `Project.db` is unanswered. The scanner is
+   therefore projects-only, and #381 reads stamps on a path where Resolve is
+   running. Revisit only if a stamped control project shows the stamp in a
+   blob. Stamps are written by the Resolve
    worker under the amended ADR 0002 rule 10 (#578), never by this job: the
    scanner only ever reads them.
 
