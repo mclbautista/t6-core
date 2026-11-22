@@ -20,7 +20,10 @@ from t6.vocabulary import PERSON_KINDS
 AUTO_ACTOR = 'Sixto (auto)'
 """The named service behind automatic Concern changes. It may run Concern verbs and nothing else."""
 
-SERVICES = frozenset({'gateway', 'worker', 'reports', 'watchdog', 'munki', 'hermes', 'mcp', 'transcribe', 'resolve', AUTO_ACTOR})
+BAY_SCANNER = 'bay-scanner'
+"""The service the Mac mini posts bay scan reports as (ADR 0008). It may run `bay scan report` and nothing else."""
+
+SERVICES = frozenset({'gateway', 'worker', 'reports', 'watchdog', 'munki', 'hermes', 'mcp', 'transcribe', 'resolve', AUTO_ACTOR, BAY_SCANNER})
 
 # Internal actors: named, not a Person, used only inside the worker by one handler. They are not in SERVICES, so no API secret
 # can name them and `T6_API_SERVICE_PERMISSIONS` cannot grant them anything; their grants are fixed here.
@@ -29,7 +32,7 @@ FRAMEIO_ACTOR = 'frameio'  # Frame.io events (#275): a file landing in a Deliver
 NOTION_ACTOR = 'T6 Notion'  # edits made in Notion by the T6 integration itself: no Person is bound to it, so it may run the coordinator and operator verbs
 INTERNAL_ACTORS: Mapping[str, frozenset[str]] = {CALENDAR_ACTOR: frozenset({'bookings'}), FRAMEIO_ACTOR: frozenset(), NOTION_ACTOR: frozenset({'operator', 'coordinator'})}
 
-PERMISSIONS = frozenset({"operator", "coordinator", "bookings", "drives", "admin", "llm", "unmasked", "fleet", "bays_edit", "minutes"})
+PERMISSIONS = frozenset({"operator", "coordinator", "bookings", "drives", "admin", "llm", "unmasked", "fleet", "bays_edit", "minutes", "bay_scan"})
 STAFF_RULE = "role:staff"
 """An allowed-tapper rule: any active staff Person (a kind, not a permission, so it is not in `PERMISSIONS`)."""
 
@@ -47,6 +50,11 @@ class People:
     def auto_refusal(noun: str) -> Refused | None:
         """`Sixto (auto)` may run Concern verbs and nothing else."""
         return None if noun == 'concern' else Refused(rule='service', reason=f'{AUTO_ACTOR} may only run concern verbs')
+
+    @staticmethod
+    def scanner_refusal(noun: str, verb: str) -> Refused | None:
+        """`bay-scanner` may post a bay scan report and nothing else, not even a read."""
+        return None if (noun, verb) == ('bay', 'scan report') else Refused(rule='service', reason=f'{BAY_SCANNER} may only post bay scan reports')
 
     def get(self, person_id: str) -> dict[str, Any] | None:
         with self.registry._transaction() as db:

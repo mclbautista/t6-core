@@ -25,6 +25,7 @@ from types import UnionType
 
 from pydantic import AwareDatetime, BaseModel, Field, ConfigDict, SerializerFunctionWrapHandler, field_validator, model_serializer, model_validator
 from t6.domain import Project, JobOrder, Deliverable, MeetingNote, Contact, Camera, ExternalRef, Machine, Ring
+from t6.bay_scan import BayScanReport
 from t6.vocabulary import DRIVE_ROLES, DriveRole, MediaKind, MediaRole, PersonKind
 from t6.llm.api import Done as Done, LLMDecideInput as LLMDecideInput, LLMDecideOutput as LLMDecideOutput, LLMFilterInput as LLMFilterInput, LLMFilterOutput as LLMFilterOutput, LLMRunInput as LLMRunInput, LLMRunOutput as LLMRunOutput
 
@@ -1898,6 +1899,41 @@ def bay_list(inputs: BayListInput, open_notion: Callable[..., Any]) -> Outcome:
     return Done(result={'bays': BayStore(_people().registry).list()})
 
 
+class BayScanReportInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    report: BayScanReport
+
+
+class BayScanReportOutput(BaseModel):
+    bay_id: str
+    stored: bool
+    reason: str
+
+
+class BayScanListInput(ReadInput):
+    bay: str | None = None
+
+
+class BayScanListOutput(BaseModel):
+    bays: list[dict[str, Any]]
+
+
+class BayDriftInput(ReadInput):
+    project: str | None = None
+
+
+class BayDriftOutput(BaseModel):
+    matched_by: str
+    note: str
+    bays: list[dict[str, Any]]
+    projects: list[dict[str, Any]]
+
+
+def bay_scan_list(inputs: BayScanListInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.bay_scan import BayScans
+    return BayScans(_people().registry).list(inputs.bay)
+
+
 class BookingGetInput(BaseModel):
     booking: str
 
@@ -2719,6 +2755,9 @@ VERBS = (
     Verb('media', 'list', 'List Media locations', (), MediaListInput, MediaListOutput, 'reader', 'Read Media locations.', media_list, read_only=True),
     Verb('bay', 'book', 'Book a Bay', (), BayBookInput, BookingOutput, 'bookings', 'Overlaps require force.', booking_write),
     Verb('bay', 'list', 'List Bays', (), BayListInput, BayListOutput, 'reader', 'Read the Bays in the registry: each Bay ID with the page ID of its Notion row. Names stay in Notion.', bay_list, read_only=True),
+    Verb('bay', 'scan report', 'Post a bay scan report', (), BayScanReportInput, BayScanReportOutput, 'bay_scan', 'Ties the report to a Bay through the machine serial and the Machine to Bays mapping; refused with rule no_bay when none matches. The latest scan per Bay is kept; a repeat or older scan changes nothing. Only the bay-scanner service may post.', api_write),
+    Verb('bay', 'scan list', 'List bay scan reports', (), BayScanListInput, BayScanListOutput, 'reader', 'Each Bay with its last report and whether it is fresh or stale (older than 3 days). A Bay with no report is listed as no_report, never as having no local copies. Optional bay (ID or page ID).', bay_scan_list, read_only=True),
+    Verb('bay', 'drift', 'Compare each bay\'s local copies with the project server', (), BayDriftInput, BayDriftOutput, 'reader', 'Per project on the server: which Bays hold a local copy and whether it stands equal, local_newer, local_older or differs, is not_on_server or report_stale, or cannot_compare. A Bay with no report is listed under unknown_bays, never as having no copies. Optional project (its Resolve-project Media location). Reports only; nothing is written.', api_read, read_only=True),
     Verb('booking', 'move', 'Move a Booking', (), BookingMoveInput, BookingOutput, 'bookings', 'Overlaps require force.', booking_write),
     Verb('booking', 'extend', 'Extend a Booking', (), BookingExtendInput, BookingOutput, 'bookings', 'Overlaps require force.', booking_write),
     Verb('booking', 'cancel', 'Cancel a Booking', (), BookingCancelInput, BookingOutput, 'bookings', 'Cancel an active Booking.', booking_write),
@@ -3288,6 +3327,20 @@ def add_parsers(commands: Any) -> None:
         if entry.input_model is MeetingNotesMarkSentInput:
             parser.add_argument('--note', required=True)
             parser.add_argument('--at', type=datetime.fromisoformat, metavar='ISO', help='When it was sent, with a UTC offset (default: now, Manila)')
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.noun == 'bay' and entry.verb.startswith('scan '):
+            if 'bay scan' not in nouns:
+                nouns['bay scan'] = nouns['bay'].add_parser('scan', help='Bay scan reports').add_subparsers(dest='bay_scan_verb', required=True)
+            parser = nouns['bay scan'].add_parser(entry.verb.split(' ')[1], help=entry.description)
+            if entry.input_model is BayScanReportInput:
+                parser.add_argument('--report', type=json.loads, required=True, metavar='JSON', help='The bay scan report as a JSON object, as the scan script prints it')
+            else:
+                parser.add_argument('--bay')
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.input_model is BayScanReportInput:
+            parser.add_argument('--report', type=json.loads, required=True, metavar='JSON', help='The bay scan report as a JSON object, as the scan script prints it')
             parser.set_defaults(registered_verb=entry)
             continue
         if entry.input_model in (MachineSyncInput, MachineEditInput):

@@ -128,12 +128,18 @@ the times from the Person's shift pattern. Booking verbs (`bay book`,
 
 ## Bay scans
 
-Decided in ADR 0008 (#18). Not built yet.
+Decided in ADR 0008 (#18). The report model, the ingest and the read are built (#376, #377); the scan script and the drift
+report follow (#379, #380).
 
 - A **local copy** is a Resolve project held in a bay's local disk database rather than on the project server.
 - A **bay scan report** is what one bay's nightly job sends to t6: the scan time, the Resolve version and the bay's
   local copies. It is tied to a Bay (`t6b_`) through the machine serial and the Machine to Bays mapping, never by name.
   t6 keeps the latest one per Bay.
+  `bay scan report` posts one. It needs the `bay_scan` permission, carried only by the `bay-scanner` service (the Mac mini),
+  which may run no other verb. A serial that maps to no Bay is refused with rule `no_bay`; a repeat or older scan changes
+  nothing. `bay scan list [<bay>]` shows each Bay's last report as `fresh`, `stale` (scanned more than 3 days ago) or
+  `no_report`, which is never the same as "no local copies". Its replies hold project names, so they are masked like other
+  reads.
 - **Drift** is a local copy that does not match the project server by the definition #374 settles. The drift report
   only reports; nothing is changed.
 
