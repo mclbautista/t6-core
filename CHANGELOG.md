@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- `t6.resolve.timelines.ScriptingTimelines`: the real `TimelineReader` over the Resolve scripting API, and the stamp writer. It writes the `t6t_` marker on a timeline's first frame (or updates it to re-stamp a duplicate), reads it back and saves; it refuses a timeline with a different stamp or a stamp already on another timeline, and gives a reason when the project cannot be loaded (#580).
+
 ### Changed
 
 - ADR 0002 rule 10 allows one Resolve write: the Resolve worker writes the `t6t_` stamp marker on a timeline's first frame, so stamping is no longer manual (#578).
