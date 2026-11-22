@@ -295,6 +295,7 @@ def configured_handlers(
             held = HeldActivity(SqliteProjectRegistry(environ["T6_DATABASE"]))
             is_linked, is_held = target.linked, held.has
             hold = HoldUnlinked(held, operator.offer_frameio_link)
+        coordinators = review_coordinators(environ, review_media_links(environ, review_registry))
         review = ReviewMessage(
             GatewayClient(HttpTransport(gateway_url), gateway_secret),
             chat,
@@ -306,6 +307,7 @@ def configured_handlers(
             is_linked=is_linked,
             hold=hold,
             is_held=is_held,
+            coordinators=coordinators,
         )
         handlers.update(review.handlers())
     if environ.get("T6_DATABASE"):
@@ -527,6 +529,28 @@ def mirror_syncer_from_env(
     active_writer = writer if writer is not None else MirrorWriter(path)
     notion = NotionSource(lambda: NotionClient(token), pacer=pacer)
     return MirrorSyncer(active_writer, notion, configs, enabled_sources=None, pacer=pacer)
+
+
+def review_coordinators(environ: Mapping[str, str], links: MediaLinks) -> Callable[[str], tuple[str, ...]] | None:
+    """The `@handle` lookup of the review message (#547): needs the Notion token and the Projects and Contacts data
+    sources. It reads the local Notion mirror when there is one (and live Notion for a page the mirror lacks)."""
+    token = environ.get("T6_NOTION_TOKEN")
+    projects, contacts = environ.get("T6_NOTION_PROJECTS_DATA_SOURCE"), environ.get("T6_NOTION_CONTACTS_DATA_SOURCE")
+    if not (token and projects and contacts):
+        return None
+    from t6.notion import MirrorReader, NotionClient, NotionSource, mirror_db_path
+    from t6.notion.reads import ContactReader, ProjectReader
+    from t6.worker.review_coordinators import ReviewCoordinators
+
+    path, mirror = mirror_db_path(environ), None
+    if path is not None:
+        configs = mirror_data_sources_from_env(environ)
+        mirror = MirrorReader(
+            path, max_age_seconds={cfg.id: cfg.max_age_seconds for cfg in configs.values()},
+            enabled_data_sources=[cfg.id for cfg in configs.values()],
+        )
+    source = NotionSource(lambda: NotionClient(token), mirror=mirror)
+    return ReviewCoordinators(links, ProjectReader(source, projects), ContactReader(source, contacts))
 
 
 def review_media_links(environ: Mapping[str, str], registry: MediaLinks) -> MediaLinks:
