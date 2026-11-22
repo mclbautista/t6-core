@@ -180,3 +180,33 @@ class OrdinaryNameDecideTests(unittest.TestCase):
                 self.assertEqual((body['rule'], body['reason']), ('masking', f'Unresolved registered names in {part}'))
                 self.assertNotIn('zqx', json.dumps(body).lower())
         self.assertEqual(self.requests, [])
+
+
+class OrdinaryPersonNameTests(unittest.TestCase):
+    """A Contacts person whose name or alias is an ordinary word does not refuse a fixed schema (#520 deploy)."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        registry = SqliteProjectRegistry(tmp.name + '/registry')
+        self.fake = FakeProvider()
+        # `Deadline` is a person named with an ordinary word, `date` an ordinary alias, `Zqxa Vor` no word at all.
+        names = Registry(people=[Person('Deadline'), Person('Jane Doe', aliases=('date',)), Person('Zqxa Vor')], projects=[])
+        service = LLMService({'fake': self.fake}, 'fake', names)
+        people = People(registry, PreviewTokens('test'), {'reports': frozenset({'llm'})})
+        self.api = VerbAPI(people, None, {'secret': 'reports'}, lambda *args: None, llm_service=service)
+
+    def call(self, schema: dict[str, Any]) -> Any:
+        self.fake.reply('{"summary":"ok"}')
+        body = {'task_name': 'summary', 'prompt_template': 'Summarize: {input}', 'output_schema': schema,
+                'input_text': 'plain text', 'masking_preset': 'names'}
+        return self.api(Request('POST', '/v1/llm/run', {'Authorization': 'Bearer secret'}, json.dumps(body).encode())).body
+
+    def test_ordinary_person_names_and_aliases_pass_in_the_schema(self) -> None:
+        schema = {'type': 'object', 'properties': {'summary': {'type': 'string'}, 'deadline': {'type': 'string', 'title': 'Deadline'},
+                                                   'date': {'type': 'string', 'title': 'Date'}}, 'required': ['summary']}
+        self.assertEqual(self.call(schema)['outcome'], 'done')
+
+    def test_a_person_name_that_is_no_word_is_still_refused(self) -> None:
+        schema = {'type': 'object', 'properties': {'summary': {'type': 'string', 'description': 'not for Zqxa Vor'}}, 'required': ['summary']}
+        self.assertEqual(self.call(schema)['reason'], 'Unresolved registered names in the output schema')
