@@ -14,7 +14,7 @@ class VersionCommandTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        self.assertEqual(json.loads(result.stdout), {"version": "0.6.17"})
+        self.assertEqual(json.loads(result.stdout), {"version": "0.6.18"})
         self.assertEqual(result.stderr, "")
 
 

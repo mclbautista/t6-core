@@ -4,6 +4,14 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.18] - 2026-11-22
+
+A patch for the watchdog after the 0.6.17 deploy: `llm run` refused its output schema (rule `masking`) because a Contact's full name is an ordinary word that the schema also holds. No migration: the schema stays at 49.
+
+### Fixed
+
+- In a prompt template, output schema or question (`FIXED_TEXT`), a person's name or alias that is an ordinary word is no longer a name, as for Project names and codes since 0.6.9 (#498). Masking of the input is unchanged.
+
 ## [0.6.17] - 2026-11-22
 
 Fewer Notion calls when a Job Order is raised and read back (#512), and planner bitrate fixes. No migration: the schema stays at 48.
