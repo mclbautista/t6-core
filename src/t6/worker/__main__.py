@@ -606,6 +606,7 @@ def frameio_backend(environ: Mapping[str, str]) -> tuple[Tokens, Run]:
     from t6.frameio.reads import FrameioReads
 
     from t6.frameio.reads import SHARE_CACHE_SECONDS, SHARE_SCAN_LIMIT
+    from t6.frameio.share_comments import share_guest_names
     from t6.frameio.share_page import fetch_share_page
 
     reads = FrameioReads(
@@ -616,6 +617,7 @@ def frameio_backend(environ: Mapping[str, str]) -> tuple[Tokens, Run]:
         share_cache_seconds=_number_setting(environ, "T6_FRAMEIO_SHARE_CACHE_SECONDS", SHARE_CACHE_SECONDS, minimum=0),
         share_scan_limit=int(_number_setting(environ, "T6_FRAMEIO_SHARE_SCAN_LIMIT", SHARE_SCAN_LIMIT, minimum=1)),
         page_fetch=fetch_share_page,
+        share_names=share_guest_names,
     )
     return tokens, reads
 

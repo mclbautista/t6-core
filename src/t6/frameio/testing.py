@@ -93,9 +93,11 @@ class FakeFrameio:
         last_viewed_at: str | None = None,
         created_at: str | None = None,
         file_ids: tuple[str, ...] = (),
+        passphrase: str | None = None,
     ) -> None:
         self.shares[project_id].append(
             {
+                "passphrase": passphrase,
                 "inserted_at": created_at,
                 "id": share_id,
                 "name": name,
@@ -218,6 +220,10 @@ class FakeFrameio:
             if stack_id not in self.stacks:
                 return self.not_a_stack_status, {}, {}
             return 200, {}, {"data": {"id": stack_id, "type": "version_stack", "name": stack_id, "parent_id": self.stack_parents[stack_id]}}
+        match = re.fullmatch(r"/shares/([^/]+)", rest)
+        if match:
+            found = [share for rows in self.shares.values() for share in rows if share["id"] == match.group(1)]
+            return (200, {}, {"data": found[0]}) if found else (404, {}, {})
         match = re.fullmatch(r"/projects/([^/]+)", rest)
         if match:
             return (200, {}, {"data": self.projects[match.group(1)]}) if match.group(1) in self.projects else (404, {}, {})

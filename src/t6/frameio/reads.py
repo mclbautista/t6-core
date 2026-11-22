@@ -40,6 +40,7 @@ from t6.frameio.model import (
     clip_remaining_seconds,
     format_timecode,
 )
+from t6.frameio.share_comments import ShareNames
 from t6.frameio.share_page import PageFetch, guest_name
 from t6.media_links import MediaLinks
 from t6.frameio.requests import (
@@ -101,8 +102,10 @@ class FrameioReads:
         clock: Callable[[], float] = time.monotonic,
         workspace_id: str | None = None,
         page_fetch: PageFetch | None = None,
+        share_names: ShareNames | None = None,
     ) -> None:
         self._page_fetch = page_fetch
+        self._share_names = share_names
         self._workspace_id = workspace_id
         self._api = api
         self._links = links
@@ -343,13 +346,23 @@ class FrameioReads:
         return comment if not updates else replace(comment, **updates)  # type: ignore[arg-type]
 
     def _guest_name(self, request: ResolveComment, comment: ResolvedComment) -> str | None:
-        """A guest's name from the public share page that holds the file; None on any failure, so the comment keeps `GUEST_NAME`."""
-        if self._page_fetch is None:
+        """A guest's name from a live share that holds the file; None on any failure, so the comment keeps `GUEST_NAME`.
+
+        First the share's comments from Frame.io's GraphQL API (unlocked with the share's passphrase when it has one),
+        then the share page's embedded JSON.
+        """
+        if self._page_fetch is None and self._share_names is None:
             return None
         try:
             now = self._now()
             for share in self.share_links(request.frameio_project_id):
-                if share.url is None or not share.live(now) or not share.file_ids or comment.file_id not in share.file_ids:
+                if not share.live(now) or not share.file_ids or comment.file_id not in share.file_ids:
+                    continue
+                if self._share_names is not None:
+                    names = self._share_names(share.id, comment.file_id, self._share_passphrase(share.id))
+                    if comment.id in names:
+                        return names[comment.id]
+                if self._page_fetch is None or share.url is None:
                     continue
                 page = self._page_fetch(share.url)
                 if page is not None and (name := guest_name(page, comment.id)) is not None:
@@ -357,6 +370,11 @@ class FrameioReads:
         except Exception:  # noqa: BLE001 - never lose or delay the comment for a name
             return None
         return None
+
+    def _share_passphrase(self, share_id: str) -> str | None:
+        """The share's passphrase from the v4 share object, or None when it has none."""
+        data = self._api.get(f"{self._account()}/shares/{_id(share_id)}").get("data")
+        return _text(data.get("passphrase")) if isinstance(data, dict) else None
 
     def _clip_metadata(self, account_id: str, file_id: str) -> tuple[float | None, float | None]:
         """The file's `Duration` (seconds) and `Frame Rate` (fps), or None when missing or unreadable."""
