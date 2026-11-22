@@ -2263,11 +2263,21 @@ be raised with no `owner`, and any Concern may have an empty `waiting_on`: the
 `person` raise still needs an owner. A Concern that is not closed is unique by
 Project and `text` (whitespace collapsed, case folded); a second one is refused
 with rule `duplicate`. `concern get` returns the new fields. `concern list
---open` returns every Concern that is not closed (`open`, `quiet`, `expired`),
+--open` returns every Concern that is not closed (`open` or `snoozed`; rows an
+older release marked `quiet` or `expired` are still returned as stored),
 oldest first, with `age_seconds` and `chronic` (open longer than
 `CHRONIC_DAYS`, 28); pass exactly one of `--raise-at-psr` and `--open`. `text`
 is masked like `waiting_on` and `anchor` for a caller without real-name access;
 reading it needs the `unmasked` permission.
+
+A Concern never goes quiet or expires on its own: no timer changes its state.
+`concern snooze` (role `operator`, preview and confirm, `idempotency_key`) sets
+an open Concern to `snoozed`. It is for a human operator only: the automatic
+actor, every service token and every internal actor are refused with rule
+`human_only`, and a Person without `operator` is refused as `permission`. A
+snoozed Concern stays in `concern list --open`, is not closed or woken by
+`concern observe` or `concern scan`, and `concern reopen` wakes it. Resolve
+still closes it.
 
 `concern observe` is how an app hands over the findings of one run (role
 `coordinator`; the reports service also needs `unmasked` to read the reply
@@ -2280,9 +2290,8 @@ that could not be read. The call is one step (no preview) and needs an
 nothing twice. At most 500 findings and 100 unavailable pairs. For each finding
 the API decides: new (no Concern that is not closed has the text in the Project:
 a Concern opens with `opened_at` the run date), known (evidence is added, an
-open or quiet or expired Concern is open again, `opened_at` is kept), or, for a
-Concern the run did not find, not seen (nothing changes; the silence timers go
-on). The same text after a Concern was closed is a new Concern with a new age.
+open or quiet or expired Concern is open again, a snoozed one stays snoozed, `opened_at` is kept), or, for a
+Concern the run did not find, not seen (nothing changes). The same text after a Concern was closed is a new Concern with a new age.
 A Concern of source `person`, `pm_notes_scan` or `date_rule` is never created,
 aged or closed by the run; it is listed in `open`. A finding whose `owner` is not
 an active coordinator of the Project is skipped, a finding with no owner is not.

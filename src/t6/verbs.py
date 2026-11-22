@@ -749,6 +749,12 @@ class ConcernReopenInput(BaseModel):
     confirm: str | None = None
 
 
+class ConcernSnoozeInput(BaseModel):
+    concern: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
 class ConcernScanInput(BaseModel):
     project: str
     owner: str
@@ -832,13 +838,13 @@ class ConcernGetOutput(BaseModel):
     concern: dict[str, Any]
 
 
-def concern_write(inputs: ConcernRaiseInput | ConcernNoteInput | ConcernResolveInput | ConcernReopenInput | ConcernRecordMessageInput, open_notion: Callable[..., Any]) -> Outcome:
+def concern_write(inputs: ConcernRaiseInput | ConcernNoteInput | ConcernResolveInput | ConcernReopenInput | ConcernSnoozeInput | ConcernRecordMessageInput, open_notion: Callable[..., Any]) -> Outcome:
     from t6.concern import ConcernStore
     from t6.preview import PreviewTokens
     key = os.environ.get('T6_PREVIEW_SIGNING_KEY', '')
     if not key:
         return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
-    verb = {ConcernRaiseInput: 'raise', ConcernNoteInput: 'note', ConcernResolveInput: 'resolve', ConcernReopenInput: 'reopen', ConcernRecordMessageInput: 'record-message'}[type(inputs)]
+    verb = {ConcernRaiseInput: 'raise', ConcernNoteInput: 'note', ConcernResolveInput: 'resolve', ConcernReopenInput: 'reopen', ConcernSnoozeInput: 'snooze', ConcernRecordMessageInput: 'record-message'}[type(inputs)]
     values = inputs.model_dump(exclude={'idempotency_key', 'confirm'})
     return ConcernStore(_people().registry, PreviewTokens(key)).write(verb, values, actor=_actor.get(), idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
 
@@ -2652,7 +2658,8 @@ VERBS = (
     Verb("concern", "raise", "Raise a Concern", (), ConcernRaiseInput, ConcernOutput, "coordinator", "Record a line waiting on a party.", concern_write),
     Verb("concern", "note", "Add a Concern note", (), ConcernNoteInput, ConcernOutput, "coordinator", "Notes are append-only.", concern_write),
     Verb("concern", "resolve", "Resolve a Concern", (), ConcernResolveInput, ConcernOutput, "coordinator", "A person resolves the Concern.", concern_write),
-    Verb("concern", "reopen", "Reopen a Concern", (), ConcernReopenInput, ConcernOutput, "coordinator", "Keep its original age.", concern_write),
+    Verb("concern", "reopen", "Reopen a Concern", (), ConcernReopenInput, ConcernOutput, "coordinator", "Keep its original age. Also wakes a snoozed Concern.", concern_write),
+    Verb("concern", "snooze", "Snooze a Concern", (), ConcernSnoozeInput, ConcernOutput, "operator", "A human operator only: refuses the automatic actor and every service. A snoozed Concern stays open, is never woken or closed by the scan or a brief run, and never goes quiet or expires.", concern_write),
     Verb("jo", "get", "Get a Job Order", (), JoGetInput, JoGetOutput, "reader", "Read a Job Order.", None, read_only=True),
     Verb("jo", "raise", "Raise a Job Order", (), JoRaiseInput, JoWriteOutput, "coordinator", "Create a Job Order.", jo_write),
     Verb("jo", "assign", "Assign a Job Order", (), JoAssignInput, JoWriteOutput, "coordinator", "The Person must differ from the current assignee.", jo_write),

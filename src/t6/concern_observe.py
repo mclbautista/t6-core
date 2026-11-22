@@ -118,7 +118,6 @@ def _apply(db: Any, store: ConcernStore, run_date: str, findings: list[dict[str,
         if row is None:
             concern = _concern_id(db, project, key, run_date)
             _insert(db, concern, project, finding.get('owner'), finding.get('waiting_on'), text, run_date, opened_at, now, source)
-            store._schedule(db, concern, now, 1)
             store._log(db, project, concern, AUTO_ACTOR, 'concern_auto_raise', now, None, {'source': source, 'run_date': run_date}, f'Concern raised from the {source} findings')
             counts['new'] += 1
         else:
@@ -126,8 +125,7 @@ def _apply(db: Any, store: ConcernStore, run_date: str, findings: list[dict[str,
             counts['known'] += 1
             if existing in OBSERVED:  # a Concern of a person, the scan or a date rule is left alone
                 label = source if SOURCES.index(source) < SOURCES.index(existing) else existing
-                db.execute("UPDATE concerns SET text = ?, source = ?, evidence_at = ?, state = 'open', revision = revision + 1 WHERE id = ?", (text, label, now, concern))
-                store._schedule(db, concern, now, revision + 1)
+                db.execute("UPDATE concerns SET text = ?, source = ?, evidence_at = ?, state = CASE WHEN state = 'snoozed' THEN state ELSE 'open' END, revision = revision + 1 WHERE id = ?", (text, label, now, concern))
                 if state != 'open':
                     store._log(db, project, concern, AUTO_ACTOR, 'concern_auto_continue', now, state, {'run_date': run_date}, 'Concern found again in the findings')
         seen.add(concern)

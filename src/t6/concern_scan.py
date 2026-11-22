@@ -113,15 +113,13 @@ class ConcernScanner:
                         continue
                     _insert(db, concern, project, owner, waiting, quote, as_of, min(now, datetime.fromisoformat(as_of).replace(tzinfo=MANILA).timestamp()), now, 'pm_notes_scan')
                     assert isinstance(concern, str)
-                    self.store._schedule(db, concern, now, 1)
                     self._pm_log(db, project, concern, 'concern_auto_raise', quote, now, None)
                     done['raised'] += 1
                 elif choice == 'continues':
                     assert isinstance(concern, str)
                     state, revision = row[0], row[1]
-                    db.execute("UPDATE concerns SET as_of = ?, evidence_at = ?, state = 'open', revision = revision + 1 WHERE id = ?", (as_of, now, concern))
+                    db.execute("UPDATE concerns SET as_of = ?, evidence_at = ?, state = CASE WHEN state = 'snoozed' THEN state ELSE 'open' END, revision = revision + 1 WHERE id = ?", (as_of, now, concern))
                     db.execute('DELETE FROM concern_pm_pending WHERE concern_id = ?', (concern,))
-                    self.store._schedule(db, concern, now, revision + 1)
                     self._pm_log(db, project, concern, 'concern_auto_continue', quote, now, state)
                     done['continued'] += 1
                 elif choice == 'settles' and row[0] != 'closed':
