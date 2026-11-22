@@ -39,7 +39,8 @@ def stamp_handler(writer: StampWriter) -> Handler:
     """Write the job's stamp; the timeline as Resolve shows it after, or `Refused` with the adapter's reason."""
     def run(job: WorkerJob) -> JsonValue:
         payload = job.payload
-        written = writer.stamp(str(payload['resolve_project']), str(payload['timeline']), str(payload['stamp']))
+        replaces = payload.get('replaces')
+        written = writer.stamp(str(payload['resolve_project']), str(payload['timeline']), str(payload['stamp']), replaces=None if replaces is None else str(replaces))
         if isinstance(written, StampFailure):
             raise Refused(written.reason)
         return {'uuid': written.uuid, 'name': written.name, 'stamp': written.stamp}

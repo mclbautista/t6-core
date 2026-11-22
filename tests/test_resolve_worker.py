@@ -48,9 +48,9 @@ class Flow:
                 return response.status, dict(response.body) if response.body else {}
         self.worker = Worker(ResolveQueue(InProcess(), 'resolve-secret'), 'resolve', {'resolve.stamp': stamp_handler(ScriptingTimelines(lambda: flow.resolve))})
 
-    def enqueue(self, timeline: str = 'Ep2', stamp: str = NEW) -> int:
+    def enqueue(self, timeline: str = 'Ep2', stamp: str = NEW, replaces: str | None = None) -> int:
         with self.registry._transaction() as db:
-            return self.jobs.enqueue(db, project='t6p_synthetic', resolve_project=REF, timeline=timeline, stamp=stamp)
+            return self.jobs.enqueue(db, project='t6p_synthetic', resolve_project=REF, timeline=timeline, stamp=stamp, replaces=replaces)
 
     def post(self, path: str, data: dict[str, Any], secret: str = 'resolve-secret') -> tuple[int, Any]:
         response = self.api(Request('POST', path, {'Authorization': 'Bearer ' + secret}, json.dumps(data).encode()))
@@ -73,6 +73,15 @@ class StampJobTests(unittest.TestCase):
         self.assertEqual(job.state, 'done')
         self.assertEqual(job.result, {'status': 'ok', 'value': {'outcome': 'done', 'result': {'job_id': job_id, 'timeline': {'uuid': 'u2', 'name': 'Ep2', 'stamp': NEW}}}})
         self.assertFalse(self.flow.worker.run_once())
+
+    def test_a_restamp_job_replaces_the_duplicated_stamp_on_the_copy(self) -> None:
+        copy = FakeTimeline('u3', 'Ep1 copy', STAMP)
+        self.flow.manager.projects[REF].timelines.append(copy)
+        job_id = self.flow.enqueue('Ep1 copy', NEW, replaces=STAMP)
+        self.assertEqual(self.flow.job(job_id).payload['replaces'], STAMP)
+        self.assertTrue(self.flow.worker.run_once())
+        self.assertEqual((copy.markers[0]['customData'], self.flow.ep1.markers[0]['customData']), (NEW, STAMP))
+        self.assertEqual(self.flow.job(job_id).state, 'done')
 
     def test_resolve_not_running_fails_the_job_for_good_and_queue_failed_shows_it(self) -> None:
         self.flow.resolve = None

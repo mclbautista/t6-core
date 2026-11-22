@@ -61,7 +61,7 @@ class RegistryOpenTests(unittest.TestCase):
 
     def test_the_previous_release_opens_a_file_with_the_index(self) -> None:
         from t6.registry import sqlite as migrations
-        with patch.object(migrations, '_MIGRATIONS', migrations._MIGRATIONS[:-1]):
+        with patch.object(migrations, '_MIGRATIONS', migrations._MIGRATIONS[:-2]):
             SqliteProjectRegistry(self.path)
         self.assertEqual(self.counts(), (ROWS, ROWS))
 

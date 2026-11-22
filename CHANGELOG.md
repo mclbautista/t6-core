@@ -7,10 +7,12 @@ All notable changes to this project are documented here, following [Keep a Chang
 ### Added
 
 - `t6.resolve.timelines.ScriptingTimelines`: the real `TimelineReader` over the Resolve scripting API, and the stamp writer. It writes the `t6t_` marker on a timeline's first frame (or updates it to re-stamp a duplicate), reads it back and saves; it refuses a timeline with a different stamp or a stamp already on another timeline, and gives a reason when the project cannot be loaded (#580).
+- Verb `timeline restamp <project> <timeline> --stamp <t6t_>` (staff, previewed): the duplicate of a Timeline gets a new `t6t_` ID, is recorded as a pending Timeline and a `resolve.stamp` job (with `replaces`) re-stamps it (#582).
 
 ### Changed
 
 - ADR 0002 rule 10 allows one Resolve write: the Resolve worker writes the `t6t_` stamp marker on a timeline's first frame, so stamping is no longer manual (#578).
+- `timeline link` stamps by code: confirm records the Timeline `pending` and queues one `resolve.stamp` job in the same transaction (a retried confirm queues nothing more); the job's result marks it `stamped` or `failed` with the reason, and linking a failed Timeline again queues it again. `timeline list` shows `stamp_state` and `stamp_reason`. Project Start's manual step is now "Resolve timelines" (create them by hand; `timeline link` writes the stamp). Migration 48 adds the stamp state to `timelines`; rows linked before count as `stamped`. It is not forward-only (#582).
 
 ## [0.6.15] - 2026-11-22
 
