@@ -11,36 +11,36 @@ ARRI Alexa Mini LF,4448 x 1856,ARRIRAW (Uncompressed),23.976,2415,Planner Sheet 
 ARRI Alexa Mini LF,3840 x 2160,ARRIRAW (Uncompressed),23.976,2415,Planner Sheet CAMERAS DATABASE
 ARRI Alexa Mini LF,2880 x 2880,ARRIRAW (Uncompressed),23.976,2415,Planner Sheet CAMERAS DATABASE
 ARRI Alexa Mini LF,3424 x 2202,ARRIRAW (Uncompressed),23.976,2207,Planner Sheet CAMERAS DATABASE
-ARRI Alexa Mini LF,4448 x 3096 (Open Gate),ARRIRAW (HDE),23.976,,
-ARRI Alexa Mini LF,4448 x 1856,ARRIRAW (HDE),23.976,,
-ARRI Alexa Mini LF,3840 x 2160,ARRIRAW (HDE),23.976,,
-ARRI Alexa Mini LF,2880 x 2880,ARRIRAW (HDE),23.976,,
-ARRI Alexa Mini LF,3424 x 2202,ARRIRAW (HDE),23.976,,
+ARRI Alexa Mini LF,4448 x 3096 (Open Gate),ARRIRAW (HDE),23.976,2400,Calculated: 60% of ARRI Alexa Mini LF uncompressed ARRIRAW (4000 Mbps) per ARRI CODEX HDE 40% reduction spec
+ARRI Alexa Mini LF,4448 x 1856,ARRIRAW (HDE),23.976,1449,Calculated: 60% of ARRI Alexa Mini LF uncompressed ARRIRAW (2415 Mbps) per ARRI CODEX HDE 40% reduction spec
+ARRI Alexa Mini LF,3840 x 2160,ARRIRAW (HDE),23.976,1449,Calculated: 60% of ARRI Alexa Mini LF uncompressed ARRIRAW (2415 Mbps) per ARRI CODEX HDE 40% reduction spec
+ARRI Alexa Mini LF,2880 x 2880,ARRIRAW (HDE),23.976,1449,Calculated: 60% of ARRI Alexa Mini LF uncompressed ARRIRAW (2415 Mbps) per ARRI CODEX HDE 40% reduction spec
+ARRI Alexa Mini LF,3424 x 2202,ARRIRAW (HDE),23.976,1324,Calculated: 60% of ARRI Alexa Mini LF uncompressed ARRIRAW (2207 Mbps) per ARRI CODEX HDE 40% reduction spec
 ARRI Alexa Mini LF,4448 x 3096 (Open Gate),ProRes 4444 XQ,23.976,1350,Planner Sheet CAMERAS DATABASE
-ARRI Alexa Mini LF,4448 x 1856,ProRes 4444 XQ,23.976,,
+ARRI Alexa Mini LF,4448 x 1856,ProRes 4444 XQ,23.976,1584,Calculated: Apple ProRes White Paper UHD 23.976p (1591 Mbps) scaled by pixel area (4448x1856 / 3840x2160)
 ARRI Alexa Mini LF,3840 x 2160,ProRes 4444 XQ,23.976,1858,Planner Sheet CAMERAS DATABASE
-ARRI Alexa Mini LF,1920 x 1080,ProRes 4444 XQ,23.976,,
-ARRI Alexa Mini LF,2048 x 1152,ProRes 4444 XQ,23.976,,
-ARRI Alexa Mini LF,2880 x 2880,ProRes 4444 XQ,23.976,,
-ARRI Alexa Mini LF,3200 x 1800,ProRes 4444 XQ,23.976,,
-ARRI Alexa Mini LF,2880 x 2160,ProRes 4444 XQ,23.976,,
-ARRI Alexa Mini LF,4448 x 3096 (Open Gate),ProRes 4444,23.976,,
-ARRI Alexa Mini LF,4448 x 1856,ProRes 4444,23.976,,
-ARRI Alexa Mini LF,3840 x 2160,ProRes 4444,23.976,,
-ARRI Alexa Mini LF,1920 x 1080,ProRes 4444,23.976,,
-ARRI Alexa Mini LF,2048 x 1152,ProRes 4444,23.976,,
-ARRI Alexa Mini LF,2880 x 2880,ProRes 4444,23.976,,
+ARRI Alexa Mini LF,1920 x 1080,ProRes 4444 XQ,23.976,396,"Apple ProRes White Paper (Apr 2022), 1920x1080 23.976p target rate"
+ARRI Alexa Mini LF,2048 x 1152,ProRes 4444 XQ,23.976,453,Calculated: Apple ProRes White Paper UHD 23.976p (1591 Mbps) scaled by pixel area (2048x1152 / 3840x2160)
+ARRI Alexa Mini LF,2880 x 2880,ProRes 4444 XQ,23.976,1591,Calculated: Apple ProRes White Paper UHD 23.976p (1591 Mbps) scaled by pixel area (2880x2880 / 3840x2160)
+ARRI Alexa Mini LF,3200 x 1800,ProRes 4444 XQ,23.976,1105,Calculated: Apple ProRes White Paper UHD 23.976p (1591 Mbps) scaled by pixel area (3200x1800 / 3840x2160)
+ARRI Alexa Mini LF,2880 x 2160,ProRes 4444 XQ,23.976,1193,Calculated: Apple ProRes White Paper UHD 23.976p (1591 Mbps) scaled by pixel area (2880x2160 / 3840x2160)
+ARRI Alexa Mini LF,4448 x 3096 (Open Gate),ProRes 4444,23.976,1760,Calculated: Apple ProRes White Paper UHD 23.976p (1060 Mbps) scaled by pixel area (4448x3096 / 3840x2160)
+ARRI Alexa Mini LF,4448 x 1856,ProRes 4444,23.976,1055,Calculated: Apple ProRes White Paper UHD 23.976p (1060 Mbps) scaled by pixel area (4448x1856 / 3840x2160)
+ARRI Alexa Mini LF,3840 x 2160,ProRes 4444,23.976,1060,"Apple ProRes White Paper (Apr 2022), 3840x2160 23.976p target rate"
+ARRI Alexa Mini LF,1920 x 1080,ProRes 4444,23.976,264,"Apple ProRes White Paper (Apr 2022), 1920x1080 23.976p target rate"
+ARRI Alexa Mini LF,2048 x 1152,ProRes 4444,23.976,302,Calculated: Apple ProRes White Paper UHD 23.976p (1060 Mbps) scaled by pixel area (2048x1152 / 3840x2160)
+ARRI Alexa Mini LF,2880 x 2880,ProRes 4444,23.976,1060,Calculated: Apple ProRes White Paper UHD 23.976p (1060 Mbps) scaled by pixel area (2880x2880 / 3840x2160)
 ARRI Alexa Mini LF,3200 x 1800,ProRes 4444,23.976,830,Planner Sheet CAMERAS DATABASE
-ARRI Alexa Mini LF,2880 x 2160,ProRes 4444,23.976,,
-ARRI Alexa Mini LF,4448 x 3096 (Open Gate),ProRes 422 HQ,23.976,,
-ARRI Alexa Mini LF,4448 x 1856,ProRes 422 HQ,23.976,,
-ARRI Alexa Mini LF,3840 x 2160,ProRes 422 HQ,23.976,,
-ARRI Alexa Mini LF,1920 x 1080,ProRes 422 HQ,23.976,,
-ARRI Alexa Mini LF,2048 x 1152,ProRes 422 HQ,23.976,,
-ARRI Alexa Mini LF,2880 x 2880,ProRes 422 HQ,23.976,,
-ARRI Alexa Mini LF,3200 x 1800,ProRes 422 HQ,23.976,,
-ARRI Alexa Mini LF,2880 x 2160,ProRes 422 HQ,23.976,,
-ARRI Amira,3840 x 2160,ProRes 4444,23.976,,
+ARRI Alexa Mini LF,2880 x 2160,ProRes 4444,23.976,795,Calculated: Apple ProRes White Paper UHD 23.976p (1060 Mbps) scaled by pixel area (2880x2160 / 3840x2160)
+ARRI Alexa Mini LF,4448 x 3096 (Open Gate),ProRes 422 HQ,23.976,1174,Calculated: Apple ProRes White Paper UHD 23.976p (707 Mbps) scaled by pixel area (4448x3096 / 3840x2160)
+ARRI Alexa Mini LF,4448 x 1856,ProRes 422 HQ,23.976,704,Calculated: Apple ProRes White Paper UHD 23.976p (707 Mbps) scaled by pixel area (4448x1856 / 3840x2160)
+ARRI Alexa Mini LF,3840 x 2160,ProRes 422 HQ,23.976,707,"Apple ProRes White Paper (Apr 2022), 3840x2160 23.976p target rate"
+ARRI Alexa Mini LF,1920 x 1080,ProRes 422 HQ,23.976,176,"Apple ProRes White Paper (Apr 2022), 1920x1080 23.976p target rate"
+ARRI Alexa Mini LF,2048 x 1152,ProRes 422 HQ,23.976,201,Calculated: Apple ProRes White Paper UHD 23.976p (707 Mbps) scaled by pixel area (2048x1152 / 3840x2160)
+ARRI Alexa Mini LF,2880 x 2880,ProRes 422 HQ,23.976,707,Calculated: Apple ProRes White Paper UHD 23.976p (707 Mbps) scaled by pixel area (2880x2880 / 3840x2160)
+ARRI Alexa Mini LF,3200 x 1800,ProRes 422 HQ,23.976,491,Calculated: Apple ProRes White Paper UHD 23.976p (707 Mbps) scaled by pixel area (3200x1800 / 3840x2160)
+ARRI Alexa Mini LF,2880 x 2160,ProRes 422 HQ,23.976,530,Calculated: Apple ProRes White Paper UHD 23.976p (707 Mbps) scaled by pixel area (2880x2160 / 3840x2160)
+ARRI Amira,3840 x 2160,ProRes 4444,23.976,1060,"Apple ProRes White Paper (Apr 2022), 3840x2160 23.976p target rate"
 Blackmagic PYXIS 12K,12288 x 8040 (12K 3:2 Open Gate),Blackmagic RAW Constant Bitrate 3:1,23.976,1194,Planner Sheet CAMERAS DATABASE
 Blackmagic PYXIS 12K,12288 x 6912 (12K 16:9),Blackmagic RAW Constant Bitrate 3:1,23.976,1194,Planner Sheet CAMERAS DATABASE
 Blackmagic PYXIS 12K,12288 x 6480 (12K 17:9),Blackmagic RAW Constant Bitrate 3:1,23.976,1194,Planner Sheet CAMERAS DATABASE
@@ -223,37 +223,33 @@ Blackmagic PYXIS 12K,4096 x 1704 (4K 2.4:1),Blackmagic RAW Constant Quality Q5,2
 Blackmagic PYXIS 12K,3216 x 2680 (4K 6:5),Blackmagic RAW Constant Quality Q5,23.976,202,Planner Sheet CAMERAS DATABASE
 Blackmagic PYXIS 6K,6048 x 4032 (6K Open Gate 3:2),Blackmagic RAW Constant Quality Q0,23.976,555,Planner Sheet CAMERAS DATABASE
 RED Komodo X,6144 x 3240,RECODE RAW HQ,23.976,1910.09,"https://docs.red.com/955-0219/955-0219_V2.0+Rev-A+RED+PS,+KOMODO-X+Operation+Guide/Content/4_Menus/02_ProjSet/R3D_Quality.htm"
-RED Komodo X,5760 x 3240,RECODE RAW HQ,23.976,,
-RED Komodo X,4800 x 2700,RECODE RAW HQ,23.976,,
-RED Komodo X,3840 x 2160,RECODE RAW HQ,23.976,,
+RED Komodo X,5760 x 3240,RECODE RAW HQ,23.976,1792,Calculated: RED KOMODO-X 6K 17:9 REDCODE RAW HQ (1912 Mbps) scaled by pixel area (5760x3240 / 6144x3240)
+RED Komodo X,4800 x 2700,RECODE RAW HQ,23.976,1245,Calculated: RED KOMODO-X 6K 17:9 REDCODE RAW HQ (1912 Mbps) scaled by pixel area (4800x2700 / 6144x3240)
+RED Komodo X,3840 x 2160,RECODE RAW HQ,23.976,797,Calculated: RED KOMODO-X 6K 17:9 REDCODE RAW HQ (1912 Mbps) scaled by pixel area (3840x2160 / 6144x3240)
 RED Komodo X,6144 x 3240,RECODE RAW MQ,23.976,1342.66,"https://docs.red.com/955-0219/955-0219_V2.0+Rev-A+RED+PS,+KOMODO-X+Operation+Guide/Content/4_Menus/02_ProjSet/R3D_Quality.htm"
-RED Komodo X,5760 x 3240,RECODE RAW MQ,23.976,,
-RED Komodo X,4800 x 2700,RECODE RAW MQ,23.976,,
-RED Komodo X,3840 x 2160,RECODE RAW MQ,23.976,,
+RED Komodo X,5760 x 3240,RECODE RAW MQ,23.976,1260,Calculated: RED KOMODO-X 6K 17:9 REDCODE RAW MQ (1344 Mbps) scaled by pixel area (5760x3240 / 6144x3240)
+RED Komodo X,4800 x 2700,RECODE RAW MQ,23.976,875,Calculated: RED KOMODO-X 6K 17:9 REDCODE RAW MQ (1344 Mbps) scaled by pixel area (4800x2700 / 6144x3240)
+RED Komodo X,3840 x 2160,RECODE RAW MQ,23.976,560,Calculated: RED KOMODO-X 6K 17:9 REDCODE RAW MQ (1344 Mbps) scaled by pixel area (3840x2160 / 6144x3240)
 RED Komodo X,6144 x 3240,RECODE RAW LQ,23.976,839.16,"https://docs.red.com/955-0219/955-0219_V2.0+Rev-A+RED+PS,+KOMODO-X+Operation+Guide/Content/4_Menus/02_ProjSet/R3D_Quality.htm"
-RED Komodo X,5760 x 3240,RECODE RAW LQ,23.976,,
-RED Komodo X,4800 x 2700,RECODE RAW LQ,23.976,,
-RED Komodo X,3840 x 2160,RECODE RAW LQ,23.976,,
+RED Komodo X,5760 x 3240,RECODE RAW LQ,23.976,788,Calculated: RED KOMODO-X 6K 17:9 REDCODE RAW LQ (840 Mbps) scaled by pixel area (5760x3240 / 6144x3240)
+RED Komodo X,4800 x 2700,RECODE RAW LQ,23.976,547,Calculated: RED KOMODO-X 6K 17:9 REDCODE RAW LQ (840 Mbps) scaled by pixel area (4800x2700 / 6144x3240)
+RED Komodo X,3840 x 2160,RECODE RAW LQ,23.976,350,Calculated: RED KOMODO-X 6K 17:9 REDCODE RAW LQ (840 Mbps) scaled by pixel area (3840x2160 / 6144x3240)
 RED Komodo X,6144 x 3240,RECODE RAW ELQ,23.976,519.48,"https://docs.red.com/955-0219/955-0219_V2.0+Rev-A+RED+PS,+KOMODO-X+Operation+Guide/Content/4_Menus/02_ProjSet/R3D_Quality.htm"
-RED Komodo X,5760 x 3240,RECODE RAW ELQ,23.976,,
-RED Komodo X,4800 x 2700,RECODE RAW ELQ,23.976,,
-RED Komodo X,3840 x 2160,RECODE RAW ELQ,23.976,,
-RED Komodo,5120 x 2700,RECODE RAW HQ,23.976,,
-RED Komodo,4096 x 2160,RECODE RAW HQ,23.976,,
-RED Komodo,3840 x 2160,RECODE RAW HQ,23.976,,
-RED Komodo,2048 x 1080,RECODE RAW HQ,23.976,,
-RED Komodo,5120 x 2700,RECODE RAW MQ,23.976,,
-RED Komodo,4096 x 2160,RECODE RAW MQ,23.976,,
-RED Komodo,3840 x 2160,RECODE RAW MQ,23.976,,
-RED Komodo,2048 x 1080,RECODE RAW MQ,23.976,,
-RED Komodo,5120 x 2700,RECODE RAW LQ,23.976,,
-RED Komodo,4096 x 2160,RECODE RAW LQ,23.976,,
-RED Komodo,3840 x 2160,RECODE RAW LQ,23.976,,
-RED Komodo,2048 x 1080,RECODE RAW LQ,23.976,,
-RED Komodo,5120 x 2700,RECODE RAW ELQ,23.976,,
-RED Komodo,4096 x 2160,RECODE RAW ELQ,23.976,,
-RED Komodo,3840 x 2160,RECODE RAW ELQ,23.976,,
-RED Komodo,2048 x 1080,RECODE RAW ELQ,23.976,,
+RED Komodo X,5760 x 3240,RECODE RAW ELQ,23.976,488,Calculated: RED KOMODO-X 6K 17:9 REDCODE RAW ELQ (520 Mbps) scaled by pixel area (5760x3240 / 6144x3240)
+RED Komodo X,4800 x 2700,RECODE RAW ELQ,23.976,339,Calculated: RED KOMODO-X 6K 17:9 REDCODE RAW ELQ (520 Mbps) scaled by pixel area (4800x2700 / 6144x3240)
+RED Komodo X,3840 x 2160,RECODE RAW ELQ,23.976,217,Calculated: RED KOMODO-X 6K 17:9 REDCODE RAW ELQ (520 Mbps) scaled by pixel area (3840x2160 / 6144x3240)
+RED Komodo,5120 x 2700,RECODE RAW HQ,23.976,1556,Calculated: RED KOMODO 6K 17:9 REDCODE RAW HQ (2240 Mbps per RED white paper) scaled by pixel area (5120x2700 / 6144x3240); cross-checked vs 512GB runtime table
+RED Komodo,4096 x 2160,RECODE RAW HQ,23.976,996,Calculated: RED KOMODO 6K 17:9 REDCODE RAW HQ (2240 Mbps per RED white paper) scaled by pixel area (4096x2160 / 6144x3240); cross-checked vs 512GB runtime table
+RED Komodo,3840 x 2160,RECODE RAW HQ,23.976,933,Calculated: RED KOMODO 6K 17:9 REDCODE RAW HQ (2240 Mbps per RED white paper) scaled by pixel area (3840x2160 / 6144x3240); cross-checked vs 512GB runtime table
+RED Komodo,2048 x 1080,RECODE RAW HQ,23.976,249,Calculated: RED KOMODO 6K 17:9 REDCODE RAW HQ (2240 Mbps per RED white paper) scaled by pixel area (2048x1080 / 6144x3240); cross-checked vs 512GB runtime table
+RED Komodo,5120 x 2700,RECODE RAW MQ,23.976,972,Calculated: RED KOMODO 6K 17:9 REDCODE RAW MQ (1400 Mbps per RED white paper) scaled by pixel area (5120x2700 / 6144x3240); cross-checked vs 512GB runtime table
+RED Komodo,4096 x 2160,RECODE RAW MQ,23.976,622,Calculated: RED KOMODO 6K 17:9 REDCODE RAW MQ (1400 Mbps per RED white paper) scaled by pixel area (4096x2160 / 6144x3240); cross-checked vs 512GB runtime table
+RED Komodo,3840 x 2160,RECODE RAW MQ,23.976,583,Calculated: RED KOMODO 6K 17:9 REDCODE RAW MQ (1400 Mbps per RED white paper) scaled by pixel area (3840x2160 / 6144x3240); cross-checked vs 512GB runtime table
+RED Komodo,2048 x 1080,RECODE RAW MQ,23.976,156,Calculated: RED KOMODO 6K 17:9 REDCODE RAW MQ (1400 Mbps per RED white paper) scaled by pixel area (2048x1080 / 6144x3240); cross-checked vs 512GB runtime table
+RED Komodo,5120 x 2700,RECODE RAW LQ,23.976,611,Calculated: RED KOMODO 6K 17:9 REDCODE RAW LQ (880 Mbps per RED white paper) scaled by pixel area (5120x2700 / 6144x3240); cross-checked vs 512GB runtime table
+RED Komodo,4096 x 2160,RECODE RAW LQ,23.976,391,Calculated: RED KOMODO 6K 17:9 REDCODE RAW LQ (880 Mbps per RED white paper) scaled by pixel area (4096x2160 / 6144x3240); cross-checked vs 512GB runtime table
+RED Komodo,3840 x 2160,RECODE RAW LQ,23.976,367,Calculated: RED KOMODO 6K 17:9 REDCODE RAW LQ (880 Mbps per RED white paper) scaled by pixel area (3840x2160 / 6144x3240); cross-checked vs 512GB runtime table
+RED Komodo,2048 x 1080,RECODE RAW LQ,23.976,98,Calculated: RED KOMODO 6K 17:9 REDCODE RAW LQ (880 Mbps per RED white paper) scaled by pixel area (2048x1080 / 6144x3240); cross-checked vs 512GB runtime table
 Sony Venice 2,8640 x 5760,CV X-OCN XT,23.976,5345,https://pro.sony/s3/2018/06/01110529/X-OCN-Workflow-Benefits-2023.pdf
 Sony Venice 2,5792 x 4276,CV X-OCN XT,23.976,2676,https://pro.sony/s3/2018/06/01110529/X-OCN-Workflow-Benefits-2023.pdf
 Sony Venice 2,5792 x 3056,CV X-OCN XT,23.976,1919,https://pro.sony/s3/2018/06/01110529/X-OCN-Workflow-Benefits-2023.pdf
@@ -263,12 +259,8 @@ Sony Venice 2,5792 x 3056,CV X-OCN ST,23.976,1313,https://pro.sony/s3/2018/06/01
 Sony Venice 2,8640 x 5760,CV X-OCN LT,23.976,2155,https://pro.sony/s3/2018/06/01110529/X-OCN-Workflow-Benefits-2023.pdf
 Sony Venice 2,5792 x 4276,CV X-OCN LT,23.976,1079,https://pro.sony/s3/2018/06/01110529/X-OCN-Workflow-Benefits-2023.pdf
 Sony Venice 2,5792 x 3056,CV X-OCN LT,23.976,773,https://pro.sony/s3/2018/06/01110529/X-OCN-Workflow-Benefits-2023.pdf
-Sony Burano,8632 x 4856,CV X-OCN XT,23.976,,
-Sony Burano,5760 x 3240,CV X-OCN XT,23.976,,
-Sony Burano,8632 x 4856,CV X-OCN ST,23.976,,
-Sony Burano,5760 x 3240,CV X-OCN ST,23.976,,
-Sony Burano,8632 x 4856,CV X-OCN LT,23.976,,
-Sony Burano,5760 x 3240,CV X-OCN LT,23.976,,
+Sony Burano,8632 x 4856,CV X-OCN LT,23.976,1855,Sony BURANO MPC-2610 Operating Instructions (via PostBase): ~1855 Mbps at 24p (835 GB/hr)
+Sony Burano,5760 x 3240,CV X-OCN LT,23.976,831,Sony BURANO MPC-2610 Operating Instructions (via PostBase): ~831 Mbps at 24p (374 GB/hr)
 Sony FX3,3840 x 2160,"XAVC S-I (All-Intra, H.264)",23.976,240,Planner Sheet CAMERAS DATABASE
 Sony FX3,4096 x 2160,"XAVC S-I (All-Intra, H.264)",23.976,240,Planner Sheet CAMERAS DATABASE
 Sony FX3,1920 x 1080,"XAVC S-I (All-Intra, H.264)",23.976,90,Planner Sheet CAMERAS DATABASE
