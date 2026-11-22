@@ -214,7 +214,7 @@ class InsideJobsTests(Reach, SyncTestCase):
 
     def waiting(self) -> list[tuple[str, str]]:
         with self.registry._transaction() as db:
-            return [(r[0], r[1]) for r in db.execute("SELECT kind, dedupe_key FROM internal_jobs WHERE state = 'queued' ORDER BY id")]
+            return [(r[0], r[1]) for r in db.execute("SELECT kind, dedupe_key FROM internal_jobs WHERE state = 'queued' AND kind != 'privacy_registry.rebuild' ORDER BY id")]  # the rebuild job has its own tests
 
     def test_a_registry_write_leaves_a_registry_sync_job_in_the_internal_table_and_the_worker_syncs_it(self) -> None:
         page = self.page()

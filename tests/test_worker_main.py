@@ -8,7 +8,8 @@ import unittest
 
 from t6.domain.events import JsonValue
 from t6.worker import QueueClient, WorkerJob
-from t6.worker.__main__ import main
+
+from t6.worker.__main__ import WorkerSettings, configured_handlers, main
 from t6.worker.runner import Handler
 from test_server_app import WORKER_SECRET, InProcess, ServerTestCase
 
@@ -96,6 +97,20 @@ class LoopTests(ServerTestCase):
         self.assertEqual([job.payload for job in seen], [{"n": 1}])
         self.assertEqual(submitter.result("main", job_id), ("ok", {"n": 2}))
         self.assertEqual(stop.waits, [7.0])
+
+    def test_the_main_worker_rebuilds_the_privacy_registry_only_when_the_file_and_data_sources_are_set(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        settings = WorkerSettings("http://server.invalid:8081", WORKER_SECRET, "main")
+        with tempfile.TemporaryDirectory() as folder:
+            sources = Path(folder) / "sources.json"
+            sources.write_text('{"studios": "ds-studios", "projects": "ds-projects"}', encoding="utf-8")
+            base = {"T6_NOTION_TOKEN": "token"}
+            full = {**base, "T6_READ_PRIVACY_REGISTRY": str(Path(folder) / "privacy_registry.json"), "T6_READ_DATA_SOURCES": str(sources)}
+            transport = InProcess(self.app)
+            self.assertIn("privacy_registry.rebuild", configured_handlers(full, settings, transport).get("main", {}))
+            self.assertNotIn("privacy_registry.rebuild", configured_handlers(base, settings, transport).get("main", {}))
 
     def test_the_main_worker_with_the_t6_database_handles_share_views(self) -> None:
         import tempfile

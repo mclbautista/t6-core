@@ -490,6 +490,7 @@ class WebhookApp:
                     f"registry.sync:{intent.id}",
                     {"project_id": intent.project_id, "revision": intent.revision},
                 )
+                self._inside.submit(MAIN_QUEUE, JobKind.PRIVACY_REGISTRY_REBUILD.value, f"privacy_registry.rebuild:{intent.id}", {})  # no name in the payload
             deliverable_intents = self._registry.undispatched_deliverable_sync()
             for intent in deliverable_intents:
                 self._inside.submit(MAIN_QUEUE, 'deliverable.sync', f'deliverable.sync:{intent.id}', {'intent_id': intent.id})
