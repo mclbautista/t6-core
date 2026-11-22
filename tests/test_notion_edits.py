@@ -234,17 +234,35 @@ class NotionEditTests(SyncTestCase):
         self.registry.bind_entity('notion', 'jo-page', T6Id.parse(jo, EntityKind.JOB_ORDER), actor='setup')
         self.assertEqual(edits.job_order('jo-page', {'status': 'Cancelled'}, ['status'], 'T6 Notion', 'cancel', editor_id='bot-1')['outcome'], 'accepted')
 
-    def test_flag_notification_is_delivered_to_operators(self) -> None:
-        from unittest.mock import MagicMock
-        from t6.worker.client import WorkerJob
-        from t6.worker.operator import StateEditNotification
-        gateway = MagicMock()
-        gateway.notify.return_value = 42
-        gateway.state.return_value = ('sent', 7)
-        job = WorkerJob(job_id=1, queue='main', token='token', kind='notion.state_flagged', dedupe_key='event', payload={'page_id': 'page', 'property': 'Status', 'value': 'Done', 'editor': 'Ada', 'reason': 'not permitted'}, attempt=1)
-        StateEditNotification(gateway, (123,)).deliver(job)
-        self.assertEqual(gateway.notify.call_args.args[0], 123)
-        self.assertIn('not permitted', gateway.notify.call_args.args[1])
+    def test_a_flagged_edit_keeps_its_review_audit_and_last_seen_and_pings_nobody(self) -> None:
+        """Job Order and Project edits that no verb matches are flagged in the database only (#548)."""
+        from t6.ids import EntityKind, T6Id
+        from t6.job_order import JobOrderStore
+        from t6.notion_edits import NotionEdits
+        from t6.preview import PreviewTokens
+        from t6.verbs import Done, Preview
+        from t6.worker.internal_queue import InternalJobQueue
+        page = self.page()
+        project = self.new('SHOW', page=page)
+        store = JobOrderStore(self.registry, PreviewTokens('secret'))
+        values = {'fields': {'project_id': page, 'name': 'JO'}}
+        preview = store.write('raise', values, actor='setup', idempotency_key='raise')
+        assert isinstance(preview, Preview)
+        done = store.write('raise', values, actor='setup', idempotency_key='raise', confirm=preview.token)
+        assert isinstance(done, Done)
+        self.registry.bind_entity('notion', 'jo-page', T6Id.parse(done.result['jo_id'], EntityKind.JOB_ORDER), actor='setup')
+        self.drain()
+        edits = NotionEdits(self.registry)
+        self.assertEqual(edits.job_order('jo-page', {'status': 'Nonsense'}, ['status'], 'Ada', 'jo-edit', editor_id='nobody')['outcome'], 'flagged')
+        self.assertEqual(edits.project_status(page, 'Nonsense', 'Ada', 'project-edit', 'nobody')['outcome'], 'flagged')
+        self.assertEqual({item.kind for item in self.registry.review_items()}, {'notion_state_edit', 'notion_project_status'})
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM audit WHERE action='notion_state_flagged'").fetchone()[0], 2)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM activity WHERE action='notion_state_flagged'").fetchone()[0], 2)
+            seen = {r[0]: r[1] for r in db.execute("SELECT property, value FROM notion_last_seen")}
+            self.assertEqual((seen['jo_status'], seen['project_status']), ('"Nonsense"', '"Nonsense"'))
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM internal_jobs WHERE kind='notion.state_flagged'").fetchone()[0], 0)
+        self.assertTrue(project)
 
     def test_health_without_a_matching_verb_is_flagged(self) -> None:
         from datetime import datetime, timezone
@@ -262,10 +280,10 @@ class NotionEditTests(SyncTestCase):
         self.assertEqual(codec.select(self.notion.page(page)['properties']['Health']), 'At Risk')
         self.assertTrue(any(item.kind == 'notion_project_health' for item in self.registry.review_items()))
         from t6.worker.internal_queue import InternalJobQueue
-        notice = InternalJobQueue(self.registry._path, clock=self.clock).claim('main')
-        assert notice is not None
-        self.assertEqual(notice.kind, 'notion.state_flagged')
-        self.assertEqual(notice.payload['page_id'], page)
+        self.assertIsNone(InternalJobQueue(self.registry._path, clock=self.clock).claim('main'))  # no operator ping (#548)
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM audit WHERE action='notion_state_flagged'").fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT value FROM notion_last_seen WHERE page_id=? AND property='project_health'", (page,)).fetchone()[0], '"At Risk"')
         self.assertTrue(any('Health' in entry.summary and 'Ada' in entry.summary for entry in self.registry.activity(project['id'])))
 
     def test_old_jo_projection_does_not_overwrite_newer_status(self) -> None:

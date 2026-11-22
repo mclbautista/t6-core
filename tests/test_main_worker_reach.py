@@ -163,6 +163,24 @@ class EdgeReachTests(Reach, SyncTestCase):
         self.assertTrue(any(p.startswith("/registry/") for p in self.api.paths))
         self.assertTrue(any(p.startswith("/operator/") for p in self.api.paths))
 
+    def test_a_queued_notion_state_flagged_job_is_drained_without_a_gateway_message(self) -> None:
+        """Flagged Notion edits no longer ping Sixto (#548); a job queued before that still completes."""
+        job = WorkerJob(1, "main", "notion.state_flagged", "e1:page:Status", {"page_id": "p", "property": "Status", "value": "Done", "editor": "Ada", "reason": "no"}, "token", 3)
+        handlers = self.handlers(T6_GATEWAY_URL=GATEWAY_URL, T6_GATEWAY_SECRET="g", T6_REVIEW_CHAT="-100", T6_OPERATOR_IDS="123")
+        self.assertIn("notion.state_flagged", handlers)  # the same workers that delivered it before still end the old jobs
+        handlers["notion.state_flagged"](job)
+        self.assertEqual(self.gateway_notify.sent, {})
+
+    def test_an_unbound_notion_page_is_not_offered_to_the_operator_chat(self) -> None:
+        page = self.page(name="Some Show")
+        self.edge_queue.submit("main", "notion.page_changed", "notion:event:e1",
+                               {"page_id": page, "updated_properties": [], "event_id": "e1", "event_type": "page.created"})
+        self.assertEqual(self.drain_main(T6_GATEWAY_URL=GATEWAY_URL, T6_GATEWAY_SECRET="g", T6_REVIEW_CHAT="-100", T6_OPERATOR_IDS="123"), 1)
+        (item,) = self.items()
+        self.assertEqual(item["kind"], "unbound_page")  # still recorded for the review list
+        self.assertEqual([p for p in self.api.paths if p.startswith("/operator/")], [])
+        self.assertEqual(self.gateway_notify.sent, {})
+
     def test_chat_reply_has_a_handler_only_with_the_gateway_and_sends_to_the_topic(self) -> None:
         self.assertNotIn("chat.reply", self.handlers())
         handlers = self.handlers(T6_GATEWAY_URL=GATEWAY_URL, T6_GATEWAY_SECRET="g", T6_REVIEW_CHAT="-100")

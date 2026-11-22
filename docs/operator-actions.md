@@ -10,7 +10,7 @@ plus push delivery of the `/project` command.
 
 | Step | Done by |
 | --- | --- |
-| Notice a page no Project owns, or an unclassified Project | core (`notion.page_changed` reconcile, `POST /operator/offers`) |
+| Notice an unclassified Project | core (`notion.page_changed` reconcile, `POST /operator/offers`). A page no Project owns is recorded as a review item only: the worker does not offer it to the chat (#548), and Notion edits that are flagged send no message either |
 | Keep the pending action, its token and expiry | core (`T6_OPERATOR_DB`) |
 | Send the card, edit it later | core's main worker, through the gateway |
 | Carry the tap to core | gateway (push delivery to `POST /tap`) |
