@@ -4,11 +4,12 @@ from __future__ import annotations
 from typing import Any
 
 from t6.notion.errors import NotionError
+from t6.notion.source import NotionSource, as_source
 from t6.notion.sync import NotionClient
 from t6.worker.client import WorkerJob
 
 
-def editor(notion: NotionClient, job: WorkerJob) -> tuple[str, str | None]:
+def editor(notion: NotionSource | NotionClient, job: WorkerJob) -> tuple[str, str | None]:
     authors = job.payload.get('authors')
     if not isinstance(authors, list) or len(authors) != 1 or not isinstance(authors[0], dict):
         return 'Unknown', None
@@ -17,7 +18,7 @@ def editor(notion: NotionClient, job: WorkerJob) -> tuple[str, str | None]:
     name = author.get('name')
     if not name and user_id:
         try:
-            name = notion.retrieve_user(user_id).get('name')
+            name = as_source(notion).retrieve_user(user_id, freshness='live').get('name')
         except NotionError as error:
             if error.status != 404:
                 raise

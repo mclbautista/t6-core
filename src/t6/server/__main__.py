@@ -8,6 +8,8 @@ import sys
 import time
 from collections.abc import Mapping
 from dataclasses import replace
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from t6.operator import ActionStore, OperatorService
 from t6.person import People
@@ -18,10 +20,15 @@ from t6.server.http import serve
 from t6.server.queue import JobQueue
 from t6.server.routes import load_routes
 from t6.server.llm import service_from_env
-from t6.server.verbs import VerbAPI, secrets_from_env, service_permissions_from_env, read_config_from_env, PrivacyList
-from t6.person import People
-from t6.preview import PreviewTokens
-from t6.cli import _open_notion
+from t6.server.verbs import (
+    PrivacyList,
+    VerbAPI,
+    read_config_from_env,
+    read_data_source_configs_from_env,
+    secrets_from_env,
+    service_permissions_from_env,
+)
+from t6.cli import DataSourceConfig, _open_notion
 from t6.server.http import make_server
 import threading
 
@@ -29,6 +36,26 @@ import threading
 def _address(value: str) -> tuple[str, int]:
     host, _, port = value.rpartition(":")
     return host, int(port)
+
+
+if TYPE_CHECKING:
+    from t6.notion.mirror import MirrorReader
+
+
+def mirror_reader_from_env(
+    environ: Mapping[str, str], source_configs: Mapping[str, DataSourceConfig] | None = None
+) -> MirrorReader | None:
+    """Build a read-only `MirrorReader` for all configured sources when the mirror is active."""
+    from t6.notion import MirrorReader, mirror_db_path
+
+    path = mirror_db_path(environ)
+    if path is None:
+        return None
+    if source_configs is None:
+        source_configs = read_data_source_configs_from_env(environ)
+    max_ages = {cfg.id: cfg.max_age_seconds for cfg in source_configs.values()}
+    enabled = [cfg.id for cfg in source_configs.values()]
+    return MirrorReader(path, max_age_seconds=max_ages, enabled_data_sources=enabled)
 
 
 def concern_autoscan_seconds(environ: Mapping[str, str]) -> float | None:
@@ -89,6 +116,8 @@ def main() -> int:
     ), registry=registry, operator=operator, inside=inside)
     if registry is not None:
         sources, privacy_registry = read_config_from_env(environ)
+        source_configs = read_data_source_configs_from_env(environ)
+        mirror = mirror_reader_from_env(environ, source_configs)
         privacy_list = PrivacyList(environ['T6_READ_PRIVACY_REGISTRY'], privacy_registry, lambda line: print(line, file=sys.stderr, flush=True)) if privacy_registry is not None else None
         frameio_queue = None
         queue_url, queue_secret = (environ.get('T6_FRAMEIO_QUEUE_URL') or '').strip(), environ.get('T6_FRAMEIO_QUEUE_SECRET') or ''
@@ -104,7 +133,8 @@ def main() -> int:
                       frameio_timeout=float(environ.get('T6_FRAMEIO_WRITE_TIMEOUT_SECONDS', '60')), frameio_queue=frameio_queue,
                       translate_enabled=environ.get('T6_TRANSCRIPT_TRANSLATE', '').lower() == 'true',
                       concern_observe_closes=environ.get('T6_CONCERN_OBSERVE_CLOSES', '').strip().lower() in {'1', 'true', 'on', 'yes'},
-                      request_log=lambda line: print(line, file=sys.stderr, flush=True))
+                      request_log=lambda line: print(line, file=sys.stderr, flush=True),
+                      mirror=mirror)
         interval = concern_autoscan_seconds(environ)
         if interval is not None and api.llm_service is not None:
             threading.Thread(target=_autoscan, args=(api, interval), daemon=True).start()

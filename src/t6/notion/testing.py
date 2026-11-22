@@ -30,15 +30,18 @@ pages read back with each property's `id`. `rename_property` and
 from __future__ import annotations
 
 import copy
+from datetime import datetime, timezone
 import json
 import re
+import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
-from t6.notion.client import NOTION_VERSION, AsyncNotionClient, RetryPolicy
+from t6.notion.client import NOTION_VERSION, AsyncNotionClient, RequestPacer, RetryPolicy
 from t6.notion import named
 from t6.notion.models import ExternalLinksProperties as xl
 from t6.notion.models import ProjectsProperties as p
@@ -64,14 +67,19 @@ class _Failure:
 class FakeNotion:
     """In-memory pages and data sources behind a mock HTTP transport."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, clock: Callable[[], float] | None = None) -> None:
         self._users: dict[str, JSON] = {}
         self._pages: dict[str, JSON] = {}
         self._data_sources: dict[str, JSON] = {}
         self._children: dict[str, list[JSON]] = {}
         self._failures: list[_Failure] = []
+        self._clock: Callable[[], float] = time.time if clock is None else clock
         self.requests: list[httpx.Request] = []
         self.transport = httpx.MockTransport(self._handle)
+
+    def _now_iso(self) -> str:
+        moment = datetime.fromtimestamp(self._clock(), tz=timezone.utc)
+        return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
     # Seeding and inspection
 
@@ -141,7 +149,16 @@ class FakeNotion:
         prop = self._data_sources[data_source_id]["properties"][name]
         return [str(option["name"]) for option in prop[prop["type"]]["options"]]
 
-    def add_page(self, data_source_id: str, properties: JSON, page_id: str | None = None) -> JSON:
+    def add_page(
+        self,
+        data_source_id: str,
+        properties: JSON,
+        page_id: str | None = None,
+        *,
+        last_edited_time: str | None = None,
+        archived: bool = False,
+        in_trash: bool = False,
+    ) -> JSON:
         if data_source_id not in self._data_sources:
             raise KeyError(f"unknown data source {data_source_id!r}; call add_data_source first")
         page_id = page_id or str(uuid.uuid4())
@@ -150,12 +167,46 @@ class FakeNotion:
             "id": page_id,
             "parent": {"type": "data_source_id", "data_source_id": data_source_id},
             "url": f"https://www.notion.so/{page_id.replace('-', '')}",
-            "archived": False,
-            "in_trash": False,
+            "archived": archived,
+            "in_trash": in_trash,
+            "last_edited_time": last_edited_time or self._now_iso(),
             "properties": self._with_ids(data_source_id, copy.deepcopy(properties)),
         }
         self._pages[page_id] = page
         return copy.deepcopy(page)
+
+    def update_page(
+        self,
+        page_id: str,
+        properties: JSON | None = None,
+        *,
+        archived: bool | None = None,
+        in_trash: bool | None = None,
+        last_edited_time: str | None = None,
+    ) -> JSON:
+        """Update a stored page in-place for tests, advancing `last_edited_time`."""
+        key = self._page_key(page_id)
+        if key not in self._pages:
+            raise KeyError(f"unknown page {page_id!r}")
+        page = self._pages[key]
+        if properties:
+            prepared = self._prepare(page["parent"]["data_source_id"], properties)
+            if isinstance(prepared, httpx.Response):
+                raise ValueError(f"invalid properties for fake update: {prepared.text}")
+            page["properties"].update(prepared)
+        if archived is not None:
+            page["archived"] = bool(archived)
+        if in_trash is not None:
+            page["in_trash"] = bool(in_trash)
+        page["last_edited_time"] = last_edited_time or self._now_iso()
+        return copy.deepcopy(page)
+
+    def delete_page(self, page_id: str) -> JSON:
+        """Hard-delete a page from the in-memory store (simulating omission from Notion)."""
+        key = self._page_key(page_id)
+        if key not in self._pages:
+            raise KeyError(f"unknown page {page_id!r}")
+        return copy.deepcopy(self._pages.pop(key))
 
     def _with_ids(self, data_source_id: str, properties: JSON) -> JSON:
         schema: JSON = self._data_sources[data_source_id]["properties"]
@@ -206,17 +257,25 @@ class FakeNotion:
     # Clients wired to this fake
 
     def async_client(
-        self, *, notion_version: str = NOTION_VERSION, retry: RetryPolicy | None = None
+        self,
+        *,
+        notion_version: str = NOTION_VERSION,
+        retry: RetryPolicy | None = None,
+        pacer: RequestPacer | None = None,
     ) -> AsyncNotionClient:
         return AsyncNotionClient(
-            "fake-token", notion_version=notion_version, retry=retry, transport=self.transport
+            "fake-token", notion_version=notion_version, retry=retry, transport=self.transport, pacer=pacer
         )
 
     def client(
-        self, *, notion_version: str = NOTION_VERSION, retry: RetryPolicy | None = None
+        self,
+        *,
+        notion_version: str = NOTION_VERSION,
+        retry: RetryPolicy | None = None,
+        pacer: RequestPacer | None = None,
     ) -> NotionClient:
         return NotionClient(
-            "fake-token", notion_version=notion_version, retry=retry, transport=self.transport
+            "fake-token", notion_version=notion_version, retry=retry, transport=self.transport, pacer=pacer
         )
 
     # HTTP
@@ -282,6 +341,7 @@ class FakeNotion:
         for flag in ("archived", "in_trash"):
             if flag in body:
                 page[flag] = bool(body[flag])
+        page["last_edited_time"] = self._now_iso()
         return httpx.Response(200, json=page)
 
     def block_children(self, block_id: str) -> list[JSON]:
@@ -414,13 +474,48 @@ def _by_name(source: JSON, query_filter: JSON | None) -> JSON | None:
     return {**query_filter, "property": ids.get(str(prop_key), prop_key)} if prop_key else query_filter
 
 
+def _parse_iso(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+
+
+def _matches_timestamp(raw_value: object, condition: JSON) -> bool:
+    edited = _parse_iso(raw_value)
+    if edited is None:
+        return False
+    checks: tuple[tuple[str, Callable[[datetime, datetime], bool]], ...] = (
+        ("on_or_after", lambda a, b: a >= b),
+        ("after", lambda a, b: a > b),
+        ("on_or_before", lambda a, b: a <= b),
+        ("before", lambda a, b: a < b),
+        ("equals", lambda a, b: a == b),
+    )
+    for op, compare in checks:
+        if op in condition:
+            bound = _parse_iso(condition[op])
+            if bound is None or not compare(edited, bound):
+                return False
+    return True
+
+
 def _matches(page: JSON, query_filter: JSON | None) -> bool:
-    """Support `and` of single-property filters: `equals` on text, select, number and
-    checkbox, and `contains` on relation. Anything else matches every row."""
+    """Support `and` of single-property/timestamp filters: `last_edited_time`,
+    `equals` on text, select, number and checkbox, and `contains` on relation.
+    Anything else matches every row."""
     if not query_filter:
         return True
     if "and" in query_filter:
         return all(_matches(page, part) for part in query_filter["and"])
+    if query_filter.get("timestamp") == "last_edited_time" and isinstance(query_filter.get("last_edited_time"), dict):
+        return _matches_timestamp(page.get("last_edited_time"), query_filter["last_edited_time"])
     if "property" not in query_filter:
         return True
     prop = page["properties"].get(query_filter["property"]) or {}
