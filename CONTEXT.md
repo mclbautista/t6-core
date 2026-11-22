@@ -128,7 +128,7 @@ the times from the Person's shift pattern. Booking verbs (`bay book`,
 
 ## Bay scans
 
-Proposed in ADR 0008 (#18). Not built yet.
+Decided in ADR 0008 (#18). Not built yet.
 
 - A **local copy** is a Resolve project held in a bay's local disk database rather than on the project server.
 - A **bay scan report** is what one bay's nightly job sends to t6: the scan time, the Resolve version and the bay's

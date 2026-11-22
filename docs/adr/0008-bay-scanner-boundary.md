@@ -1,6 +1,6 @@
 # 8. The bay scanner boundary
 
-Date: 2026-11-22. Status: proposed. Source: #18, #375. Facts: #374, see
+Date: 2026-11-22. Status: accepted (owner, 2026-11-22). Source: #18, #375. Facts: #374, see
 `docs/research/bay-resolve-disk-library.md`.
 
 ## Context
