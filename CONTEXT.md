@@ -126,6 +126,17 @@ the times from the Person's shift pattern. Booking verbs (`bay book`,
   service account) are never changed. Revoke sets view; it does not
   delete the entry.
 
+## Bay scans
+
+Proposed in ADR 0008 (#18). Not built yet.
+
+- A **local copy** is a Resolve project held in a bay's local disk database rather than on the project server.
+- A **bay scan report** is what one bay's nightly job sends to t6: the scan time, the Resolve version and the bay's
+  local copies. It is tied to a Bay (`t6b_`) through the machine serial and the Machine to Bays mapping, never by name.
+  t6 keeps the latest one per Bay.
+- **Drift** is a local copy that does not match the project server by the definition #374 settles. The drift report
+  only reports; nothing is changed.
+
 ## Timelines
 
 A **Timeline** (`t6t_`) is a DaVinci Resolve sequence timeline known by its
