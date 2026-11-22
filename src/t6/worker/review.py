@@ -73,6 +73,7 @@ class ReviewMessage:
         is_linked: Callable[[str], bool] | None = None,
         hold: Callable[[WorkerJob, str], JsonValue] | None = None,
         is_held: Callable[[str], bool] | None = None,
+        coordinators: Callable[[str], tuple[str, ...]] | None = None,
     ) -> None:
         self._gateway = gateway
         self._chat = chat
@@ -85,6 +86,7 @@ class ReviewMessage:
         self._is_linked = is_linked
         self._hold = hold
         self._is_held = is_held
+        self._coordinators = coordinators
 
     def handlers(self) -> dict[str, Handler]:
         return {JobKind.FRAMEIO_REVIEW_DONE.value: self.notify}
@@ -122,6 +124,7 @@ class ReviewMessage:
             f"Stopped: {long_date(last)}\n"
             f"{_timecode_line(payload)}"
             f"{comments} from them, {UNKNOWN if total is None else total} on the file in total"
+            f"{self._coordinator_line(project_id)}"
         )
         target = self._target(project_id) if self._target is not None else None
         chat, topic = target if target is not None else (self._chat, self._topic)
@@ -129,6 +132,17 @@ class ReviewMessage:
         if target is not None and self._track_send is not None:
             self._track_send(ref, chat, topic)
         return {"message_ref": ref, "count": count}
+
+    def _coordinator_line(self, frameio_project_id: str) -> str:
+        """`@handle`s of the Project's coordinators as a last line, or nothing. A lookup that fails never stops the message."""
+        if self._coordinators is None:
+            return ""
+        try:
+            handles = self._coordinators(frameio_project_id)
+        except Exception:
+            return ""
+        tags = [html.escape(f"@{handle}", quote=False) for handle in dict.fromkeys(handles) if handle]
+        return f"\n{' '.join(tags)}" if tags else ""
 
     def _version_line(self, file_id: str, attempt: int) -> str:
         """The file's Version as a line of the message, or nothing when t6 has no Version for it.
