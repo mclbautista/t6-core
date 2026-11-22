@@ -4,8 +4,15 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.16] - 2026-11-22
+
+Timeline stamps by code, the Resolve worker, and the bay scanner reader and drift report. Migration 48 takes the schema from 47 to 48 (Timeline stamp state, `replaces` and `resolve_uuid`); it is not forward-only.
+
 ### Added
 
+- The Resolve worker: `python -m t6.worker` with `T6_WORKER_QUEUE=resolve` runs `resolve.stamp` jobs on one Mac with Resolve Studio, through the tailnet routes `/v1/resolve/{claim,extend,report,fail}` that only the `resolve` identity may call. It never opens the t6 database. See the README, "Resolve worker" (#581).
+- Bay scanner: a read-only reader of a bay's local Resolve disk library (#377), the bay scan report and list verbs, the scan script and the drift report (#376, #379, #380).
+- A public camera-specs CSV for the OCF Drive Planner (#24).
 - `t6.resolve.timelines.ScriptingTimelines`: the real `TimelineReader` over the Resolve scripting API, and the stamp writer. It writes the `t6t_` marker on a timeline's first frame (or updates it to re-stamp a duplicate), reads it back and saves; it refuses a timeline with a different stamp or a stamp already on another timeline, and gives a reason when the project cannot be loaded. It closes each project it loads and restores the current database (#580). The Resolve worker exits 2 when `DaVinciResolveScript` cannot be imported, including when it cannot load `fusionscript`.
 - Verb `timeline restamp <project> <timeline> --stamp <t6t_>` (staff, previewed): the duplicate of a Timeline gets a new `t6t_` ID, is recorded as a pending Timeline and a `resolve.stamp` job (with `replaces`) re-stamps it (#582).
 
