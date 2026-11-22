@@ -197,6 +197,9 @@ def _terms(registry: Registry, options: MaskOptions) -> list[_Term]:
     for person in registry.people:
         if options.names:
             for name in (person.name, *person.aliases):
+                # In a fixed text an ordinary word is never a name, a person's included.
+                if readable and is_ordinary(name.strip()):
+                    continue
                 if len(name.strip()) >= (2 if options.skip_trivial and name != person.name else 1):
                     add(_Term("person", name))
             for handle in person.handles:
