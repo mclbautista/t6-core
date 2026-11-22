@@ -16,38 +16,36 @@ otherwise.
 
 ## Decision
 
-1. **Code: a standalone script, with the format defined in t6-core.** The bay
-   job is one Python file that uses only the standard library. It runs under
-   the Python that Munki already installs on every managed Mac
+1. **Code: a standalone script, with the format defined in t6-core.** The
+   scan is one Python file that uses only the standard library. It runs on the
+   bay under the Python that Munki already installs on every managed Mac
    (`/usr/local/munki/munki-python`), so bays need no t6 install and no pinned
-   release. The report format is a versioned model in t6-core. A contract test
-   runs the script against a fixture and validates its output with that model.
-   The script lives in t6-core next to the model, so the two change in the same
-   PR, and t6-munki-repo packages it (munki #20).
+   release. It prints one report as JSON on stdout and does nothing else: no
+   network, no credential, no state left behind. The report format is a
+   versioned model in t6-core. A contract test runs the script against a
+   fixture and validates its output with that model. The script lives in
+   t6-core next to the model, so the two change in the same PR.
    *Why:* every bay would otherwise need t6 and its dependencies kept at one
    release, which is ADR 0002 rule 7's cost paid on every bay for a job that
    only reads files. Munki's Python is already on every bay.
 
-2. **Report path: the t6 API, one narrow service credential.** The job posts its
-   report to a t6 API write verb (`bay scan report`). The job is the holder of a
-   new credential, `bay-scanner`: a service token whose only permission,
-   `bay_scan`, allows that one verb and nothing else. Munki delivers it as a
-   root-owned file with mode 0600, outside the Munki repo's public catalog
-   (the exact delivery is part of munki #20). ADR 0003 gains a row for it.
-   *Why:* ADR 0002 rule 1 says apps call the API, and a file drop would need a
-   share and a collector on the Mac mini. One shared token is chosen over one
-   per bay because Munki serves the same files to every client, so per-bay
-   secrets would need a delivery path that does not exist yet.
-   *Accepted risk:* any bay holding the token could post a report that claims
-   another machine's serial. The data is report-only and changes nothing, and
-   the API logs the reporting address. Per-bay tokens can replace this later
-   without changing the format.
-   **Route: tailnet only.** The owner decided (2026-11-22) that the API stays
-   tailnet-only and ADR 0006 does not change. A bay posts to the tailnet
-   listener that serves `/v1/`. **Open: #374 found the pilot bay is NOT on
-   the tailnet** (no Tailscale at all), so it cannot reach the API. The route
-   for bays is an owner decision, and this decision is amended when it is
-   made. #376 and #379 wait for it.
+2. **Report path: the Mac mini pulls, then posts to the t6 API.** The owner
+   decided (2026-11-22) that the API stays tailnet-only (ADR 0006 unchanged),
+   and #374 found bays are not on the tailnet. So bays never talk to the API.
+   The Mac mini, which is on the tailnet and already reaches every bay over
+   SSH with the fleet key, runs a committed read-only Ansible playbook in
+   t6-munki-repo. For each bay it copies the script over, runs it, collects
+   the JSON, removes the script, and posts each report to the t6 API write
+   verb `bay scan report`. The playbook is read-only on the bay in the sense
+   of the fleet rules (munki #32): agents may run it without a per-run
+   approval. The poster holds a new credential, `bay-scanner`: a service
+   token whose only permission, `bay_scan`, allows that one verb. It lives on
+   the Mac mini only (1Password, like the other fleet secrets); no bay holds
+   a secret. ADR 0003 gains a row for it.
+   *Why:* this keeps the API tailnet-only, needs no new listener, and puts no
+   token on a bay or in the Munki repo, which is served over plain HTTP.
+   *Accepted risk:* the Mac mini is a single point: if it is off, no bay
+   reports that night, and the drift report shows the reports as stale.
 
 3. **Read-only guarantee.** The job never opens or starts Resolve. If a Resolve
    process is running, it scans nothing and reports "skipped, Resolve open" (a
@@ -76,8 +74,10 @@ otherwise.
    Hostnames change, and names are how `Deco 202` and `Deco 203` got confused
    (#551).
 
-5. **Cadence and staleness.** launchd runs the job nightly at 02:00 (Manila)
-   with low priority I/O. If the Mac was asleep, launchd runs it at wake. The
+5. **Cadence and staleness.** launchd on the Mac mini runs the playbook
+   nightly at 02:00 (Manila); the script runs on each bay with low priority
+   I/O. A bay that is asleep, off or unreachable is skipped for that night and
+   logged; nothing is retried until the next run. The
    API keeps the latest report per Bay. The drift report shows a report older
    than 3 days as stale, and a Bay with no report as "no report", never as "no
    copies".
@@ -107,7 +107,9 @@ otherwise.
 
 - t6-core gains a report model, an ingest verb, a `bay_scan` permission and a
   `bay-scanner` service actor. ADR 0003 gains its credential row.
-- Bays need nothing new beyond the Munki package (script, launchd plist and
-  token file).
-- The drift report is only as fresh as the last night each bay was awake.
+- Bays need nothing new: no package, no launchd job, no token. munki #20
+  becomes the read-only playbook and the Mac mini launchd job, not a Munki
+  recipe.
+- The drift report is only as fresh as the last night each bay was awake and
+  the Mac mini was on.
 - Nothing in this path writes to Resolve, Notion or a bay.
