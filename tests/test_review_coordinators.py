@@ -53,10 +53,11 @@ class CoordinatorTests(unittest.TestCase):
             props[ContactsRow.notion_name("telegram_handle")] = rich_text(handle)
         return str(self.notion.add_page(CONTACTS, props)["id"])
 
-    def project(self, *coordinators: str) -> str:
+    def project(self, *coordinators: str, client_supervisors: tuple[str, ...] = ()) -> str:
         return str(self.notion.add_page(PROJECTS, {
             ProjectsRow.notion_name("name"): title("Show A"),
-            ProjectsRow.notion_name("prod_coor_supe"): relation(*coordinators),
+            ProjectsRow.notion_name("t6_post_coordinator"): relation(*coordinators),
+            ProjectsRow.notion_name("prod_coor_supe"): relation(*client_supervisors),
         })["id"])
 
     def lookup(self, page: str | None) -> tuple[ReviewCoordinators, _Source]:
@@ -70,6 +71,13 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(lookup("fp1"), ("coord_a", "coord_b"))
         self.assertEqual({kind for _, kind in source.calls}, {"page"})
         self.assertTrue(all(freshness == "mirror" for freshness, _ in source.calls))
+
+    def test_the_productions_post_supervisor_is_a_client_and_never_tagged(self) -> None:
+        coordinator, supervisor = self.contact("Coord A", "coord_a"), self.contact("Client Supe", "client_supe")
+        lookup, _ = self.lookup(self.project(coordinator, client_supervisors=(supervisor,)))
+        self.assertEqual(lookup("fp1"), ("coord_a",))
+        lookup, _ = self.lookup(self.project(client_supervisors=(supervisor,)))
+        self.assertEqual(lookup("fp1"), ())
 
     def test_nothing_to_tag_gives_no_handles(self) -> None:
         no_handle = self.contact("Coord C", None)

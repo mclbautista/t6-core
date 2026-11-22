@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Fixed
+
+- The Frame.io review message tags the linked Project's `T6 Post Coordinator`, not `Prod Coor/Supe`: that is the production's post supervisor, a client (#547).
+
 ## [0.6.19] - 2026-11-22
 
 Guest reviewers' names in the Frame.io review message, and a longer CLI wait for `concern scan`. No migration: the schema stays at 49.
