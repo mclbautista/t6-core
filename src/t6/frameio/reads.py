@@ -101,8 +101,10 @@ class FrameioReads:
         clock: Callable[[], float] = time.monotonic,
         workspace_id: str | None = None,
         page_fetch: PageFetch | None = None,
+        share_name: Callable[[str, str, str], str | None] | None = None,
     ) -> None:
         self._page_fetch = page_fetch
+        self._share_name = share_name
         self._workspace_id = workspace_id
         self._api = api
         self._links = links
@@ -344,15 +346,18 @@ class FrameioReads:
 
     def _guest_name(self, request: ResolveComment, comment: ResolvedComment) -> str | None:
         """A guest's name from the public share page that holds the file; None on any failure, so the comment keeps `GUEST_NAME`."""
-        if self._page_fetch is None:
+        if self._page_fetch is None and self._share_name is None:
             return None
         try:
             now = self._now()
             for share in self.share_links(request.frameio_project_id):
                 if share.url is None or not share.live(now) or not share.file_ids or comment.file_id not in share.file_ids:
                     continue
-                page = self._page_fetch(share.url)
+                page = self._page_fetch(share.url) if self._page_fetch is not None else None
                 if page is not None and (name := guest_name(page, comment.id)) is not None:
+                    return name
+                # `share_name(share id, file id, comment id)`: the share viewer's own comment list (#601)
+                if self._share_name is not None and (name := self._share_name(share.id, comment.file_id, comment.id)) is not None:
                     return name
         except Exception:  # noqa: BLE001 - never lose or delay the comment for a name
             return None

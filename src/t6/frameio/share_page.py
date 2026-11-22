@@ -19,6 +19,8 @@ PAGE_HOSTS = ("f.io", "frame.io")
 """A share page is read only on these hosts or their subdomains, so a URL from an API answer cannot point the worker elsewhere."""
 PAGE_TIMEOUT_SECONDS = 5.0
 PAGE_LIMIT_BYTES = 2_000_000
+USER_AGENT = "t6-frameio-worker"
+"""Frame.io answers 403 to Python's default `User-Agent`; a plain descriptive name is read."""
 NAME_LIMIT = 80
 _NAME_PARENTS = ("owner", "author", "user", "guest", "creator")
 _NAME_KEYS = ("display_name", "name", "author_name", "guest_name")
@@ -37,7 +39,8 @@ def fetch_share_page(url: str) -> str | None:
     if not _frame_io_host(url):
         return None
     try:
-        with urllib.request.urlopen(url, timeout=PAGE_TIMEOUT_SECONDS) as response:  # noqa: S310 - https and host checked
+        request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(request, timeout=PAGE_TIMEOUT_SECONDS) as response:  # noqa: S310 - https and host checked
             if not _frame_io_host(response.geturl()):  # a redirect must stay on Frame.io
                 return None
             raw = response.read(PAGE_LIMIT_BYTES + 1)
