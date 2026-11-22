@@ -110,13 +110,17 @@ class LLMService:
                  decisions: OpenRouterDecisions | None = None, filters: Any = None,
                  skills_dir: str | Path | None = None,
                  allowed_script_env: Mapping[str, str] | None = None,
-                 blocked_script_env: Sequence[str] = ()) -> None:
+                 blocked_script_env: Sequence[str] = (),
+                 tasks: Mapping[str, str] | None = None) -> None:
         if default not in providers or type(require_zdr) is not bool or type(max_bytes) is not int or max_bytes < 1:
             raise ValueError('Invalid LLM policy')
         if skills_dir is not None and (not isinstance(skills_dir, (str, Path)) or not str(skills_dir).strip()):
             raise ValueError('Invalid LLM policy')
         floors = dict(min_retention_by_provider or {})
         if any((name not in providers and not (name == 'decisions' and decisions)) or value not in RETENTIONS for name, value in floors.items()):
+            raise ValueError('Invalid LLM policy')
+        self.tasks: dict[str, str] = dict(tasks or {})  # task_name -> provider name; a tag with no entry runs on the default
+        if any(name not in providers for name in self.tasks.values()):
             raise ValueError('Invalid LLM policy')
         self.decisions = decisions
         self.thresholds = _thresholds(filters)
@@ -384,6 +388,11 @@ class LLMService:
                 current = _unwrap_script_payload(parsed, key='output', protected_keys=protected)
         return current, None
 
+    def _provider_for_task(self, task_name: str) -> tuple[str, Provider]:
+        """The provider entry (and so the API key) configured for a task tag, else the default. An explicit `model_hint` is checked first."""
+        name = self.tasks.get(task_name, self.default)
+        return name, self.providers[name]
+
     def _run(self, inputs: LLMRunInput, meta: dict[str, Any] | None = None) -> Done | Refused:
         meta = {} if meta is None else meta
         skill: Skill | None = None
@@ -421,7 +430,7 @@ class LLMService:
                 validator.validate(example.output)
         except (ValidationError, Unresolvable):
             return Refused(rule='schema', reason='Example output does not match the schema')
-        selected = next(((name, p) for name, p in self.providers.items() if p.model == inputs.model_hint), None) if inputs.model_hint else (self.default, self.providers[self.default])
+        selected = next(((name, p) for name, p in self.providers.items() if p.model == inputs.model_hint), None) if inputs.model_hint else self._provider_for_task(inputs.task_name)
         if selected is None:
             return Refused(rule='policy', reason='Model is not allowed', failure='policy')
         name, provider = selected
@@ -744,4 +753,4 @@ def service_from_env(env: Mapping[str, str], privacy_list: Callable[[], Registry
                       min_retention_by_provider=floors, decisions=decisions, filters=config.get('filters'),
                       skills_dir=_skills_dir_from(config.get('skills_dir'), path),
                       allowed_script_env=_script_env_from(config.get('allowed_script_env'), env, provider_key_envs),
-                      blocked_script_env=tuple(sorted(provider_key_envs)))
+                      blocked_script_env=tuple(sorted(provider_key_envs)), tasks=llm.tasks)

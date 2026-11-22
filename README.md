@@ -2061,6 +2061,31 @@ only; other providers keep the `require_zdr` rule, and a caller's
 used only when listed here as `"unknown"`. A name that is not a configured
 provider, or any other value, stops the server at start-up. Each audit record
 also holds the `provider` used and whether `zdr` was required.
+`llm.tasks` maps a `task_name` to a provider name. `/v1/llm/run` runs a call on the provider
+its `task_name` maps to, with that provider's own `api_key_env`, so each task's spend lands on
+its own account; a `task_name` with no entry runs on `default`. A `model_hint` that names a
+configured model wins over the mapping. Retention floors, `provider_min_retention` and
+`require_zdr` apply to the provider that was chosen, and every provider's `api_key_env` is hidden
+from skill scripts. A task that maps to a provider that is not configured stops the server at
+start-up. The audit record's `provider` shows the route that ran.
+
+For a high-volume task, a cheap quantized model through OpenRouter is one option. These are
+synthetic names and the price at the time of writing (check the provider's page before relying on it):
+
+```json
+{"llm": {"default": "main",
+         "providers": {"main": {"base_url": "https://llm.example/v1", "model": "some/model",
+                                "retention": "zdr_enforced", "api_key_env": "MAIN_LLM_KEY"},
+                       "cheap": {"base_url": "https://openrouter.ai/api/v1", "model": "qwen/qwen3.7-flash",
+                                 "retention": "zdr_enforced", "api_key_env": "CHEAP_LLM_KEY"}},
+         "tasks": {"bulk-classify": "cheap"}},
+ "privacy_registry": {}}
+```
+
+`qwen/qwen3.7-flash` costs $0.03 per million input tokens and $0.13 per million output tokens.
+Use it only for a task whose data policy allows the provider's retention; the floors above
+decide, not the price.
+
 Install the `server` extra for JSON Schema validation.
 
 POST `/v1/llm/run` with `task_name`, `prompt_template`, `output_schema`,
