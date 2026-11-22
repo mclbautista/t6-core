@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 from pydantic import ValidationError
 
 from t6.frameio.project_folders import LocalFrameioQueue, QueueFrameioWriter
-from t6.person import AUTO_ACTOR, PERMISSIONS, SERVICES, People
+from t6.person import AUTO_ACTOR, BAY_SCANNER, PERMISSIONS, SERVICES, People
 from t6.privacy import MaskOptions, Registry as PrivacyRegistry, Session, mask_reply
 from t6.server.app import Request, Response, WebhookApp
 from t6.server.queue import MAIN_QUEUE
@@ -42,7 +42,8 @@ class VerbAPI:
                  translate_enabled: bool = False, frameio_timeout: float = 60.0,
                  frameio_queue: Any = None, concern_observe_closes: bool = False,
                  request_log: Callable[[str], None] | None = None, privacy_list: PrivacyList | None = None,
-                 notion_source: NotionSource | None = None, mirror: MirrorReader | None = None) -> None:
+                 notion_source: NotionSource | None = None, mirror: MirrorReader | None = None,
+                 server_projects: Callable[[], Sequence[Any]] | None = None) -> None:
         import math
         if not math.isfinite(transcribe_rate) or transcribe_rate < 0:
             raise ValueError('Transcription rate must be finite and non-negative')
@@ -55,6 +56,7 @@ class VerbAPI:
         self._mirror: MirrorReader | None = mirror
         self.tap_app = tap_app
         self.llm_service = llm_service
+        self.server_projects = server_projects  # the Resolve project server's inventory for `bay drift`; None until it is wired
         self.data_sources = dict(data_sources or {})
         self._privacy_registry, self.privacy_list = privacy_registry, privacy_list
         self.transcribe_rate = transcribe_rate
@@ -306,6 +308,10 @@ class VerbAPI:
             refusal = People.auto_refusal(entry.noun)
             if refusal:
                 return self.refused(refusal.rule, refusal.reason)
+        if actor == BAY_SCANNER:
+            refusal = People.scanner_refusal(entry.noun, entry.verb)
+            if refusal:
+                return self.refused(refusal.rule, refusal.reason)
         outcome: Any
         try:
             inputs = entry.input_model.model_validate(data)
@@ -404,6 +410,19 @@ class VerbAPI:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._meeting_notes(entry.verb, inputs, actor)
             # The reply holds the note's title and attendee names, so it is masked like `meeting-notes list`.
+            if isinstance(outcome, Done) and not self._reads_unmasked(actor):
+                outcome = self._masked_outcome(outcome)
+        elif (entry.noun, entry.verb) == ('bay', 'scan report'):
+            refusal = self.people.authorize(actor, entry.role)
+            outcome = refusal or self._bay_scan_report(inputs, actor)
+        elif (entry.noun, entry.verb) == ('bay', 'drift'):
+            refusal = self.people.authorize(actor, entry.role)
+            outcome = refusal or self._bay_drift(inputs)
+            if isinstance(outcome, Done) and not self._reads_unmasked(actor):
+                outcome = self._masked_outcome(outcome)
+        elif (entry.noun, entry.verb) == ('bay', 'scan list'):
+            outcome = invoke(entry, inputs, actor=actor, people=self.people, open_notion=self.open_notion)
+            # The reply holds project names and folder paths, so it is masked like `meeting-notes list`.
             if isinstance(outcome, Done) and not self._reads_unmasked(actor):
                 outcome = self._masked_outcome(outcome)
         elif (entry.noun, entry.verb) == ('machine', 'edit'):
@@ -798,6 +817,49 @@ class VerbAPI:
             return done(note_from_page(notion.retrieve_page(note.page_id, freshness='live')))
         except (ValueError, KeyError, OSError, NotionError) as error:
             return Refused(rule='input', reason=str(error))
+
+    def _bay_scan_report(self, inputs: Any, actor: str) -> Any:
+        """Tie a report to its Bay through the serial and the Bays rows, then keep it as that Bay's latest (`t6.bay_scan`)."""
+        from t6.bay_scan import FORMAT_VERSION, BayScans, bay_for_serial
+        from t6.fleet import Fleet, FleetSafetyError
+        from t6.notion import NotionError
+        report = inputs.report
+        if report.format_version != FORMAT_VERSION:
+            return Refused(rule='format_version', reason=f'This t6 reads bay scan report format {FORMAT_VERSION}, not {report.format_version}')
+        try:
+            source = self.data_sources['bays']
+            if not self._has_custom_source() and 'T6_NOTION_TOKEN' not in os.environ:
+                raise KeyError('T6_NOTION_TOKEN')
+            machines = Fleet(self.notion_source, source).machines()
+        except (ValueError, KeyError, OSError, NotionError, FleetSafetyError) as error:
+            return Refused(rule='config', reason=f'The Bays rows cannot be read: {error}')
+        scans = BayScans(self.people.registry)
+        bay, why = bay_for_serial(report.serial, machines, scans.bound_pages())
+        return scans.ingest(report, bay, actor=actor) if bay else Refused(rule='no_bay', reason=why)
+
+    def _bay_drift(self, inputs: Any) -> Any:
+        """Each Bay's last report against the project server's inventory. It reads and compares; nothing is written (`t6.bay_drift`)."""
+        from t6.bay_drift import drift
+        from t6.bay_scan import BayScans
+        from t6.media import active_links
+        from t6.registry.core import normalize_page_id
+        if self.server_projects is None:
+            return Refused(rule='config', reason='The project server inventory is not configured')
+        links = active_links(self.people.registry, 'resolve-project', 'working')
+        only = None
+        if inputs.project is not None:
+            page = normalize_page_id(inputs.project)
+            mine = [link for link in links if inputs.project == link.project_id or page in {normalize_page_id(p) for p in link.pages}]
+            if not mine:
+                return Refused(rule='project', reason='Project has no Resolve-project Media location')
+            only = mine[0].ref
+        try:
+            inventory = list(self.server_projects())
+        except (OSError, ValueError) as error:
+            return Refused(rule='config', reason=f'The project server inventory cannot be read: {error}')
+        listed = BayScans(self.people.registry).list()
+        assert isinstance(listed, Done)
+        return Done(result=drift(listed.result['bays'], inventory, {link.ref: link.project_id for link in links}, only))
 
     def _machine(self, verb: str, inputs: Any, actor: str) -> Any:
         """`machine list` reads the Bays rows; `machine sync` previews, then on confirm writes the fleet facts (`t6.fleet`)."""

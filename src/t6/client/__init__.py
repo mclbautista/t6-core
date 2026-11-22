@@ -21,7 +21,7 @@ from t6.verbs import (
     DriveAddInput, DriveEditInput, DrivePromoteSerialInput, DriveListInput, DriveGetInput, DriveFindInput, DriveCatalogSnapshotInput, DriveCatalogSnapshotsInput, DriveCatalogDiffInput, DriveCatalogAtInput, DriveShipmentsInput, DriveShipmentInput, DriveExceptionsInput,
     MachineEditInput, MachineListInput, MachineSyncInput,
     SwingAssignInput, SwingUnassignInput, SwingReturnInput, SwingOverdueInput,
-    BayBookInput, BayListInput, BookingMoveInput, BookingExtendInput, BookingCancelInput, BookingGetInput, BookingListInput,
+    BayBookInput, BayListInput, BayDriftInput, BayScanListInput, BayScanReportInput, BookingMoveInput, BookingExtendInput, BookingCancelInput, BookingGetInput, BookingListInput,
     DeliverableDeliverInput, PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput, QueueDismissInput, QueueFailedInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
     ConcernScanInput, ConcernObserveInput, ConcernCountsInput, ConcernListInput, ConcernChangesInput, ConcernForMessageInput, ConcernRecordMessageInput, ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput, ConcernSnoozeInput,
@@ -238,6 +238,15 @@ class Client:
 
     def bay_list(self, inputs: BayListInput) -> Result:
         return self.call('bay', 'list', inputs)
+
+    def bay_scan_report(self, inputs: BayScanReportInput) -> Result:
+        return self.call('bay', 'scan report', inputs)
+
+    def bay_scan_list(self, inputs: BayScanListInput) -> Result:
+        return self.call('bay', 'scan list', inputs)
+
+    def bay_drift(self, inputs: BayDriftInput) -> Result:
+        return self.call('bay', 'drift', inputs)
 
     def booking_move(self, inputs: BookingMoveInput) -> Result:
         return self.call('booking', 'move', inputs)

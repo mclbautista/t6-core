@@ -21,6 +21,7 @@ project and together are the one holder for their credentials.
 | ElevenLabs | Transcribe worker | Request transcription through t6. |
 | Telegram | Gateway | Request Telegram transport through the gateway. |
 | Frame.io | Frame.io worker | Request Frame.io work through t6. |
+| `bay-scanner` service token | Mac mini only (1Password) | Post bay scan reports to the t6 API, tailnet only. No bay holds it (ADR 0008, #18). |
 
 The API applies masking and the zero data retention (ZDR) flag to `llm run`;
 apps supply their own prompt and output schema. Every new credential needs a

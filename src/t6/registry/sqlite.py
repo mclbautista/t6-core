@@ -389,6 +389,9 @@ _MIGRATIONS = (
     ALTER TABLE timelines ADD COLUMN stamp_reason TEXT;
     ALTER TABLE timelines ADD COLUMN replaces TEXT;
     ALTER TABLE timelines ADD COLUMN resolve_uuid TEXT"""),
+    # The latest bay scan report of each Bay: what its local Resolve disk library held when the Mac mini last scanned it (#376).
+    (49, False, """CREATE TABLE bay_scan_reports (bay_id TEXT PRIMARY KEY REFERENCES bays(id), serial TEXT NOT NULL, scanned_at REAL NOT NULL,
+        received_at REAL NOT NULL, report TEXT NOT NULL)"""),
 )
 
 
