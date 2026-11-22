@@ -376,11 +376,12 @@ class VerbAPI:
             else:
                 from t6.verbs import ProjectNotesInput
                 from t6.concern import ConcernStore
+                from t6.concern_scan import ConcernScanner
                 from t6.concern_task import ClassifyRefused, classify
                 notes = self._typed_read('project', 'notes', ProjectNotesInput(project=inputs.project)) if inputs.owner in self._coordinators(inputs.project) else Refused(rule='owner', reason='Owner must be a Project coordinator')
                 if isinstance(notes, Done):
                     try:
-                        ConcernStore(self.people.registry, self.people.tokens).process_notes(inputs.project, inputs.owner, notes.result['lines'], lambda payload: classify(self.llm_service, payload, actor=actor, registry=self.people.registry))
+                        ConcernScanner(ConcernStore(self.people.registry, self.people.tokens)).process_notes(inputs.project, inputs.owner, notes.result['lines'], lambda payload: classify(self.llm_service, payload, actor=actor, registry=self.people.registry))
                         outcome = Done(result={'project': inputs.project})
                     except ValueError:
                         outcome = Refused(rule='project', reason='Project and active coordinator are required')
@@ -924,6 +925,7 @@ class VerbAPI:
     def scan_concerns(self) -> int:
         """Scan the PM Notes of every Project in rotation for new Concern evidence; returns how many were scanned."""
         from t6.concern import ConcernStore
+        from t6.concern_scan import ConcernScanner
         from t6.concern_task import ClassifyRefused, classify
         from t6.registry import Rotation
         from t6.verbs import ProjectNotesInput
@@ -937,7 +939,7 @@ class VerbAPI:
                 continue
             owner = owners[0]
             try:
-                done = ConcernStore(self.people.registry, self.people.tokens).process_notes(project.id, owner, notes.result['lines'], lambda payload: classify(self.llm_service, payload, actor=owner, registry=self.people.registry))
+                done = ConcernScanner(ConcernStore(self.people.registry, self.people.tokens)).process_notes(project.id, owner, notes.result['lines'], lambda payload: classify(self.llm_service, payload, actor=owner, registry=self.people.registry))
                 scanned += 1
                 changes = {name: count + done[name] for name, count in changes.items()}
             except ValueError:

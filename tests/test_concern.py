@@ -2,6 +2,7 @@ import sqlite3
 import unittest
 from typing import Any
 
+from t6.concern_scan import ConcernScanner
 from t6.concern import ConcernStore, WEEK
 from t6.ids import EntityKind, T6Id
 from t6.preview import PreviewTokens
@@ -315,7 +316,7 @@ class ConcernTests(unittest.TestCase):
         with self.registry._transaction() as db:
             db.execute('INSERT INTO concern_pm_pending VALUES (?, ?, ?, ?, ?)', (pending, '2026-11-17', 'quote', self.now, 1))
         self.now += 10
-        self.store.apply_pending(self.project)
+        ConcernScanner(self.store).apply_pending(self.project)
         self.assertEqual((self._get(pending)['state'], self._get(pending)['closed_at']), ('closed', self.now))
 
     def test_open_concerns_are_every_state_but_closed_oldest_first_with_the_chronic_mark(self) -> None:

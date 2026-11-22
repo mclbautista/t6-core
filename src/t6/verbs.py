@@ -850,8 +850,9 @@ def concern_for_message(inputs: ConcernForMessageInput, open_notion: Callable[..
 
 def concern_changes(inputs: ConcernChangesInput, open_notion: Callable[..., Any]) -> Outcome:
     from t6.concern import ConcernStore
+    from t6.concern_scan import ConcernScanner
     try:
-        return Done(result={'changes': ConcernStore(_people().registry, _people().tokens).changes(inputs.project, inputs.since)})
+        return Done(result={'changes': ConcernScanner(ConcernStore(_people().registry, _people().tokens)).changes(inputs.project, inputs.since)})
     except ValueError:
         return Refused(rule='since', reason='Since must be an ISO date')
 
