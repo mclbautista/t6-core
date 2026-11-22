@@ -1031,11 +1031,12 @@ class VerbAPI:
         from t6.verbs import ProjectNotesInput
         if self.llm_service is None:
             return 0
-        scanned, changes = 0, {'raised': 0, 'continued': 0, 'announced': 0}
+        scanned, skipped, changes = 0, 0, {'raised': 0, 'continued': 0, 'announced': 0}
         for project in self.people.registry.list_projects(Rotation.IN):
             owners = sorted(self._coordinators(project.id))
             notes = self._typed_read('project', 'notes', ProjectNotesInput(project=project.id)) if owners else None
             if not isinstance(notes, Done):
+                skipped += 1  # no coordinator, or the notes could not be read: counted, never silent (#596)
                 continue
             owner = owners[0]
             try:
@@ -1047,7 +1048,7 @@ class VerbAPI:
             except ClassifyRefused as refused:
                 print(f't6.server: concern scan stopped: llm run refused rule={refused.rule} projects={scanned}', file=sys.stderr, flush=True)  # rule only: no text
                 return scanned
-        print(f't6.server: concern scan projects={scanned} ' + ' '.join(f'{name}={count}' for name, count in changes.items()), file=sys.stderr, flush=True)  # counts only: no text
+        print(f't6.server: concern scan projects={scanned} skipped={skipped} ' + ' '.join(f'{name}={count}' for name, count in changes.items()), file=sys.stderr, flush=True)  # counts only: no text
         return scanned
 
     def _coordinators(self, project_id: str) -> set[str]:

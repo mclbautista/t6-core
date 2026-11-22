@@ -150,7 +150,7 @@ that the edge route file and the API need.
 
 On first open of a t6 database, `T6_OPERATOR_IDS` seeds the `operator` permission for matching Persons; unmatched IDs are reported on stderr. The seed is recorded even when the variable is empty, and later changes to it do not change Person permissions. Set it before the first open of an existing database containing Persons. Legacy operator cards still use the variable independently until their authorization is migrated.
 
-The CLI is an API client: set `T6_API_URL` and `T6_API_SECRET`. The API secret is bound to one Person or service, and that identity and its stored permissions decide what a registered verb may do. There is no command-line actor flag.
+The CLI is an API client: set `T6_API_URL` and `T6_API_SECRET`. The CLI waits 10 s for a reply (600 s for `concern scan`); `T6_API_TIMEOUT_SECONDS` sets the wait for every call. The API secret is bound to one Person or service, and that identity and its stored permissions decide what a registered verb may do. There is no command-line actor flag.
 
 Tests use `t6.server.testing.FakeClock`; no test opens a connection to a
 provider.

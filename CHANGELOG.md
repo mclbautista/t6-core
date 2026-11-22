@@ -4,6 +4,11 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Fixed
+
+- `t6 concern scan` from the CLI no longer gives up after 10 s with `unavailable: timed out` on a Project with many new PM Notes lines. The CLI now waits 600 s for `concern scan`, and `T6_API_TIMEOUT_SECONDS` sets the wait for every CLI call. A timed-out call names that setting. The API had kept scanning after the CLI left (#596).
+- The concern scan log line counts the Projects in rotation it skipped (no coordinator, or notes that could not be read) as `skipped=N` (#596).
+
 ## [0.6.18] - 2026-11-22
 
 A patch for the watchdog after the 0.6.17 deploy: `llm run` refused its output schema (rule `masking`) because a Contact's full name is an ordinary word that the schema also holds. No migration: the schema stays at 49.
