@@ -420,13 +420,9 @@ def booking_calendar_handler(environ: Mapping[str, str]) -> Handler:
     from t6.registry.sqlite import SqliteProjectRegistry
 
     def names(registry: SqliteProjectRegistry) -> Names:
-        token = environ.get("T6_NOTION_TOKEN")
-        if not token:
-            raise ValueError("missing environment variable: T6_NOTION_TOKEN (the calendar events carry Project and Person names)")
-        from t6.google.names import NotionNames
-        from t6.notion import NotionClient, NotionSource
+        from t6.google.names import notion_names
 
-        return NotionNames(registry, NotionSource(lambda: NotionClient(token)))
+        return notion_names(environ, registry, "the calendar events carry Project and Person names")
 
     try:
         return calendar_handler(environ, lambda: SqliteProjectRegistry(environ["T6_DATABASE"]), names)
@@ -444,13 +440,9 @@ def inbound_calendar_handlers(environ: Mapping[str, str]) -> dict[str, Handler]:
     from t6.registry.sqlite import SqliteProjectRegistry
 
     def names(registry: SqliteProjectRegistry) -> object:
-        token = environ.get("T6_NOTION_TOKEN")
-        if not token:
-            raise ValueError("missing environment variable: T6_NOTION_TOKEN (inbound calendar edits map the editor's email to a Person)")
-        from t6.google.names import NotionNames
-        from t6.notion import NotionClient, NotionSource
+        from t6.google.names import notion_names
 
-        return NotionNames(registry, NotionSource(lambda: NotionClient(token)))
+        return notion_names(environ, registry, "inbound calendar edits map the editor's email to a Person")
 
     try:
         return inbound_handlers(environ, lambda: SqliteProjectRegistry(environ["T6_DATABASE"]), names)
@@ -468,13 +460,9 @@ def sharing_calendar_handlers(environ: Mapping[str, str]) -> dict[str, Handler]:
     from t6.registry.sqlite import SqliteProjectRegistry
 
     def identities(registry: SqliteProjectRegistry) -> object:
-        token = environ.get("T6_NOTION_TOKEN")
-        if not token:
-            raise ValueError("missing environment variable: T6_NOTION_TOKEN (calendar sharing maps a Person to a Google email)")
-        from t6.google.names import NotionNames
-        from t6.notion import NotionClient, NotionSource
+        from t6.google.names import notion_names
 
-        return NotionNames(registry, NotionSource(lambda: NotionClient(token)))
+        return notion_names(environ, registry, "calendar sharing maps a Person to a Google email")
 
     try:
         return sharing_handlers(environ, lambda: SqliteProjectRegistry(environ["T6_DATABASE"]), identities)

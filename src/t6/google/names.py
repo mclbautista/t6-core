@@ -1,12 +1,20 @@
 """Names for event content: Notion keeps the Project's and the Person's names, t6 keeps the binding (#260)."""
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Protocol
 from uuid import UUID
 
 from t6.google.calendar import CalendarError
 from t6.notion import NotionClient, NotionError, NotionSource, as_source
 from t6.notion.reads import ContactReader, ProjectReader
 from t6.registry.sqlite import SqliteProjectRegistry
+
+
+class Identities(Protocol):
+    """The Google email a Person holds in Notion. A lookup that fails raises `CalendarError`, so the job retries."""
+
+    def email(self, person: str) -> str | None: ...
 
 
 class NotionNames:
@@ -46,3 +54,11 @@ class NotionNames:
             return self._people.get(self._page(person)).email
         except (NotionError, OSError) as error:
             raise CalendarError('Person email lookup failed') from error
+
+
+def notion_names(environ: Mapping[str, str], registry: SqliteProjectRegistry, reason: str) -> NotionNames:
+    """The Notion-backed names and emails for a Google handler. A missing `T6_NOTION_TOKEN` is a `ValueError` that says `reason`."""
+    token = environ.get('T6_NOTION_TOKEN')
+    if not token:
+        raise ValueError(f'missing environment variable: T6_NOTION_TOKEN ({reason})')
+    return NotionNames(registry, NotionSource(lambda: NotionClient(token)))

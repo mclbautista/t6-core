@@ -17,7 +17,7 @@ import time
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any
 
 from t6.bay import BookingStore
 from t6.domain.events import JsonValue
@@ -36,6 +36,9 @@ from t6.server.queue import Submitted
 from t6.worker.internal_queue import InternalJobQueue
 from t6.worker.runner import Handler
 
+if TYPE_CHECKING:
+    from t6.google.names import Identities  # names.py needs the Notion extra; the type is only for the checker
+
 CHANGED_KIND = 'google.calendar_changed'
 RENEW_KIND = 'google.renew_channels'
 QUEUE = 'main'
@@ -45,12 +48,6 @@ RENEW_EVERY = 86400            # the renewal job runs daily
 NO_PERMISSION = 'the editor is not a Person with the bookings permission'
 UNNAMED_EDITOR = 'changed in Google Calendar; Google does not name the editor'
 NO_TIME = 'the event needs a start and end with a time zone'
-
-
-class Identities(Protocol):
-    """The Google email a Person holds in Notion. A lookup that fails raises `CalendarError`, so the job retries."""
-
-    def email(self, person: str) -> str | None: ...
 
 
 class NoInbound:
