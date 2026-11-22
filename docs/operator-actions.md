@@ -117,7 +117,7 @@ the code and rotation buttons are refused on such a card.
 **Start Project (#540).** A Project's card for an operator has **Start Project** when the API has people
 configured. It is refused for anyone without `permission:operator`, in any chat. The tap runs
 `project start` for the card's Project as the tapper's Person, with no Deliverables, Media or Bookings
-(add those with the `project start` verb before confirming, or use the verb from the start): it queues the plan
+(a Start's inputs are fixed when its plan is made, so use the `project start` verb to start with them. After a Start is applied, `deliverable define`, `media link` and `booking book` add Deliverables, Media locations and Bookings to the Project one by one): it queues the plan
 job and the card says so (`start_queued`). **Check plan** reads the job: `start_pending` while the main worker has
 not built it, `start_ready` with the steps and **Confirm start**, or `start_refused` with the reason (for
 example the Project already started, or a Start waits for its Approval). **Confirm start** requests the Approval
