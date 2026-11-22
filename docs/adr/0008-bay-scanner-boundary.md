@@ -41,9 +41,11 @@ otherwise.
    another machine's serial. The data is report-only and changes nothing, and
    the API logs the reporting address. Per-bay tokens can replace this later
    without changing the format.
-   **(confirm in #374)** Bays must be able to reach the API listener that
-   serves `/v1/` (today the tailnet listener). If bays are not on the tailnet,
-   this needs a LAN route or a fallback, and this ADR is amended.
+   **Route: tailnet only.** The owner decided (2026-11-22) that the API stays
+   tailnet-only and ADR 0006 does not change. A bay posts to the tailnet
+   listener that serves `/v1/`. **(confirm in #374)** Each bay is on the
+   tailnet. A bay that is not cannot report, and shows as "no report" until it
+   joins; no LAN route is added for it.
 
 3. **Read-only guarantee.** The job never opens or starts Resolve. If a Resolve
    process is running, it scans nothing and reports "skipped, Resolve open" (a
@@ -79,9 +81,11 @@ otherwise.
    that definition and nothing looser.
 
 7. **Timeline stamps: only if readable.** Per `docs/research/resolve-marker-custom-data.md`,
-   markers sit in binary blobs on the project server. If #374 finds the same on
-   disk, #381 does not use the scanner. It is re-drafted with a path that has
-   Resolve running, and #274 changes with it.
+   markers sit in binary blobs on the project server. Whether a stamp can be
+   read without Resolve is tested once, in #579, and not again here. If it
+   cannot, #381 does not use the scanner. Stamps are written by the Resolve
+   worker under the amended ADR 0002 rule 10 (#578), never by this job: the
+   scanner only ever reads them.
 
 ## Consequences
 
