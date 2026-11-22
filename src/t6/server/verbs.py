@@ -1565,12 +1565,39 @@ def service_permissions_from_env(environ: Mapping[str, str]) -> dict[str, frozen
 
 
 def _read_privacy_names(path: str) -> PrivacyRegistry:
-    from t6.privacy import Person
+    """Load `privacy_registry.json`: `{"people": [...], "projects": [...], "ids": [...]}`; the old array of names still loads."""
     with open(path, encoding='utf-8') as file:
-        names = json.load(file)
-    if not isinstance(names, list) or any(not isinstance(name, str) or not name.strip() for name in names):
-        raise ValueError('T6_READ_PRIVACY_REGISTRY must contain a JSON array of client names')
-    return PrivacyRegistry(people=[Person(name=name) for name in names])
+        return parse_privacy_registry(json.load(file))
+
+
+def parse_privacy_registry(names: Any) -> PrivacyRegistry:
+    from t6.privacy import Person, Project
+
+    def text(value: Any) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError('privacy_registry.json holds names that are not text')
+        return value
+
+    def texts(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            raise ValueError('privacy_registry.json lists must be arrays')
+        return [text(item) for item in value]
+
+    if isinstance(names, list):  # the first format: client names only
+        return PrivacyRegistry(people=[Person(name=text(name)) for name in names])
+    if not isinstance(names, dict) or not names or set(names) - {'people', 'projects', 'ids'}:
+        raise ValueError('privacy_registry.json must be an object with people, projects and ids')
+    if any(not isinstance(names.get(key, []), list) for key in ('people', 'projects')):
+        raise ValueError('privacy_registry.json people and projects must be arrays')
+    people = [Person(name=text(entry)) if isinstance(entry, str) else
+              Person(name=text(entry.get('name')), aliases=texts(entry.get('aliases', [])), handles=texts(entry.get('handles', [])))
+              for entry in names.get('people', []) if isinstance(entry, (str, dict))]
+    projects = [Project(name=text(entry)) if isinstance(entry, str) else
+                Project(name=text(entry.get('name')), code=text(entry['code']) if entry.get('code') is not None else None)
+                for entry in names.get('projects', []) if isinstance(entry, (str, dict))]
+    if len(people) != len(names.get('people', [])) or len(projects) != len(names.get('projects', [])):
+        raise ValueError('privacy_registry.json entries must be names or objects')
+    return PrivacyRegistry(people=people, projects=projects, ids=texts(names.get('ids', [])))
 
 
 class PrivacyList:
@@ -1587,7 +1614,7 @@ class PrivacyList:
         self._seen: tuple[int, int] | None = None  # (mtime_ns, size) of the file last tried
         self._loaded: tuple[int, int] | None = None  # the same, of the list in use
         self._failed = False
-        self._names = len(registry.people)
+        self._names = len(registry.people) + len(registry.projects)
         try:
             self._seen = self._loaded = self._stamp()
         except OSError:
@@ -1610,7 +1637,7 @@ class PrivacyList:
                 if stamp is not None:
                     try:
                         self._registry = _read_privacy_names(self.path)
-                        self._loaded, self._failed, self._names = stamp, False, len(self._registry.people)
+                        self._loaded, self._failed, self._names = stamp, False, len(self._registry.people) + len(self._registry.projects)
                         return self._registry
                     except (OSError, ValueError) as error:  # JSONDecodeError is a ValueError
                         failure = type(error).__name__

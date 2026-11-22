@@ -128,7 +128,7 @@ def main() -> int:
         api = VerbAPI(People(registry, PreviewTokens(signing_key),
                              service_permissions_from_env(environ)),
                       queue, secrets_from_env(environ), _open_notion, app,
-                      llm_service=service_from_env(environ), data_sources=sources, privacy_registry=privacy_registry, privacy_list=privacy_list,
+                      llm_service=service_from_env(environ, privacy_list.current if privacy_list else None), data_sources=sources, privacy_registry=privacy_registry, privacy_list=privacy_list,
                       transcribe_rate=float(environ.get('T6_TRANSCRIBE_RATE', '0.4')),
                       frameio_timeout=float(environ.get('T6_FRAMEIO_WRITE_TIMEOUT_SECONDS', '60')), frameio_queue=frameio_queue,
                       translate_enabled=environ.get('T6_TRANSCRIPT_TRANSLATE', '').lower() == 'true',

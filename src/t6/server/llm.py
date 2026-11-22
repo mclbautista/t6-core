@@ -5,7 +5,7 @@ import dataclasses
 import hashlib
 import json
 import time
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -104,7 +104,7 @@ def _complete_chat(
 
 
 class LLMService:
-    def __init__(self, providers: Mapping[str, Provider], default: str, registry: Registry,
+    def __init__(self, providers: Mapping[str, Provider], default: str, registry: Registry | Callable[[], Registry],
                  *, require_zdr: bool = True, max_bytes: int = 100_000,
                  min_retention_by_provider: Mapping[str, Retention] | None = None,
                  decisions: OpenRouterDecisions | None = None, filters: Any = None,
@@ -121,11 +121,16 @@ class LLMService:
         self.decisions = decisions
         self.thresholds = _thresholds(filters)
         self.min_retention_by_provider = floors
-        self.providers, self.default, self.registry = dict(providers), default, registry
+        self.providers, self.default, self._registry = dict(providers), default, registry
         self.require_zdr, self.max_bytes = require_zdr, max_bytes
         self.skills_dir: Path | None = Path(skills_dir).resolve() if skills_dir is not None else None
         self.allowed_script_env: dict[str, str] | None = dict(allowed_script_env) if allowed_script_env is not None else None
         self.blocked_script_env: tuple[str, ...] = tuple(blocked_script_env)
+
+    @property
+    def registry(self) -> Registry:
+        """The names to hide now: a callable (the live `privacy_registry.json`) is asked on every use."""
+        return self._registry() if callable(self._registry) else self._registry
 
     def run(self, inputs: LLMRunInput, *, actor: str, registry: Any) -> Done | Refused:
         # Audit only fixed metadata, never caller-supplied text or provider output.
@@ -710,7 +715,7 @@ def _skills_dir_from(raw_skills_dir: Any, config_path: str) -> Path | None:
     return candidate if candidate.is_absolute() else (Path(config_path).resolve().parent / candidate)
 
 
-def service_from_env(env: Mapping[str, str]) -> LLMService | None:
+def service_from_env(env: Mapping[str, str], privacy_list: Callable[[], Registry] | None = None) -> LLMService | None:
     """Load server policy and names from a JSON file; absent configuration disables the verb."""
     path = env.get('T6_LLM_CONFIG')
     if not path:
@@ -721,9 +726,12 @@ def service_from_env(env: Mapping[str, str]) -> LLMService | None:
     providers: dict[str, Provider] = {}
     for name in llm.providers:
         providers[name] = replace(llm, default=name, tasks={}).provider_for('', env=env)
-    names = config['privacy_registry']
-    privacy = Registry(people=[Person(**p) for p in names.get('people', [])],
-                       projects=[Project(**p) for p in names.get('projects', [])], ids=names.get('ids', []))
+    if privacy_list is not None:  # the API's live privacy_registry.json, shared with masked reads
+        privacy: Registry | Callable[[], Registry] = privacy_list
+    else:
+        names = config['privacy_registry']
+        privacy = Registry(people=[Person(**p) for p in names.get('people', [])],
+                           projects=[Project(**p) for p in names.get('projects', [])], ids=names.get('ids', []))
     decisions = _decisions_from(config['decisions'], env) if 'decisions' in config else None
     floors = config.get('provider_min_retention', {})
     if not isinstance(floors, dict) or any((name not in providers and not (name == 'decisions' and decisions)) or value not in RETENTIONS for name, value in floors.items()):

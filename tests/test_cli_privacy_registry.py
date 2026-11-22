@@ -21,7 +21,8 @@ from t6.server.queue import JobQueue
 from t6.server.verbs import VerbAPI, read_config_from_env
 from t6.verbs import Done, ProjectListInput
 
-EXPECTED = ['Acme Studios', 'Acme', 'Acme Co', 'Borealis Pictures', 'Show One', 'Acme Studios Special']
+EXPECTED = {'people': [{'name': name} for name in ('Acme Studios', 'Acme', 'Acme Co', 'Borealis Pictures')],
+            'projects': [{'name': 'Show One'}, {'name': 'Acme Studios Special'}], 'ids': []}
 
 
 class PrivacyRegistryCommandTests(unittest.TestCase):
@@ -57,10 +58,19 @@ class PrivacyRegistryCommandTests(unittest.TestCase):
         self.assertEqual(err.strip(), '6 names; 0 shorter than 4 characters; 1 plain words of 4 to 6 letters')
         self.assertNotIn('Show One', err)
 
-    def test_prints_the_array_to_stdout_without_output(self) -> None:
+    def test_prints_the_registry_to_stdout_without_output(self) -> None:
         status, out, _ = self.run_command(env={'T6_NOTION_TOKEN': 'fake', 'T6_READ_DATA_SOURCES': str(self.sources)})
         self.assertEqual(status, 0)
         self.assertEqual(json.loads(out), EXPECTED)
+
+    def test_a_reload_reads_people_and_projects_and_still_loads_the_old_array(self) -> None:
+        from t6.server.verbs import parse_privacy_registry
+        registry = parse_privacy_registry({'people': [{'name': 'Ana Cruz', 'aliases': ['Ana'], 'handles': ['@ana']}], 'projects': [{'name': 'Show A', 'code': 'SHA'}], 'ids': ['123456']})
+        self.assertEqual(([p.name for p in registry.people], [p.code for p in registry.projects], list(registry.ids)), (['Ana Cruz'], ['SHA'], ['123456']))
+        self.assertEqual([p.name for p in parse_privacy_registry(['Client Corp']).people], ['Client Corp'])
+        for bad in ({}, {'bad': 1}, {'people': 'x'}, {'people': [3]}, 5):
+            with self.assertRaises(ValueError):
+                parse_privacy_registry(bad)
 
     def test_refuses_without_token_or_source(self) -> None:
         self.assertEqual(self.run_command('--data-sources', str(self.sources), env={})[0], 2)
@@ -89,4 +99,4 @@ class PrivacyRegistryCommandTests(unittest.TestCase):
         text = json.dumps(result.result)
         self.assertNotIn('Acme', text)
         self.assertNotIn('Show One', text)  # Project names are in the registry too
-        self.assertIn('[person 1]', text)
+        self.assertIn('[project 1]', text)
