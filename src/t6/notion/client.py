@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+import math
+import time
 from types import TracebackType
 from typing import Any
 
@@ -74,6 +76,54 @@ def withheld(value: Any) -> Any:
     return out
 
 
+class RequestPacer:
+    """Paces consecutive Notion API requests so throughput stays below 3 req/s."""
+
+    def __init__(
+        self,
+        min_interval: float = 0.4,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+        async_sleep: Callable[[float], Awaitable[None]] | None = None,
+    ) -> None:
+        if not math.isfinite(min_interval) or min_interval < 0:
+            raise ValueError(f"min_interval must be finite and non-negative, got {min_interval!r}")
+        self.min_interval = float(min_interval)
+        self._clock = clock
+        self._sleep = sleep
+        self._async_sleep = async_sleep
+        self._last_request_at: float | None = None
+
+    def wait(self) -> None:
+        """Sleep synchronously if needed so consecutive requests stay >= `min_interval` apart."""
+        if self.min_interval <= 0:
+            self._last_request_at = self._clock()
+            return
+        if self._last_request_at is not None:
+            elapsed = self._clock() - self._last_request_at
+            if elapsed < self.min_interval:
+                self._sleep(self.min_interval - elapsed)
+        self._last_request_at = self._clock()
+
+    async def wait_async(self) -> None:
+        """Sleep asynchronously (or via injected sync fake `sleep`) to pace consecutive requests."""
+        if self.min_interval <= 0:
+            self._last_request_at = self._clock()
+            return
+        if self._last_request_at is not None:
+            elapsed = self._clock() - self._last_request_at
+            if elapsed < self.min_interval:
+                delay = self.min_interval - elapsed
+                if self._async_sleep is not None:
+                    await self._async_sleep(delay)
+                elif self._sleep is not time.sleep:
+                    self._sleep(delay)
+                else:
+                    await asyncio.sleep(delay)
+        self._last_request_at = self._clock()
+
+
 class AsyncNotionClient:
     """Async client for pages and data sources."""
 
@@ -86,9 +136,11 @@ class AsyncNotionClient:
         base_url: str = BASE_URL,
         timeout: float = 30.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        pacer: RequestPacer | None = None,
     ) -> None:
         self.notion_version = notion_version
         self.retry = retry
+        self._pacer = pacer
         self._http = httpx.AsyncClient(
             base_url=base_url,
             headers={
@@ -240,6 +292,8 @@ class AsyncNotionClient:
         return read and transient
 
     async def _send(self, method: str, path: str, body: JSON | None) -> JSON:
+        if self._pacer is not None:
+            await self._pacer.wait_async()
         try:
             response = await self._http.request(method, path, json=body)
         except httpx.TimeoutException as error:

@@ -13,6 +13,7 @@ from t6.domain import Contact
 from t6.notion.errors import NotionError
 from t6.notion.generated import ContactsRow
 from t6.notion.reads import ContactReader, contact_from_row
+from t6.notion.source import Freshness, NotionSource, as_source
 from t6.notion.sync import NotionClient
 from t6.notion.writes import Ambiguous, Rejected, create_row, update_row
 
@@ -22,23 +23,23 @@ __all__ = ["Contacts"]
 class Contacts:
     """Reads Contacts from one data source, sets Telegram user IDs and creates Contacts."""
 
-    def __init__(self, client: NotionClient, data_source_id: str) -> None:
-        self._client = client
+    def __init__(self, source: NotionSource | NotionClient, data_source_id: str) -> None:
+        self._notion = as_source(source)
         self._source = data_source_id
-        self._reader = ContactReader(client, data_source_id)
+        self._reader = ContactReader(self._notion, data_source_id)
 
-    def get(self, page_id: str) -> Contact:
-        """The Contact on a page, read fresh."""
-        return self._reader.get(page_id)
+    def get(self, page_id: str, *, freshness: Freshness = "mirror") -> Contact:
+        """The Contact on a page."""
+        return self._reader.get(page_id, freshness=freshness)
 
-    def list(self) -> tuple[Contact, ...]:
+    def list(self, *, freshness: Freshness = "mirror") -> tuple[Contact, ...]:
         """Every Contact."""
-        return self._reader.list()
+        return self._reader.list(freshness=freshness)
 
     def set_telegram_user_id(self, page_id: str, user_id: int) -> Contact | Rejected | Ambiguous:
         """Set the Contact's Telegram user ID and return the Contact as saved."""
         return update_row(
-            self._client, ContactsRow, page_id, {"telegram_user_id": str(user_id)}, to_domain=contact_from_row
+            self._notion, ContactsRow, page_id, {"telegram_user_id": str(user_id)}, to_domain=contact_from_row
         )
 
     def create(
@@ -53,12 +54,12 @@ class Contacts:
             values["telegram_user_id"] = str(telegram_user_id)
         if telegram_handle:
             values["telegram_handle"] = telegram_handle
-        saved = create_row(self._client, ContactsRow, self._source, values, to_domain=contact_from_row)
+        saved = create_row(self._notion, ContactsRow, self._source, values, to_domain=contact_from_row)
         if isinstance(saved, (Rejected, Ambiguous)) or not note:
             return saved
         paragraph = {"type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": note}}]}}
         try:
-            self._client.append_block_children(saved.page_id, [paragraph])
+            self._notion.append_block_children(saved.page_id, [paragraph])
         except NotionError as error:
             reason = error.code if error.code in ("timeout", "network_error") else "readback_failed"
             return Ambiguous(reason, f"the Contact was created but its note was not saved: {error}", saved.page_id)  # type: ignore[arg-type]

@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from t6.cli import TOKEN_VARIABLE, _fail, _read_data_sources
 
 if TYPE_CHECKING:
+    from t6.notion.source import NotionSource
     from t6.notion.sync import NotionClient
 
 JSON = dict[str, Any]
@@ -90,18 +91,20 @@ def run(args: argparse.Namespace, open_notion: Callable[[str], NotionClient]) ->
     if not token:
         return _fail(f"set {TOKEN_VARIABLE} to a Notion integration token")
     try:
-        with open_notion(token) as client:
-            if args.command == "deadline":
-                from t6.notion.reads import ContactReader
+        from t6.notion.source import NotionSource
 
-                reader = ContactReader(client, "")
-                return _print(_deadline(args.phrase, args.posted, tuple(reader.get(ref) for ref in args.assignees), person if args.person else None))
-            sources = _read_data_sources(args.data_sources)
-            if "job_orders" not in sources:
-                return _fail("--data-sources has no 'job_orders' entry")
-            if args.jo_command == "get":
-                return _print(_get(client, sources["job_orders"], args.ref))
-            return _fail("unknown Job Order command")
+        notion = NotionSource(lambda: open_notion(token))
+        if args.command == "deadline":
+            from t6.notion.reads import ContactReader
+
+            reader = ContactReader(notion, "")
+            return _print(_deadline(args.phrase, args.posted, tuple(reader.get(ref) for ref in args.assignees), person if args.person else None))
+        sources = _read_data_sources(args.data_sources)
+        if "job_orders" not in sources:
+            return _fail("--data-sources has no 'job_orders' entry")
+        if args.jo_command == "get":
+            return _print(_get(notion, sources["job_orders"], args.ref))
+        return _fail("unknown Job Order command")
     except (OSError, TypeError, ValueError, ImportError, NotionError) as error:  # TypeError: an unknown JO field
         return _fail(str(error))
 
@@ -157,7 +160,7 @@ def _deadline(phrase: str, posted: datetime | None, assignees: tuple[Any, ...], 
     }
 
 
-def _get(client: NotionClient, data_source_id: str, ref: str) -> JSON:
+def _get(client: NotionSource | NotionClient, data_source_id: str, ref: str) -> JSON:
     from t6.domain.job_order_rules import parse_telegram_key
     from t6.notion.job_orders import JobOrders
 
@@ -174,17 +177,17 @@ def _get(client: NotionClient, data_source_id: str, ref: str) -> JSON:
         record = None
     if record is not None:
         page = next((b["page_id"] for b in record["bindings"] if b["active"]), None)
-        fields = _order(orders.get(page)) if page else dict(record["fields"])
+        fields = _order(orders.get(page, freshness="live")) if page else dict(record["fields"])
         fields["notion_notes"] = fields.get("notes")
         fields.update(id=record["id"], t6_id=record["id"], page_id=page,
                       state=record["state"], history=record["history"], assignee_id=record["assignee_id"], assignee=people.get(record["assignee_id"]) if record["assignee_id"] else None, notes=record["notes"])
         return fields
     if parse_telegram_key(ref) is not None:
-        found = orders.find_by_telegram_key(ref)
+        found = orders.find_by_telegram_key(ref, freshness="live")
         if found is None:
             raise ValueError(f"no Job Order has the Telegram Key {ref}")
-        return _order(orders.get(found.page_id))
-    return _order(orders.get(ref))
+        return _order(orders.get(found.page_id, freshness="live"))
+    return _order(orders.get(ref, freshness="live"))
 
 
 def read_fields_file(path: Path) -> JSON:
@@ -195,7 +198,7 @@ def read_fields_file(path: Path) -> JSON:
     return fields
 
 
-def check_fields(client: NotionClient, data_source_id: str, given: Mapping[str, Any]) -> JSON:
+def check_fields(client: NotionSource | NotionClient, data_source_id: str, given: Mapping[str, Any]) -> JSON:
     """Validate and normalize Job Order fields from a mapping, without adding a Watermark.
 
     A caller that sends no Watermark leaves the property unset. Only `prepare_fields`,
@@ -228,7 +231,7 @@ def check_fields(client: NotionClient, data_source_id: str, given: Mapping[str, 
     return fields
 
 
-def prepare_fields(client: NotionClient, data_source_id: str, path: Path) -> JSON:
+def prepare_fields(client: NotionSource | NotionClient, data_source_id: str, path: Path) -> JSON:
     """Validate and normalize the same fields accepted by the original create command.
 
     The file path keeps the old default: no Watermark in the file means "none".

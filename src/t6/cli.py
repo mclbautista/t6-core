@@ -9,6 +9,7 @@ that could not be registered, a classification that was refused), or when
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from datetime import date
 import getpass
 import hashlib
@@ -18,12 +19,14 @@ import os
 import sqlite3
 from importlib import resources
 from importlib.metadata import version
+import math
 from pathlib import Path
 import sys
 from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
+    from t6.notion.source import NotionSource
     from t6.notion.sync import NotionClient
 
 TOKEN_VARIABLE = "T6_NOTION_TOKEN"
@@ -37,18 +40,67 @@ def _open_notion(token: str) -> NotionClient:
     return NotionClient(token, retry=RetryPolicy())
 
 
+def _notion_source(open_notion: Callable[[str], NotionClient], token: str) -> NotionSource:
+    from t6.notion.source import NotionSource
+
+    return NotionSource(lambda: open_notion(token))
+
+
 def _fail(message: str, status: int = 2) -> int:
     print(json.dumps({"error": message}), file=sys.stderr)
     return status
 
 
-def _read_data_sources(path: Path) -> dict[str, str]:
-    data_sources: Any = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data_sources, dict) or not all(
-        isinstance(value, str) for value in data_sources.values()
-    ):
+DEFAULT_MIRROR_MAX_AGE_SECONDS = 300.0
+
+
+@dataclass(frozen=True, slots=True)
+class DataSourceConfig:
+    """Configured Notion data source ID and optional mirror max-age override."""
+
+    id: str
+    max_age_seconds: float = DEFAULT_MIRROR_MAX_AGE_SECONDS
+
+
+def read_data_source_configs(path: Path) -> dict[str, DataSourceConfig]:
+    """Read `--data-sources` JSON mapping database key to string ID or `{id, max_age_seconds}`."""
+    raw: Any = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
         raise ValueError("--data-sources must be a JSON object of database key to data source ID")
-    return data_sources
+    configs: dict[str, DataSourceConfig] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("--data-sources keys must be non-empty strings")
+        if isinstance(value, str):
+            if not value.strip():
+                raise ValueError(f"--data-sources entry {key!r} must be a non-empty string")
+            configs[key] = DataSourceConfig(id=value)
+        elif isinstance(value, dict):
+            extra = set(value) - {"id", "max_age_seconds"}
+            if extra:
+                raise ValueError(f"--data-sources entry {key!r} has unexpected keys: {sorted(extra)}")
+            ds_id = value.get("id")
+            if not isinstance(ds_id, str) or not ds_id.strip():
+                raise ValueError(f"--data-sources entry {key!r} must have a string 'id'")
+            if "max_age_seconds" in value:
+                max_age_raw = value["max_age_seconds"]
+                if (
+                    isinstance(max_age_raw, bool)
+                    or not isinstance(max_age_raw, (int, float))
+                    or not math.isfinite(float(max_age_raw))
+                    or float(max_age_raw) <= 0
+                ):
+                    raise ValueError(f"--data-sources entry {key!r} max_age_seconds must be a positive number")
+                configs[key] = DataSourceConfig(id=ds_id, max_age_seconds=float(max_age_raw))
+            else:
+                configs[key] = DataSourceConfig(id=ds_id)
+        else:
+            raise ValueError("--data-sources must be a JSON object of database key to data source ID")
+    return configs
+
+
+def _read_data_sources(path: Path) -> dict[str, str]:
+    return {key: cfg.id for key, cfg in read_data_source_configs(path).items()}
 
 
 def _cameras(
@@ -73,11 +125,11 @@ def _cameras(
                 payload = json.loads(text)
             except json.JSONDecodeError as error:
                 return _fail(f"update input is not valid JSON: {error}")
-        with open_notion(token) as client:
-            if args.cameras_command == "get":
-                result: Any = get_cameras(client, data_source_id, page_id=args.page_id)
-            else:
-                result = update_camera(client, data_source_id, args.page_id, payload)
+        notion = _notion_source(open_notion, token)
+        if args.cameras_command == "get":
+            result: Any = get_cameras(notion, data_source_id, page_id=args.page_id)
+        else:
+            result = update_camera(notion, data_source_id, args.page_id, payload)
     except (OSError, ValueError, NotionError) as error:  # CameraInputError is a ValueError
         return _fail(str(error))
     print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -114,8 +166,8 @@ def _schema_check(
         snapshot = load_snapshot(args.snapshot)
         data_sources = _read_data_sources(args.data_sources)
         registry = _open_registry(args.registry_db)
-        with open_notion(token) as client:
-            report = check_schema(client, snapshot, data_sources, registry)
+        notion = _notion_source(open_notion, token)
+        report = check_schema(notion, snapshot, data_sources, registry)
         if args.fix_snapshot:
             target = args.snapshot or Path(str(resources.files("t6.notion").joinpath("schema_snapshot.json")))
             try:
@@ -147,8 +199,8 @@ def _schema_snapshot(
     try:
         snapshot = load_snapshot(args.snapshot)
         data_sources = _read_data_sources(args.data_sources)
-        with open_notion(token) as client:
-            refreshed = refresh_snapshot(client, snapshot, data_sources)
+        notion = _notion_source(open_notion, token)
+        refreshed = refresh_snapshot(notion, snapshot, data_sources)
         refreshed["captured"] = date.today().isoformat()
         args.out.write_text(json.dumps(refreshed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     except (OSError, ValueError, NotionError) as error:
@@ -169,8 +221,8 @@ def _migrate_people(args: argparse.Namespace, open_notion: Callable[..., Any]) -
     if args.apply and not args.preview:
         return _fail("--apply needs --preview FILE")
     try:
-        with open_notion(token) as client:
-            contacts = Contacts(client, _read_data_sources(args.data_sources)["contacts"]).list()
+        notion = _notion_source(open_notion, token)
+        contacts = Contacts(notion, _read_data_sources(args.data_sources)["contacts"]).list(freshness="live")
         people = People(SqliteProjectRegistry(args.registry_db), PreviewTokens("migration"))
         digest = json.loads(args.preview.read_text(encoding="utf-8"))["digest"] if args.apply else None
         report = people.migrate(contacts, actor=pwd.getpwuid(os.getuid()).pw_name, apply=args.apply, digest=digest)
@@ -197,8 +249,8 @@ def _migrate_job_orders(args: argparse.Namespace, open_notion: Callable[..., Any
     if args.apply and not args.preview:
         return _fail("--apply needs --preview FILE")
     try:
-        with open_notion(token) as client:
-            orders = JobOrders(client, _read_data_sources(args.data_sources)["job_orders"]).list()
+        notion = _notion_source(open_notion, token)
+        orders = JobOrders(notion, _read_data_sources(args.data_sources)["job_orders"]).list(freshness="live")
         store = JobOrderStore(SqliteProjectRegistry(args.registry_db), PreviewTokens("migration"))
         digest = json.loads(args.preview.read_text(encoding="utf-8"))["digest"] if args.apply else None
         report = store.migrate(orders, actor=pwd.getpwuid(os.getuid()).pw_name, apply=args.apply, digest=digest)
@@ -235,8 +287,8 @@ def _migrate_bays(args: argparse.Namespace, open_notion: Callable[..., Any]) -> 
     if args.apply and not args.preview:
         return _fail("--apply needs --preview FILE")
     try:
-        with open_notion(token) as client:
-            rows = [BaysRow.from_page(page) for page in client.query_data_source(_read_data_sources(args.data_sources)['bays']) if is_live(page)]
+        notion = _notion_source(open_notion, token)
+        rows = [BaysRow.from_page(page) for page in notion.query_data_source(_read_data_sources(args.data_sources)['bays'], freshness="live") if is_live(page)]
         if args.type:  # the Notion database also holds machines that are not Bays
             rows = [row for row in rows if args.type in row.type]
         digest = json.loads(args.preview.read_text(encoding='utf-8'))['digest'] if args.apply else None
@@ -258,9 +310,9 @@ def _privacy_registry(args: argparse.Namespace, open_notion: Callable[..., Any])
         sources = _read_data_sources(args.data_sources)
         if not sources.get("studios") or not sources.get("projects"):
             return _fail("--data-sources needs 'studios' and 'projects' entries")
-        with open_notion(token) as client:
-            studios = StudioReader(client, sources["studios"]).names()
-            projects = tuple(project.name for project in ProjectReader(client, sources["projects"]).list())
+        notion = _notion_source(open_notion, token)
+        studios = StudioReader(notion, sources["studios"]).names()
+        projects = tuple(project.name for project in ProjectReader(notion, sources["projects"]).list())
         names = list(dict.fromkeys(" ".join(name.split()) for name in (*studios, *projects) if name.strip()))
         text = json.dumps(names, ensure_ascii=False)
         if args.output:
@@ -322,18 +374,18 @@ def _migrate_deliverables(args: argparse.Namespace, open_notion: Callable[..., A
         return _fail("--apply needs --preview FILE")
     try:
         property_id = projection_id()
-        with open_notion(token) as client:
-            pages = client.query_data_source(_read_data_sources(args.data_sources)['deliverables'])
-            rows = []
-            for page in pages:
-                if not is_live(page):
-                    continue
-                row = DeliverablesRow.from_page(page)
-                props = page.get('properties') or {}
-                rows.append({'page_id': row.page_id, 'project_page': row.projects[0] if len(row.projects) == 1 else None,
-                             'code': row.name, 'due': row.deadline.isoformat() if row.deadline else None,
-                             'air': row.playdate.isoformat() if row.playdate else None,
-                             't6_id': codec.rich_text(next((prop for prop in props.values() if unquote(str(prop.get('id', ''))) == unquote(property_id)), None))})
+        notion = _notion_source(open_notion, token)
+        pages = notion.query_data_source(_read_data_sources(args.data_sources)['deliverables'], freshness="live")
+        rows = []
+        for page in pages:
+            if not is_live(page):
+                continue
+            row = DeliverablesRow.from_page(page)
+            props = page.get('properties') or {}
+            rows.append({'page_id': row.page_id, 'project_page': row.projects[0] if len(row.projects) == 1 else None,
+                         'code': row.name, 'due': row.deadline.isoformat() if row.deadline else None,
+                         'air': row.playdate.isoformat() if row.playdate else None,
+                         't6_id': codec.rich_text(next((prop for prop in props.values() if unquote(str(prop.get('id', ''))) == unquote(property_id)), None))})
         store = DeliverableStore(SqliteProjectRegistry(args.registry_db), PreviewTokens('migration'))
         digest = json.loads(args.preview.read_text(encoding='utf-8'))['digest'] if args.apply else None
         report = store.migrate(rows, actor=pwd.getpwuid(os.getuid()).pw_name, apply=args.apply, digest=digest)
@@ -359,8 +411,8 @@ def _migrate_projects(
         return _fail("--apply needs --preview FILE (the exported preview) and --actor NAME")
     try:
         registry = SqliteProjectRegistry(args.registry_db)
-        with open_notion(token) as client:
-            projects, not_counted = read_legacy_projects(client, _read_data_sources(args.data_sources))
+        notion = _notion_source(open_notion, token)
+        projects, not_counted = read_legacy_projects(notion, _read_data_sources(args.data_sources))
         if not args.apply:
             print(json.dumps(preview(registry, projects, not_counted=not_counted).to_json(), ensure_ascii=False, indent=2))
             return 0
@@ -478,8 +530,8 @@ def _import_swing(args: argparse.Namespace, open_notion: Callable[..., Any]) -> 
         data_source = _read_data_sources(args.data_sources).get("swing_drives")
         if not data_source:
             return _fail("--data-sources has no 'swing_drives' entry")
-        with open_notion(token) as client:
-            rows = read_swing_drives(client, data_source)
+        notion = _notion_source(open_notion, token)
+        rows = read_swing_drives(notion, data_source, freshness="live")
         digest = json.loads(args.preview.read_text(encoding="utf-8"))["digest"] if args.apply else None
         report = import_swing_drives(rows, SqliteDriveStore(SqliteProjectRegistry(args.registry_db)), apply=args.apply, digest=digest)
     except (OSError, ValueError, KeyError, NotionError) as error:

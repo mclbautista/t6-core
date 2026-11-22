@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from t6.notion import named
 from t6.notion.errors import NotionError
+from t6.notion.source import NotionSource, as_source
 from t6.registry import ProjectRegistry, RegistryUnavailable
 from t6.registry.check import ProjectFindings, audit_projects
 
@@ -76,7 +77,7 @@ def diff_properties(snapshot: list[JSON], live: JSON) -> JSON:
     return {"added": added, "removed": removed, "changed": changed, "renamed": renamed}
 
 
-def refresh_snapshot(client: NotionClient, snapshot: JSON, data_sources: dict[str, str]) -> JSON:
+def refresh_snapshot(source: NotionSource | NotionClient, snapshot: JSON, data_sources: dict[str, str]) -> JSON:
     """A copy of `snapshot` with property and option IDs (and names) read from live Notion.
 
     For each database in `data_sources`, a property keeps its place when its ID
@@ -88,9 +89,10 @@ def refresh_snapshot(client: NotionClient, snapshot: JSON, data_sources: dict[st
     unknown = sorted(set(data_sources) - set(snapshot["databases"]))
     if unknown:
         raise ValueError(f"data sources for databases not in the snapshot: {', '.join(unknown)}")
+    notion = as_source(source)
     refreshed: JSON = copy.deepcopy(snapshot)
     for key, source_id in data_sources.items():
-        live = client.retrieve_data_source(source_id).get("properties") or {}
+        live = notion.retrieve_data_source(source_id, freshness="live").get("properties") or {}
         live_props = [{**prop, "name": str(prop.get("name", name))} for name, prop in live.items()]
         by_id = {str(prop["id"]): prop for prop in live_props if "id" in prop}
         by_name = {prop["name"]: prop for prop in live_props}
@@ -118,7 +120,7 @@ def _snapshot_property(live: JSON) -> JSON:
 
 
 def check_schema(
-    client: NotionClient,
+    source: NotionSource | NotionClient,
     snapshot: JSON,
     data_sources: dict[str, str],
     registry: ProjectRegistry | None = None,
@@ -144,12 +146,13 @@ def check_schema(
     unknown = sorted(set(data_sources) - set(snapshot["databases"]))
     if unknown:
         raise ValueError(f"data sources for databases not in the snapshot: {', '.join(unknown)}")
+    notion = as_source(source)
     databases: dict[str, JSON] = {}
     for key, database in snapshot["databases"].items():
         if key not in data_sources:
             continue
         try:
-            live = client.retrieve_data_source(data_sources[key])
+            live = notion.retrieve_data_source(data_sources[key], freshness="live")
         except NotionError as error:
             databases[key] = {
                 "status": "error",
@@ -167,7 +170,7 @@ def check_schema(
 
     project_codes: JSON | None = None
     if "projects" in data_sources and databases["projects"]["status"] != "error":
-        project_codes = _audit_projects(client, data_sources["projects"], registry)
+        project_codes = _audit_projects(notion, data_sources["projects"], registry)
 
     return {
         "ok": (project_codes is None or project_codes["status"] == "ok")
@@ -252,11 +255,11 @@ def _error(source: str, error: NotionError) -> JSON:
     return {"source": source, "status": error.status, "code": error.code, "message": error.message}
 
 
-def _audit_projects(client: NotionClient, data_source_id: str, registry: ProjectRegistry | None) -> JSON:
+def _audit_projects(notion: NotionSource, data_source_id: str, registry: ProjectRegistry | None) -> JSON:
     reasons: list[JSON] = []
     pages: list[str] | None = None
     try:
-        pages = [str(row["id"]) for row in client.query_data_source(data_source_id)]
+        pages = [str(row["id"]) for row in notion.query_data_source(data_source_id, freshness="live")]
     except NotionError as error:
         reasons.append(_error("notion", error))
     findings: ProjectFindings | None = None

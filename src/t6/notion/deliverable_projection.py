@@ -9,6 +9,8 @@ from t6.registry import normalize_page_id
 
 from t6.notion.generated import DeliverablesRow
 from t6.notion.named import live_option_name
+from t6.notion.source import NotionSource, as_source
+from t6.notion.sync import NotionClient
 from t6.notion.writes import Ambiguous, Rejected, create_row
 from t6.worker.runner import Refused
 
@@ -21,19 +23,19 @@ def projection_id() -> str:
 
 
 class DeliverableProjection:
-    def __init__(self, notion: Any, registry: Any, data_source: str) -> None:
-        self.notion, self.registry, self.data_source = notion, registry, data_source
+    def __init__(self, notion: NotionSource | NotionClient, registry: Any, data_source: str) -> None:
+        self.notion, self.registry, self.data_source = as_source(notion), registry, data_source
 
     def _option(self, wanted: str) -> str:
         """The team's own Status option for `wanted`; the API never creates one."""
         try:
-            return live_option_name(self.notion.retrieve_data_source(self.data_source), DeliverablesRow.notion_id('status') or 'Status', wanted)
+            return live_option_name(self.notion.retrieve_data_source(self.data_source, freshness='live'), DeliverablesRow.notion_id('status') or 'Status', wanted)
         except ValueError as error:
             raise Refused(str(error)) from error
 
     def reconcile(self, job: Any) -> dict[str, Any]:
         page_id = str(job.payload['page_id'])
-        page = self.notion.retrieve_page(page_id)
+        page = self.notion.retrieve_page(page_id, freshness='live')
         if normalize_page_id(str((page.get('parent') or {}).get('data_source_id', ''))) != normalize_page_id(self.data_source):
             return {'outcome': 'not_a_deliverable_page'}
         property_id = projection_id()
@@ -71,7 +73,7 @@ class DeliverableProjection:
         identifier = state['id']
         page = state['page_id']
         if not page:
-            matches = self.notion.query_data_source(self.data_source, filter={'property': property_id, 'rich_text': {'equals': identifier}})
+            matches = self.notion.query_data_source(self.data_source, filter={'property': property_id, 'rich_text': {'equals': identifier}}, freshness='live')
             if len(matches) > 1:
                 self.registry.report_deliverable_sync(intent, error='Multiple Notion pages have this T6 ID')
                 raise Refused('Multiple Notion pages have this T6 ID')
@@ -93,7 +95,7 @@ class DeliverableProjection:
                     raise Refused(f'Notion create needs review: {saved}')
                 page = saved.page_id
         status_id = DeliverablesRow.notion_id('status') or 'Status'
-        current = self.notion.retrieve_page(page)
+        current = self.notion.retrieve_page(page, freshness='live')
         current_status = DeliverablesRow.from_page(current).status
         properties: dict[str, Any] = {property_id: {'rich_text': [{'text': {'content': identifier}}]}}
         if DeliverablesRow.from_page(current).name != state['code']:
