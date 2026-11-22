@@ -1,0 +1,92 @@
+"""Guest reviewers' names from Frame.io's private GraphQL API (#545).
+
+A comment a guest left through a share link has no `owner` in the public v4 API. The share page loads its comments,
+with each guest's name, from `POST https://api.frame.io/graphql` (operation `GetShareCommentsByAsset`) at
+`data.share.asset.comments.result[].owner.name`. On a passphrase share that call needs the share token the page gets
+when the passphrase is accepted, sent as `x-frameio-share-authentication`.
+
+The unlock call (`share_token`) is a best guess: the real call is not captured yet (#602). This API is undocumented, so
+every failure (no token, refused call, a changed answer) answers no names and the caller keeps its guest fallback.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+import json
+from typing import Any
+import urllib.error
+import urllib.request
+import uuid
+
+from t6.frameio.tokens import USER_AGENT
+
+GRAPHQL_URL = "https://api.frame.io/graphql"
+TIMEOUT_SECONDS = 5.0
+NAME_LIMIT = 80
+
+COMMENTS_QUERY = (
+    "query GetShareCommentsByAsset($shareId: ID!, $assetId: ID!) {"
+    " share(shareId: $shareId) { asset(assetId: $assetId) { comments {"
+    " result { id owner { ... on IdentifiedUser { name } } } } } } }"
+)
+UNLOCK_QUERY = (  # best guess, see #602
+    "mutation AuthenticateShare($shareId: ID!, $passphrase: String!) {"
+    " authenticateShare(shareId: $shareId, passphrase: $passphrase) { token } }"
+)
+
+Post = Callable[[Mapping[str, Any], Mapping[str, str]], Any]
+"""POST one GraphQL request (body, extra headers) to Frame.io; the decoded JSON answer. Raises on any failure."""
+ShareNames = Callable[[str, str, str | None], dict[str, str]]
+"""(share id, file id, passphrase or None) -> {comment id: guest name}; empty on any failure."""
+
+
+def post_graphql(body: Mapping[str, Any], headers: Mapping[str, str]) -> Any:
+    request = urllib.request.Request(
+        GRAPHQL_URL,
+        data=json.dumps(body).encode(),
+        headers={"User-Agent": USER_AGENT, "Content-Type": "application/json", **headers},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310 - fixed https URL
+        return json.loads(response.read())
+
+
+def _clean(name: Any) -> str | None:
+    if not isinstance(name, str):
+        return None
+    text = "".join(ch for ch in name if ch.isprintable()).strip()
+    return text[:NAME_LIMIT] or None
+
+
+def _dig(value: Any, *keys: str) -> Any:
+    for key in keys:
+        value = value.get(key) if isinstance(value, Mapping) else None
+    return value
+
+
+def share_token(share_id: str, passphrase: str, post: Post = post_graphql) -> str | None:
+    """The share token that unlocks a passphrase share, or None. Best guess at Frame.io's unlock call (#602)."""
+    answer = post({"query": UNLOCK_QUERY, "variables": {"shareId": share_id, "passphrase": passphrase}}, {})
+    token = _dig(answer, "data", "authenticateShare", "token")
+    return token if isinstance(token, str) and token else None
+
+
+def share_guest_names(share_id: str, file_id: str, passphrase: str | None, post: Post = post_graphql) -> dict[str, str]:
+    """{comment id: name} for the file's comments as the share shows them. Empty when anything fails."""
+    try:
+        headers = {"x-frameio-session-id": str(uuid.uuid4())}
+        if passphrase:
+            token = share_token(share_id, passphrase, post)
+            if token is None:
+                return {}
+            headers["x-frameio-share-authentication"] = token
+        answer = post({"query": COMMENTS_QUERY, "variables": {"shareId": share_id, "assetId": file_id}}, headers)
+    except (urllib.error.URLError, OSError, ValueError):
+        return {}
+    comments = _dig(answer, "data", "share", "asset", "comments", "result")
+    names: dict[str, str] = {}
+    for comment in comments if isinstance(comments, list) else ():
+        comment_id, name = _dig(comment, "id"), _clean(_dig(comment, "owner", "name"))
+        if isinstance(comment_id, str) and name is not None:
+            names[comment_id] = name
+    return names

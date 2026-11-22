@@ -2,13 +2,17 @@
 
 import json
 import unittest
+from unittest import mock
+import urllib.request
 
 from t6.frameio.api import FrameioApi
 from t6.frameio.model import GUEST_ID, GUEST_NAME, ResolvedComment
 from t6.frameio.reads import FrameioReads
 from t6.frameio.requests import ResolveComment
+from t6.frameio.share_comments import COMMENTS_QUERY, UNLOCK_QUERY, share_guest_names
 from t6.frameio.share_page import fetch_share_page, guest_name
 from t6.frameio.testing import FakeFrameio, StaticTokens
+from t6.frameio.tokens import USER_AGENT
 
 ACCOUNT = "acc-1"
 
@@ -36,6 +40,32 @@ class GuestNameParsingTest(unittest.TestCase):
         name = guest_name(html, "c1")
         assert name is not None
         self.assertTrue(name.startswith("Guest Ana") and len(name) == 80 and "\x00" not in name)
+
+    def test_the_page_is_fetched_as_the_t6_worker_not_as_python(self) -> None:
+        # Frame.io answers Python's default User-Agent with a bare 403 page, so the name was never read (#545).
+        sent: list[urllib.request.Request] = []
+
+        class Response:
+            def __enter__(self) -> "Response":
+                return self
+
+            def __exit__(self, *exc: object) -> None:
+                return None
+
+            def geturl(self) -> str:
+                return "https://f.io/s1"
+
+            def read(self, limit: int) -> bytes:
+                return b"<html></html>"
+
+        def urlopen(request: urllib.request.Request, timeout: float) -> Response:
+            sent.append(request)
+            return Response()
+
+        with mock.patch("urllib.request.urlopen", urlopen):
+            self.assertEqual(fetch_share_page("https://f.io/s1"), "<html></html>")
+        self.assertEqual(sent[0].get_header("User-agent"), USER_AGENT)
+        self.assertEqual(sent[0].full_url, "https://f.io/s1")
 
     def test_only_frame_io_https_pages_are_fetched(self) -> None:
         for url in ("http://f.io/s1", "https://example.com/s1", "https://frame.io.example.com/s1", "file:///etc/passwd"):
@@ -95,6 +125,80 @@ class GuestCommentTest(unittest.TestCase):
         found = reads.resolve_comment(ResolveComment(comment_id="c2", account_id=ACCOUNT, frameio_project_id="fp1"))
         self.assertEqual(found.author_name, "Reviewer One")
         self.assertEqual(self.fetched, [])
+
+
+class ShareGuestNamesTest(unittest.TestCase):
+    """The guest's name from Frame.io's GraphQL share comments (#545); the unlock call is a best guess (#602)."""
+
+    def setUp(self) -> None:
+        self.posts: list[tuple[dict[str, object], dict[str, str]]] = []
+        self.answers: list[object] = []
+
+    def post(self, body: object, headers: object) -> object:
+        self.posts.append((dict(body), dict(headers)))  # type: ignore[call-overload]
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    @staticmethod
+    def comments(*rows: dict[str, object]) -> dict[str, object]:
+        return {"data": {"share": {"asset": {"comments": {"result": list(rows)}}}}}
+
+    def test_an_open_share_answers_names_by_comment_without_a_token(self) -> None:
+        self.answers = [self.comments({"id": "c1", "owner": {"name": " Cyrene Lubigan "}}, {"id": "c2", "owner": None})]
+        self.assertEqual(share_guest_names("s1", "f1", None, self.post), {"c1": "Cyrene Lubigan"})
+        body, headers = self.posts[0]
+        self.assertEqual((body["query"], body["variables"]), (COMMENTS_QUERY, {"shareId": "s1", "assetId": "f1"}))
+        self.assertNotIn("x-frameio-share-authentication", headers)
+
+    def test_a_passphrase_share_is_unlocked_and_the_token_sent(self) -> None:
+        self.answers = [{"data": {"authenticateShare": {"token": "tok"}}}, self.comments({"id": "c1", "owner": {"name": "Ana"}})]
+        self.assertEqual(share_guest_names("s1", "f1", "secret", self.post), {"c1": "Ana"})
+        self.assertEqual(self.posts[0][0], {"query": UNLOCK_QUERY, "variables": {"shareId": "s1", "passphrase": "secret"}})
+        self.assertEqual(self.posts[1][1]["x-frameio-share-authentication"], "tok")
+
+    def test_a_failed_unlock_or_call_or_odd_answer_is_no_names(self) -> None:
+        for answers in (
+            [{"errors": [{"message": "unknown field"}]}],
+            [OSError("down")],
+            [ValueError("not json")],
+        ):
+            self.answers = list(answers)
+            self.assertEqual(share_guest_names("s1", "f1", "secret", self.post), {}, answers)
+        for answer in ({"data": None}, {"data": {"share": {"asset": {"comments": {"result": "x"}}}}}, OSError("down")):
+            self.answers = [answer]
+            self.assertEqual(share_guest_names("s1", "f1", None, self.post), {}, answer)
+
+
+class GuestNameFromShareCommentsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.fake = FakeFrameio()
+        self.fake.add_project("fp1", "Project One")
+        self.fake.add_file("f1", "Cut 1")
+        self.fake.add_share("fp1", "s1", "Cut 1", file_ids=("f1",), created_at="2026-11-01T00:00:00Z", passphrase="kb-pass")
+        self.fake.add_comment("f1", "c1", "text", author_id=None)
+        self.asked: list[tuple[str, str, str | None]] = []
+        self.names: dict[str, str] = {"c1": "Cyrene Lubigan"}
+
+    def resolve(self, page_fetch: object = None) -> ResolvedComment:
+        def names(share_id: str, file_id: str, passphrase: str | None) -> dict[str, str]:
+            self.asked.append((share_id, file_id, passphrase))
+            return self.names
+
+        reads = FrameioReads(
+            FrameioApi(StaticTokens(), self.fake.fetch), account_id=ACCOUNT, share_names=names, page_fetch=page_fetch  # type: ignore[arg-type]
+        )
+        return reads.resolve_comment(ResolveComment(comment_id="c1", account_id=ACCOUNT, frameio_project_id="fp1"))
+
+    def test_the_name_comes_from_the_share_comments_with_the_share_passphrase(self) -> None:
+        self.assertEqual(self.resolve().author_name, "Cyrene Lubigan")
+        self.assertEqual(self.asked, [("s1", "f1", "kb-pass")])
+
+    def test_no_name_there_falls_back_to_the_page_then_to_the_guest_name(self) -> None:
+        self.names = {}
+        self.assertEqual(self.resolve(lambda url: page({"id": "c1", "owner": {"name": "Guest Ana"}})).author_name, "Guest Ana")
+        self.assertEqual(self.resolve().author_name, GUEST_NAME)
 
 
 if __name__ == "__main__":
