@@ -82,7 +82,7 @@ class ObserveTests(unittest.TestCase):
         self.assertEqual((record['opened_at'], record['evidence_at'], record['owner_id'], record['waiting_on'], record['source']), (manila('2026-11-16'), self.now, None, '', 'flag_rule'))
         self.assertEqual({k: v for k, v in result['counts'].items() if v}, {'new': 1})
         with self.registry._transaction() as db:
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM internal_jobs WHERE kind = 'concern_silence'").fetchone()[0], 2)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM internal_jobs WHERE kind = 'concern_silence'").fetchone()[0], 0)
         self.assertTrue(any(a.action == 'concern_auto_raise' and a.subject_id == item['id'] for a in self.registry.activity(self.project)))
 
     def test_the_same_finding_a_week_later_keeps_opened_at_and_grows_weeks(self) -> None:
@@ -103,9 +103,8 @@ class ObserveTests(unittest.TestCase):
         self.now += DAY
         self.assertTrue(self.open_of(self.go('2026-12-15', [self.finding('Playdate is missing')]))[0]['chronic'])
 
-    def test_a_missing_finding_changes_nothing_and_the_old_timers_take_it_quiet_then_expired(self) -> None:
+    def test_a_missing_finding_changes_nothing_and_nothing_goes_quiet(self) -> None:
         item = self.open_of(self.go('2026-11-16', [self.finding('No editor is named')]))[0]
-        evidence = self.now
         before = self.store.get(item['id'])
         assert before is not None
         self.now += 7 * DAY
@@ -114,22 +113,20 @@ class ObserveTests(unittest.TestCase):
         self.assertEqual((seen['id'], seen['seen_this_run'], seen['state']), (item['id'], False, 'open'))
         self.assertEqual({k: v for k, v in result['counts'].items() if v}, {'not_seen': 1})
         self.assertEqual(self.store.get(item['id']), {**before, 'age_seconds': self.now - before['opened_at']})
-        self.now = evidence + 2 * WEEK
-        self.assertTrue(self.store.silence(item['id'], evidence, 'quiet'))
-        self.now = evidence + 4 * WEEK
-        self.assertTrue(self.store.silence(item['id'], evidence, 'expired'))
-        self.assertEqual(self.open_of(self.go('2026-12-14', []))[0]['state'], 'expired')
+        self.now += 8 * WEEK
+        self.assertEqual(self.open_of(self.go('2027-01-18', []))[0]['state'], 'open')
 
-    def test_a_quiet_concern_found_again_is_open_again_with_fresh_timers(self) -> None:
+    def test_a_snoozed_concern_found_again_stays_snoozed(self) -> None:
         item = self.open_of(self.go('2026-11-16', [self.finding('No editor is named')]))[0]
+        preview = self.store.write('snooze', {'concern': item['id']}, actor='coordinator', idempotency_key='s')
+        self.store.write('snooze', {'concern': item['id']}, actor='coordinator', idempotency_key='s', confirm=preview.token)  # type: ignore[union-attr]
         self.now += 2 * WEEK
-        self.assertTrue(self.store.silence(item['id'], self.store.get(item['id'])['evidence_at'], 'quiet'))  # type: ignore[index]
         self.go('2026-11-30', [self.finding('No editor is named')])
         record = self.store.get(item['id'])
         assert record is not None
-        self.assertEqual((record['state'], record['evidence_at']), ('open', self.now))
-        with self.registry._transaction() as db:
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM internal_jobs WHERE kind = 'concern_silence'").fetchone()[0], 4)
+        self.assertEqual((record['state'], record['evidence_at']), ('snoozed', self.now))
+        self.go('2026-12-07', [])
+        self.assertEqual(self.store.get(item['id'])['state'], 'snoozed')  # type: ignore[index]
 
     def test_a_concern_closed_by_a_person_shows_once_and_the_same_text_starts_a_new_one(self) -> None:
         item = self.open_of(self.go('2026-11-16', [self.finding('No editor is named')]))[0]

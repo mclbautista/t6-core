@@ -1,4 +1,4 @@
-"""Concern records, human decisions, and silence timers. Deterministic: LLM scanning lives in concern_scan."""
+"""Concern records and human decisions. Deterministic: LLM scanning lives in concern_scan. A Concern never goes quiet or expires on its own."""
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -10,7 +10,7 @@ import statistics
 from typing import Any
 
 from t6.ids import EntityKind, T6Id
-from t6.person import AUTO_ACTOR, People
+from t6.person import AUTO_ACTOR, INTERNAL_ACTORS, SERVICES, People
 from t6.preview import PreviewTokens
 from t6.registry.sqlite import SqliteProjectRegistry, concern_key
 from t6.verbs import Done, Outcome, Refused
@@ -178,8 +178,10 @@ class ConcernStore:
             return {r[0]: r[1] for r in db.execute('SELECT rule, concern_id FROM concern_date_rules WHERE project_id = ?', (project,))}
 
     def write(self, verb: str, values: dict[str, Any], *, actor: str, idempotency_key: str | None = None, confirm: str | None = None) -> Outcome:
-        if verb not in ('raise', 'note', 'resolve', 'reopen', 'record-message') or not actor.strip():
+        if verb not in ('raise', 'note', 'resolve', 'reopen', 'record-message', 'snooze') or not actor.strip():
             return Refused(rule='input', reason='A valid verb and actor are required')
+        if verb == 'snooze' and (actor in SERVICES or actor in INTERNAL_ACTORS):
+            return Refused(rule='human_only', reason='Only a human operator snoozes a Concern')
         if (idempotency_key is not None and not idempotency_key.strip()) or (confirm and not idempotency_key):
             return Refused(rule='idempotency_key', reason='A nonblank idempotency key is required')
         key = idempotency_key or secrets.token_hex(16)
@@ -248,6 +250,8 @@ class ConcernStore:
                     return Refused(rule='note', reason='A note is required')
                 if verb == 'reopen' and state == 'closed' and db.execute("SELECT 1 FROM concerns c JOIN concerns o ON o.project_id = c.project_id AND o.text_key = c.text_key AND o.state != 'closed' WHERE c.id = ?", (concern,)).fetchone():
                     return Refused(rule='duplicate', reason='A Concern with this text is already open in the Project')
+                if verb == 'snooze' and state not in ('open', 'quiet', 'expired'):
+                    return Refused(rule='state', reason='Only an open Concern can be snoozed')
                 if verb == 'resolve' and state == 'closed' or verb == 'reopen' and state == 'open' and not db.execute('SELECT 1 FROM concern_pm_pending WHERE concern_id = ?', (concern,)).fetchone():
                     return Refused(rule='state', reason='Concern cannot make that transition')
             settles = values.get('settles_id')
@@ -280,7 +284,6 @@ class ConcernStore:
             if verb == 'raise':
                 concern = str(T6Id.mint(EntityKind.CONCERN))
                 _insert(db, concern, project, values.get('owner'), values.get('waiting_on'), values['anchor'], values['as_of'], now, now, values.get('source') or 'person', values.get('text'), settles)
-                self._schedule(db, concern, now, 1)
                 if deliverable is not None:
                     db.execute('INSERT INTO concern_milestones VALUES (?, ?, ?)', (concern, deliverable, milestone))
                     if db.execute('SELECT 1 FROM milestones WHERE deliverable_id = ? AND milestone = ?', (deliverable, milestone)).fetchone():
@@ -295,7 +298,8 @@ class ConcernStore:
                 assert isinstance(concern, str) and revision is not None
                 db.execute('INSERT INTO concern_notes (concern_id, text, actor, at, message_id) VALUES (?, ?, ?, ?, ?)', (concern, values['text'], actor, now, values.get('message_id')))
                 db.execute("UPDATE concerns SET evidence_at = ?, state = CASE WHEN state = 'quiet' THEN 'open' ELSE state END, revision = revision + 1 WHERE id = ?", (now, concern))
-                self._schedule(db, concern, now, revision + 1)
+            elif verb == 'snooze':
+                db.execute("UPDATE concerns SET state = 'snoozed', manual_override = 1, revision = revision + 1 WHERE id = ?", (concern,))
             else:
                 db.execute('UPDATE concerns SET state = ?, closed_at = ?, manual_override = 1, settles_id = COALESCE(?, settles_id), revision = revision + 1 WHERE id = ?', ('closed' if verb == 'resolve' else 'open', now if verb == 'resolve' else None, settles, concern))
                 db.execute('DELETE FROM concern_pm_pending WHERE concern_id = ?', (concern,))
@@ -306,28 +310,9 @@ class ConcernStore:
             db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(result)))
             return Done(result=result)
 
-    def _schedule(self, db: Any, concern: str, now: float, revision: int) -> None:
-        from t6.worker.internal_queue import InternalJobQueue
-        queue = InternalJobQueue(self.registry, clock=lambda: now)
-        for weeks, target in ((2, 'quiet'), (4, 'expired')):
-            queue.submit('main', 'concern_silence', f'{concern}:{revision}:{target}', {'concern': concern, 'evidence_at': now, 'target': target}, run_at=now + weeks * WEEK, db=db)
-
     @staticmethod
     def _log(db: Any, project: str, concern: str, actor: str, action: str, now: float, before: Any, after: Any, summary: str) -> None:
         if actor == AUTO_ACTOR and People.auto_refusal(action.split('_', 1)[0]):
             raise PermissionError(f'{AUTO_ACTOR} may only write Concern changes')
         cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)', (concern, action, actor, now, json.dumps(before), json.dumps(after)))
         db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (project, concern, now, actor, action, summary, cursor.lastrowid))
-
-    def silence(self, concern: str, evidence_at: float, target: str) -> bool:
-        if target not in ('quiet', 'expired'):
-            raise ValueError('Invalid silence target')
-        with self.registry._transaction() as db:
-            row = db.execute('SELECT project_id, state, evidence_at, manual_override FROM concerns WHERE id = ?', (concern,)).fetchone()
-            now = self.registry._clock()
-            if not row or row[2] != evidence_at or row[3] or row[1] in ('closed', 'expired') or row[1] == target or now < evidence_at + (2 if target == 'quiet' else 4) * WEEK:
-                return False
-            db.execute('UPDATE concerns SET state = ?, revision = revision + 1 WHERE id = ?', (target, concern))
-            reason = f'Concern {target}: no evidence for {2 if target == "quiet" else 4} weeks'
-            self._log(db, row[0], concern, AUTO_ACTOR, 'concern_' + target, now, row[1], target, reason)
-            return True

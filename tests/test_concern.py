@@ -43,30 +43,17 @@ class ConcernTests(unittest.TestCase):
         assert record is not None
         return record
 
-    def test_lifecycle_timers_and_append_only(self) -> None:
+    def test_lifecycle_never_goes_quiet_or_expires_and_append_only(self) -> None:
         concern = self.raise_concern()
-        opened = self.now
-        self.now += 2 * WEEK
-        self.assertTrue(self.store.silence(concern, opened, 'quiet'))
-        self.assertFalse(self.store.silence(concern, opened, 'quiet'))
-        self.write('note', {'concern': concern, 'text': 'May update'}, 'note')
-        self.assertFalse(self.store.silence(concern, opened, 'expired'))
-        evidence = self.now
-        self.now += 2 * WEEK
-        self.assertTrue(self.store.silence(concern, evidence, 'quiet'))
-        self.now += 2 * WEEK
-        self.assertTrue(self.store.silence(concern, evidence, 'expired'))
-        self.assertFalse(self.store.silence(concern, evidence, 'expired'))
-        self.write('reopen', {'concern': concern}, 'reopen')
-        record = self.store.get(concern)
-        assert record is not None
-        self.assertEqual(record['age_seconds'], 6 * WEEK)
-        self.assertEqual(record['anchor'], 'Waiting kay client — raw line')
-        self.assertFalse(self.store.silence(concern, evidence, 'expired'))
-        self.write('resolve', {'concern': concern}, 'resolve')
         self.now += 10 * WEEK
-        self.assertFalse(self.store.silence(concern, evidence, 'expired'))
-        self.assertEqual(self._get(concern)['state'], 'closed')
+        self.assertEqual(self._get(concern)['state'], 'open')
+        self.write('note', {'concern': concern, 'text': 'May update'}, 'note')
+        self.write('resolve', {'concern': concern}, 'resolve')
+        self.write('reopen', {'concern': concern}, 'reopen')
+        record = self._get(concern)
+        self.assertEqual(record['age_seconds'], 10 * WEEK)
+        self.assertEqual(record['anchor'], 'Waiting kay client — raw line')
+        self.assertEqual(record['state'], 'open')
         actions = [a.action for a in self.registry.activity(self.project) if a.subject_id == concern]
         for action in ('raise', 'note', 'resolve', 'reopen'):
             self.assertEqual(actions.count('concern_' + action), 1)
@@ -76,21 +63,57 @@ class ConcernTests(unittest.TestCase):
                 db.execute("UPDATE concern_notes SET text = 'changed'")
             with self.assertRaises(sqlite3.IntegrityError):
                 db.execute('DELETE FROM concern_notes')
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM internal_jobs WHERE kind = 'concern_silence'").fetchone()[0], 4)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM internal_jobs WHERE kind = 'concern_silence'").fetchone()[0], 0)
 
-    def test_manual_resolve_blocks_pending_timers_and_stale_preview(self) -> None:
+    def test_manual_resolve_blocks_stale_preview(self) -> None:
         concern = self.raise_concern()
-        opened = self.now
         stale = self.store.write('resolve', {'concern': concern}, actor='person', idempotency_key='stale')
         assert isinstance(stale, Preview)
         self.write('note', {'concern': concern, 'text': 'Still waiting'}, 'fresh-note')
         refused = self.store.write('resolve', {'concern': concern}, actor='person', idempotency_key='stale', confirm=stale.token)
         self.assertIsInstance(refused, Refused)
         self.write('resolve', {'concern': concern}, 'closed')
-        self.now += 4 * WEEK
-        self.assertFalse(self.store.silence(concern, opened, 'quiet'))
-        self.assertFalse(self.store.silence(concern, opened, 'expired'))
         self.assertEqual(self._get(concern)['state'], 'closed')
+
+    def snooze(self, concern: str, key: str = 'snooze', actor: str = 'coordinator') -> Any:
+        preview = self.store.write('snooze', {'concern': concern}, actor=actor, idempotency_key=key)
+        if not isinstance(preview, Preview):
+            return preview
+        return self.store.write('snooze', {'concern': concern}, actor=actor, idempotency_key=key, confirm=preview.token)
+
+    def test_a_human_snoozes_and_reopen_wakes_it(self) -> None:
+        concern = self.raise_concern()
+        done = self.snooze(concern)
+        self.assertIsInstance(done, Done)
+        record = self._get(concern)
+        self.assertEqual(record['state'], 'snoozed')
+        self.assertEqual([c['id'] for c in self.store.open_concerns()], [concern])
+        self.assertIsInstance(self.snooze(concern, 'again'), Refused)
+        self.write('reopen', {'concern': concern}, 'wake')
+        self.assertEqual(self._get(concern)['state'], 'open')
+        actions = [a.action for a in self.registry.activity(self.project) if a.subject_id == concern]
+        self.assertEqual(actions.count('concern_snooze'), 1)
+
+    def test_snooze_is_human_only(self) -> None:
+        from t6.person import AUTO_ACTOR, SERVICES, INTERNAL_ACTORS
+        concern = self.raise_concern()
+        for actor in (AUTO_ACTOR, *sorted(SERVICES), *sorted(INTERNAL_ACTORS)):
+            refused = self.snooze(concern, 'k-' + actor, actor)
+            self.assertIsInstance(refused, Refused, actor)
+            self.assertEqual(refused.rule, 'human_only')
+        self.assertEqual(self._get(concern)['state'], 'open')
+
+    def test_a_closed_or_missing_concern_cannot_be_snoozed(self) -> None:
+        concern = self.raise_concern()
+        self.write('resolve', {'concern': concern}, 'resolve')
+        self.assertIsInstance(self.snooze(concern), Refused)
+        self.assertIsInstance(self.snooze('t6c_missing', 'missing'), Refused)
+
+    def test_a_note_keeps_a_snoozed_concern_snoozed(self) -> None:
+        concern = self.raise_concern()
+        self.snooze(concern)
+        self.write('note', {'concern': concern, 'text': 'Update'}, 'note')
+        self.assertEqual(self._get(concern)['state'], 'snoozed')
 
     def test_jo_done_closes_linked_concern_and_manual_reopen_sticks(self) -> None:
         from t6.job_order import JobOrderStore
@@ -334,17 +357,14 @@ class ConcernTests(unittest.TestCase):
 
 
 class ConcernQueueTests(unittest.TestCase):
-    def test_scheduled_jobs_are_claimed_and_applied_once(self) -> None:
+    def test_raising_and_noting_submit_no_timers(self) -> None:
         import tempfile
         from pathlib import Path
         from t6.registry.sqlite import SqliteProjectRegistry
-        from t6.worker.internal_queue import InternalJobQueue
 
-        now = [1000000.0]
-        clock = lambda: now[0]
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'db'
-            registry = SqliteProjectRegistry(path, clock=clock)
+            registry = SqliteProjectRegistry(path, clock=lambda: 1000000.0)
             project = registry.register(actor='setup', idempotency_key='setup', notion_page_id='project')
             assert isinstance(project, Registered)
             with registry._transaction() as db:
@@ -355,16 +375,5 @@ class ConcernQueueTests(unittest.TestCase):
             assert isinstance(preview, Preview)
             result = store.write('raise', values, actor='person', idempotency_key='key', confirm=preview.token)
             assert isinstance(result, Done)
-            queue = InternalJobQueue(path, clock)
-            self.assertIsNone(queue.claim('main'))
-            for state in ('quiet', 'expired'):
-                now[0] += 2 * WEEK
-                job = queue.claim('main')
-                assert job is not None
-                payload: dict[str, Any] = dict(job.payload)
-                self.assertTrue(store.silence(**payload))
-                self.assertFalse(store.silence(**payload))
-                self.assertTrue(queue.ack(job.job_id, job.token))
-                record = store.get(result.result['concern_id'])
-                assert record is not None
-                self.assertEqual(record['state'], state)
+            with registry._transaction() as db:
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM internal_jobs').fetchone()[0], 0)

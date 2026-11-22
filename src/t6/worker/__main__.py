@@ -787,10 +787,7 @@ def main(
 
             concerns = ConcernStore(SqliteProjectRegistry(environ["T6_DATABASE"]), PreviewTokens("timer"))
             def concern_silence(job: WorkerJob) -> bool:
-                concern, evidence, target = job.payload["concern"], job.payload["evidence_at"], job.payload["target"]
-                if not isinstance(concern, str) or not isinstance(evidence, (int, float)) or not isinstance(target, str):
-                    raise ValueError("Invalid Concern timer payload")
-                return concerns.silence(concern, evidence, target)
+                return True  # A Concern never goes quiet or expires: acknowledge a legacy job and change nothing.
             def concern_pm_close(job: WorkerJob) -> bool:
                 project = job.payload.get('project')
                 if not isinstance(project, str):
