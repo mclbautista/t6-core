@@ -1,0 +1,294 @@
+camera_model,resolution,codec,frame_rate,bitrate_mbps,bitrate_source
+ARRI Alexa 35 Extreme,4608 x 3164 (Open Gate),ARRIRAW (Open Gate),23.976,4465,Planner Sheet CAMERAS DATABASE
+ARRI Alexa 35,4608 x 3164 (Open Gate),ARRIRAW (Open Gate),23.976,4583,Planner Sheet CAMERAS DATABASE
+ARRI Alexa 35,4608 x 3164 (Open Gate),ARRIRAW (Uncompressed),23.976,4644,Planner Sheet CAMERAS DATABASE
+ARRI Alexa 35,4608 x 3164 (Open Gate),ARRIRAW (HDE),23.976,2786,Planner Sheet CAMERAS DATABASE
+ARRI Alexa 35,4608 x 3164 (Open Gate),ProRes 4444 XQ,23.976,3149,Planner Sheet CAMERAS DATABASE
+ARRI Alexa 35,4096 x 2304 (16:9),ProRes 4444 XQ,23.976,1776,Planner Sheet CAMERAS DATABASE
+ARRI Alexa 35,4096 x 2048 (2:1),ProRes 4444 XQ,23.976,1580,Planner Sheet CAMERAS DATABASE
+ARRI Alexa Mini LF,4448 x 3096 (Open Gate),ARRIRAW (Uncompressed),23.976,4000,Planner Sheet CAMERAS DATABASE
+ARRI Alexa Mini LF,4448 x 1856,ARRIRAW (Uncompressed),23.976,2415,Planner Sheet CAMERAS DATABASE
+ARRI Alexa Mini LF,3840 x 2160,ARRIRAW (Uncompressed),23.976,2415,Planner Sheet CAMERAS DATABASE
+ARRI Alexa Mini LF,2880 x 2880,ARRIRAW (Uncompressed),23.976,2415,Planner Sheet CAMERAS DATABASE
+ARRI Alexa Mini LF,3424 x 2202,ARRIRAW (Uncompressed),23.976,2207,Planner Sheet CAMERAS DATABASE
+ARRI Alexa Mini LF,4448 x 3096 (Open Gate),ARRIRAW (HDE),23.976,,
+ARRI Alexa Mini LF,4448 x 1856,ARRIRAW (HDE),23.976,,
+ARRI Alexa Mini LF,3840 x 2160,ARRIRAW (HDE),23.976,,
+ARRI Alexa Mini LF,2880 x 2880,ARRIRAW (HDE),23.976,,
+ARRI Alexa Mini LF,3424 x 2202,ARRIRAW (HDE),23.976,,
+ARRI Alexa Mini LF,4448 x 3096 (Open Gate),ProRes 4444 XQ,23.976,1350,Planner Sheet CAMERAS DATABASE
+ARRI Alexa Mini LF,4448 x 1856,ProRes 4444 XQ,23.976,,
+ARRI Alexa Mini LF,3840 x 2160,ProRes 4444 XQ,23.976,1858,Planner Sheet CAMERAS DATABASE
+ARRI Alexa Mini LF,1920 x 1080,ProRes 4444 XQ,23.976,,
+ARRI Alexa Mini LF,2048 x 1152,ProRes 4444 XQ,23.976,,
+ARRI Alexa Mini LF,2880 x 2880,ProRes 4444 XQ,23.976,,
+ARRI Alexa Mini LF,3200 x 1800,ProRes 4444 XQ,23.976,,
+ARRI Alexa Mini LF,2880 x 2160,ProRes 4444 XQ,23.976,,
+ARRI Alexa Mini LF,4448 x 3096 (Open Gate),ProRes 4444,23.976,,
+ARRI Alexa Mini LF,4448 x 1856,ProRes 4444,23.976,,
+ARRI Alexa Mini LF,3840 x 2160,ProRes 4444,23.976,,
+ARRI Alexa Mini LF,1920 x 1080,ProRes 4444,23.976,,
+ARRI Alexa Mini LF,2048 x 1152,ProRes 4444,23.976,,
+ARRI Alexa Mini LF,2880 x 2880,ProRes 4444,23.976,,
+ARRI Alexa Mini LF,3200 x 1800,ProRes 4444,23.976,830,Planner Sheet CAMERAS DATABASE
+ARRI Alexa Mini LF,2880 x 2160,ProRes 4444,23.976,,
+ARRI Alexa Mini LF,4448 x 3096 (Open Gate),ProRes 422 HQ,23.976,,
+ARRI Alexa Mini LF,4448 x 1856,ProRes 422 HQ,23.976,,
+ARRI Alexa Mini LF,3840 x 2160,ProRes 422 HQ,23.976,,
+ARRI Alexa Mini LF,1920 x 1080,ProRes 422 HQ,23.976,,
+ARRI Alexa Mini LF,2048 x 1152,ProRes 422 HQ,23.976,,
+ARRI Alexa Mini LF,2880 x 2880,ProRes 422 HQ,23.976,,
+ARRI Alexa Mini LF,3200 x 1800,ProRes 422 HQ,23.976,,
+ARRI Alexa Mini LF,2880 x 2160,ProRes 422 HQ,23.976,,
+ARRI Amira,3840 x 2160,ProRes 4444,23.976,,
+Blackmagic PYXIS 12K,12288 x 8040 (12K 3:2 Open Gate),Blackmagic RAW Constant Bitrate 3:1,23.976,1194,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 6912 (12K 16:9),Blackmagic RAW Constant Bitrate 3:1,23.976,1194,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 6480 (12K 17:9),Blackmagic RAW Constant Bitrate 3:1,23.976,1194,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 5112 (12K 2.4:1),Blackmagic RAW Constant Bitrate 3:1,23.976,1194,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9648 x 8040 (12K 6:5),Blackmagic RAW Constant Bitrate 3:1,23.976,714,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9408 x 6264 (9K 3:2),Blackmagic RAW Constant Bitrate 3:1,23.976,714,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8688 x 4896 (9K 16:9),Blackmagic RAW Constant Bitrate 3:1,23.976,714,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9312 x 4896 (9K 17:9),Blackmagic RAW Constant Bitrate 3:1,23.976,714,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9312 x 3864 (9K 2.4:1),Blackmagic RAW Constant Bitrate 3:1,23.976,714,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,7680 x 6408 (9K 6:5),Blackmagic RAW Constant Bitrate 3:1,23.976,714,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 5360 (8K 3:2 Open Gate),Blackmagic RAW Constant Bitrate 3:1,23.976,533,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 4608 (8K 16:9),Blackmagic RAW Constant Bitrate 3:1,23.976,533,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 4320 (8K 17:9),Blackmagic RAW Constant Bitrate 3:1,23.976,533,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 3408 (8K 2.4:1),Blackmagic RAW Constant Bitrate 3:1,23.976,533,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,6432 x 5360 (8K 6:5),Blackmagic RAW Constant Bitrate 3:1,23.976,533,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2680 (4K 3:2 Open Gate),Blackmagic RAW Constant Bitrate 3:1,23.976,135,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2304 (4K 16:9),Blackmagic RAW Constant Bitrate 3:1,23.976,135,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2160 (4K 17:9),Blackmagic RAW Constant Bitrate 3:1,23.976,135,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 1704 (4K 2.4:1),Blackmagic RAW Constant Bitrate 3:1,23.976,135,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,3216 x 2680 (4K 6:5),Blackmagic RAW Constant Bitrate 3:1,23.976,135,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 8040 (12K 3:2 Open Gate),Blackmagic RAW Constant Bitrate 5:1,23.976,1204,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 6912 (12K 16:9),Blackmagic RAW Constant Bitrate 5:1,23.976,1204,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 6480 (12K 17:9),Blackmagic RAW Constant Bitrate 5:1,23.976,1204,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 5112 (12K 2.4:1),Blackmagic RAW Constant Bitrate 5:1,23.976,1204,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9648 x 8040 (12K 6:5),Blackmagic RAW Constant Bitrate 5:1,23.976,1204,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9408 x 6264 (9K 3:2),Blackmagic RAW Constant Bitrate 5:1,23.976,720,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8688 x 4896 (9K 16:9),Blackmagic RAW Constant Bitrate 5:1,23.976,720,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9312 x 4896 (9K 17:9),Blackmagic RAW Constant Bitrate 5:1,23.976,720,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9312 x 3864 (9K 2.4:1),Blackmagic RAW Constant Bitrate 5:1,23.976,720,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,7680 x 6408 (9K 6:5),Blackmagic RAW Constant Bitrate 5:1,23.976,720,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 5360 (8K 3:2 Open Gate),Blackmagic RAW Constant Bitrate 5:1,23.976,320,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 4608 (8K 16:9),Blackmagic RAW Constant Bitrate 5:1,23.976,320,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 4320 (8K 17:9),Blackmagic RAW Constant Bitrate 5:1,23.976,320,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 3408 (8K 2.4:1),Blackmagic RAW Constant Bitrate 5:1,23.976,320,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,6432 x 5360 (8K 6:5),Blackmagic RAW Constant Bitrate 5:1,23.976,320,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2680 (4K 3:2 Open Gate),Blackmagic RAW Constant Bitrate 5:1,23.976,81,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2304 (4K 16:9),Blackmagic RAW Constant Bitrate 5:1,23.976,81,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2160 (4K 17:9),Blackmagic RAW Constant Bitrate 5:1,23.976,81,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 1704 (4K 2.4:1),Blackmagic RAW Constant Bitrate 5:1,23.976,81,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,3216 x 2680 (4K 6:5),Blackmagic RAW Constant Bitrate 5:1,23.976,81,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 8040 (12K 3:2 Open Gate),Blackmagic RAW Constant Bitrate 8:1,23.976,448,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 6912 (12K 16:9),Blackmagic RAW Constant Bitrate 8:1,23.976,448,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 6480 (12K 17:9),Blackmagic RAW Constant Bitrate 8:1,23.976,448,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 5112 (12K 2.4:1),Blackmagic RAW Constant Bitrate 8:1,23.976,448,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9648 x 8040 (12K 6:5),Blackmagic RAW Constant Bitrate 8:1,23.976,448,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9408 x 6264 (9K 3:2),Blackmagic RAW Constant Bitrate 8:1,23.976,268,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8688 x 4896 (9K 16:9),Blackmagic RAW Constant Bitrate 8:1,23.976,268,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9312 x 4896 (9K 17:9),Blackmagic RAW Constant Bitrate 8:1,23.976,268,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9312 x 3864 (9K 2.4:1),Blackmagic RAW Constant Bitrate 8:1,23.976,268,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,7680 x 6408 (9K 6:5),Blackmagic RAW Constant Bitrate 8:1,23.976,268,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 5360 (8K 3:2 Open Gate),Blackmagic RAW Constant Bitrate 8:1,23.976,200,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 4608 (8K 16:9),Blackmagic RAW Constant Bitrate 8:1,23.976,200,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 4320 (8K 17:9),Blackmagic RAW Constant Bitrate 8:1,23.976,200,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 3408 (8K 2.4:1),Blackmagic RAW Constant Bitrate 8:1,23.976,200,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,6432 x 5360 (8K 6:5),Blackmagic RAW Constant Bitrate 8:1,23.976,200,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2680 (4K 3:2 Open Gate),Blackmagic RAW Constant Bitrate 8:1,23.976,68,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2304 (4K 16:9),Blackmagic RAW Constant Bitrate 8:1,23.976,68,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2160 (4K 17:9),Blackmagic RAW Constant Bitrate 8:1,23.976,68,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 1704 (4K 2.4:1),Blackmagic RAW Constant Bitrate 8:1,23.976,68,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,3216 x 2680 (4K 6:5),Blackmagic RAW Constant Bitrate 8:1,23.976,68,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 8040 (12K 3:2 Open Gate),Blackmagic RAW Constant Bitrate 12:1,23.976,299,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 6912 (12K 16:9),Blackmagic RAW Constant Bitrate 12:1,23.976,299,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 6480 (12K 17:9),Blackmagic RAW Constant Bitrate 12:1,23.976,299,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 5112 (12K 2.4:1),Blackmagic RAW Constant Bitrate 12:1,23.976,299,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9648 x 8040 (12K 6:5),Blackmagic RAW Constant Bitrate 12:1,23.976,299,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9408 x 6264 (9K 3:2),Blackmagic RAW Constant Bitrate 12:1,23.976,179,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8688 x 4896 (9K 16:9),Blackmagic RAW Constant Bitrate 12:1,23.976,179,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9312 x 4896 (9K 17:9),Blackmagic RAW Constant Bitrate 12:1,23.976,179,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9312 x 3864 (9K 2.4:1),Blackmagic RAW Constant Bitrate 12:1,23.976,179,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,7680 x 6408 (9K 6:5),Blackmagic RAW Constant Bitrate 12:1,23.976,179,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 5360 (8K 3:2 Open Gate),Blackmagic RAW Constant Bitrate 12:1,23.976,133,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 4608 (8K 16:9),Blackmagic RAW Constant Bitrate 12:1,23.976,133,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 4320 (8K 17:9),Blackmagic RAW Constant Bitrate 12:1,23.976,133,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 3408 (8K 2.4:1),Blackmagic RAW Constant Bitrate 12:1,23.976,133,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,6432 x 5360 (8K 6:5),Blackmagic RAW Constant Bitrate 12:1,23.976,133,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2680 (4K 3:2 Open Gate),Blackmagic RAW Constant Bitrate 12:1,23.976,50,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2304 (4K 16:9),Blackmagic RAW Constant Bitrate 12:1,23.976,50,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2160 (4K 17:9),Blackmagic RAW Constant Bitrate 12:1,23.976,50,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 1704 (4K 2.4:1),Blackmagic RAW Constant Bitrate 12:1,23.976,50,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,3216 x 2680 (4K 6:5),Blackmagic RAW Constant Bitrate 12:1,23.976,50,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 8040 (12K 3:2 Open Gate),Blackmagic RAW Constant Bitrate 18:1,23.976,199,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 6912 (12K 16:9),Blackmagic RAW Constant Bitrate 18:1,23.976,199,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 6480 (12K 17:9),Blackmagic RAW Constant Bitrate 18:1,23.976,199,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 5112 (12K 2.4:1),Blackmagic RAW Constant Bitrate 18:1,23.976,199,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9648 x 8040 (12K 6:5),Blackmagic RAW Constant Bitrate 18:1,23.976,199,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9408 x 6264 (9K 3:2),Blackmagic RAW Constant Bitrate 18:1,23.976,119,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8688 x 4896 (9K 16:9),Blackmagic RAW Constant Bitrate 18:1,23.976,119,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9312 x 4896 (9K 17:9),Blackmagic RAW Constant Bitrate 18:1,23.976,119,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9312 x 3864 (9K 2.4:1),Blackmagic RAW Constant Bitrate 18:1,23.976,119,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,7680 x 6408 (9K 6:5),Blackmagic RAW Constant Bitrate 18:1,23.976,119,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 5360 (8K 3:2 Open Gate),Blackmagic RAW Constant Bitrate 18:1,23.976,88,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 4608 (8K 16:9),Blackmagic RAW Constant Bitrate 18:1,23.976,88,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 4320 (8K 17:9),Blackmagic RAW Constant Bitrate 18:1,23.976,88,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 3408 (8K 2.4:1),Blackmagic RAW Constant Bitrate 18:1,23.976,88,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,6432 x 5360 (8K 6:5),Blackmagic RAW Constant Bitrate 18:1,23.976,88,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2680 (4K 3:2 Open Gate),Blackmagic RAW Constant Bitrate 18:1,23.976,30,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2304 (4K 16:9),Blackmagic RAW Constant Bitrate 18:1,23.976,30,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2160 (4K 17:9),Blackmagic RAW Constant Bitrate 18:1,23.976,30,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 1704 (4K 2.4:1),Blackmagic RAW Constant Bitrate 18:1,23.976,30,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,3216 x 2680 (4K 6:5),Blackmagic RAW Constant Bitrate 18:1,23.976,30,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 8040 (12K 3:2 Open Gate),Blackmagic RAW Constant Quality Q0,23.976,1433,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 6912 (12K 16:9),Blackmagic RAW Constant Quality Q0,23.976,1433,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 6480 (12K 17:9),Blackmagic RAW Constant Quality Q0,23.976,1433,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 5112 (12K 2.4:1),Blackmagic RAW Constant Quality Q0,23.976,1433,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9648 x 8040 (12K 6:5),Blackmagic RAW Constant Quality Q0,23.976,1433,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9408 x 6264 (9K 3:2),Blackmagic RAW Constant Quality Q0,23.976,857,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8688 x 4896 (9K 16:9),Blackmagic RAW Constant Quality Q0,23.976,857,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9312 x 4896 (9K 17:9),Blackmagic RAW Constant Quality Q0,23.976,857,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9312 x 3864 (9K 2.4:1),Blackmagic RAW Constant Quality Q0,23.976,857,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,7680 x 6408 (9K 6:5),Blackmagic RAW Constant Quality Q0,23.976,857,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 5360 (8K 3:2 Open Gate),Blackmagic RAW Constant Quality Q0,23.976,639,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 4608 (8K 16:9),Blackmagic RAW Constant Quality Q0,23.976,639,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 4320 (8K 17:9),Blackmagic RAW Constant Quality Q0,23.976,639,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 3408 (8K 2.4:1),Blackmagic RAW Constant Quality Q0,23.976,639,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,6432 x 5360 (8K 6:5),Blackmagic RAW Constant Quality Q0,23.976,639,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2680 (4K 3:2 Open Gate),Blackmagic RAW Constant Quality Q0,23.976,336,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2304 (4K 16:9),Blackmagic RAW Constant Quality Q0,23.976,336,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2160 (4K 17:9),Blackmagic RAW Constant Quality Q0,23.976,336,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 1704 (4K 2.4:1),Blackmagic RAW Constant Quality Q0,23.976,336,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,3216 x 2680 (4K 6:5),Blackmagic RAW Constant Quality Q0,23.976,336,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 8040 (12K 3:2 Open Gate),Blackmagic RAW Constant Quality Q1,23.976,796,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 6912 (12K 16:9),Blackmagic RAW Constant Quality Q1,23.976,796,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 6480 (12K 17:9),Blackmagic RAW Constant Quality Q1,23.976,796,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 5112 (12K 2.4:1),Blackmagic RAW Constant Quality Q1,23.976,796,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9648 x 8040 (12K 6:5),Blackmagic RAW Constant Quality Q1,23.976,796,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9408 x 6264 (9K 3:2),Blackmagic RAW Constant Quality Q1,23.976,476,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8688 x 4896 (9K 16:9),Blackmagic RAW Constant Quality Q1,23.976,476,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9312 x 4896 (9K 17:9),Blackmagic RAW Constant Quality Q1,23.976,476,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9312 x 3864 (9K 2.4:1),Blackmagic RAW Constant Quality Q1,23.976,476,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,7680 x 6408 (9K 6:5),Blackmagic RAW Constant Quality Q1,23.976,476,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 5360 (8K 3:2 Open Gate),Blackmagic RAW Constant Quality Q1,23.976,533,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 4608 (8K 16:9),Blackmagic RAW Constant Quality Q1,23.976,533,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 4320 (8K 17:9),Blackmagic RAW Constant Quality Q1,23.976,533,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 3408 (8K 2.4:1),Blackmagic RAW Constant Quality Q1,23.976,533,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,6432 x 5360 (8K 6:5),Blackmagic RAW Constant Quality Q1,23.976,533,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2680 (4K 3:2 Open Gate),Blackmagic RAW Constant Quality Q1,23.976,311,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2304 (4K 16:9),Blackmagic RAW Constant Quality Q1,23.976,311,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2160 (4K 17:9),Blackmagic RAW Constant Quality Q1,23.976,311,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 1704 (4K 2.4:1),Blackmagic RAW Constant Quality Q1,23.976,311,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,3216 x 2680 (4K 6:5),Blackmagic RAW Constant Quality Q1,23.976,311,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 8040 (12K 3:2 Open Gate),Blackmagic RAW Constant Quality Q3,23.976,448,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 6912 (12K 16:9),Blackmagic RAW Constant Quality Q3,23.976,448,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 6480 (12K 17:9),Blackmagic RAW Constant Quality Q3,23.976,448,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 5112 (12K 2.4:1),Blackmagic RAW Constant Quality Q3,23.976,448,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9648 x 8040 (12K 6:5),Blackmagic RAW Constant Quality Q3,23.976,448,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9408 x 6264 (9K 3:2),Blackmagic RAW Constant Quality Q3,23.976,268,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8688 x 4896 (9K 16:9),Blackmagic RAW Constant Quality Q3,23.976,268,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9312 x 4896 (9K 17:9),Blackmagic RAW Constant Quality Q3,23.976,268,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9312 x 3864 (9K 2.4:1),Blackmagic RAW Constant Quality Q3,23.976,268,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,7680 x 6408 (9K 6:5),Blackmagic RAW Constant Quality Q3,23.976,268,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 5360 (8K 3:2 Open Gate),Blackmagic RAW Constant Quality Q3,23.976,400,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 4608 (8K 16:9),Blackmagic RAW Constant Quality Q3,23.976,400,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 4320 (8K 17:9),Blackmagic RAW Constant Quality Q3,23.976,400,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 3408 (8K 2.4:1),Blackmagic RAW Constant Quality Q3,23.976,400,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,6432 x 5360 (8K 6:5),Blackmagic RAW Constant Quality Q3,23.976,400,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2680 (4K 3:2 Open Gate),Blackmagic RAW Constant Quality Q3,23.976,238,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2304 (4K 16:9),Blackmagic RAW Constant Quality Q3,23.976,238,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2160 (4K 17:9),Blackmagic RAW Constant Quality Q3,23.976,238,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 1704 (4K 2.4:1),Blackmagic RAW Constant Quality Q3,23.976,238,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,3216 x 2680 (4K 6:5),Blackmagic RAW Constant Quality Q3,23.976,238,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 8040 (12K 3:2 Open Gate),Blackmagic RAW Constant Quality Q5,23.976,358,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 6912 (12K 16:9),Blackmagic RAW Constant Quality Q5,23.976,358,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 6480 (12K 17:9),Blackmagic RAW Constant Quality Q5,23.976,358,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,12288 x 5112 (12K 2.4:1),Blackmagic RAW Constant Quality Q5,23.976,358,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9648 x 8040 (12K 6:5),Blackmagic RAW Constant Quality Q5,23.976,358,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9408 x 6264 (9K 3:2),Blackmagic RAW Constant Quality Q5,23.976,214,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8688 x 4896 (9K 16:9),Blackmagic RAW Constant Quality Q5,23.976,214,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9312 x 4896 (9K 17:9),Blackmagic RAW Constant Quality Q5,23.976,214,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,9312 x 3864 (9K 2.4:1),Blackmagic RAW Constant Quality Q5,23.976,214,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,7680 x 6408 (9K 6:5),Blackmagic RAW Constant Quality Q5,23.976,214,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 5360 (8K 3:2 Open Gate),Blackmagic RAW Constant Quality Q5,23.976,266,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 4608 (8K 16:9),Blackmagic RAW Constant Quality Q5,23.976,266,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 4320 (8K 17:9),Blackmagic RAW Constant Quality Q5,23.976,266,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,8192 x 3408 (8K 2.4:1),Blackmagic RAW Constant Quality Q5,23.976,266,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,6432 x 5360 (8K 6:5),Blackmagic RAW Constant Quality Q5,23.976,266,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2680 (4K 3:2 Open Gate),Blackmagic RAW Constant Quality Q5,23.976,202,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2304 (4K 16:9),Blackmagic RAW Constant Quality Q5,23.976,202,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 2160 (4K 17:9),Blackmagic RAW Constant Quality Q5,23.976,202,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,4096 x 1704 (4K 2.4:1),Blackmagic RAW Constant Quality Q5,23.976,202,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 12K,3216 x 2680 (4K 6:5),Blackmagic RAW Constant Quality Q5,23.976,202,Planner Sheet CAMERAS DATABASE
+Blackmagic PYXIS 6K,6048 x 4032 (6K Open Gate 3:2),Blackmagic RAW Constant Quality Q0,23.976,555,Planner Sheet CAMERAS DATABASE
+RED Komodo X,6144 x 3240,RECODE RAW HQ,23.976,1910.09,"https://docs.red.com/955-0219/955-0219_V2.0+Rev-A+RED+PS,+KOMODO-X+Operation+Guide/Content/4_Menus/02_ProjSet/R3D_Quality.htm"
+RED Komodo X,5760 x 3240,RECODE RAW HQ,23.976,,
+RED Komodo X,4800 x 2700,RECODE RAW HQ,23.976,,
+RED Komodo X,3840 x 2160,RECODE RAW HQ,23.976,,
+RED Komodo X,6144 x 3240,RECODE RAW MQ,23.976,1342.66,"https://docs.red.com/955-0219/955-0219_V2.0+Rev-A+RED+PS,+KOMODO-X+Operation+Guide/Content/4_Menus/02_ProjSet/R3D_Quality.htm"
+RED Komodo X,5760 x 3240,RECODE RAW MQ,23.976,,
+RED Komodo X,4800 x 2700,RECODE RAW MQ,23.976,,
+RED Komodo X,3840 x 2160,RECODE RAW MQ,23.976,,
+RED Komodo X,6144 x 3240,RECODE RAW LQ,23.976,839.16,"https://docs.red.com/955-0219/955-0219_V2.0+Rev-A+RED+PS,+KOMODO-X+Operation+Guide/Content/4_Menus/02_ProjSet/R3D_Quality.htm"
+RED Komodo X,5760 x 3240,RECODE RAW LQ,23.976,,
+RED Komodo X,4800 x 2700,RECODE RAW LQ,23.976,,
+RED Komodo X,3840 x 2160,RECODE RAW LQ,23.976,,
+RED Komodo X,6144 x 3240,RECODE RAW ELQ,23.976,519.48,"https://docs.red.com/955-0219/955-0219_V2.0+Rev-A+RED+PS,+KOMODO-X+Operation+Guide/Content/4_Menus/02_ProjSet/R3D_Quality.htm"
+RED Komodo X,5760 x 3240,RECODE RAW ELQ,23.976,,
+RED Komodo X,4800 x 2700,RECODE RAW ELQ,23.976,,
+RED Komodo X,3840 x 2160,RECODE RAW ELQ,23.976,,
+RED Komodo,5120 x 2700,RECODE RAW HQ,23.976,,
+RED Komodo,4096 x 2160,RECODE RAW HQ,23.976,,
+RED Komodo,3840 x 2160,RECODE RAW HQ,23.976,,
+RED Komodo,2048 x 1080,RECODE RAW HQ,23.976,,
+RED Komodo,5120 x 2700,RECODE RAW MQ,23.976,,
+RED Komodo,4096 x 2160,RECODE RAW MQ,23.976,,
+RED Komodo,3840 x 2160,RECODE RAW MQ,23.976,,
+RED Komodo,2048 x 1080,RECODE RAW MQ,23.976,,
+RED Komodo,5120 x 2700,RECODE RAW LQ,23.976,,
+RED Komodo,4096 x 2160,RECODE RAW LQ,23.976,,
+RED Komodo,3840 x 2160,RECODE RAW LQ,23.976,,
+RED Komodo,2048 x 1080,RECODE RAW LQ,23.976,,
+RED Komodo,5120 x 2700,RECODE RAW ELQ,23.976,,
+RED Komodo,4096 x 2160,RECODE RAW ELQ,23.976,,
+RED Komodo,3840 x 2160,RECODE RAW ELQ,23.976,,
+RED Komodo,2048 x 1080,RECODE RAW ELQ,23.976,,
+Sony Venice 2,8640 x 5760,CV X-OCN XT,23.976,5345,https://pro.sony/s3/2018/06/01110529/X-OCN-Workflow-Benefits-2023.pdf
+Sony Venice 2,5792 x 4276,CV X-OCN XT,23.976,2676,https://pro.sony/s3/2018/06/01110529/X-OCN-Workflow-Benefits-2023.pdf
+Sony Venice 2,5792 x 3056,CV X-OCN XT,23.976,1919,https://pro.sony/s3/2018/06/01110529/X-OCN-Workflow-Benefits-2023.pdf
+Sony Venice 2,8640 x 5760,CV X-OCN ST,23.976,3658,https://pro.sony/s3/2018/06/01110529/X-OCN-Workflow-Benefits-2023.pdf
+Sony Venice 2,5792 x 4276,CV X-OCN ST,23.976,1832,https://pro.sony/s3/2018/06/01110529/X-OCN-Workflow-Benefits-2023.pdf
+Sony Venice 2,5792 x 3056,CV X-OCN ST,23.976,1313,https://pro.sony/s3/2018/06/01110529/X-OCN-Workflow-Benefits-2023.pdf
+Sony Venice 2,8640 x 5760,CV X-OCN LT,23.976,2155,https://pro.sony/s3/2018/06/01110529/X-OCN-Workflow-Benefits-2023.pdf
+Sony Venice 2,5792 x 4276,CV X-OCN LT,23.976,1079,https://pro.sony/s3/2018/06/01110529/X-OCN-Workflow-Benefits-2023.pdf
+Sony Venice 2,5792 x 3056,CV X-OCN LT,23.976,773,https://pro.sony/s3/2018/06/01110529/X-OCN-Workflow-Benefits-2023.pdf
+Sony Burano,8632 x 4856,CV X-OCN XT,23.976,,
+Sony Burano,5760 x 3240,CV X-OCN XT,23.976,,
+Sony Burano,8632 x 4856,CV X-OCN ST,23.976,,
+Sony Burano,5760 x 3240,CV X-OCN ST,23.976,,
+Sony Burano,8632 x 4856,CV X-OCN LT,23.976,,
+Sony Burano,5760 x 3240,CV X-OCN LT,23.976,,
+Sony FX3,3840 x 2160,"XAVC S-I (All-Intra, H.264)",23.976,240,Planner Sheet CAMERAS DATABASE
+Sony FX3,4096 x 2160,"XAVC S-I (All-Intra, H.264)",23.976,240,Planner Sheet CAMERAS DATABASE
+Sony FX3,1920 x 1080,"XAVC S-I (All-Intra, H.264)",23.976,90,Planner Sheet CAMERAS DATABASE
+Sony FX3,3840 x 2160,"XAVC S (Long GOP, H.264)",23.976,100,Planner Sheet CAMERAS DATABASE
+Sony FX3,4096 x 2160,"XAVC S (Long GOP, H.264)",23.976,100,Planner Sheet CAMERAS DATABASE
+Sony FX3,1920 x 1080,"XAVC S (Long GOP, H.264)",23.976,50,Planner Sheet CAMERAS DATABASE
+Sony FX3,3840 x 2160,h264 High 422 L5.1,23.976,300,Planner Sheet CAMERAS DATABASE
+Sony FX6,3840 x 2160,XAVC Intra 4:2:2,23.976,275,Planner Sheet CAMERAS DATABASE
+Sony FX6,4096 x 2160,XAVC Intra 4:2:2,23.976,300,Planner Sheet CAMERAS DATABASE
+Sony FX6,1920 x 1080,XAVC Intra 4:2:2,23.976,150,Planner Sheet CAMERAS DATABASE
+Sony FX6,3840 x 2160,XAVC-Long,23.976,150,Planner Sheet CAMERAS DATABASE
+Sony FX6,4096 x 2160,XAVC-Long,23.976,150,Planner Sheet CAMERAS DATABASE
+Sony FX6,1920 x 1080,XAVC-Long,23.976,50,Planner Sheet CAMERAS DATABASE
+Sony FX9,3840 x 2160,XAVC Intra 4:2:2,23.976,275,Planner Sheet CAMERAS DATABASE
+Sony FX9,4096 x 2160,XAVC Intra 4:2:2,23.976,300,Planner Sheet CAMERAS DATABASE
+Sony FX9,1920 x 1080,XAVC Intra 4:2:2,23.976,150,Planner Sheet CAMERAS DATABASE
+Sony FX9,3840 x 2160,"XAVC Long (Long GOP, 10-bit 4:2:2)",23.976,150,Planner Sheet CAMERAS DATABASE
+Sony FX9,4096 x 2160,"XAVC Long (Long GOP, 10-bit 4:2:2)",23.976,150,Planner Sheet CAMERAS DATABASE
+Sony FX9,1920 x 1080,"XAVC Long (Long GOP, 10-bit 4:2:2)",23.976,50,Planner Sheet CAMERAS DATABASE
+Sony FX9,3840 x 2160,ProRes RAW HQ,23.976,400,Planner Sheet CAMERAS DATABASE
+Sony FX9,4096 x 2160,ProRes RAW HQ,23.976,400,Planner Sheet CAMERAS DATABASE
+Sony FX9,3840 x 2160,ProRes RAW,23.976,270,Planner Sheet CAMERAS DATABASE
+Sony FX9,4096 x 2160,ProRes RAW,23.976,270,Planner Sheet CAMERAS DATABASE
