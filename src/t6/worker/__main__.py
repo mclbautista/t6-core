@@ -148,10 +148,9 @@ def configured_handlers(
     if gateway_url and gateway_secret:
         gateway = GatewayClient(HttpTransport(gateway_url), gateway_secret)
         handlers.update(CardDelivery(operator, gateway).handlers())
-        from t6.domain.studio_people import operator_ids
-        from t6.worker.operator import ChatReply, StateEditNotification
+        from t6.worker.operator import ChatReply, drain_state_flagged
         handlers[JobKind.CHAT_REPLY.value] = ChatReply(gateway).deliver
-        handlers['notion.state_flagged'] = StateEditNotification(gateway, operator_ids(environ)).deliver
+        handlers['notion.state_flagged'] = drain_state_flagged  # no operator ping for a Notion edit (#548); old jobs still end cleanly
     token, projects = environ.get("T6_NOTION_TOKEN"), environ.get("T6_NOTION_PROJECTS_DATA_SOURCE")
     job_orders = environ.get("T6_NOTION_JOB_ORDERS_DATA_SOURCE")
     deliverables = environ.get('T6_NOTION_DELIVERABLES_DATA_SOURCE')
@@ -183,10 +182,8 @@ def configured_handlers(
         from t6.notion.projection import ProjectProjection
         from t6.worker.registry import RegistryClient
 
-        offer = operator.offer_unbound_page if gateway_url and gateway_secret else None
-        projection = ProjectProjection(
-            notion, RegistryClient(api, settings.secret), projects, offer=offer
-        )
+        # An unbound Notion page is recorded for review but not offered to the operator chat (#548).
+        projection = ProjectProjection(notion, RegistryClient(api, settings.secret), projects)
         handlers.update(projection.handlers())
     if notion and job_orders:
         from t6.notion.jo_projection import JobOrderProjection

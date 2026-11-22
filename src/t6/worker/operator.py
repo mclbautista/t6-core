@@ -102,25 +102,11 @@ class ChatReply:
         return {"message_ref": ref}
 
 
-class StateEditNotification:
-    """Deliver a durable flagged-edit notice to configured operators."""
+def drain_state_flagged(job: WorkerJob) -> JsonValue:
+    """Complete a `notion.state_flagged` job without a message.
 
-    def __init__(self, gateway: GatewayClient, operators: tuple[int, ...]) -> None:
-        self.gateway = gateway
-        self.operators = operators
+    Flagged Notion edits no longer ping operators (#548): the review item, audit and activity are the record.
+    Jobs queued before that change still sit in the table, so the kind keeps a handler that ends them cleanly.
+    """
+    return {"delivered": 0}
 
-    def deliver(self, job: WorkerJob) -> JsonValue:
-        from html import escape
-        if not self.operators:
-            raise RuntimeError('No operator IDs configured for flagged Notion edits')
-        payload = job.payload
-        message = 'Notion edit needs review\n' + '\n'.join(
-            f"{escape(label)}: {escape(str(payload.get(key) or ''))}"
-            for key, label in (('page_id', 'Page'), ('property', 'Property'), ('value', 'Value'), ('editor', 'Editor'), ('reason', 'Reason'))
-        )
-        for operator in self.operators:
-            ref = self.gateway.notify(operator, message, [], f'notion-state:{job.dedupe_key}:{operator}')
-            state, _ = self.gateway.state(ref)
-            if state != 'sent':
-                raise RuntimeError(f'gateway message {ref} is {state}')
-        return {'delivered': len(self.operators)}

@@ -87,7 +87,6 @@ class NotionEdits:
                 if project:
                     cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)', (jo['id'], 'notion_state_flagged', actor, now, json.dumps({'status': old}), json.dumps({'status': status, 'reason': reason})))
                     db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (project, jo['id'], now, actor, 'notion_state_flagged', f'JO Status edited in Notion by {editor}, flagged: {reason}', cursor.lastrowid))
-                _notify(self.registry, db, page, event, property_name='Status', value=status, editor=editor, reason=reason, now=now)
                 outcome = 'flagged'
             db.execute('INSERT INTO notion_last_seen VALUES (?, ?, ?) ON CONFLICT(page_id, property) DO UPDATE SET value=excluded.value', (page, 'jo_status', json.dumps(status)))
         return {'outcome': outcome, 'restore': restore}
@@ -179,13 +178,7 @@ class NotionEdits:
                 _open_review(db, review_kind, page, project.id, {'property': property_name, 'value': status, 'editor': editor, 'reason': reason}, now)
                 cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, ?, ?)', (project.id, 'notion_state_flagged', actor, now, json.dumps({'status': old}), json.dumps({'status': status, 'reason': reason})))
                 db.execute('INSERT INTO activity (project_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?)', (project.id, now, actor, 'notion_state_flagged', f'Project {property_name} edited in Notion by {editor}, flagged: {reason}', cursor.lastrowid))
-                _notify(self.registry, db, page, event, property_name=property_name, value=status, editor=editor, reason=reason, now=now)
                 outcome = 'flagged'
             db.execute('INSERT INTO notion_last_seen VALUES (?, ?, ?) ON CONFLICT(page_id, property) DO UPDATE SET value=excluded.value', (page, cache_key, json.dumps(status)))
         return {'outcome': outcome}
 
-
-def _notify(registry: SqliteProjectRegistry, db: Any, page: str, event: str, *, property_name: str, value: Any, editor: str, reason: str, now: float) -> None:
-    from t6.worker.internal_queue import InternalJobQueue
-    payload = {'page_id': page, 'property': property_name, 'value': value, 'editor': editor, 'reason': reason}
-    InternalJobQueue(registry, clock=lambda: now).submit('main', 'notion.state_flagged', event + ':' + page + ':' + property_name, payload, db=db)
