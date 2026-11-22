@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from t6.notion.generated import PackageSpecsRow
 from t6.notion.reads import is_live
+from t6.notion.source import Freshness, NotionSource, as_source
 from t6.notion.sync import NotionClient
 
 
@@ -27,14 +28,20 @@ class PackageSpec:
 class PackageSpecReader:
     """Read specs for an exact package kind and optional client spec."""
 
-    def __init__(self, client: NotionClient, data_source_id: str) -> None:
-        self._client, self._source = client, data_source_id
+    def __init__(
+        self, source: NotionSource | NotionClient, data_source_id: str, *, freshness: Freshness = "mirror"
+    ) -> None:
+        self._notion, self._source, self._default_freshness = as_source(source), data_source_id, freshness
 
-    def find(self, package_kind: str, client_spec: str | None = None) -> tuple[PackageSpec, ...]:
+    def find(
+        self, package_kind: str, client_spec: str | None = None, *, freshness: Freshness | None = None
+    ) -> tuple[PackageSpec, ...]:
         """Return all matching live rows; duplicates remain visible to the caller."""
-        pages = self._client.query_data_source(
+        mode = self._default_freshness if freshness is None else freshness
+        pages = self._notion.query_data_source(
             self._source,
             filter={"property": PackageSpecsRow.notion_id("package_kind"), "rich_text": {"equals": package_kind}},
+            freshness=mode,
         )
         result = []
         for page in pages:

@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 import tempfile
 from typing import Any
@@ -9,7 +10,7 @@ from t6.preview import PreviewTokens
 from t6.privacy import Person, Registry
 from t6.registry import SqliteProjectRegistry
 from t6.server.app import Request
-from t6.server.llm import LLMService
+from t6.server.llm import LLMService, service_from_env
 from t6.server.verbs import VerbAPI
 
 
@@ -269,3 +270,57 @@ class LLMAPITests(unittest.TestCase):
         self.assertFalse(result['output_valid'])
         self.assertEqual(result['failure'], 'unresolved_placeholder')
         self.assertEqual((result['unresolved'], result['masked_output']), ([], None))
+
+
+class TaskRoutingTests(unittest.TestCase):
+    """Each task tag runs on its own provider entry, and so on its own API key (#541)."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.registry = SqliteProjectRegistry(tmp.name + '/registry')
+        self.main, self.cheap = FakeProvider().reply('{"summary":"ok"}'), FakeProvider(model='qwen/qwen3.7-flash').reply('{"summary":"ok"}')
+        self.service = LLMService({'main': self.main, 'cheap': self.cheap}, 'main', Registry(), tasks={'task-b': 'cheap'})
+        people = People(self.registry, PreviewTokens('test'), {'reports': frozenset({'llm'})})
+        self.api = VerbAPI(people, None, {'secret': 'reports'}, lambda *args: None, llm_service=self.service)
+
+    def call(self, task: str, **extra: Any) -> Any:
+        body = {'task_name': task, 'prompt_template': 'Summarize: {input}', 'masking_preset': 'names', 'input_text': 'x', **extra,
+                'output_schema': {'type': 'object', 'properties': {'summary': {'type': 'string'}}, 'required': ['summary']}}
+        return self.api(Request('POST', '/v1/llm/run', {'Authorization': 'Bearer secret'}, json.dumps(body).encode())).body
+
+    def test_a_mapped_task_uses_its_provider_and_an_unmapped_one_the_default(self) -> None:
+        self.assertEqual(self.call('task-b')['result']['provider'], 'cheap')
+        self.assertEqual(self.call('task-a')['result']['provider'], 'main')
+        self.assertEqual((len(self.cheap.calls), len(self.main.calls)), (1, 1))
+        with self.registry._transaction() as db:
+            self.assertEqual([json.loads(r[0])['provider'] for r in db.execute("SELECT after FROM audit WHERE action = 'llm_run' ORDER BY rowid")], ['cheap', 'main'])
+
+    def test_an_explicit_model_hint_wins_over_the_task_mapping(self) -> None:
+        self.assertEqual(self.call('task-b', model_hint='fake-model')['result']['provider'], 'main')
+
+    def test_the_retention_floor_applies_to_the_task_provider(self) -> None:
+        cheap = FakeProvider(model='qwen/qwen3.7-flash', retention='unknown')
+        self.api.llm_service = LLMService({'main': self.main, 'cheap': cheap}, 'main', Registry(), tasks={'task-b': 'cheap'})
+        self.assertEqual(self.call('task-b')['rule'], 'policy')
+        self.assertEqual(cheap.calls, [])
+        self.assertEqual(self.call('task-a')['result']['provider'], 'main')
+
+    def test_a_task_that_names_no_provider_stops_the_service_at_start(self) -> None:
+        with self.assertRaises(ValueError):
+            LLMService({'main': self.main}, 'main', Registry(), tasks={'task-b': 'nope'})
+
+    def test_service_from_env_keeps_the_tasks_and_one_key_per_provider_and_blocks_every_key_from_scripts(self) -> None:
+        provider = {'base_url': 'https://llm.example', 'retention': 'zdr_enforced'}
+        config = {'llm': {'default': 'main', 'providers': {'main': {**provider, 'model': 'm', 'api_key_env': 'MAIN_KEY'},
+                                                           'cheap': {**provider, 'model': 'qwen/qwen3.7-flash', 'api_key_env': 'CHEAP_KEY'}},
+                          'tasks': {'task-b': 'cheap'}}, 'privacy_registry': {}}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'llm.json')
+            with open(path, 'w', encoding='utf-8') as file:
+                json.dump(config, file)
+            service = service_from_env({'T6_LLM_CONFIG': path, 'MAIN_KEY': 'k-main', 'CHEAP_KEY': 'k-cheap'})
+        assert service is not None
+        self.assertEqual(service.tasks, {'task-b': 'cheap'})
+        self.assertEqual((getattr(service.providers['main'], '_api_key'), getattr(service.providers['cheap'], '_api_key')), ('k-main', 'k-cheap'))
+        self.assertEqual(service.blocked_script_env, ('CHEAP_KEY', 'MAIN_KEY'))

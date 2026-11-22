@@ -11,7 +11,7 @@ from types import TracebackType
 
 import httpx
 
-from t6.notion.client import BASE_URL, JSON, NOTION_VERSION, AsyncNotionClient, RetryPolicy
+from t6.notion.client import BASE_URL, JSON, NOTION_VERSION, AsyncNotionClient, RequestPacer, RetryPolicy
 
 
 class NotionClient:
@@ -26,6 +26,7 @@ class NotionClient:
         base_url: str = BASE_URL,
         timeout: float = 30.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        pacer: RequestPacer | None = None,
     ) -> None:
         self._runner = asyncio.Runner()
         self._async = AsyncNotionClient(
@@ -35,7 +36,12 @@ class NotionClient:
             base_url=base_url,
             timeout=timeout,
             transport=transport,
+            pacer=pacer,
         )
+
+    def set_pacer(self, pacer: RequestPacer | None) -> None:
+        """Attach or replace the request pacer on the underlying async client."""
+        self._async._pacer = pacer
 
     @property
     def notion_version(self) -> str:

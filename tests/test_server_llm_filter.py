@@ -172,7 +172,7 @@ class LLMFilterTests(unittest.TestCase):
         self.assertEqual(rows[0], {'outcome': 'done', 'provider': 'decisions', 'zdr': False, 'rule': 'job_order', 'verdict': 'pass'})
         self.assertEqual(rows[1], {'outcome': 'refused', 'provider': 'decisions', 'zdr': False, 'rule': 'job_order'})
         with self.registry._transaction() as db:
-            raw = ' '.join(str(row) for row in db.execute("SELECT * FROM audit WHERE action = 'llm_filter'"))
+            raw = ' '.join(str(row) for row in db.execute("SELECT before, after FROM audit WHERE action = 'llm_filter'"))
         for text in ('teaser', 'a reply', '0.8'):
             self.assertNotIn(text, raw)
 

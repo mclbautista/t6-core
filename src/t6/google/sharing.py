@@ -20,16 +20,18 @@ import sqlite3
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any
 
 from t6.domain.events import JsonValue
 from t6.google.calendar import Calendar, CalendarError
-from t6.google.config import CALENDARS_VARIABLE, bay_calendars, credential_path
+from t6.google.config import bay_calendars, credential_path
+from t6.google.sync import NoCalendar
 from t6.registry.sqlite import SqliteProjectRegistry
 from t6.worker.client import WorkerJob
 from t6.worker.runner import Handler
 
 if TYPE_CHECKING:
+    from t6.google.names import Identities  # names.py needs the Notion extra; the type is only for the checker
     from t6.server.queue import Submitted
     from t6.worker.internal_queue import InternalJobQueue
 
@@ -42,12 +44,6 @@ RECONCILE_EVERY = 86400
 log = logging.getLogger('t6.google.sharing')
 
 
-class Identities(Protocol):
-    """The Google email a Person holds in Notion (the same lookup `inbound.py` uses). A failed lookup raises `CalendarError`, so the job retries."""
-
-    def email(self, person: str) -> str | None: ...
-
-
 def short_hash(email: str) -> str:
     """A short stable id for an identity in logs and results."""
     return hashlib.sha256(email.strip().casefold().encode()).hexdigest()[:8]
@@ -57,13 +53,6 @@ def enqueue(registry: SqliteProjectRegistry, db: sqlite3.Connection, person: str
     """Queue the sharing update in the same transaction as the grant or revoke. `key` is the change's idempotency key."""
     from t6.worker.internal_queue import InternalJobQueue  # imported here: t6.person imports this module, and the queue imports t6.person
     InternalJobQueue(registry, clock=lambda: now).submit(QUEUE, SHARING_KIND, f'{person}:{verb}:{key}', {'person_id': person}, db=db)
-
-
-class NoSharing:
-    """The handler when no calendar is set up: the job finishes and says why. It never fails, so no job dies."""
-
-    def handle(self, job: WorkerJob) -> JsonValue:
-        return {'event': 'skipped', 'reason': f'no calendar configured: set {CALENDARS_VARIABLE} and the Google credential'}
 
 
 class SharingSync:
@@ -165,12 +154,12 @@ def sharing_handlers(
 ) -> dict[str, Handler]:
     """The `booking.calendar_sharing` and `google.reconcile_sharing` handlers for the main worker.
 
-    Real when the Bay calendars and the credential are set, else `NoSharing`. The daily run is queued here, at worker start.
+    Real when the Bay calendars and the credential are set, else `NoCalendar`. The daily run is queued here, at worker start.
     `open_identities` gives an object with `email(person)`. A set but unusable setting raises `ValueError`.
     """
     calendars, credential = bay_calendars(environ), credential_path(environ)
     if not calendars or not credential:
-        skipped = NoSharing().handle
+        skipped = NoCalendar().handle
         return {SHARING_KIND: skipped, RECONCILE_KIND: skipped}
     from t6.google.http import GoogleCalendar, ServiceAccount, UrllibHttp
     try:

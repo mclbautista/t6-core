@@ -3,6 +3,7 @@ import json
 import unittest
 from datetime import date
 
+from t6.concern_scan import ConcernScanner
 from t6.concern import ConcernStore
 from t6.concern_eval_cases import CASES
 from t6.concern_task import classify
@@ -28,9 +29,9 @@ class ConcernEvalTests(unittest.TestCase):
             with registry._transaction() as db:
                 db.execute("INSERT INTO persons VALUES ('coordinator', 'staff', '[]', '[]', NULL, 0, 1)")
             store = ConcernStore(registry, PreviewTokens('secret'))
-            store.process_notes(project.project.id, 'coordinator', [{'text': 'Waiting on client for KDM', 'as_of': '2026-11-01'}],
+            ConcernScanner(store).process_notes(project.project.id, 'coordinator', [{'text': 'Waiting on client for KDM', 'as_of': '2026-11-01'}],
                 lambda _: {'choice': 'new', 'quote': 'Waiting on client for KDM', 'waiting_on': 'client'})
-            concern = store.changes(project.project.id, '2020-01-01')[0]['concern_id']
+            concern = ConcernScanner(store).changes(project.project.id, '2020-01-01')[0]['concern_id']
             data = case.masked_input
             assert isinstance(data, dict)
             answer = dict(data['answer'])
@@ -38,9 +39,9 @@ class ConcernEvalTests(unittest.TestCase):
                 answer['concern_id'] = concern
             provider = FakeProvider().reply(json.dumps(answer))
             service = LLMService({'fake': provider}, 'fake', Registry())
-            store.process_notes(project.project.id, 'coordinator', [{'text': data['line'], 'as_of': data['as_of']}],
+            ConcernScanner(store).process_notes(project.project.id, 'coordinator', [{'text': data['line'], 'as_of': data['as_of']}],
                 lambda payload: classify(service, payload, actor='reports', registry=registry))
-            changes = store.changes(project.project.id, '2020-01-01')
+            changes = ConcernScanner(store).changes(project.project.id, '2020-01-01')
             action = changes[-1]['action'] if len(changes) > 1 else 'ignored'
             actual = {'concern_auto_raise': 'new', 'concern_auto_continue': 'continues', 'concern_auto_announce': 'settles'}.get(action, 'ignored')
             expected = data['expected']

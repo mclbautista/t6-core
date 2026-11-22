@@ -18,6 +18,7 @@ from t6.cli import DEFAULT_REGISTRY_DB, REGISTRY_DB_VARIABLE, TOKEN_VARIABLE, _f
 if TYPE_CHECKING:
     from t6.domain import Contact, Project
     from t6.lookup import Candidate, Resolution
+    from t6.notion.source import NotionSource
     from t6.notion.sync import NotionClient
 
 JSON = dict[str, Any]
@@ -90,20 +91,22 @@ def run(args: argparse.Namespace, open_notion: Callable[[str], NotionClient]) ->
         source_key = {"contacts": "contacts", "projects": "projects"}[args.command]
         if source_key not in sources:
             return _fail(f"--data-sources has no '{source_key}' entry")
-        with open_notion(token) as client:
-            if args.command == "contacts":
-                result = _contacts_find(client, sources[source_key], args.mention, args.mentions, args.suggest, args.prefer_telegram)
-                if getattr(args, "person_lookup", False):
-                    from t6.verbs import _people
-                    try:
-                        people = _people()
-                    except ValueError:
-                        people = None
-                    for found in result.get("results", [result]):
-                        for item in ([found["match"]] if found["match"] else []) + found["candidates"]:
-                            item["t6_id"] = people.registry.bound_entity("notion", item["id"]) if people else None
-            else:
-                result = _projects_resolve(client, sources[source_key], args.text, args.registry_db, args.in_text)
+        from t6.notion.source import NotionSource
+
+        notion = NotionSource(lambda: open_notion(token))
+        if args.command == "contacts":
+            result = _contacts_find(notion, sources[source_key], args.mention, args.mentions, args.suggest, args.prefer_telegram)
+            if getattr(args, "person_lookup", False):
+                from t6.verbs import _people
+                try:
+                    people = _people()
+                except ValueError:
+                    people = None
+                for found in result.get("results", [result]):
+                    for item in ([found["match"]] if found["match"] else []) + found["candidates"]:
+                        item["t6_id"] = people.registry.bound_entity("notion", item["id"]) if people else None
+        else:
+            result = _projects_resolve(notion, sources[source_key], args.text, args.registry_db, args.in_text)
     except (OSError, ValueError, ImportError, NotionError) as error:
         return _fail(str(error))
     return _print(result)
@@ -182,7 +185,7 @@ def _find_contacts(
 
 
 def _contacts_find(
-    client: NotionClient,
+    client: NotionSource | NotionClient,
     data_source_id: str,
     mention: str | None,
     mentions: Sequence[str] | None = None,
@@ -194,7 +197,13 @@ def _contacts_find(
     return _find_contacts(ContactReader(client, data_source_id).list(), _contact, mention, mentions, suggest, prefer_telegram)
 
 
-def _projects_resolve(client: NotionClient, data_source_id: str, text: str, registry_db: Path, in_text: bool = False) -> JSON:
+def _projects_resolve(
+    client: NotionSource | NotionClient,
+    data_source_id: str,
+    text: str,
+    registry_db: Path,
+    in_text: bool = False,
+) -> JSON:
     from t6.lookup import Index, Lookup
     from t6.notion.reads import ProjectReader
 

@@ -5,7 +5,7 @@ import dataclasses
 import hashlib
 import json
 import time
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -104,13 +104,14 @@ def _complete_chat(
 
 
 class LLMService:
-    def __init__(self, providers: Mapping[str, Provider], default: str, registry: Registry,
+    def __init__(self, providers: Mapping[str, Provider], default: str, registry: Registry | Callable[[], Registry],
                  *, require_zdr: bool = True, max_bytes: int = 100_000,
                  min_retention_by_provider: Mapping[str, Retention] | None = None,
                  decisions: OpenRouterDecisions | None = None, filters: Any = None,
                  skills_dir: str | Path | None = None,
                  allowed_script_env: Mapping[str, str] | None = None,
-                 blocked_script_env: Sequence[str] = ()) -> None:
+                 blocked_script_env: Sequence[str] = (),
+                 tasks: Mapping[str, str] | None = None) -> None:
         if default not in providers or type(require_zdr) is not bool or type(max_bytes) is not int or max_bytes < 1:
             raise ValueError('Invalid LLM policy')
         if skills_dir is not None and (not isinstance(skills_dir, (str, Path)) or not str(skills_dir).strip()):
@@ -118,14 +119,22 @@ class LLMService:
         floors = dict(min_retention_by_provider or {})
         if any((name not in providers and not (name == 'decisions' and decisions)) or value not in RETENTIONS for name, value in floors.items()):
             raise ValueError('Invalid LLM policy')
+        self.tasks: dict[str, str] = dict(tasks or {})  # task_name -> provider name; a tag with no entry runs on the default
+        if any(name not in providers for name in self.tasks.values()):
+            raise ValueError('Invalid LLM policy')
         self.decisions = decisions
         self.thresholds = _thresholds(filters)
         self.min_retention_by_provider = floors
-        self.providers, self.default, self.registry = dict(providers), default, registry
+        self.providers, self.default, self._registry = dict(providers), default, registry
         self.require_zdr, self.max_bytes = require_zdr, max_bytes
         self.skills_dir: Path | None = Path(skills_dir).resolve() if skills_dir is not None else None
         self.allowed_script_env: dict[str, str] | None = dict(allowed_script_env) if allowed_script_env is not None else None
         self.blocked_script_env: tuple[str, ...] = tuple(blocked_script_env)
+
+    @property
+    def registry(self) -> Registry:
+        """The names to hide now: a callable (the live `privacy_registry.json`) is asked on every use."""
+        return self._registry() if callable(self._registry) else self._registry
 
     def run(self, inputs: LLMRunInput, *, actor: str, registry: Any) -> Done | Refused:
         # Audit only fixed metadata, never caller-supplied text or provider output.
@@ -379,6 +388,11 @@ class LLMService:
                 current = _unwrap_script_payload(parsed, key='output', protected_keys=protected)
         return current, None
 
+    def _provider_for_task(self, task_name: str) -> tuple[str, Provider]:
+        """The provider entry (and so the API key) configured for a task tag, else the default. An explicit `model_hint` is checked first."""
+        name = self.tasks.get(task_name, self.default)
+        return name, self.providers[name]
+
     def _run(self, inputs: LLMRunInput, meta: dict[str, Any] | None = None) -> Done | Refused:
         meta = {} if meta is None else meta
         skill: Skill | None = None
@@ -416,7 +430,7 @@ class LLMService:
                 validator.validate(example.output)
         except (ValidationError, Unresolvable):
             return Refused(rule='schema', reason='Example output does not match the schema')
-        selected = next(((name, p) for name, p in self.providers.items() if p.model == inputs.model_hint), None) if inputs.model_hint else (self.default, self.providers[self.default])
+        selected = next(((name, p) for name, p in self.providers.items() if p.model == inputs.model_hint), None) if inputs.model_hint else self._provider_for_task(inputs.task_name)
         if selected is None:
             return Refused(rule='policy', reason='Model is not allowed', failure='policy')
         name, provider = selected
@@ -710,7 +724,7 @@ def _skills_dir_from(raw_skills_dir: Any, config_path: str) -> Path | None:
     return candidate if candidate.is_absolute() else (Path(config_path).resolve().parent / candidate)
 
 
-def service_from_env(env: Mapping[str, str]) -> LLMService | None:
+def service_from_env(env: Mapping[str, str], privacy_list: Callable[[], Registry] | None = None) -> LLMService | None:
     """Load server policy and names from a JSON file; absent configuration disables the verb."""
     path = env.get('T6_LLM_CONFIG')
     if not path:
@@ -721,9 +735,12 @@ def service_from_env(env: Mapping[str, str]) -> LLMService | None:
     providers: dict[str, Provider] = {}
     for name in llm.providers:
         providers[name] = replace(llm, default=name, tasks={}).provider_for('', env=env)
-    names = config['privacy_registry']
-    privacy = Registry(people=[Person(**p) for p in names.get('people', [])],
-                       projects=[Project(**p) for p in names.get('projects', [])], ids=names.get('ids', []))
+    if privacy_list is not None:  # the API's live privacy_registry.json, shared with masked reads
+        privacy: Registry | Callable[[], Registry] = privacy_list
+    else:
+        names = config['privacy_registry']
+        privacy = Registry(people=[Person(**p) for p in names.get('people', [])],
+                           projects=[Project(**p) for p in names.get('projects', [])], ids=names.get('ids', []))
     decisions = _decisions_from(config['decisions'], env) if 'decisions' in config else None
     floors = config.get('provider_min_retention', {})
     if not isinstance(floors, dict) or any((name not in providers and not (name == 'decisions' and decisions)) or value not in RETENTIONS for name, value in floors.items()):
@@ -736,4 +753,4 @@ def service_from_env(env: Mapping[str, str]) -> LLMService | None:
                       min_retention_by_provider=floors, decisions=decisions, filters=config.get('filters'),
                       skills_dir=_skills_dir_from(config.get('skills_dir'), path),
                       allowed_script_env=_script_env_from(config.get('allowed_script_env'), env, provider_key_envs),
-                      blocked_script_env=tuple(sorted(provider_key_envs)))
+                      blocked_script_env=tuple(sorted(provider_key_envs)), tasks=llm.tasks)

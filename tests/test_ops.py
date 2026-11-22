@@ -87,10 +87,10 @@ class BackupRestoreTests(OpsTestCase):
         # A queue from before the job existed:
         target["queue"].unlink()
         self.boot(target)
-        job = self.queue.claim("main", 60)
+        job = self.queue.claim("main", 60, ["registry.sync"])
         assert job is not None
         self.assertEqual(job.kind, "registry.sync")
-        self.assertIsNone(self.queue.claim("main", 60))  # once, not twice
+        self.assertIsNone(self.queue.claim("main", 60, ["registry.sync"]))  # once, not twice
 
     def test_restore_refuses_to_overwrite_and_a_damaged_backup_is_refused(self) -> None:
         self.workflow()

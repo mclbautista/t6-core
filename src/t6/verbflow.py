@@ -26,6 +26,7 @@ from t6.verbs import Done, Outcome, Preview, Refused
 
 KEY_REQUIRED = 'A nonblank idempotency key is required'
 KEY_REUSED = 'Idempotency key was used for a different request'
+TOKEN_USED = 'Preview token has already been used'
 
 
 def check_key(idempotency_key: str | None, confirm: str | None, reason: str = KEY_REQUIRED) -> Refused | None:
@@ -54,6 +55,18 @@ def keep(db: sqlite3.Connection, key: str, print_: str, result: Any, *, ignore_r
     db.execute(('INSERT OR IGNORE' if ignore_repeat else 'INSERT') + ' INTO verb_requests VALUES (?, ?, ?)', (key, print_, json.dumps(result)))
 
 
+def token_spent(db: sqlite3.Connection, nonce: str) -> Refused | None:
+    """Refused when the token with this nonce was already spent."""
+    if db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce=?', (nonce,)).fetchone():
+        return Refused(rule='token_used', reason=TOKEN_USED)
+    return None
+
+
+def spend(db: sqlite3.Connection, nonce: str, *, ignore_repeat: bool = False) -> None:
+    """Spend a token, so a second confirm with it is refused."""
+    db.execute(('INSERT OR IGNORE' if ignore_repeat else 'INSERT') + ' INTO used_preview_tokens VALUES (?)', (nonce,))
+
+
 @dataclass(frozen=True)
 class Request:
     """One call of a verb: who, what it is called, its key, the inputs the token covers, and the verified token's nonce."""
@@ -79,19 +92,25 @@ def begin(tokens: PreviewTokens, name: str, actor: str, values: dict[str, Any], 
     return Request(name, actor, key, inputs, fingerprint(name, actor, inputs), nonce)
 
 
-def settle(db: sqlite3.Connection, tokens: PreviewTokens, request: Request, *, reused: str = KEY_REUSED) -> Outcome | None:
+def settle(db: sqlite3.Connection, tokens: PreviewTokens, request: Request, *, reused: str = KEY_REUSED,
+           replay_spent: bool = False) -> Outcome | None:
     """The answer when the request needs no work: a spent token, a key used for another request, or a retry.
 
     A retry with its token spends the token and returns the first result; a retried preview returns a new Preview of
-    the first result. None means the verb goes on to plan and act.
+    the first result. None means the verb goes on to plan and act. With `replay_spent` a retry is answered before the
+    token is checked, so a confirm retried with its token already spent still gets the first result.
     """
-    if request.nonce and db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce=?', (request.nonce,)).fetchone():
-        return Refused(rule='token_used', reason='Preview token has already been used')
+    if request.nonce and not replay_spent:
+        spent = token_spent(db, request.nonce)
+        if spent:
+            return spent
     previous = retry_of(db, request.key, request.print_, reused=reused)
     if previous is None or isinstance(previous, Refused):
+        if previous is None and request.nonce and replay_spent:
+            return token_spent(db, request.nonce)
         return previous
     if request.nonce:
-        db.execute('INSERT INTO used_preview_tokens VALUES (?)', (request.nonce,))
+        spend(db, request.nonce, ignore_repeat=replay_spent)
         return previous
     return tokens.create(request.name, request.actor, request.inputs, previous.result)
 
@@ -106,6 +125,7 @@ def issue(tokens: PreviewTokens, request: Request, plan: Any) -> tuple[Preview, 
 
 def finish(db: sqlite3.Connection, request: Request, result: Any) -> Done:
     """Spend the token and keep the result under the key; call it in the transaction that did the work."""
-    db.execute('INSERT INTO used_preview_tokens VALUES (?)', (request.nonce,))
+    assert request.nonce
+    spend(db, request.nonce)
     keep(db, request.key, request.print_, result)
     return Done(result=result)

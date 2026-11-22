@@ -32,9 +32,11 @@ import sqlite3
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from t6 import verbflow
 from t6.approval import Approvals
 from t6.bay import BookingStore
 from t6.deliverable import DeliverableStore
+from t6.domain.events import JobKind
 from t6.deliverable_templates import TEMPLATES
 from t6.ids import EntityKind, T6Id
 from t6.media import MediaStore
@@ -63,10 +65,6 @@ MANUAL_STEPS = (
 # User-supplied `media` may not name these: the Frame.io Media locations come from the Frame.io step only.
 FRAMEIO_KINDS = ('frameio-project', 'frameio-folder')
 FRAMEIO_LABEL = 'Frame.io project and per-Deliverable folder'
-
-
-def _fingerprint(actor: str, inputs: Mapping[str, Any]) -> str:
-    return json.dumps({'verb': VERB, 'actor': actor, **inputs}, sort_keys=True, separators=(',', ':'))
 
 
 def _step(outcome: Outcome, label: str) -> Refused | None:
@@ -116,7 +114,7 @@ class ProjectStartStore:
                 return refusal
         key = idempotency_key or secrets.token_hex(16)
         inputs = {**values, 'idempotency_key': key}
-        fingerprint = _fingerprint(actor, inputs)
+        fingerprint = verbflow.fingerprint(VERB, actor, inputs)
         submitted = self.queue.submit(QUEUE, JOB_KIND, f'{actor}:{key}',
                                       {'verb': VERB, 'actor': actor, 'inputs': inputs, 'fingerprint': fingerprint})
         if not submitted.created and self._job(submitted.job_id, 'fingerprint') != fingerprint:
@@ -269,7 +267,7 @@ class ProjectStartStore:
             return Refused(rule='idempotency_key', reason='A nonblank idempotency key is required')
         key = idempotency_key
         inputs = {**values, 'idempotency_key': key}
-        fingerprint = _fingerprint(actor, inputs)
+        fingerprint = verbflow.fingerprint(VERB, actor, inputs)
         with self.registry._transaction() as db:
             previous = db.execute('SELECT fingerprint FROM verb_requests WHERE idempotency_key=?', (key,)).fetchone()
             archived = db.execute('SELECT 1 FROM project_archives WHERE project_id=?', (values['project'],)).fetchone() is not None
@@ -291,8 +289,9 @@ class ProjectStartStore:
         if isinstance(nonce, Refused):
             return nonce
         with self.registry._transaction() as db:
-            if db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce=?', (nonce,)).fetchone():
-                return Refused(rule='token_used', reason='Preview token has already been used')
+            spent = verbflow.token_spent(db, nonce)
+            if spent:
+                return spent
             saved = db.execute('SELECT state FROM jo_state_previews WHERE nonce=?', (nonce,)).fetchone()
         if not saved:
             return Refused(rule='preview', reason='Preview not found')
@@ -468,7 +467,8 @@ class ProjectStartStore:
                                     *(('project_start_manual', f'manual step: {name}') for name in plan['manual_steps'])]:
                 db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
                            (project, project, now, actor, action, summary, audit.lastrowid))
-            db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
-            db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(result)))
+            verbflow.spend(db, nonce)
+            verbflow.keep(db, key, fingerprint, result)
             db.execute("UPDATE project_starts SET state='applied', reason=NULL WHERE idempotency_key=?", (key,))
+            InternalJobQueue(self.registry, clock=lambda: now).submit(QUEUE, JobKind.PRIVACY_REGISTRY_REBUILD.value, key, {}, db=db)
         return Done(result={'state': 'applied', **result})

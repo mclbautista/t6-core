@@ -212,6 +212,12 @@ class ProjectStartTests(unittest.TestCase):
         self.assertEqual(len(self.writer.calls), 1)
         self.assertEqual(done.result['state'], 'applied')
 
+    def test_applying_the_start_queues_one_privacy_registry_rebuild_with_no_name_in_it(self) -> None:
+        self.confirm()
+        self.store.run_apply({'key': 'start'}, self.writer)  # run twice: still one job
+        (job,) = self.queue.find('privacy_registry.rebuild')
+        self.assertEqual((job.queue, job.dedupe_key, job.payload), ('main', 'start', {}))
+
     def test_denying_the_approval_applies_nothing_and_lets_a_new_start_begin(self) -> None:
         confirm = self.request()
         waiting = self.call(confirm)

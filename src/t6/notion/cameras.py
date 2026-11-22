@@ -11,6 +11,7 @@ from typing import Any
 
 from t6.notion.generated import CamerasRow
 from t6.notion.model import READ_ONLY_TYPES
+from t6.notion.source import Freshness, NotionSource, as_source
 from t6.notion.sync import NotionClient
 
 JSON = dict[str, Any]
@@ -67,27 +68,35 @@ def validate_update(payload: Any) -> JSON:
 
 
 def get_cameras(
-    client: NotionClient, data_source_id: str, *, page_id: str | None = None
+    source: NotionSource | NotionClient,
+    data_source_id: str,
+    *,
+    page_id: str | None = None,
+    freshness: Freshness = "mirror",
 ) -> list[JSON]:
     """All Cameras, or just the one page when `page_id` is given."""
+    notion = as_source(source)
     if page_id is not None:
-        return [camera_to_json(CamerasRow.from_page(_camera_page(client, data_source_id, page_id)))]
-    pages = client.query_data_source(data_source_id)
+        return [camera_to_json(CamerasRow.from_page(_camera_page(notion, data_source_id, page_id, freshness=freshness)))]
+    pages = notion.query_data_source(data_source_id, freshness=freshness)
     return [camera_to_json(CamerasRow.from_page(page)) for page in pages]
 
 
 def update_camera(
-    client: NotionClient, data_source_id: str, page_id: str, payload: Any
+    source: NotionSource | NotionClient, data_source_id: str, page_id: str, payload: Any
 ) -> JSON:
     """Validate and write an update, then return the updated row."""
+    notion = as_source(source)
     values = validate_update(payload)
-    _camera_page(client, data_source_id, page_id)
-    page = client.update_page(page_id, {"properties": CamerasRow.to_properties(**values)})
+    _camera_page(notion, data_source_id, page_id)
+    page = notion.update_page(page_id, {"properties": CamerasRow.to_properties(**values)})
     return camera_to_json(CamerasRow.from_page(page))
 
 
-def _camera_page(client: NotionClient, data_source_id: str, page_id: str) -> JSON:
-    page = client.retrieve_page(page_id)
+def _camera_page(
+    notion: NotionSource, data_source_id: str, page_id: str, *, freshness: Freshness = "mirror"
+) -> JSON:
+    page = notion.retrieve_page(page_id, freshness=freshness)
     parent = page.get("parent") or {}
     if parent.get("data_source_id") != data_source_id:
         raise CameraInputError(f"page {page_id} is not in the Cameras data source")

@@ -572,3 +572,21 @@ IDs retain their existing 24-hex-digit format; the others use 32 lowercase hex
 digits. Drive IDs retain their UUID4 format. Existing IDs are never rewritten.
 A binding links an external page to an entity ID; replaced pages remain legacy
 bindings. Project bindings and registry behavior continue as before.
+
+## Notion reads
+
+Every Notion read goes through the reader layer (`t6.notion.source.NotionSource`),
+never directly through `NotionClient` or `open_notion` (enforced by the AST
+guard in `tests/test_notion_read_guard.py`).
+
+- **Default freshness is `mirror`**: callers omit `freshness` or pass
+  `freshness="mirror"` so routine reads can be served from the local mirror once
+  enabled.
+- **Explicit `live` reads**: callers pass `freshness="live"` only by explicit
+  choice — for write confirmations and pre-write checks, live schema or option
+  lookups, unmirrored page block bodies (`list_block_children`), webhook
+  reconciliation, one-off migrations, or explicit live reads like `jo get`.
+- **Allowlisted reasons**: every `freshness="live"` call site outside
+  `t6.notion.source` must be listed in `LIVE_READ_ALLOWLIST` in
+  `tests/test_notion_read_guard.py` with a one-line reason explaining why live
+  Notion is required.

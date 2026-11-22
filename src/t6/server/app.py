@@ -490,6 +490,7 @@ class WebhookApp:
                     f"registry.sync:{intent.id}",
                     {"project_id": intent.project_id, "revision": intent.revision},
                 )
+                self._inside.submit(MAIN_QUEUE, JobKind.PRIVACY_REGISTRY_REBUILD.value, f"privacy_registry.rebuild:{intent.id}", {})  # no name in the payload
             deliverable_intents = self._registry.undispatched_deliverable_sync()
             for intent in deliverable_intents:
                 self._inside.submit(MAIN_QUEUE, 'deliverable.sync', f'deliverable.sync:{intent.id}', {'intent_id': intent.id})
@@ -528,7 +529,8 @@ class WebhookApp:
     def after_verb(self, noun: str, verb: str, outcome: Outcome) -> None:
         """The effects a verb has outside the t6 database, once it has committed: they follow the verb, not the API that ran it.
 
-        A read verb and a refusal changed nothing, so nothing follows them. An error here is logged and swallowed: the verb
+        A read verb changed nothing, so nothing follows it. A refused write verb may still have committed earlier steps (a
+        `project start` that stops at a late step), so its sync intents are queued, but nothing else follows a refusal (#562). An error here is logged and swallowed: the verb
         has committed, and its answer must not turn into a failure the caller would retry.
 
         Review activity that waited for a Frame.io link is released after any verb that is `Done` (#272): the link data decides,
@@ -536,7 +538,7 @@ class WebhookApp:
         link. It is one cheap query when nothing waits. Sync intents a verb committed are queued here (queueing twice is
         harmless), so no restart or other call is needed (#358). A confirmed Project Start gives the Approval it created its card (#267).
         """
-        if isinstance(outcome, Refused) or _is_read_verb(noun, verb):
+        if _is_read_verb(noun, verb):
             return
         try:
             self._dispatch_sync()  # a write through a verb queues its sync job before the request answers
@@ -644,6 +646,8 @@ class WebhookApp:
             self._deliver(result.action.token, result.action.version)
         self._dispatch_sync()
         self.release_held_activity()
+        if result.outcome == "start_requested":
+            self._redeliver_cards()  # the Approval the card's Project Start asked for gets its own card
         return Response(200, {"outcome": result.outcome})
 
     def _deliver(self, token: str, version: int) -> None:

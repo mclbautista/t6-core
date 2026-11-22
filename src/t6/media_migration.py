@@ -16,6 +16,7 @@ from typing import Any
 
 from t6.notion import codec
 from t6.notion.models import ExternalLinksProperties
+from t6.notion.source import NotionSource, as_source
 from t6.notion.sync import NotionClient
 
 JSON = dict[str, Any]
@@ -24,12 +25,13 @@ JSON = dict[str, Any]
 _P = ExternalLinksProperties
 
 
-def read_external_links_once_for_migration(client: NotionClient, data_source_id: str) -> list[JSON]:
+def read_external_links_once_for_migration(source: NotionSource | NotionClient, data_source_id: str) -> list[JSON]:
     """Read every live External Links row, including incomplete rows for the review list. Migration only."""
     from t6.notion.reads import is_live
 
+    notion = as_source(source)
     rows = []
-    for page in client.query_data_source(data_source_id):
+    for page in notion.query_data_source(data_source_id, freshness="live"):
         if not is_live(page):
             continue
         props = page.get("properties") or {}

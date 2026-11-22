@@ -66,6 +66,44 @@ class VerbFlowTests(unittest.TestCase):
         self.assertEqual(retry.plan, {'n': 1, 'idempotency_key': 'k'})
 
 
+class SpentTokenTests(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.registry = SqliteProjectRegistry(directory.name + '/db')
+
+    def test_a_token_is_spent_once_and_token_spent_says_so(self) -> None:
+        with self.registry._transaction() as db:
+            self.assertIsNone(verbflow.token_spent(db, 'n1'))
+            verbflow.spend(db, 'n1')
+            refused = verbflow.token_spent(db, 'n1')
+            assert isinstance(refused, Refused)
+            self.assertEqual((refused.rule, refused.reason), ('token_used', verbflow.TOKEN_USED))
+
+    def test_spending_again_is_an_error_unless_the_repeat_is_ignored(self) -> None:
+        import sqlite3
+        with self.registry._transaction() as db:
+            verbflow.spend(db, 'n1')
+            verbflow.spend(db, 'n1', ignore_repeat=True)
+            with self.assertRaises(sqlite3.IntegrityError):
+                verbflow.spend(db, 'n1')
+
+    def test_replay_spent_answers_a_retried_confirm_with_a_token_already_spent(self) -> None:
+        tokens = PreviewTokens('signing')
+        preview = tokens.create('thing make', 'actor', {'idempotency_key': 'k'}, {'n': 1})
+        nonce = tokens.verify(preview.token, 'thing make', 'actor', {'idempotency_key': 'k'})
+        assert isinstance(nonce, str)
+        request = verbflow.begin(tokens, 'thing make', 'actor', {}, 'k', preview.token)
+        assert not isinstance(request, Refused)
+        with self.registry._transaction() as db:
+            verbflow.spend(db, nonce)
+            verbflow.keep(db, 'k', request.print_, {'n': 1})
+            strict = verbflow.settle(db, tokens, request)
+            assert isinstance(strict, Refused)
+            self.assertEqual(strict.rule, 'token_used')
+            self.assertEqual(verbflow.settle(db, tokens, request, replay_spent=True), Done(result={'n': 1}))
+
+
 class VocabularyTests(unittest.TestCase):
     def test_the_verb_schemas_and_the_stores_read_the_same_lists(self) -> None:
         from t6.drives import Role
