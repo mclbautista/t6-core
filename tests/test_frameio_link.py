@@ -527,7 +527,7 @@ class UnlinkedActivityTests(MainWorkerCase):
         self.drain()
         self.assertEqual((len(self.reviews()), self.waiting_rows('fp-1')), (1, []))
 
-    def test_after_verb_does_nothing_after_a_read_verb_or_a_refusal(self) -> None:
+    def test_after_verb_does_nothing_after_a_read_verb_and_a_refusal_only_queues_the_sync_a_write_committed(self) -> None:
         from t6.project_writes import ProjectWrites
         from t6.verbs import Refused
         self.event('fp-1', 'evt-1')
@@ -539,8 +539,13 @@ class UnlinkedActivityTests(MainWorkerCase):
         writes.run('archive', self.show_b, None, actor=self.operator_person, idempotency_key='archive', confirm=archive.token)
         self.assertEqual(len(self.registry.undispatched_status_sync()), 1)  # committed, not queued yet
         self.app.after_verb('project', 'list', Done(result={}))
-        self.app.after_verb('project', 'archive', Refused(rule='x', reason='y'))
+        self.app.after_verb('project', 'list', Refused(rule='x', reason='y'))  # a refused read verb changed nothing
         self.assertEqual((len(self.waiting_rows('fp-1')), len(self.registry.undispatched_status_sync())), (1, 1))
+        # a refused write verb may have committed earlier steps (#562): their sync is queued, but nothing else follows a refusal
+        self.app.after_verb('project', 'archive', Refused(rule='x', reason='y'))
+        self.assertEqual((len(self.waiting_rows('fp-1')), len(self.registry.undispatched_status_sync())), (1, 0))
+        self.app.after_verb('project', 'archive', Refused(rule='x', reason='y'))  # nothing new committed: nothing new queued
+        self.assertEqual(len(self.registry.undispatched_status_sync()), 0)
         self.app.after_verb('project', 'archive', Done(result={}))
         self.assertEqual((len(self.waiting_rows('fp-1')), len(self.registry.undispatched_status_sync())), (0, 0))
 
