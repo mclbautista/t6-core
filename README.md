@@ -109,6 +109,7 @@ that the edge route file and the API need.
 | `T6_NOTION_TOKEN` | main worker: Notion integration token, for the Project registry sync |
 | `T6_NOTION_PROJECTS_DATA_SOURCE` | main worker: ID of the Projects data source |
 | `T6_NOTION_JOB_ORDERS_DATA_SOURCE` | main worker: ID of the Job Orders data source |
+| `T6_NOTION_CONTACTS_DATA_SOURCE` | main worker: optional, ID of the Contacts data source. With it (and the token and Projects data source) the [review message](#frameio) ends with the `@handle` of the linked Project's coordinators. Without it the message is sent with no tag |
 | `T6_REVIEW_CHAT` | main worker: required when the gateway variables are set, the Telegram chat ID that gets the [review message](#frameio) |
 | `T6_REVIEW_TOPIC` | main worker: optional, the forum topic ID in that chat. Leave it unset for the General topic: Telegram rejects topic 1 |
 | `T6_GATEWAY_URL`, `T6_GATEWAY_SECRET` | Frame.io worker: required, the gateway whose `/notify` sends the sign-in alert |

@@ -30,7 +30,7 @@ Server: `T6_FRAMEIO_WEBHOOK_SECRET`, `T6_NOTION_WEBHOOK_TOKEN`, `T6_TAP_SECRET`
 `T6_REGISTRY_SECRET`, `T6_REGISTRY_READ_SECRET`), `T6_OPERATOR_IDS` (Telegram user
 IDs; the first receives cards), the `*_DB` paths and the two binds. Worker:
 `T6_SERVER_URL` (the tailnet address, for queue calls only), `T6_API_URL` (the t6 API, for every registry and operator call; required when `T6_DATABASE` is set), `T6_WORKER_SECRET`, `T6_WORKER_QUEUE=main`,
-`T6_NOTION_TOKEN`, `T6_NOTION_PROJECTS_DATA_SOURCE`, `T6_NOTION_JOB_ORDERS_DATA_SOURCE`, `T6_GATEWAY_URL`,
+`T6_NOTION_TOKEN`, `T6_NOTION_PROJECTS_DATA_SOURCE`, `T6_NOTION_JOB_ORDERS_DATA_SOURCE`, `T6_NOTION_CONTACTS_DATA_SOURCE` (without it the review message has no coordinator tag), `T6_GATEWAY_URL`,
 `T6_GATEWAY_SECRET`. Keep secrets in the host's secret store or a root-only env
 file, never in the image or this repository. Prefer separate secrets per grant so
 one leak is one capability. An unset secret turns its route off (503).
