@@ -92,11 +92,11 @@ class ConcernStore:
         return records
 
     def raise_at_psr(self, project: str | None = None) -> list[dict[str, Any]]:
-        """Concerns that went quiet (no new evidence for 2 weeks). Age alone never lists one; expired ones are shown elsewhere."""
+        """Every Concern that is neither closed nor snoozed, oldest evidence first. Age is shown and never decides inclusion."""
         now = self.registry._clock()
         with self.registry._transaction() as db:
-            rows = db.execute("SELECT id, project_id, owner_id, waiting_on, opened_at FROM concerns WHERE state = 'quiet' AND (? IS NULL OR project_id = ?) ORDER BY opened_at, id", (project, project)).fetchall()
-        return [{'id': row[0], 'project_id': row[1], 'owner_id': row[2], 'waiting_on': row[3], 'age_seconds': max(0, now - row[4]), 'label': 'no news for 2 weeks'} for row in rows]
+            rows = db.execute("SELECT id, project_id, owner_id, waiting_on, opened_at, evidence_at FROM concerns WHERE state NOT IN ('closed', 'snoozed') AND (? IS NULL OR project_id = ?) ORDER BY evidence_at, id", (project, project)).fetchall()
+        return [{'id': row[0], 'project_id': row[1], 'owner_id': row[2], 'waiting_on': row[3], 'age_seconds': max(0, now - row[4]), 'evidence_at': row[5]} for row in rows]
 
     def counts(self, since: str | None = None, until: str | None = None, project: str | None = None) -> Outcome:
         """Counts for each run date the brief listed Concerns on: no text, no names."""

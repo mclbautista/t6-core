@@ -2652,7 +2652,7 @@ VERBS = (
     Verb("concern", "scan", "Scan PM Notes for Concerns", (), ConcernScanInput, ConcernScanOutput, "coordinator", "Match new dated lines through llm run.", concern_scan),
     Verb("concern", "observe", "Hand over the findings of one brief run", (), ConcernObserveInput, ConcernObserveOutput, "coordinator", "The API decides which findings are new, known or not seen; it closes nothing unless T6_CONCERN_OBSERVE_CLOSES is on.", concern_observe),
     Verb("concern", "counts", "Count the Concerns each PSR listed", (), ConcernCountsInput, ConcernCountsOutput, "reader", "Counts only: listed, sent, new, closed, ages and sources for each run date.", concern_counts, read_only=True),
-    Verb("concern", "list", "List Concerns to raise at PSR", (), ConcernListInput, ConcernListOutput, "reader", "Quiet Concerns only (no news for 2 weeks); age alone never lists one.", concern_list, read_only=True),
+    Verb("concern", "list", "List Concerns to raise at PSR", (), ConcernListInput, ConcernListOutput, "reader", "With raise_at_psr: every Concern that is neither closed nor snoozed, oldest evidence first, with owner, waiting on, age and the date of its last evidence. Age never decides inclusion.", concern_list, read_only=True),
     Verb("concern", "changes", "Read automatic Concern changes", (), ConcernChangesInput, ConcernChangesOutput, "reader", "Read receipts since a date.", concern_changes, read_only=True),
     Verb("concern", "get", "Get a Concern", (), ConcernGetInput, ConcernGetOutput, "reader", "Read a Concern and its age.", concern_get, read_only=True),
     Verb("concern", "raise", "Raise a Concern", (), ConcernRaiseInput, ConcernOutput, "coordinator", "Record a line waiting on a party.", concern_write),

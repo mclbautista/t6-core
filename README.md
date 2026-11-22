@@ -2266,7 +2266,9 @@ with rule `duplicate`. `concern get` returns the new fields. `concern list
 --open` returns every Concern that is not closed (`open` or `snoozed`; rows an
 older release marked `quiet` or `expired` are still returned as stored),
 oldest first, with `age_seconds` and `chronic` (open longer than
-`CHRONIC_DAYS`, 28); pass exactly one of `--raise-at-psr` and `--open`. `text`
+`CHRONIC_DAYS`, 28); pass exactly one of `--raise-at-psr` and `--open`. `--raise-at-psr` lists every
+Concern that is neither closed nor snoozed, oldest last evidence first, with
+owner, `waiting_on`, `age_seconds` and `evidence_at`; age never hides one. `text`
 is masked like `waiting_on` and `anchor` for a caller without real-name access;
 reading it needs the `unmasked` permission.
 

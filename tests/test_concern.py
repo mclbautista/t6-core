@@ -159,21 +159,26 @@ class ConcernTests(unittest.TestCase):
         assert record is not None
         self.assertEqual(record['state'], 'closed')
 
-    def test_raise_at_psr_is_quiet_concerns_never_old_ones(self) -> None:
+    def test_raise_at_psr_lists_every_open_unsnoozed_concern_oldest_evidence_first(self) -> None:
         old = self.raise_concern()
         self.now += 6 * WEEK
-        with self.registry._transaction() as db:
-            db.execute('UPDATE concerns SET evidence_at = ? WHERE id = ?', (self.now - WEEK, old))
-        self.assertEqual(self.store.raise_at_psr(self.project), [])
-        quiet = str(self.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'lab', 'anchor': 'Waiting on lab', 'as_of': '2026-11-01'}, 'quiet')['concern_id'])
-        with self.registry._transaction() as db:
-            db.execute("UPDATE concerns SET state = 'quiet' WHERE id = ?", (quiet,))
+        recent = str(self.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'lab', 'anchor': 'Waiting on lab', 'as_of': '2026-11-01'}, 'recent')['concern_id'])
         listed = self.store.raise_at_psr(self.project)
-        self.assertEqual([(c['id'], c['label'], c['owner_id'], c['waiting_on']) for c in listed], [(quiet, 'no news for 2 weeks', 'coordinator', 'lab')])
+        self.assertEqual([(c['id'], c['owner_id'], c['waiting_on'], c['evidence_at']) for c in listed], [(old, 'coordinator', 'client', 1000000.0), (recent, 'coordinator', 'lab', self.now)])
+        self.assertEqual([c['age_seconds'] for c in listed], [6 * WEEK, 0])
         self.assertEqual(self.store.raise_at_psr('other-project'), [])
-        with self.registry._transaction() as db:
-            db.execute("UPDATE concerns SET state = 'expired' WHERE id = ?", (quiet,))
+        # Newer evidence moves a Concern after the other one, and never hides it.
+        self.now += WEEK
+        self.write('note', {'concern': old, 'text': 'May update'}, 'note')
+        self.assertEqual([c['id'] for c in self.store.raise_at_psr()], [recent, old])
+
+    def test_raise_at_psr_skips_snoozed_and_closed_and_lists_a_woken_one_again(self) -> None:
+        snoozed, closed = self.raise_concern(), str(self.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'lab', 'anchor': 'Waiting on lab', 'as_of': '2026-11-01'}, 'other')['concern_id'])
+        self.snooze(snoozed)
+        self.write('resolve', {'concern': closed}, 'resolve')
         self.assertEqual(self.store.raise_at_psr(), [])
+        self.write('reopen', {'concern': snoozed}, 'wake')
+        self.assertEqual([c['id'] for c in self.store.raise_at_psr()], [snoozed])
 
     def test_validation_and_catalogue(self) -> None:
         result = self.store.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'lab', 'anchor': ' ', 'as_of': '2026-01-01'}, actor='person')
