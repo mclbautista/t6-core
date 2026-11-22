@@ -490,6 +490,7 @@ class WebhookApp:
                     f"registry.sync:{intent.id}",
                     {"project_id": intent.project_id, "revision": intent.revision},
                 )
+                self._inside.submit(MAIN_QUEUE, JobKind.PRIVACY_REGISTRY_REBUILD.value, f"privacy_registry.rebuild:{intent.id}", {})  # no name in the payload
             deliverable_intents = self._registry.undispatched_deliverable_sync()
             for intent in deliverable_intents:
                 self._inside.submit(MAIN_QUEUE, 'deliverable.sync', f'deliverable.sync:{intent.id}', {'intent_id': intent.id})
@@ -644,6 +645,8 @@ class WebhookApp:
             self._deliver(result.action.token, result.action.version)
         self._dispatch_sync()
         self.release_held_activity()
+        if result.outcome == "start_requested":
+            self._redeliver_cards()  # the Approval the card's Project Start asked for gets its own card
         return Response(200, {"outcome": result.outcome})
 
     def _deliver(self, token: str, version: int) -> None:

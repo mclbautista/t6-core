@@ -29,6 +29,7 @@ from t6.vocabulary import DRIVE_ROLES, DriveRole, MediaKind, MediaRole, PersonKi
 from t6.llm.api import Done as Done, LLMDecideInput as LLMDecideInput, LLMDecideOutput as LLMDecideOutput, LLMFilterInput as LLMFilterInput, LLMFilterOutput as LLMFilterOutput, LLMRunInput as LLMRunInput, LLMRunOutput as LLMRunOutput
 
 if TYPE_CHECKING:
+    from t6.notion.source import NotionSource
     from t6.person import People
 
 
@@ -36,6 +37,16 @@ _actor: ContextVar[str] = ContextVar("verb_actor", default="")
 _registry: ContextVar[Any] = ContextVar("verb_registry", default=None)
 _frameio: ContextVar[Any] = ContextVar("verb_frameio", default=None)
 """The way to ask the Frame.io worker (`t6.frameio.project_folders.FrameioProjectWriter`), set by the API; None in a process that has none."""
+_notion_source: ContextVar[Any] = ContextVar("verb_notion_source", default=None)
+
+
+def _verb_notion_source(open_notion: Callable[..., Any], token: str) -> NotionSource:
+    from t6.notion.source import NotionSource
+
+    injected = _notion_source.get()
+    if injected is not None:
+        return injected  # type: ignore[no-any-return]
+    return NotionSource(lambda: open_notion(token))
 
 
 class Preview(BaseModel):
@@ -648,25 +659,25 @@ def jo_write(inputs: JoRaiseInput | JoAssignInput | JoReassignInput | JoNoteInpu
             if inputs.message is None and (inputs.file is None) == (inputs.fields is None):
                 return Refused(rule="input", reason="Give exactly one of file and fields")
             token = os.environ.get(TOKEN_VARIABLE)
-            if not token:
+            if _notion_source.get() is None and not token:
                 return Refused(rule="credentials", reason=f"set {TOKEN_VARIABLE}")
             if data_source is None and inputs.data_sources is not None:
                 data_source = _read_data_sources(inputs.data_sources)["job_orders"]
             if data_source is None:
                 return Refused(rule="config", reason="The job_orders data source is not configured")
-            with open_notion(token) as client:
-                if inputs.message is not None:
-                    from t6.job_order import apply_message
-                    built = apply_message(client, data_source, _people(), inputs.message, inputs.fields or {}, no_project=inputs.no_project,
-                                          aliases=os.environ.get("T6_DEPARTMENT_ALIASES", ""))
-                    if isinstance(built, Refused):
-                        return built
-                    fields, derived = built
-                elif inputs.fields is not None:
-                    fields = check_fields(client, data_source, inputs.fields)
-                else:
-                    assert inputs.file is not None
-                    fields = prepare_fields(client, data_source, inputs.file)
+            notion = _verb_notion_source(open_notion, token or "")
+            if inputs.message is not None:
+                from t6.job_order import apply_message
+                built = apply_message(notion, data_source, _people(), inputs.message, inputs.fields or {}, no_project=inputs.no_project,
+                                      aliases=os.environ.get("T6_DEPARTMENT_ALIASES", ""))
+                if isinstance(built, Refused):
+                    return built
+                fields, derived = built
+            elif inputs.fields is not None:
+                fields = check_fields(notion, data_source, inputs.fields)
+            else:
+                assert inputs.file is not None
+                fields = prepare_fields(notion, data_source, inputs.file)
             verb, values = "raise", {"fields": fields, **({"no_project": True} if inputs.no_project else {})}
         elif isinstance(inputs, JoReassignInput):
             verb, values = "reassign", {"jo": inputs.jo, "person": inputs.person, "reason": inputs.reason}
@@ -969,11 +980,11 @@ def package_write(inputs: PackagePrepareInput | PackageCheckInput | PackageHando
         if isinstance(inputs, PackagePrepareInput):
             from t6.notion.package_specs import PackageSpecReader
             token = os.environ.get(TOKEN_VARIABLE)
-            if not token:
+            if _notion_source.get() is None and not token:
                 return Refused(rule='credentials', reason=f'set {TOKEN_VARIABLE}')
-            with open_notion(token) as client:
-                store.specs = PackageSpecReader(client, _read_data_sources(inputs.data_sources)['package_specs'])
-                return store.write(verb, values, actor=_actor.get(), idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+            notion = _verb_notion_source(open_notion, token or '')
+            store.specs = PackageSpecReader(notion, _read_data_sources(inputs.data_sources)['package_specs'])
+            return store.write(verb, values, actor=_actor.get(), idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
         return store.write(verb, values, actor=_actor.get(), idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
     except (OSError, ValueError, KeyError, NotionError) as error:
         return Refused(rule='spec', reason=str(error))
@@ -1476,11 +1487,18 @@ def deliverable_define(inputs: DeliverableDefineInput, open_notion: Callable[...
     from t6.notion import NotionError
 
     def project_type(page: str) -> str | None:
+        from uuid import UUID
+
         token = os.environ.get(TOKEN_VARIABLE)
-        if not token:
+        if _notion_source.get() is None and not token:
             raise ValueError(f'set {TOKEN_VARIABLE} to read Project Type')
-        with open_notion(token) as client:
-            return ProjectsRow.from_page(client.retrieve_page(page)).project_type
+        if len(page) == 32:
+            try:
+                page = str(UUID(page))
+            except ValueError:
+                pass
+        notion = _verb_notion_source(open_notion, token or '')
+        return ProjectsRow.from_page(notion.retrieve_page(page, freshness='live')).project_type
 
     try:
         return DeliverableStore(_people().registry, _people().tokens, project_type).define(
@@ -2658,7 +2676,8 @@ VERBS = (
 
 def invoke(entry: Verb, inputs: BaseModel, *, actor: str, people: People,
            open_notion: Callable[..., Any],
-           legacy: Callable[[], int] | None = None, frameio: Any = None) -> Outcome:
+           legacy: Callable[[], int] | None = None, frameio: Any = None,
+           notion_source: Any = None) -> Outcome:
     """Authorize an authenticated Person before invoking a registered verb."""
     if isinstance(inputs, ConcernNoteInput) and inputs.from_reply is not None:
         person = people.get(actor)
@@ -2677,12 +2696,14 @@ def invoke(entry: Verb, inputs: BaseModel, *, actor: str, people: People,
     token = _actor.set(actor)
     registry_token = _registry.set(people.registry)
     frameio_token = _frameio.set(frameio)
+    notion_token = _notion_source.set(notion_source)
     try:
         return entry.handler(inputs, open_notion)
     finally:
         _actor.reset(token)
         _registry.reset(registry_token)
         _frameio.reset(frameio_token)
+        _notion_source.reset(notion_token)
 
 
 def catalogue() -> list[dict[str, Any]]:

@@ -14,6 +14,7 @@ from typing import Any
 
 from t6.domain.job_order_rules import DEPARTMENT_ALIASES
 from t6.notion.generated import JobOrdersRow
+from t6.notion.source import Freshness, NotionSource, as_source
 from t6.notion.sync import NotionClient
 
 JSON = dict[str, Any]
@@ -43,10 +44,15 @@ class UnknownDepartment:
 
 
 def get_departments(
-    client: NotionClient, data_source_id: str, *, include_misc: bool = False
+    source: NotionSource | NotionClient,
+    data_source_id: str,
+    *,
+    include_misc: bool = False,
+    freshness: Freshness = "mirror",
 ) -> tuple[Department, ...]:
-    """The live Department options, in display order. MISC is left out unless `include_misc`."""
-    live = client.retrieve_data_source(data_source_id).get("properties") or {}
+    """The Department options, in display order. MISC is left out unless `include_misc`."""
+    notion = as_source(source)
+    live = notion.retrieve_data_source(data_source_id, freshness=freshness).get("properties") or {}
     prop = _department_property(live)
     options = ((prop or {}).get("select") or {}).get("options") or []
     found = [

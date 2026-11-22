@@ -38,6 +38,7 @@ from t6.notion.errors import NotionError
 from t6.notion.generated import BaysRow
 from t6.notion.model import ID_KEY, NAME_KEY, TYPE_KEY
 from t6.notion.schema import diff_properties, load_snapshot
+from t6.notion.source import Freshness, NotionSource, as_source
 from t6.notion.sync import NotionClient
 from t6.notion.writes import Ambiguous, Rejected, update_row
 from t6.registry import normalize_page_id
@@ -173,17 +174,17 @@ def _same(old: Any, new: Any) -> bool:
 class Fleet:
     """Machines in one Bays data source."""
 
-    def __init__(self, client: NotionClient, data_source_id: str, snapshot: JSON | None = None) -> None:
-        self._client = client
+    def __init__(self, source: NotionSource | NotionClient, data_source_id: str, snapshot: JSON | None = None) -> None:
+        self._notion = as_source(source)
         self._source = data_source_id
         self._snapshot = snapshot or load_snapshot()
 
-    def machines(self) -> tuple[Machine, ...]:
+    def machines(self, *, freshness: Freshness = "mirror") -> tuple[Machine, ...]:
         """Every Bays row as a Machine; raise FleetSafetyError for a foreign page."""
-        return tuple(self._machine(page) for page in self._pages())
+        return tuple(self._machine(page) for page in self._pages(freshness=freshness))
 
-    def _pages(self) -> list[JSON]:
-        pages = self._client.query_data_source(self._source)
+    def _pages(self, *, freshness: Freshness = "mirror") -> list[JSON]:
+        pages = self._notion.query_data_source(self._source, freshness=freshness)
         for page in pages:
             parent = page.get("parent") or {}
             if parent.get("type") != "data_source_id" or normalize_page_id(
@@ -250,7 +251,7 @@ class Fleet:
             for f in fields(BaysRow)
             if f.name in attributes
         ]
-        live = self._client.retrieve_data_source(self._source).get("properties") or {}
+        live = self._notion.retrieve_data_source(self._source, freshness="live").get("properties") or {}
         drift = diff_properties(expected, live)
         if drift["removed"] or drift["changed"]:
             raise FleetSafetyError(f"unsafe Bays schema: missing {drift['removed']}, changed {drift['changed']}")
@@ -303,7 +304,7 @@ class Fleet:
     def _moved(self, queried: JSON, row: BaysRow) -> bool:
         """Whether the row was archived, or its identity or fleet facts edited, since it was queried."""
         try:
-            page = self._client.retrieve_page(row.page_id)
+            page = self._notion.retrieve_page(row.page_id, freshness="live")
         except NotionError:
             return True
         if page.get("archived") or page.get("in_trash") or page.get("parent") != queried.get("parent"):
@@ -311,11 +312,11 @@ class Fleet:
         return BaysRow.from_page(page) != row
 
     def _write(self, page_id: str, values: JSON) -> Machine | Rejected | Ambiguous:
-        saved = update_row(self._client, BaysRow, page_id, values)
+        saved = update_row(self._notion, BaysRow, page_id, values)
         if isinstance(saved, (Rejected, Ambiguous)):
             return saved
         try:
-            return self._machine(self._client.retrieve_page(page_id))
+            return self._machine(self._notion.retrieve_page(page_id, freshness="live"))
         except NotionError as error:
             return Ambiguous("readback_failed", str(error), page_id)
 

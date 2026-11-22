@@ -181,6 +181,13 @@ class UnboundPageTests(OperatorTestCase):
         self.drain()
         self.assertEqual(self.gateway.sends, 1)
 
+    def test_registering_a_project_queues_a_privacy_registry_rebuild_with_no_name_in_it(self) -> None:
+        self.offer_and_deliver()
+        self.tap(self.payload(1, "New Project"))
+        job = self.queue.claim("main", 60, ["privacy_registry.rebuild"])
+        assert job is not None
+        self.assertEqual(job.payload, {})
+
     def test_new_identity_registers_out_of_rotation_with_no_code_and_the_card_reports_notion(self) -> None:
         self.offer_and_deliver()
         answer = self.tap(self.payload(1, "New Project"))

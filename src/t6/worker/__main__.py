@@ -12,7 +12,12 @@ import signal
 import sys
 import threading
 import time
+from typing import TYPE_CHECKING, Any
 from urllib.error import URLError
+
+if TYPE_CHECKING:
+    from t6.cli import DataSourceConfig
+    from t6.notion.mirror import MirrorSyncer, MirrorWriter
 
 from t6.domain.events import JobKind, JsonValue
 from t6.frameio.readapi import ReadApi
@@ -114,7 +119,11 @@ def registry_transport(environ: Mapping[str, str], queue_transport: Transport) -
 
 
 def configured_handlers(
-    environ: Mapping[str, str], settings: WorkerSettings, transport: Transport
+    environ: Mapping[str, str],
+    settings: WorkerSettings,
+    transport: Transport,
+    *,
+    mirror_writer: MirrorWriter | None = None,
 ) -> dict[str, dict[str, Handler]]:
     """Handlers that need settings from the environment.
 
@@ -144,22 +153,45 @@ def configured_handlers(
         handlers[JobKind.CHAT_REPLY.value] = ChatReply(gateway).deliver
         handlers['notion.state_flagged'] = StateEditNotification(gateway, operator_ids(environ)).deliver
     token, projects = environ.get("T6_NOTION_TOKEN"), environ.get("T6_NOTION_PROJECTS_DATA_SOURCE")
-    if token and projects:
-        from t6.notion import NotionClient
+    job_orders = environ.get("T6_NOTION_JOB_ORDERS_DATA_SOURCE")
+    deliverables = environ.get('T6_NOTION_DELIVERABLES_DATA_SOURCE')
+    active_mirror_writer: MirrorWriter | None = None
+    active_mirror_ds_ids: tuple[str, ...] = ()
+    on_page_written: Callable[[dict[str, Any]], None] | None = None
+    if token:
+        from t6.notion import MirrorWriter, mirror_db_path
+
+        mirror_path = mirror_db_path(environ)
+        if mirror_path is not None:
+            configs = mirror_data_sources_from_env(environ)
+            if configs:
+                active_mirror_writer = mirror_writer if mirror_writer is not None else MirrorWriter(mirror_path)
+                active_mirror_ds_ids = tuple(cfg.id for cfg in configs.values())
+                writer_ref = active_mirror_writer
+                ds_ids_ref = active_mirror_ds_ids
+
+                def write_through(page: dict[str, Any]) -> None:
+                    writer_ref.upsert_page(page, active_data_source_ids=ds_ids_ref)
+
+                on_page_written = write_through
+    notion = None
+    if token and (projects or job_orders or deliverables):
+        from t6.notion import NotionClient, NotionSource
+
+        notion = NotionSource.from_client(NotionClient(token), on_page_written=on_page_written)
+    if notion and projects:
         from t6.notion.projection import ProjectProjection
         from t6.worker.registry import RegistryClient
 
         offer = operator.offer_unbound_page if gateway_url and gateway_secret else None
         projection = ProjectProjection(
-            NotionClient(token), RegistryClient(api, settings.secret), projects, offer=offer
+            notion, RegistryClient(api, settings.secret), projects, offer=offer
         )
         handlers.update(projection.handlers())
-    job_orders = environ.get("T6_NOTION_JOB_ORDERS_DATA_SOURCE")
-    if token and job_orders:
-        from t6.notion import NotionClient
+    if notion and job_orders:
         from t6.notion.jo_projection import JobOrderProjection
         from t6.worker.registry import RegistryClient
-        jo_projection = JobOrderProjection(NotionClient(token), RegistryClient(api, settings.secret), job_orders)
+        jo_projection = JobOrderProjection(notion, RegistryClient(api, settings.secret), job_orders)
         project_reconcile = handlers.get("notion.page_changed")
         handlers.update(jo_projection.handlers())
         if project_reconcile is not None:
@@ -169,12 +201,10 @@ def configured_handlers(
                     return jo_projection.reconcile(job)
                 return result
             handlers["notion.page_changed"] = reconcile
-    deliverables = environ.get('T6_NOTION_DELIVERABLES_DATA_SOURCE')
-    if token and deliverables:
-        from t6.notion import NotionClient
+    if notion and deliverables:
         from t6.notion.deliverable_projection import DeliverableProjection
         from t6.worker.registry import RegistryClient
-        deliverable_projection = DeliverableProjection(NotionClient(token), RegistryClient(api, settings.secret), deliverables)
+        deliverable_projection = DeliverableProjection(notion, RegistryClient(api, settings.secret), deliverables)
         handlers['deliverable.sync'] = deliverable_projection.sync
         prior_reconcile = handlers.get('notion.page_changed')
         if prior_reconcile is None:
@@ -187,6 +217,59 @@ def configured_handlers(
                     return deliverable_projection.reconcile(job)
                 return result
             handlers['notion.page_changed'] = reconcile_deliverable
+    if token and active_mirror_writer is not None:
+        from t6.notion import NotionClient, NotionSource
+
+        notion_token = token
+        mirror_notion = (
+            notion
+            if notion is not None
+            else NotionSource(lambda: NotionClient(notion_token), on_page_written=on_page_written)
+        )
+        existing_reconcile = handlers.get(JobKind.NOTION_PAGE_CHANGED.value)
+        active_writer = active_mirror_writer
+        active_ds_ids = active_mirror_ds_ids
+
+        def mirror_page_changed(job: WorkerJob) -> JsonValue:
+            try:
+                mirror_outcome = active_writer.handle_page_changed(
+                    mirror_notion,
+                    job.payload,
+                    active_data_source_ids=active_ds_ids,
+                )
+            except Exception as error:
+                event_type = job.payload.get("event_type") or job.payload.get("type")
+                print(
+                    f"t6.worker: mirror page_changed failed ({type(error).__name__}) event_type={event_type}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                mirror_outcome = "error"
+            if existing_reconcile is not None:
+                return existing_reconcile(job)
+            return {"outcome": mirror_outcome}
+
+        def mirror_refresh(job: WorkerJob) -> JsonValue:
+            mirror_outcome = active_writer.refresh_page(
+                mirror_notion,
+                job.payload,
+                active_data_source_ids=active_ds_ids,
+            )
+            return {"outcome": mirror_outcome}
+
+        handlers[JobKind.NOTION_PAGE_CHANGED.value] = mirror_page_changed
+        handlers[JobKind.NOTION_MIRROR_REFRESH.value] = mirror_refresh
+    privacy_file, data_sources_file = environ.get("T6_READ_PRIVACY_REGISTRY"), environ.get("T6_READ_DATA_SOURCES")
+    if token and privacy_file and data_sources_file:
+        from t6.cli import read_data_source_configs
+        from t6.notion import NotionClient
+        from t6.notion.source import NotionSource
+        from t6.privacy_build import Rebuild
+
+        privacy_sources = {key: cfg.id for key, cfg in read_data_source_configs(Path(data_sources_file)).items()}
+        if privacy_sources.get("studios") and privacy_sources.get("projects"):
+            rebuild = Rebuild(NotionSource(lambda: NotionClient(token)), privacy_sources, Path(privacy_file))
+            handlers[JobKind.PRIVACY_REGISTRY_REBUILD.value] = lambda job: rebuild(job)
     if gateway_url and gateway_secret:
         chat = _whole_number(environ, "T6_REVIEW_CHAT", required=True)
         topic = _whole_number(environ, "T6_REVIEW_TOPIC", required=False)
@@ -286,12 +369,12 @@ def project_start_handler(environ: Mapping[str, str]) -> Handler:
         token = environ.get("T6_NOTION_TOKEN")
         if not token:
             raise ValueError("missing environment variable: T6_NOTION_TOKEN (the plan reads the Project Type)")
-        from t6.notion import NotionClient, NotionError
+        from t6.notion import NotionClient, NotionError, NotionSource
         from t6.notion.generated import ProjectsRow
 
+        notion = NotionSource(lambda: NotionClient(token))
         try:
-            with NotionClient(token) as client:
-                return ProjectsRow.from_page(client.retrieve_page(page)).project_type
+            return ProjectsRow.from_page(notion.retrieve_page(page)).project_type
         except NotionError as error:
             raise ValueError(f"could not read the Project Type from Notion: {error}") from error
 
@@ -299,12 +382,12 @@ def project_start_handler(environ: Mapping[str, str]) -> Handler:
         token = environ.get("T6_NOTION_TOKEN")
         if not token:
             raise ValueError("missing environment variable: T6_NOTION_TOKEN (the plan reads the Project name for Frame.io)")
-        from t6.notion import NotionClient, NotionError
+        from t6.notion import NotionClient, NotionError, NotionSource
         from t6.notion.generated import ProjectsRow
 
+        notion = NotionSource(lambda: NotionClient(token))
         try:
-            with NotionClient(token) as client:
-                return ProjectsRow.from_page(client.retrieve_page(page)).name
+            return ProjectsRow.from_page(notion.retrieve_page(page)).name
         except NotionError as error:
             raise ValueError(f"could not read the Project name from Notion: {error}") from error
 
@@ -341,9 +424,9 @@ def booking_calendar_handler(environ: Mapping[str, str]) -> Handler:
         if not token:
             raise ValueError("missing environment variable: T6_NOTION_TOKEN (the calendar events carry Project and Person names)")
         from t6.google.names import NotionNames
-        from t6.notion import NotionClient
+        from t6.notion import NotionClient, NotionSource
 
-        return NotionNames(registry, NotionClient(token))
+        return NotionNames(registry, NotionSource(lambda: NotionClient(token)))
 
     try:
         return calendar_handler(environ, lambda: SqliteProjectRegistry(environ["T6_DATABASE"]), names)
@@ -365,9 +448,9 @@ def inbound_calendar_handlers(environ: Mapping[str, str]) -> dict[str, Handler]:
         if not token:
             raise ValueError("missing environment variable: T6_NOTION_TOKEN (inbound calendar edits map the editor's email to a Person)")
         from t6.google.names import NotionNames
-        from t6.notion import NotionClient
+        from t6.notion import NotionClient, NotionSource
 
-        return NotionNames(registry, NotionClient(token))
+        return NotionNames(registry, NotionSource(lambda: NotionClient(token)))
 
     try:
         return inbound_handlers(environ, lambda: SqliteProjectRegistry(environ["T6_DATABASE"]), names)
@@ -389,14 +472,76 @@ def sharing_calendar_handlers(environ: Mapping[str, str]) -> dict[str, Handler]:
         if not token:
             raise ValueError("missing environment variable: T6_NOTION_TOKEN (calendar sharing maps a Person to a Google email)")
         from t6.google.names import NotionNames
-        from t6.notion import NotionClient
+        from t6.notion import NotionClient, NotionSource
 
-        return NotionNames(registry, NotionClient(token))
+        return NotionNames(registry, NotionSource(lambda: NotionClient(token)))
 
     try:
         return sharing_handlers(environ, lambda: SqliteProjectRegistry(environ["T6_DATABASE"]), identities)
     except ValueError as error:
         raise ConfigError(str(error)) from error
+
+
+def mirror_data_sources_from_env(environ: Mapping[str, str]) -> dict[str, DataSourceConfig]:
+    """Load configured data source IDs and max-age settings for the main worker's Notion mirror."""
+    from t6.cli import DataSourceConfig
+    from t6.server.verbs import read_data_source_configs_from_env
+
+    configs: dict[str, DataSourceConfig] = read_data_source_configs_from_env(environ)
+    for key, env_name in (
+        ("projects", "T6_NOTION_PROJECTS_DATA_SOURCE"),
+        ("contacts", "T6_NOTION_CONTACTS_DATA_SOURCE"),
+        ("job_orders", "T6_NOTION_JOB_ORDERS_DATA_SOURCE"),
+        ("deliverables", "T6_NOTION_DELIVERABLES_DATA_SOURCE"),
+    ):
+        if key not in configs:
+            value = (environ.get(env_name) or "").strip()
+            if value:
+                configs[key] = DataSourceConfig(id=value)
+    return configs
+
+
+def mirror_writer_from_env(environ: Mapping[str, str]) -> MirrorWriter | None:
+    """Create the main worker's shared `MirrorWriter`, or None if mirror is disabled/unconfigured."""
+    from t6.notion import MirrorWriter, mirror_db_path
+
+    path = mirror_db_path(environ)
+    if path is None:
+        return None
+    if not environ.get("T6_NOTION_TOKEN"):
+        return None
+    if not mirror_data_sources_from_env(environ):
+        return None
+    return MirrorWriter(path)
+
+
+def mirror_syncer_from_env(
+    environ: Mapping[str, str], *, writer: MirrorWriter | None = None
+) -> MirrorSyncer | None:
+    """Create the main worker's `MirrorSyncer`, or None if mirror is disabled/unconfigured."""
+    from t6.notion import (
+        MIN_REQUEST_INTERVAL_SECONDS,
+        MirrorSyncer,
+        MirrorWriter,
+        NotionClient,
+        NotionSource,
+        RequestPacer,
+        mirror_db_path,
+    )
+
+    path = mirror_db_path(environ)
+    if path is None:
+        return None
+    token = environ.get("T6_NOTION_TOKEN")
+    if not token:
+        return None
+    configs = mirror_data_sources_from_env(environ)
+    if not configs:
+        return None
+    pacer = RequestPacer(MIN_REQUEST_INTERVAL_SECONDS)
+    active_writer = writer if writer is not None else MirrorWriter(path)
+    notion = NotionSource(lambda: NotionClient(token), pacer=pacer)
+    return MirrorSyncer(active_writer, notion, configs, enabled_sources=None, pacer=pacer)
 
 
 def review_media_links(environ: Mapping[str, str], registry: MediaLinks) -> MediaLinks:
@@ -598,101 +743,138 @@ def main(
     environ = os.environ if environ is None else environ
     tick: Callable[[], None] | None = None
     read_api: ThreadingHTTPServer | None = None
+    shared_mirror_writer: MirrorWriter | None = None
     try:
-        settings = WorkerSettings.from_env(environ)
-        transport = transport or HttpTransport(settings.server_url)
-        table = handlers if handlers is not None else {**HANDLERS, **configured_handlers(environ, settings, transport)}
-        queue_handlers = table.get(settings.queue)
-        transcribe_client = None
-        if settings.queue == 'transcribe':
-            from t6.transcribe.worker import TranscribeQueue, configured
-            transcribe_client = TranscribeQueue(transport, settings.secret)
-            if handlers is None:
-                try:
-                    queue_handlers = configured(environ, transcribe_client)
-                except (ValueError, ImportError) as error:
-                    raise ConfigError(str(error)) from error
-        if settings.queue == FRAMEIO_QUEUE and handlers is None:
-            frameio = frameio or frameio_worker(
-                environ, *frameio_backend(environ), timers=ReviewTimerClient(transport, settings.secret).arm
+        try:
+            settings = WorkerSettings.from_env(environ)
+            transport = transport or HttpTransport(settings.server_url)
+            if settings.queue == "main":
+                shared_mirror_writer = mirror_writer_from_env(environ)
+            table = (
+                handlers
+                if handlers is not None
+                else {
+                    **HANDLERS,
+                    **configured_handlers(environ, settings, transport, mirror_writer=shared_mirror_writer),
+                }
             )
-            queue_handlers, tick = frameio.handlers(), frameio.tick
-            read_api = read_api_server(environ, frameio)
-        if not queue_handlers and settings.queue == "main" and environ.get("T6_DATABASE"):
-            queue_handlers = {}
-        if queue_handlers is None or (not queue_handlers and not (settings.queue == "main" and environ.get("T6_DATABASE"))):
-            raise ConfigError(f"no handler is registered for queue {settings.queue!r}")
-    except ConfigError as error:
-        print(f"t6.worker: {error}", file=sys.stderr)
-        return 2
-    if stop is None:
-        stop = threading.Event()
-        for signum in (signal.SIGTERM, signal.SIGINT):
-            signal.signal(signum, lambda _signum, _frame: stop.set())
-    client = transcribe_client if transcribe_client is not None else QueueClient(transport, settings.secret)
-    internal_client = None
-    if settings.queue == 'main' and environ.get("T6_DATABASE"):
-        from t6.worker.internal_queue import InternalJobQueue, InternalQueueClient
+            queue_handlers = table.get(settings.queue)
+            transcribe_client = None
+            if settings.queue == 'transcribe':
+                from t6.transcribe.worker import TranscribeQueue, configured
+                transcribe_client = TranscribeQueue(transport, settings.secret)
+                if handlers is None:
+                    try:
+                        queue_handlers = configured(environ, transcribe_client)
+                    except (ValueError, ImportError) as error:
+                        raise ConfigError(str(error)) from error
+            if settings.queue == FRAMEIO_QUEUE and handlers is None:
+                frameio = frameio or frameio_worker(
+                    environ, *frameio_backend(environ), timers=ReviewTimerClient(transport, settings.secret).arm
+                )
+                queue_handlers, tick = frameio.handlers(), frameio.tick
+                read_api = read_api_server(environ, frameio)
+            if not queue_handlers and settings.queue == "main" and environ.get("T6_DATABASE"):
+                queue_handlers = {}
+            if queue_handlers is None or (not queue_handlers and not (settings.queue == "main" and environ.get("T6_DATABASE"))):
+                raise ConfigError(f"no handler is registered for queue {settings.queue!r}")
+        except ConfigError as error:
+            print(f"t6.worker: {error}", file=sys.stderr)
+            return 2
+        if stop is None:
+            stop = threading.Event()
+            for signum in (signal.SIGTERM, signal.SIGINT):
+                signal.signal(signum, lambda _signum, _frame: stop.set())
+        client = transcribe_client if transcribe_client is not None else QueueClient(transport, settings.secret)
+        internal_client = None
+        if settings.queue == 'main' and environ.get("T6_DATABASE"):
+            from t6.worker.internal_queue import InternalJobQueue, InternalQueueClient
 
-        internal_client = InternalQueueClient(InternalJobQueue(environ["T6_DATABASE"]))
-    if internal_client is not None and settings.queue == "main":
-        from t6.concern import ConcernStore
-        from t6.concern_scan import ConcernScanner
-        from t6.preview import PreviewTokens
-        from t6.registry.sqlite import SqliteProjectRegistry
+            internal_client = InternalQueueClient(InternalJobQueue(environ["T6_DATABASE"]))
+        if internal_client is not None and settings.queue == "main":
+            from t6.concern import ConcernStore
+            from t6.concern_scan import ConcernScanner
+            from t6.preview import PreviewTokens
+            from t6.registry.sqlite import SqliteProjectRegistry
 
-        concerns = ConcernStore(SqliteProjectRegistry(environ["T6_DATABASE"]), PreviewTokens("timer"))
-        def concern_silence(job: WorkerJob) -> bool:
-            concern, evidence, target = job.payload["concern"], job.payload["evidence_at"], job.payload["target"]
-            if not isinstance(concern, str) or not isinstance(evidence, (int, float)) or not isinstance(target, str):
-                raise ValueError("Invalid Concern timer payload")
-            return concerns.silence(concern, evidence, target)
-        def concern_pm_close(job: WorkerJob) -> bool:
-            project = job.payload.get('project')
-            if not isinstance(project, str):
-                raise ValueError('Invalid Concern close payload')
-            ConcernScanner(concerns).apply_pending(project)
-            return True
-        from t6.frameio.share_views import DeliveryShareViews, share_viewed_handler
+            concerns = ConcernStore(SqliteProjectRegistry(environ["T6_DATABASE"]), PreviewTokens("timer"))
+            def concern_silence(job: WorkerJob) -> bool:
+                concern, evidence, target = job.payload["concern"], job.payload["evidence_at"], job.payload["target"]
+                if not isinstance(concern, str) or not isinstance(evidence, (int, float)) or not isinstance(target, str):
+                    raise ValueError("Invalid Concern timer payload")
+                return concerns.silence(concern, evidence, target)
+            def concern_pm_close(job: WorkerJob) -> bool:
+                project = job.payload.get('project')
+                if not isinstance(project, str):
+                    raise ValueError('Invalid Concern close payload')
+                ConcernScanner(concerns).apply_pending(project)
+                return True
+            from t6.frameio.share_views import DeliveryShareViews, share_viewed_handler
 
-        share_viewed = share_viewed_handler(DeliveryShareViews(SqliteProjectRegistry(environ["T6_DATABASE"])))
-        queue_handlers = {**queue_handlers, "concern_silence": concern_silence, "concern_pm_close": concern_pm_close,
-                          JobKind.FRAMEIO_SHARE_VIEWED.value: share_viewed}
-        def unavailable_abang_nudge(job: WorkerJob) -> bool:
-            raise RuntimeError('Abang nudge needs a configured gateway')
-        def unavailable_subscriptions(job: WorkerJob) -> bool:
-            raise RuntimeError('Chat subscriptions need a configured gateway')
-        queue_handlers = {**queue_handlers, "abang_nudge": unavailable_abang_nudge, "chat_subscriptions": unavailable_subscriptions}
-    if settings.queue == "main" and environ.get("T6_DATABASE") and environ.get("T6_GATEWAY_URL") and environ.get("T6_GATEWAY_SECRET"):
-        from t6.registry.sqlite import SqliteProjectRegistry
-        from t6.worker.linked_chats import LinkedChats
-        from t6.domain.studio_people import operator_ids
-        from t6.worker.gateway import GatewayRejected
-        from urllib.error import URLError
+            share_viewed = share_viewed_handler(DeliveryShareViews(SqliteProjectRegistry(environ["T6_DATABASE"])))
+            queue_handlers = {**queue_handlers, "concern_silence": concern_silence, "concern_pm_close": concern_pm_close,
+                              JobKind.FRAMEIO_SHARE_VIEWED.value: share_viewed}
+            def unavailable_abang_nudge(job: WorkerJob) -> bool:
+                raise RuntimeError('Abang nudge needs a configured gateway')
+            def unavailable_subscriptions(job: WorkerJob) -> bool:
+                raise RuntimeError('Chat subscriptions need a configured gateway')
+            queue_handlers = {**queue_handlers, "abang_nudge": unavailable_abang_nudge, "chat_subscriptions": unavailable_subscriptions}
+        if settings.queue == "main" and environ.get("T6_DATABASE") and environ.get("T6_GATEWAY_URL") and environ.get("T6_GATEWAY_SECRET"):
+            from t6.registry.sqlite import SqliteProjectRegistry
+            from t6.worker.linked_chats import LinkedChats
+            from t6.domain.studio_people import operator_ids
+            from t6.worker.gateway import GatewayRejected
+            from urllib.error import URLError
 
-        linked = LinkedChats(SqliteProjectRegistry(environ["T6_DATABASE"]), GatewayClient(HttpTransport(environ["T6_GATEWAY_URL"]), environ["T6_GATEWAY_SECRET"]), operator_ids(environ))
-        queue_handlers = {**queue_handlers, "abang_nudge": linked.nudge, "chat_subscriptions": linked.replace_subscriptions}
-        def linked_tick() -> None:
-            try:
-                linked.tick()
-            except (OSError, URLError, GatewayRejected):
-                pass  # Retry on the next worker poll.
-        tick = linked_tick
-    if read_api is not None:
-        threading.Thread(target=read_api.serve_forever, daemon=True).start()
-    try:
-        lease = {"main": MAIN_LEASE_SECONDS, "frameio": FRAMEIO_LEASE_SECONDS}.get(settings.queue, 60.0)
-        serve(
-            Worker(client, settings.queue, queue_handlers, lease_seconds=lease, internal_client=internal_client),
-            stop,
-            settings.poll_seconds,
-            tick,
-        )
-    finally:
+            linked = LinkedChats(SqliteProjectRegistry(environ["T6_DATABASE"]), GatewayClient(HttpTransport(environ["T6_GATEWAY_URL"]), environ["T6_GATEWAY_SECRET"]), operator_ids(environ))
+            queue_handlers = {**queue_handlers, "abang_nudge": linked.nudge, "chat_subscriptions": linked.replace_subscriptions}
+            def linked_tick() -> None:
+                try:
+                    linked.tick()
+                except (OSError, URLError, GatewayRejected):
+                    pass  # Retry on the next worker poll.
+            tick = linked_tick
+        if settings.queue == "main":
+            mirror_syncer = mirror_syncer_from_env(environ, writer=shared_mirror_writer)
+            if mirror_syncer is not None:
+                def run_mirror_tick() -> None:
+                    try:
+                        mirror_syncer.tick()
+                    except Exception as error:
+                        print(
+                            f"t6.worker: mirror tick failed ({type(error).__name__})",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+
+                if tick is not None:
+                    prev_tick = tick
+
+                    def combined_tick() -> None:
+                        prev_tick()
+                        run_mirror_tick()
+
+                    tick = combined_tick
+                else:
+                    tick = run_mirror_tick
         if read_api is not None:
-            read_api.shutdown()
-            read_api.server_close()
-    return 0
+            threading.Thread(target=read_api.serve_forever, daemon=True).start()
+        try:
+            lease = {"main": MAIN_LEASE_SECONDS, "frameio": FRAMEIO_LEASE_SECONDS}.get(settings.queue, 60.0)
+            serve(
+                Worker(client, settings.queue, queue_handlers, lease_seconds=lease, internal_client=internal_client),
+                stop,
+                settings.poll_seconds,
+                tick,
+            )
+        finally:
+            if read_api is not None:
+                read_api.shutdown()
+                read_api.server_close()
+        return 0
+    finally:
+        if shared_mirror_writer is not None:
+            shared_mirror_writer.close()
 
 
 if __name__ == "__main__":

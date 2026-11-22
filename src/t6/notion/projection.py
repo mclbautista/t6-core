@@ -25,6 +25,7 @@ from t6.notion.errors import NotionError
 from t6.notion.editor import editor as notion_editor
 from t6.notion.models import ProjectsProperties
 from t6.notion.generated import ProjectsRow
+from t6.notion.source import NotionSource, as_source
 from t6.notion.sync import NotionClient
 from t6.registry import normalize_page_id
 from t6.worker.client import WorkerJob
@@ -44,13 +45,13 @@ __all__ = ["ROTATION", "T6_ID", "ProjectProjection"]
 class ProjectProjection:
     def __init__(
         self,
-        notion: NotionClient,
+        notion: NotionSource | NotionClient,
         registry: RegistryClient,
         projects_data_source_id: str,
         offer: Callable[[str, str], None] | None = None,
     ) -> None:
         self._offer = offer
-        self._notion = notion
+        self._notion = as_source(notion)
         self._registry = registry
         self._projects = normalize_page_id(projects_data_source_id)
 
@@ -64,13 +65,13 @@ class ProjectProjection:
             return {'skipped': 'completed or missing intent'}
         page = state['page_id']
         if page and state['held'] == state['current_held']:
-            before = ProjectsRow.from_page(self._notion.retrieve_page(page)).status
+            before = ProjectsRow.from_page(self._notion.retrieve_page(page, freshness='live')).status
             allowed = self._registry.projection(page, {'project_status': before}).get('allowed', {})
             if not allowed.get('project_status'):
                 raise ValueError('Project Status changed in Notion; reconcile before projecting')
             wanted = 'Archived' if state['held'] == 2 else 'Standby' if state['held'] else 'In-Progress'
             try:
-                status = live_option_name(self._notion.retrieve_data_source(self._projects), ProjectsRow.notion_id('status') or 'Status', wanted)
+                status = live_option_name(self._notion.retrieve_data_source(self._projects, freshness='live'), ProjectsRow.notion_id('status') or 'Status', wanted)
             except ValueError as error:
                 raise Refused(str(error)) from error
             self._notion.update_page(page, {'properties': {ProjectsRow.notion_id('status'): {'select': {'name': status}}}})
@@ -96,7 +97,7 @@ class ProjectProjection:
             }
         }
         try:
-            before = self._notion.retrieve_page(page)
+            before = self._notion.retrieve_page(page, freshness="live")
             if _gone(before):
                 raise NotionError(404, "object_not_found", "the page is in the trash")
             self._notion.update_page(page, body)
@@ -118,7 +119,7 @@ class ProjectProjection:
     def reconcile(self, job: WorkerJob) -> JsonValue:
         page_id = str(job.payload["page_id"])
         try:
-            page = self._notion.retrieve_page(page_id)
+            page = self._notion.retrieve_page(page_id, freshness="live")
         except NotionError as error:
             if error.status != 404:
                 raise

@@ -22,6 +22,7 @@ from t6.notion.errors import NotionError
 from t6.notion.generated import JobOrdersRow
 from t6.notion.reads import is_live, page_edited
 from t6.notion.schema import load_snapshot
+from t6.notion.source import Freshness, NotionSource, as_source, last_read_from_mirror
 from t6.notion.sync import NotionClient
 from t6.notion.writes import Ambiguous, Rejected, create_row
 from t6.privacy.withhold import withhold
@@ -68,45 +69,57 @@ BLOCK_TEXT_LIMIT = 2000
 class JobOrders:
     """Reads and creates Job Orders in one data source."""
 
-    def __init__(self, client: NotionClient, data_source_id: str, snapshot: JSON | None = None) -> None:
-        self._client = client
+    def __init__(
+        self, source: NotionSource | NotionClient, data_source_id: str, snapshot: JSON | None = None
+    ) -> None:
+        self._notion = as_source(source)
         self._source = data_source_id
         self._snapshot = snapshot or load_snapshot()
 
-    def get(self, page_id: str) -> JobOrder:
+    def get(self, page_id: str, *, freshness: Freshness = "mirror") -> JobOrder:
         """The Job Order on a page, with its body."""
-        return self._read(self._client.retrieve_page(page_id))
+        return self._read(self._notion.retrieve_page(page_id, freshness=freshness))
 
-    def find_by_telegram_key(self, telegram_key: str) -> JobOrder | None:
+    def find_by_telegram_key(self, telegram_key: str, *, freshness: Freshness = "mirror") -> JobOrder | None:
         """The Job Order whose Telegram Key is exactly `telegram_key`, or None. The first one, if several."""
-        rows = self._client.query_data_source(
-            self._source,
-            filter={
-                "property": JobOrdersRow.notion_id("telegram_key") or JobOrdersRow.notion_name("telegram_key"),
-                "rich_text": {"equals": telegram_key},
-            },
-        )
+        query_filter = {
+            "property": JobOrdersRow.notion_id("telegram_key") or JobOrdersRow.notion_name("telegram_key"),
+            "rich_text": {"equals": telegram_key},
+        }
+        rows = self._notion.query_data_source(self._source, filter=query_filter, freshness=freshness)
+        if not rows and freshness == "mirror" and last_read_from_mirror():
+            rows = self._notion.query_data_source(self._source, filter=query_filter, freshness="live")
         return self._read(rows[0]) if rows else None
 
-    def find_all_by_telegram_key(self, telegram_key: str) -> tuple[JobOrder, ...]:
+    def find_all_by_telegram_key(self, telegram_key: str, *, freshness: Freshness = "mirror") -> tuple[JobOrder, ...]:
         """Every Job Order whose Telegram Key is exactly `telegram_key`, oldest first, without bodies.
 
         More than one means the key was written twice; the caller decides what to do about it.
         """
-        rows = self._client.query_data_source(
+        query_filter = {
+            "property": JobOrdersRow.notion_id("telegram_key") or JobOrdersRow.notion_name("telegram_key"),
+            "rich_text": {"equals": telegram_key},
+        }
+        sorts = [{"timestamp": "created_time", "direction": "ascending"}]
+        rows = self._notion.query_data_source(
             self._source,
-            filter={
-                "property": JobOrdersRow.notion_id("telegram_key") or JobOrdersRow.notion_name("telegram_key"),
-                "rich_text": {"equals": telegram_key},
-            },
-            sorts=[{"timestamp": "created_time", "direction": "ascending"}],
+            filter=query_filter,
+            sorts=sorts,
+            freshness=freshness,
         )
+        if not rows and freshness == "mirror" and last_read_from_mirror():
+            rows = self._notion.query_data_source(
+                self._source,
+                filter=query_filter,
+                sorts=sorts,
+                freshness="live",
+            )
         return tuple(self._order(JobOrdersRow.from_page(page), page) for page in rows)
 
-    def list(self, *, oldest_first: bool = False) -> tuple[JobOrder, ...]:
+    def list(self, *, oldest_first: bool = False, freshness: Freshness = "mirror") -> tuple[JobOrder, ...]:
         """Every Job Order that is not trashed or archived, without bodies; `oldest_first` sorts by creation."""
         sorts = [{"timestamp": "created_time", "direction": "ascending"}] if oldest_first else None
-        pages = self._client.query_data_source(self._source, sorts=sorts)
+        pages = self._notion.query_data_source(self._source, sorts=sorts, freshness=freshness)
         return tuple(self._order(JobOrdersRow.from_page(page), page) for page in pages if is_live(page))
 
     def create(self, fields: Mapping[str, Any], *, t6_id: str | None = None) -> JobOrder | Rejected | Ambiguous:
@@ -131,7 +144,13 @@ class JobOrders:
         if t6_id:
             from t6.notion.jo_projection import projection_ids
             t6_property, _ = projection_ids()
-        saved = create_row(self._client, JobOrdersRow, self._source, values, extra_properties={t6_property: {"rich_text": [{"text": {"content": t6_id}}]}} if t6_id else None)
+        saved = create_row(
+            self._notion,
+            JobOrdersRow,
+            self._source,
+            values,
+            extra_properties={t6_property: {"rich_text": [{"text": {"content": t6_id}}]}} if t6_id else None,
+        )
         if isinstance(saved, (Rejected, Ambiguous)):
             return saved
         body = fields.get("source_text")
@@ -139,12 +158,12 @@ class JobOrders:
             failed = self._write_body(saved.page_id, str(body))
             if failed is not None:
                 return failed
-        return self.get(saved.page_id)
+        return self.get(saved.page_id, freshness="live")
 
     def ensure_body(self, page_id: str, text: str) -> Ambiguous | None:
         """Finish an interrupted body write without appending the same body twice."""
         try:
-            held = _body_text(self._client.list_block_children(page_id))
+            held = _body_text(self._notion.list_block_children(page_id, freshness="live"))
         except NotionError as error:
             return Ambiguous("readback_failed", str(error), page_id)
         expected = withhold(text).text
@@ -157,8 +176,9 @@ class JobOrders:
     def _write_body(self, page_id: str, text: str) -> Ambiguous | None:
         expected = withhold(text).text
         try:
-            self._client.append_block_children(page_id, _blocks(text))
-            saved = _body_text(self._client.list_block_children(page_id))
+            with self._notion.open_write_client() as client:
+                client.append_block_children(page_id, _blocks(text))
+            saved = _body_text(self._notion.list_block_children(page_id, freshness="live"))
         except NotionError as error:
             reason = error.code if error.code in ("timeout", "network_error") else "readback_failed"
             return Ambiguous(reason, f"the page was created but its body was not saved: {error}", page_id)  # type: ignore[arg-type]
@@ -167,7 +187,7 @@ class JobOrders:
         return None
 
     def _read(self, page: JSON) -> JobOrder:
-        body = _body_text(self._client.list_block_children(str(page["id"])))
+        body = _body_text(self._notion.list_block_children(str(page["id"]), freshness="live"))
         return self._order(JobOrdersRow.from_page(page), page, body)
 
     def _order(self, row: JobOrdersRow, page: JSON, body: str | None = None) -> JobOrder:

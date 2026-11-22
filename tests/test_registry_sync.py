@@ -6,6 +6,7 @@ fake Notion. No test opens a connection.
 
 from datetime import datetime, timezone
 from typing import Any
+import json
 import uuid
 
 from test_registry_codes import CodesTestCase
@@ -202,7 +203,7 @@ class ProjectionTests(SyncTestCase):
         self.drain()
         # The registry commits a change, then the server dies before it queues the job.
         self.registry.set_code(project["id"], "ABC", actor="writer", idempotency_key="crash", expected_revision=1)
-        self.assertIsNone(self.queue.claim("main", 1))
+        self.assertIsNone(self.queue.claim("main", 1, ["registry.sync"]))
         self.start()
         self.assertEqual(self.drain(), 1)
         self.assertEqual(self.shown(page), (project["id"], "ABC", "out"))
@@ -274,6 +275,12 @@ class ReconciliationTests(SyncTestCase):
         self.assertEqual(self.items(), [])
         self.assertEqual(codec.select(self.notion.page(page)["properties"]["Status"]), "Delivered")
         self.assertEqual(self.read(project)["revision"], 2 - 1)
+
+    def test_a_new_project_queues_a_privacy_registry_rebuild_with_no_name_in_it(self) -> None:
+        self.new("ABC", "in")
+        job = self.queue.claim("main", 60, ["privacy_registry.rebuild"])
+        assert job is not None
+        self.assertEqual(job.payload, {})
 
     def test_a_webhook_that_arrives_before_the_sync_is_not_a_conflict(self) -> None:
         page = self.page()

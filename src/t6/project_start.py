@@ -35,6 +35,7 @@ from typing import Any
 from t6.approval import Approvals
 from t6.bay import BookingStore
 from t6.deliverable import DeliverableStore
+from t6.domain.events import JobKind
 from t6.deliverable_templates import TEMPLATES
 from t6.ids import EntityKind, T6Id
 from t6.media import MediaStore
@@ -471,4 +472,5 @@ class ProjectStartStore:
             db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
             db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(result)))
             db.execute("UPDATE project_starts SET state='applied', reason=NULL WHERE idempotency_key=?", (key,))
+            InternalJobQueue(self.registry, clock=lambda: now).submit(QUEUE, JobKind.PRIVACY_REGISTRY_REBUILD.value, key, {}, db=db)
         return Done(result={'state': 'applied', **result})

@@ -140,8 +140,14 @@ def find_forms(reader: Any, registry: SqliteProjectRegistry, inputs: Any) -> tup
     wanted = jo_key(project_page_id(registry, inputs.project), int(digits))
     if wanted is None:
         return ()
-    return tuple(o for o in reader.list(oldest_first=True)
-                 if o.project_id and (found := parse_number(o.number)) is not None and jo_key(normalize_page_id(o.project_id), int(found)) == wanted)
+    from t6.notion.source import last_read_from_mirror
+
+    orders = tuple(o for o in reader.list(oldest_first=True)
+                   if o.project_id and (found := parse_number(o.number)) is not None and jo_key(normalize_page_id(o.project_id), int(found)) == wanted)
+    if not orders and last_read_from_mirror():
+        orders = tuple(o for o in reader.list(oldest_first=True, freshness='live')
+                       if o.project_id and (found := parse_number(o.number)) is not None and jo_key(normalize_page_id(o.project_id), int(found)) == wanted)
+    return orders
 
 
 class JobOrderStore:

@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import html
 import time
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from t6.domain.events import JsonValue
 from t6.media import MediaStore, active_links
@@ -59,6 +59,7 @@ from t6.registry import (
 if TYPE_CHECKING:  # t6.frameio imports t6.server, which imports this package, so the names are only for the checker
     from t6.frameio.model import FrameioProject
     from t6.frameio.requests import Failed
+    from t6.project_start import ProjectStartStore
 
 __all__ = ["Button", "Card", "OperatorService", "TapResult", "PREFIX"]
 
@@ -74,8 +75,8 @@ MIN_ID_ENDING = 4
 """A search matches the end of a T6 ID only from this many characters, so a short code search lists no chance matches."""
 FRAMEIO_COORDINATOR_RULE = "permission:coordinator"
 """Who may pick a show on the card that waits for a Frame.io project's link."""
-_OPERATOR_ONLY = frozenset({"in", "out", "clr", "chg", "cclr", "bout"})
-"""The `manage` choices that change a Project's code or rotation: only a card made for an operator takes them."""
+_OPERATOR_ONLY = frozenset({"in", "out", "clr", "chg", "cclr", "bout", "pst", "stchk", "stcf", "sbk"})
+"""The `manage` choices that change a Project's code or rotation, or start it: only a card made for an operator takes them."""
 DEFAULT_TTL_SECONDS = 7 * 24 * 3600.0
 
 
@@ -494,6 +495,10 @@ class OperatorService:
             return self._list_frameio(action, "", 0)
         if stage in {"fio", "fio_search"}:
             return self._manage_frameio(action, choice, operator)
+        if stage == "start":
+            return self._manage_start(action, choice, operator)
+        if stage == "project" and choice == "pst":
+            return self._start_begin(action, operator)
         # The version goes up with every stage, so each step of one card has its own key.
         key = f"op:{action.token}:{action.version}:{choice}"
         if stage == "choose":
@@ -538,6 +543,70 @@ class OperatorService:
                 return self._done(action, {"outcome": "stale"})
             return self._enter(action, revision, actor, key, {"released": freed.project.id})
         return None
+
+    # -- Project Start (#540) ---------------------------------------------------------
+
+    def _start_person(self, operator: int) -> str | None:
+        """The active Person of this Telegram ID, who runs the Start; the card is operator-only, so the permission was checked."""
+        assert self._people is not None
+        with self._people.registry._transaction() as db:
+            row = db.execute("SELECT id FROM persons WHERE telegram_id = ? AND active = 1", (operator,)).fetchone()
+        return None if row is None else str(row[0])
+
+    def _start_store(self) -> "ProjectStartStore":
+        from t6.project_start import ProjectStartStore
+
+        assert self._people is not None
+        return ProjectStartStore(self._people.registry, self._people.tokens)
+
+    def _start_begin(self, action: Action, operator: int) -> TapResult:
+        """Queue the plan job of a Start of this Project with no Deliverables, Media or Bookings; the main worker builds the plan."""
+        person = self._start_person(operator) if self._people is not None else None
+        if person is None:
+            self._store.release(action.token)
+            self._store.reject("not_allowed", operator=operator, token=action.token, detail="no Person")
+            return TapResult(True, "rejected", action)
+        key = f"op:{action.token}:start"
+        values: dict[str, Any] = {"project": str(action.project_id), "deliverables": [], "media": [], "bookings": []}
+        queued = self._start_store().start(values, actor=person, idempotency_key=key)
+        from t6.verbs import Done
+
+        if not isinstance(queued, Done):
+            return self._done(action, {"outcome": "start_refused", "reason": getattr(queued, "reason", "not queued")})
+        params: dict[str, JsonValue] = {**action.params, "key": key, "job_id": int(str(queued.result["job_id"])), "state": "queued"}
+        return TapResult(True, "start_queued", self._store.advance(action.token, stage="start", params=params), changed=True)
+
+    def _manage_start(self, action: Action, choice: str, operator: int) -> TapResult | None:
+        params = action.params
+        if choice == "sbk":
+            moved = self._store.advance(action.token, stage="project", params={"revision": params["revision"]})
+            return TapResult(True, "project", moved, changed=True)
+        person = self._start_person(operator) if self._people is not None else None
+        if person is None or choice not in {"stchk", "stcf"}:
+            return None
+        from t6.verbs import Done, Preview, Refused
+
+        store, key = self._start_store(), str(params["key"])
+        if choice == "stchk":
+            found = store.job_result(int(str(params["job_id"])), actor=person)
+            if isinstance(found, Preview):
+                steps = [f"{step['step']}{' (by hand)' if step['kind'] == 'manual' else ''}" for step in found.plan["steps"]]
+                shown: dict[str, JsonValue] = {**params, "state": "ready", "token": found.token, "steps": [*steps]}
+                return TapResult(True, "start_ready", self._store.advance(action.token, stage="start", params=shown), changed=True)
+            if isinstance(found, Refused):
+                return self._done(action, {"outcome": "start_refused", "reason": found.reason})
+            assert isinstance(found, Done)
+            if found.result.get("state") == "pending":
+                self._store.release(action.token)
+                return TapResult(True, "start_pending", action)
+            return self._done(action, {"outcome": "start_requested", "state": str(found.result.get("state"))})  # a Start already made under this key
+        if params.get("state") != "ready":
+            return None
+        values: dict[str, Any] = {"project": str(action.project_id), "deliverables": [], "media": [], "bookings": []}
+        confirmed = store.confirm(values, actor=person, idempotency_key=key, token=str(params["token"]))
+        if isinstance(confirmed, Done):
+            return self._done(action, {"outcome": "start_requested", "approval_id": confirmed.result.get("approval_id")})
+        return self._done(action, {"outcome": "start_refused", "reason": getattr(confirmed, "reason", "not confirmed")})
 
     # -- Frame.io links (#272) --------------------------------------------------------
 
@@ -749,7 +818,7 @@ class OperatorService:
         if action is None:
             return None
         project = None if action.project_id is None else self._registry.get(action.project_id)
-        text, rows = _render(action, project, self._registry, self._frameio is not None)
+        text, rows = _render(action, project, self._registry, self._frameio is not None, self._people is not None)
         buttons = tuple(
             tuple(Button(label, f"{PREFIX}{token}:{choice}") for label, choice in row) for row in rows
         )
@@ -796,7 +865,7 @@ def _name(project: RegisteredProject) -> str:
 
 
 def _render(
-    action: Action, project: RegisteredProject | None, registry: ProjectRegistry, frameio: bool = False
+    action: Action, project: RegisteredProject | None, registry: ProjectRegistry, frameio: bool = False, can_start: bool = False
 ) -> tuple[str, list[list[tuple[str, str]]]]:
     if action.kind == "frameio_link":
         return _render_frameio_link(action, registry)
@@ -808,11 +877,11 @@ def _render(
             return head + '\nChoose a reason:', [[('Changes requested', 'changes'), ('Requirements not met', 'requirements')]]
         return head + '\nGrant this Approval?', [[('Grant', 'grant'), ('Deny', 'deny')]]
     if action.kind == "manage":
-        return _render_manage(action, project, registry, frameio)
+        return _render_manage(action, project, registry, frameio, can_start)
     if action.kind == "unbound_page" and project is not None and (
         action.stage in {"code", "conflict"} or (action.result or {}).get("outcome") not in {"registered", "bound", None}
     ):
-        return _render_manage(action, project, registry, frameio)  # registered on this card, now being given a code
+        return _render_manage(action, project, registry, frameio, can_start)  # registered on this card, now being given a code
     label = html.escape(str(action.params.get("label") or "(untitled)"))
     result = action.result or {}
     outcome = str(result.get("outcome", ""))
@@ -863,7 +932,7 @@ def _button(project: RegisteredProject) -> str:
 
 
 def _render_manage(
-    action: Action, project: RegisteredProject | None, registry: ProjectRegistry, frameio: bool = False
+    action: Action, project: RegisteredProject | None, registry: ProjectRegistry, frameio: bool = False, can_start: bool = False
 ) -> tuple[str, list[list[tuple[str, str]]]]:
     params, result = action.params, action.result or {}
     if action.state == "done":
@@ -899,6 +968,8 @@ def _render_manage(
     head = f"<b>Project</b> {_identity(project)}"
     if action.stage in {"fio", "fio_search"}:
         return _render_frameio_list(action, head)
+    if action.stage == "start":
+        return _render_start(params, head)
     if action.stage == "code":
         lines = [head]
         if action.kind == "unbound_page":
@@ -943,7 +1014,20 @@ def _render_manage(
     change = [("Change code", "chg")]
     if project is not None and project.code:
         change.append(("Clear code", "clr"))
-    return text, rows + [change] + link + [[("Close", "skip")]]
+    return text, rows + [change] + ([[("Start Project", "pst")]] if can_start else []) + link + [[("Close", "skip")]]
+
+
+def _render_start(params: Mapping[str, JsonValue], head: str) -> tuple[str, list[list[tuple[str, str]]]]:
+    """The Project Start steps of one card: the plan is being built, then its steps and Confirm start."""
+    lines = [head, "<b>Project Start</b>"]
+    if params.get("state") == "ready":
+        steps = params.get("steps")
+        lines.append("The plan, with no Deliverables, Media or Bookings (add them with the <code>project start</code> verb):")
+        lines += [f"• {html.escape(str(step))}" for step in (steps if isinstance(steps, list) else [])]
+        lines.append("Confirming asks for the Project Start Approval. Nothing else is applied until it is granted.")
+        return "\n".join(lines), [[("Confirm start", "stcf")], [("Back", "sbk")]]
+    lines.append("The plan is being built. Tap Check plan in a moment.")
+    return "\n".join(lines), [[("Check plan", "stchk")], [("Back", "sbk")]]
 
 
 def _render_managed(
@@ -972,6 +1056,8 @@ def _render_managed(
         "skipped": "Closed. Nothing changed.",
         "stale": "The Project changed since this card was sent. Nothing changed.",
         "expired": "This card expired. Nothing changed.",
+        "start_requested": "Project Start requested. The Approval card follows; nothing else is applied until it is granted.",
+        "start_refused": f"Not started: {html.escape(str(result.get('reason', '')))}",
     }
     lines.update(_frameio_lines(result, registry))
     line = lines.get(outcome, html.escape(outcome))
