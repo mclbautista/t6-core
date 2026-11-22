@@ -4,8 +4,14 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.19] - 2026-11-22
+
+Guest reviewers' names in the Frame.io review message, and a longer CLI wait for `concern scan`. No migration: the schema stays at 49.
+
 ### Fixed
 
+- The Frame.io worker fetches a share page as `t6-frameio-worker`: Frame.io answered Python's default User-Agent with a bare 403 page, so a guest's name was never read (#545).
+- A guest's name now comes from the comments Frame.io's share GraphQL API returns (`GetShareCommentsByAsset`, `owner.name`), unlocked with the share's passphrase from the v4 share object. The unlock call is a best guess until it is captured (#602); any failure keeps "A guest" (#545).
 - `t6 concern scan` from the CLI no longer gives up after 10 s with `unavailable: timed out` on a Project with many new PM Notes lines. The CLI now waits 600 s for `concern scan`, and `T6_API_TIMEOUT_SECONDS` sets the wait for every CLI call. A timed-out call names that setting. The API had kept scanning after the CLI left (#596).
 - The concern scan log line counts the Projects in rotation it skipped (no coordinator, or notes that could not be read) as `skipped=N` (#596).
 
