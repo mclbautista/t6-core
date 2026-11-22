@@ -915,7 +915,7 @@ def main(
         entry = next(v for v in verbs.VERBS if (v.noun, v.verb) == pair)
         if entry.local_only:
             return cli_jo.run(args, open_notion) if entry.noun == "jo" else _cameras(args, open_notion)
-        from t6.client import APIError, Client, Unavailable
+        from t6.client import APIError, Client, Unavailable, cli_timeout
         values = {name: getattr(args, name, None) for name in entry.input_model.model_fields}
         if pair == ('camera', 'enrich'):
             try:
@@ -937,7 +937,7 @@ def main(
             values = {name: getattr(args, name, None) for name in model.model_fields}
         inputs = model.model_validate(values)
         try:
-            outcome = Client().call(entry.noun, entry.verb, inputs)
+            outcome = Client(timeout=cli_timeout(*pair)).call(entry.noun, entry.verb, inputs)
         except APIError as error:
             outcome = verbs.Refused(rule="api", reason=str(error))
         if isinstance(outcome, Unavailable):

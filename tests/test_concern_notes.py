@@ -184,16 +184,18 @@ class ConcernAutoScanTests(ConcernNotesTests):
         with self.registry._transaction() as db:
             db.execute("UPDATE projects SET rotation = 'in' WHERE id = ?", (self.project,))
         notes = Done(result={'lines': [{'text': 'Waiting on client', 'as_of': '2026-11-01'}]})
-        with patch.object(api, '_coordinators', return_value=set()), patch.object(api, '_typed_read', return_value=notes):
-            self.assertEqual(api.scan_concerns(), 0)
-        answer = {'choice': 'new', 'quote': 'Waiting on client', 'waiting_on': 'client'}
         import contextlib
         import io
+        err = io.StringIO()
+        with patch.object(api, '_coordinators', return_value=set()), patch.object(api, '_typed_read', return_value=notes), contextlib.redirect_stderr(err):
+            self.assertEqual(api.scan_concerns(), 0)
+        self.assertEqual(err.getvalue(), 't6.server: concern scan projects=0 skipped=1 raised=0 continued=0 announced=0\n')  # counted, never silent (#596)
+        answer = {'choice': 'new', 'quote': 'Waiting on client', 'waiting_on': 'client'}
         err = io.StringIO()
         with patch.object(api, '_coordinators', return_value={'coordinator'}), patch.object(api, '_typed_read', return_value=notes), patch('t6.concern_task.classify', return_value=answer), contextlib.redirect_stderr(err):
             self.assertEqual(api.scan_concerns(), 1)
         self.assertEqual(len(ConcernScanner(self.store).changes(self.project, '2026-01-01')), 1)
-        self.assertEqual(err.getvalue(), 't6.server: concern scan projects=1 raised=1 continued=0 announced=0\n')
+        self.assertEqual(err.getvalue(), 't6.server: concern scan projects=1 skipped=0 raised=1 continued=0 announced=0\n')
 
     def test_a_refused_llm_run_stops_the_whole_scan_after_one_call(self) -> None:
         # A refusal of the request itself holds for every line; re-sending each line made 51k refused calls on Sixto (#504).

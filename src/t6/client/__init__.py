@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import secrets
 from dataclasses import dataclass
+from collections.abc import Mapping
 from typing import Any, cast
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -32,6 +34,24 @@ from t6.verbs import (
     PersonGetInput, PersonProjectRoleInput, PersonPermissionInput, PersonRebindInput, PersonShiftInput, PersonClassifyInput,
     PersonTelegramInput, ProjectChatInput, ProjectHoldInput, ProjectResolveInput, ProjectResumeInput, ProjectStartInput,
 )
+
+
+# A `concern scan` makes one llm run call per new PM Notes line inside one request, so 10 s is too short (#596).
+SLOW_VERB_SECONDS = {('concern', 'scan'): 600.0}
+
+
+def cli_timeout(noun: str, verb: str, environ: Mapping[str, str] = os.environ) -> float:
+    """Seconds the CLI waits for the API: T6_API_TIMEOUT_SECONDS when set, else 10 (600 for `concern scan`)."""
+    text = environ.get('T6_API_TIMEOUT_SECONDS', '').strip()
+    if not text:
+        return SLOW_VERB_SECONDS.get((noun, verb), 10.0)
+    try:
+        seconds = float(text)
+    except ValueError:
+        seconds = 0.0
+    if not (math.isfinite(seconds) and seconds > 0):
+        raise SystemExit(f'T6_API_TIMEOUT_SECONDS must be a positive number of seconds, not {text!r}')
+    return seconds
 
 
 @dataclass(frozen=True)
@@ -115,8 +135,8 @@ class Client:
             raise APIError(f'API returned HTTP {error.code}: {error.read().decode(errors="replace")}', error.code) from error
         except (URLError, TimeoutError, OSError) as error:
             reason = str(error)
-            if self.mcp and isinstance(getattr(error, 'reason', error), TimeoutError):
-                reason += f' after {self.timeout:g} s; raise T6_MCP_TIMEOUT_SECONDS'
+            if isinstance(getattr(error, 'reason', error), TimeoutError):
+                reason += f" after {self.timeout:g} s; raise {'T6_MCP_TIMEOUT_SECONDS' if self.mcp else 'T6_API_TIMEOUT_SECONDS'}"
             return Unavailable(reason, key)
 
     def call(self, noun: str, verb: str, inputs: BaseModel) -> Result:

@@ -3410,9 +3410,9 @@ def run(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
               LegacyDepartmentsInput(data_sources=args.data_sources, include_misc=args.include_misc) if entry.handler is departments and args.data_sources else
               entry.input_model.model_validate({name: getattr(args, name) for name in entry.input_model.model_fields}))
     assert entry.handler is not None
-    from t6.client import APIError, Client, Unavailable
+    from t6.client import APIError, Client, Unavailable, cli_timeout
     try:
-        outcome = Client().call(entry.noun, entry.verb, inputs)
+        outcome = Client(timeout=cli_timeout(entry.noun, entry.verb)).call(entry.noun, entry.verb, inputs)
     except APIError as error:
         outcome = Refused(rule="api", reason=str(error))
     if isinstance(outcome, Unavailable):
