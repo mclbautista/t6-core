@@ -78,7 +78,11 @@ class JobOrders:
 
     def get(self, page_id: str, *, freshness: Freshness = "mirror") -> JobOrder:
         """The Job Order on a page, with its body."""
-        return self._read(self._notion.retrieve_page(page_id, freshness=freshness))
+        return self.from_page(self._notion.retrieve_page(page_id, freshness=freshness))
+
+    def from_page(self, page: JSON) -> JobOrder:
+        """The Job Order on a page the caller already retrieved, with its body (one more read, live)."""
+        return self._read(page)
 
     def find_by_telegram_key(self, telegram_key: str, *, freshness: Freshness = "mirror") -> JobOrder | None:
         """The Job Order whose Telegram Key is exactly `telegram_key`, or None. The first one, if several."""
@@ -130,6 +134,17 @@ class JobOrders:
         An unknown field raises TypeError. A body that could not be saved,
         or does not read back as written, is `Ambiguous`: the page exists.
         """
+        saved = self.insert(fields, t6_id=t6_id)
+        if isinstance(saved, (Rejected, Ambiguous)):
+            return saved
+        return self.get(saved.page_id, freshness="live")
+
+    def insert(self, fields: Mapping[str, Any], *, t6_id: str | None = None) -> JobOrdersRow | Rejected | Ambiguous:
+        """`create` without the final full read: the row as the create's own read-back saw it.
+
+        The properties and the body are checked as in `create`. For a caller that needs only
+        the page ID and the row, such as the `jo.sync` projection (#591).
+        """
         allowed = {*FIELDS, *RELATIONS, "project_id", "source_text"}
         unknown = sorted(set(fields) - allowed)
         if unknown:
@@ -158,7 +173,7 @@ class JobOrders:
             failed = self._write_body(saved.page_id, str(body))
             if failed is not None:
                 return failed
-        return self.get(saved.page_id, freshness="live")
+        return saved
 
     def ensure_body(self, page_id: str, text: str) -> Ambiguous | None:
         """Finish an interrupted body write without appending the same body twice."""

@@ -65,6 +65,7 @@ class JobOrderProjection:
             return {'skipped': 'completed or missing intent'}
         jo_id = state['jo_id']
         page = state['page_id']
+        created = None  # the row this run created, already read back with its body (#591)
         if not page and state['operation'] == 'create':
             matches = self.notion.query_data_source(self.data_source, filter={'property': t6_id, 'rich_text': {'equals': jo_id}}, freshness='live')
             if len(matches) > 1:
@@ -86,7 +87,7 @@ class JobOrderProjection:
                     if isinstance(fields.get(name), str):
                         raw = fields[name]
                         fields[name] = datetime.fromisoformat(raw) if 'T' in raw or ' ' in raw else date.fromisoformat(raw)
-                saved = JobOrders(self.notion, self.data_source).create(fields, t6_id=jo_id)
+                saved = JobOrders(self.notion, self.data_source).insert(fields, t6_id=jo_id)
                 if isinstance(saved, Rejected):
                     self.registry.report_jo_sync(intent_id, error=str(saved))
                     raise Refused(f'Notion create needs review: {saved}')
@@ -98,16 +99,17 @@ class JobOrderProjection:
                     page = str(found[0]['id'])
                 else:
                     page = saved.page_id
+                    created = saved
         if not page:
             raise ValueError('Job Order page has not been created yet')
         body = state['fields'].get('source_text')
-        if body:
+        if body and created is None:
             failure = JobOrders(self.notion, self.data_source).ensure_body(page, str(body))
             if failure is not None:
                 self.registry.report_jo_sync(intent_id, page_id=page, error=str(failure))
                 raise Refused(f'Notion body needs review: {failure}')
         properties: dict[str, Any] = {t6_id: {'rich_text': [{'text': {'content': jo_id}}]}}
-        seen_status = JobOrdersRow.from_page(self.notion.retrieve_page(page, freshness='live')).status
+        seen_status = (created or JobOrdersRow.from_page(self.notion.retrieve_page(page, freshness='live'))).status
         seen_value = str(seen_status) if seen_status else None
         if 'status' in state['payload']:
             allowed = self.registry.projection(page, {'jo_status': seen_value}).get('allowed', {})
