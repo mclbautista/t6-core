@@ -87,9 +87,11 @@ class InternalJobQueue:
         return [_record(row) for row in rows]
 
     def finish(self, job_id: int, outcome: JsonValue, *, state: str = 'done', db: sqlite3.Connection | None = None) -> None:
-        """End a job with the outcome the caller reads back through `result`: `done` is status ok, `failed` is status failed; the lease is dropped."""
-        if state not in ('done', 'failed'):
-            raise ValueError('state must be done or failed')
+        """End a job with the outcome the caller reads back through `result`: `done` is status ok, `failed` and `dead` are status failed; the lease is dropped.
+
+        `dead` is a failure an operator must see: `dead` lists it (`queue failed`) and `dismiss` clears it."""
+        if state not in ('done', 'failed', 'dead'):
+            raise ValueError('state must be done, failed or dead')
         with self._within(db) as conn:
             conn.execute("UPDATE internal_jobs SET state = ?, result = ?, lease_token = NULL, lease_until = NULL WHERE id = ?",
                          (state, _stored('ok' if state == 'done' else 'failed', outcome), job_id))
