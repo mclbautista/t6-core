@@ -33,7 +33,10 @@ def build(notion: NotionSource, sources: dict[str, str]) -> dict[str, Any]:
 def write(path: Path, payload: dict[str, Any]) -> None:
     """Replace the file in one step, so a reader never sees half of it."""
     temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # names inside: owner only from the first byte
+    with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+        file.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    os.chmod(temporary, 0o600)  # a leftover .tmp keeps its old mode through O_CREAT
     os.replace(temporary, path)
 
 
