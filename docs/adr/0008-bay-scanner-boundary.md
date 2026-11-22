@@ -1,6 +1,7 @@
 # 8. The bay scanner boundary
 
-Date: 2026-11-22. Status: proposed. Source: #18, #375. Facts to confirm: #374.
+Date: 2026-11-22. Status: proposed. Source: #18, #375. Facts: #374, see
+`docs/research/bay-resolve-disk-library.md`.
 
 ## Context
 
@@ -43,9 +44,10 @@ otherwise.
    without changing the format.
    **Route: tailnet only.** The owner decided (2026-11-22) that the API stays
    tailnet-only and ADR 0006 does not change. A bay posts to the tailnet
-   listener that serves `/v1/`. **(confirm in #374)** Each bay is on the
-   tailnet. A bay that is not cannot report, and shows as "no report" until it
-   joins; no LAN route is added for it.
+   listener that serves `/v1/`. **Open: #374 found the pilot bay is NOT on
+   the tailnet** (no Tailscale at all), so it cannot reach the API. The route
+   for bays is an owner decision, and this decision is amended when it is
+   made. #376 and #379 wait for it.
 
 3. **Read-only guarantee.** The job never opens or starts Resolve. If a Resolve
    process is running, it scans nothing and reports "skipped, Resolve open" (a
@@ -54,9 +56,14 @@ otherwise.
    `mode=ro` and `immutable=1`. It deletes the copy when it is done, and it
    never writes inside the Resolve folders. A test proves the fixture folder is
    byte-for-byte unchanged after a scan. This follows ADR 0002 rule 10.
-   **(confirm in #374)** The disk database location and format (expected to be
-   one SQLite file per project under the user's Resolve Disk Database folder),
-   and whether a closed Resolve leaves lock files behind.
+   "Resolve is running" means a process whose executable is inside the
+   Resolve app bundle. Confirmed in #374 (Resolve 20.3.1): the library is
+   `~/Library/Application Support/Blackmagic Design/DaVinci Resolve/Resolve Project Library/Resolve Projects/Users/<user>/`,
+   one plain SQLite `Project.db` per project under nested `Projects/`
+   directories, and a closed Resolve leaves no lock, journal, `-wal` or `-shm`
+   files. The job reads `Project.db` only and never trusts the
+   `ProjectMetadataCache/Metadata.db` cache, which #374 found incomplete and
+   stale.
 
 4. **Identity: the serial, mapped by t6.fleet.** The report carries the
    machine's hardware serial number (`IOPlatformSerialNumber`). The API ties it
@@ -75,10 +82,16 @@ otherwise.
    than 3 days as stale, and a Bay with no report as "no report", never as "no
    copies".
 
-6. **What "matches the server" means: open until #374.** #374 decides which
-   fields can honestly be compared (internal project ID, modified time, a
-   content fingerprint, timeline count). The drift report (#380) implements
-   that definition and nothing looser.
+6. **What "matches the server" means.** Per #374, a local copy reports
+   `SM_Project.SM_Project_id` (UUID), `SM_Project.ProjectName`, its folder
+   path, `SM_Project.LastModTimeInSecs` and its `Sm2Timeline` count. The drift
+   report (#380) compares identity by UUID, then modified time and timeline
+   count, and calls a copy "same identity, newer/older/equal", never
+   "identical": none of these fields proves the same content. A file hash is
+   not used because autosave changes it. **Still to confirm:** that the
+   project server stores the same UUID for the same project (a read-only
+   check on the server). Until then, #380 matches by folder path and name and
+   says so.
 
 7. **Timeline stamps: only if readable.** Per `docs/research/resolve-marker-custom-data.md`,
    markers sit in binary blobs on the project server. Whether a stamp can be
