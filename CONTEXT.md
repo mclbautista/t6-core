@@ -129,17 +129,26 @@ the times from the Person's shift pattern. Booking verbs (`bay book`,
 ## Timelines
 
 A **Timeline** (`t6t_`) is a DaVinci Resolve sequence timeline known by its
-**stamp**: the `t6t_` ID a person writes by hand into the custom data of a
-marker at the timeline's first frame. The stamp is the identity; the Resolve
-name is only a label, so editors may rename and back up freely. Writing the
-stamp is a Resolve write and stays manual. Nothing in T6 writes to Resolve.
+**stamp**: the `t6t_` ID in the custom data of a marker at the timeline's
+first frame. The stamp is the identity; the Resolve name is only a label, so
+editors may rename and back up freely. T6 writes the stamp by code, through the
+Resolve worker; no person types it. This is the one Resolve write T6 makes
+(ADR 0002, rule 10).
 `timeline link` without `--stamp` creates the stamp: the preview shows the new
-`t6t_` ID (the same one for the same key), the confirm records exactly it, and
-the person then writes it into the marker by hand. A Timeline that already
+`t6t_` ID (the same one for the same key), and the confirm records exactly it
+as **pending** and queues a `resolve.stamp` job. The Resolve worker writes the
+marker and reads it back; a success marks the Timeline **stamped** (verified),
+and a failure leaves it pending with the reason. A Timeline that already
 carries a stamp is not given a new one (pass `--stamp`), except that at confirm a timeline
-carrying exactly the stamp the preview showed is accepted (the person has written it
-by hand); a retried confirm with the same key returns the first result. `timeline list` refuses a
+carrying exactly the stamp the preview showed is accepted; a retried confirm with the same key returns the first result. `timeline list` refuses a
 Project that is not registered.
+
+- **Resolve worker**: the one process that holds Resolve scripting access and
+  the only Resolve writer. It runs on one Mac with Resolve Studio and claims
+  `resolve.stamp` jobs through the t6 API; it never opens the t6 database. It
+  writes only the stamp marker (add, update, read back) and never deletes a
+  marker. Before writing it refuses a timeline that carries a different stamp,
+  or a stamp already on another timeline of the project.
 
 - A Timeline records its `t6t_` ID (the stamp), its Resolve project (the
   Project's active resolve-project Media location, on the project server) and
@@ -147,8 +156,9 @@ Project that is not registered.
   in other Resolve projects are not recorded.
 - **One Timeline per stamp.** Linking a stamp already linked to another Project
   or Resolve project is refused, and so is a stamp found on two timelines of the
-  Resolve project (a duplicate keeps the same stamp). The fix, re-stamping the
-  copy, is manual. Linking the same stamp again for the same Resolve project
+  Resolve project (a duplicate keeps the same stamp). The fix is re-stamping
+  by code: the copy that is not the canonical Timeline gets a new `t6t_` ID
+  through a previewed verb, and the Resolve worker writes it. Linking the same stamp again for the same Resolve project
   records nothing new, whatever the name now is.
 - A Resolve unique id is not the key: it changes on duplicate and import.
 - A **Version** may name its source Timeline (`version add --timeline`); the
@@ -206,7 +216,8 @@ for Bookings.
   per Project) apply. A retry after a failed step resumes without repeating
   the steps already done.
 - **Manual steps** the plan lists and does not do: creating the NAS folders, the
-  Resolve project, the Resolve timelines with their stamps (manual stamping).
+  Resolve project and the Resolve timelines. Their stamps are written by code
+  when each timeline is linked (`timeline link`).
   The apply records each in Activity (`project_start_manual`) with `project_start`.
 - **Frame.io step**: the apply asks the Frame.io worker (the only token holder)
   through the `frameio` queue for one Frame.io project and one folder per

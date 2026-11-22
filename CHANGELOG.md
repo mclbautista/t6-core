@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Changed
+
+- ADR 0002 rule 10 allows one Resolve write: the Resolve worker writes the `t6t_` stamp marker on a timeline's first frame, so stamping is no longer manual (#578).
+
 ## [0.6.15] - 2026-11-22
 
 The Notion mirror, one privacy registry, human-only Concern snooze, no more Notion-edit pings, Frame.io review details and Drive catalog snapshots. Migration 47 takes the schema from 46 to 47 (Drive `qr_code` and the catalog snapshot tables); it is not forward-only.
