@@ -114,6 +114,18 @@ tapper. If another show holds it by then, nothing changes and the card names the
 sends `/project` in their own chat and gets the card with only this button (rule `role:staff`);
 the code and rotation buttons are refused on such a card.
 
+**Start Project (#540).** A Project's card for an operator has **Start Project** when the API has people
+configured. It is refused for anyone without `permission:operator`, in any chat. The tap runs
+`project start` for the card's Project as the tapper's Person, with no Deliverables, Media or Bookings
+(add those with the `project start` verb before confirming, or use the verb from the start): it queues the plan
+job and the card says so (`start_queued`). **Check plan** reads the job: `start_pending` while the main worker has
+not built it, `start_ready` with the steps and **Confirm start**, or `start_refused` with the reason (for
+example the Project already started, or a Start waits for its Approval). **Confirm start** requests the Approval
+`project start` (`start_requested`) and the API then offers the Approval's own card as for any Approval, with
+the rule `permission:operator`. Nothing else is applied until it is granted; granting queues the apply job, and
+applying a Start queues `privacy_registry.rebuild` (see `docs/api-read-verbs.md`). **Back** returns to the
+Project card. Examples use the synthetic code `EX01`.
+
 **A Frame.io project with no show.** When review activity arrives for a Frame.io project no
 show holds, the main worker holds it and asks (`POST /operator/offers`,
 `{"kind": "frameio_link", "frameio_project_id": ...}`) for one card per Frame.io project, with
