@@ -302,7 +302,7 @@ def _migrate_bays(args: argparse.Namespace, open_notion: Callable[..., Any]) -> 
 def _privacy_registry(args: argparse.Namespace, open_notion: Callable[..., Any]) -> int:
     import re
     from t6.notion import NotionError
-    from t6.notion.reads import ContactReader, ProjectReader, StudioReader
+    from t6.privacy_build import build, write
     token = os.environ.get(TOKEN_VARIABLE)
     if not token:
         return _fail(f"set {TOKEN_VARIABLE} to a Notion integration token")
@@ -311,31 +311,12 @@ def _privacy_registry(args: argparse.Namespace, open_notion: Callable[..., Any])
         if not sources.get("studios") or not sources.get("projects"):
             return _fail("--data-sources needs 'studios' and 'projects' entries")
         notion = _notion_source(open_notion, token)
-        studios = StudioReader(notion, sources["studios"]).names()
-        projects = ProjectReader(notion, sources["projects"]).list()
-        contacts = ContactReader(notion, sources["contacts"]).list() if sources.get("contacts") else ()
-
-        def clean(name: str) -> str:
-            return " ".join(name.split())
-
-        people: dict[str, dict[str, Any]] = {clean(name): {"name": clean(name)} for name in studios if name.strip()}
-        for contact in contacts:
-            if contact.name.strip() and clean(contact.name) not in people:
-                people[clean(contact.name)] = {"name": clean(contact.name), "aliases": [clean(a) for a in contact.aliases if a.strip()],
-                                               "handles": [contact.telegram_handle] if contact.telegram_handle else []}
-        shows: dict[str, dict[str, Any]] = {}
-        for project in projects:
-            if project.name.strip() and clean(project.name) not in shows:
-                shows[clean(project.name)] = {"name": clean(project.name), **({"code": project.project_code} if project.project_code else {})}
-        payload = {"people": list(people.values()), "projects": list(shows.values()), "ids": []}
-        names = [*people, *shows]
-        text = json.dumps(payload, ensure_ascii=False)
+        payload = build(notion, sources)
+        names = [*(person["name"] for person in payload["people"]), *(project["name"] for project in payload["projects"])]
         if args.output:
-            temporary = args.output.with_name(args.output.name + ".tmp")
-            temporary.write_text(text + "\n", encoding="utf-8")
-            os.replace(temporary, args.output)  # a reader never sees half a file
+            write(args.output, payload)
         else:
-            print(text)
+            print(json.dumps(payload, ensure_ascii=False))
     except (OSError, ValueError, NotionError) as error:
         return _fail(str(error))
     print(f"{len(names)} names; {sum(len(name) < 4 for name in names)} shorter than 4 characters; "

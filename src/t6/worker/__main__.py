@@ -259,6 +259,17 @@ def configured_handlers(
 
         handlers[JobKind.NOTION_PAGE_CHANGED.value] = mirror_page_changed
         handlers[JobKind.NOTION_MIRROR_REFRESH.value] = mirror_refresh
+    privacy_file, data_sources_file = environ.get("T6_READ_PRIVACY_REGISTRY"), environ.get("T6_READ_DATA_SOURCES")
+    if token and privacy_file and data_sources_file:
+        from t6.cli import read_data_source_configs
+        from t6.notion import NotionClient
+        from t6.notion.source import NotionSource
+        from t6.privacy_build import Rebuild
+
+        privacy_sources = {key: cfg.id for key, cfg in read_data_source_configs(Path(data_sources_file)).items()}
+        if privacy_sources.get("studios") and privacy_sources.get("projects"):
+            rebuild = Rebuild(NotionSource(lambda: NotionClient(token)), privacy_sources, Path(privacy_file))
+            handlers[JobKind.PRIVACY_REGISTRY_REBUILD.value] = lambda job: rebuild(job)
     if gateway_url and gateway_secret:
         chat = _whole_number(environ, "T6_REVIEW_CHAT", required=True)
         topic = _whole_number(environ, "T6_REVIEW_TOPIC", required=False)

@@ -55,8 +55,15 @@ set; the `privacy_registry` entry in `T6_LLM_CONFIG` is then not used.
 `t6 health` shows the list under `api.privacy_registry`: `names` in use (people
 and projects),
 `age_seconds` of the file they came from, and `reload_failed` (a later file was
-refused). A Project or Studio added after the last rebuild is not masked until the
+refused). A Studio added after the last rebuild is not masked until the
 next rebuild; a growing `age_seconds` is the sign that the rebuild has stopped.
+
+A Project is added by itself: when a Project start is applied, and when a Project is registered or
+changed (`/project`, `project` verbs), the API queues a `privacy_registry.rebuild` job on the main
+queue. The main worker runs it when it has `T6_NOTION_TOKEN`, `T6_READ_PRIVACY_REGISTRY` and
+`T6_READ_DATA_SOURCES` (the same file path and data sources the API uses, so the worker needs the
+same volume), reads Notion and replaces the file in one step. The job holds no name, and its result
+and logs hold counts only. A main worker without those variables leaves the job queued.
 
 `departments` and `standing-cc` do not contain client names and do not require this file.
 

@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- A new or changed Project rebuilds `privacy_registry.json` by itself (#539). Applying a Project start, and registering or changing a Project, queue a `privacy_registry.rebuild` job with no name in it; the main worker rebuilds the file when it has `T6_NOTION_TOKEN`, `T6_READ_PRIVACY_REGISTRY` and `T6_READ_DATA_SOURCES`.
+
 ### Fixed
 
 - `machine sync` and `machine edit` no longer treat `Deco 203` as `Deco 202`: a row with exactly the machine's name (case and spaces folded) now wins, and ARD's `-NNN` suffix is ignored only when no row has the exact name. Found by the live `machine edit` test on 0.6.13, where every `Deco NNN` row matched every other.
