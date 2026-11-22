@@ -165,6 +165,7 @@ the verbs; the rules run in the API, and an app holds no Notion token or LLM key
 The sections below on the domain model, lookup, privacy, LLM, Notion and
 fleet modules describe what t6-core itself runs; an app does not import them. The rules are in
 [`docs/adr/0002-consumer-contract.md`](docs/adr/0002-consumer-contract.md).
+Tools meant for studio Macs ship as Munki packages (one shared `t6` base package with thin tool packages on top, scheduled via `launchd`, no secrets in packages; servers keep their own deploy): see [t6-munki-repo ADR 0013](https://github.com/mclbautista/t6-munki-repo/blob/main/docs/adr/0013-t6-tools-as-munki-packages.md).
 
 ## MCP server
 
