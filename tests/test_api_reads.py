@@ -1357,7 +1357,6 @@ class ReadTests(unittest.TestCase):
             calls,
             [
                 ('retrieve_page', self.jo['id'], 'live'),
-                ('retrieve_page', self.jo['id'], 'live'),
                 ('list_block_children', self.jo['id'], 'live'),
             ],
         )
@@ -1369,7 +1368,6 @@ class ReadTests(unittest.TestCase):
             calls,
             [
                 ('query_data_source', 'job_orders', 'live'),
-                ('retrieve_page', self.jo['id'], 'live'),
                 ('retrieve_page', self.jo['id'], 'live'),
                 ('list_block_children', self.jo['id'], 'live'),
             ],

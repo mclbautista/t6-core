@@ -81,7 +81,6 @@ LIVE_READ_ALLOWLIST: dict[tuple[str, str, str], str] = {
     ("server/verbs.py", "VerbAPI._typed_read", "list"): "Retry once against live Notion when a mirrored read finds no match.",
     ("server/verbs.py", "VerbAPI._typed_read", "find_all_by_telegram_key"): "Confirm live Job Order by Telegram key on jo get.",
     ("server/verbs.py", "VerbAPI._typed_read", "retrieve_page"): "Confirm live Job Order parent data source on jo get.",
-    ("server/verbs.py", "VerbAPI._typed_read", "get"): "Confirm live Job Order fields on jo get.",
     ("server/verbs.py", "VerbAPI._typed_read.blocks", "list_block_children"): "Read live Meeting Note block body (block bodies are not mirrored).",
 }
 
