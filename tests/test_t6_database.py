@@ -151,7 +151,7 @@ class MigrationTests(unittest.TestCase):
                     db.execute('INSERT INTO timelines VALUES (?, ?, ?, ?)', ('t6t_' + 'a' * 32, project.project.id, media, 'Ep1'))
             SqliteProjectRegistry(path)
             with closing(sqlite3.connect(path)) as db, db:
-                self.assertEqual(db.execute('SELECT stamp_state, stamp_reason FROM timelines').fetchall(), [('stamped', None)])
+                self.assertEqual(db.execute('SELECT stamp_state, stamp_reason, replaces, resolve_uuid FROM timelines').fetchall(), [('stamped', None, None, None)])
 
     def test_reopen_does_not_treat_media_audit_as_project_activity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

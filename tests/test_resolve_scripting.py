@@ -41,8 +41,11 @@ class FakeTimeline:
 
 
 class FakeProject:
-    def __init__(self, timelines: list[FakeTimeline]) -> None:
-        self.timelines = timelines
+    def __init__(self, timelines: list[FakeTimeline], name: str = 'show') -> None:
+        self.timelines, self.name = timelines, name
+
+    def GetName(self) -> str:
+        return self.name
 
     def GetTimelineCount(self) -> int:
         return len(self.timelines)
@@ -54,6 +57,8 @@ class FakeProject:
 class FakeManager:
     def __init__(self, projects: dict[str, FakeProject]) -> None:
         self.projects, self.locked, self.saves = projects, False, 0
+        self.current: FakeProject | None = None
+        self.closed: list[FakeProject] = []
         self.db, self.path = 'db1', ''
 
     def GetCurrentDatabase(self) -> dict[str, str]:
@@ -80,7 +85,18 @@ class FakeManager:
         return [ref.rsplit('/', 1)[1] for ref in self.projects if ref.rsplit('/', 1)[0] == self.path]
 
     def LoadProject(self, name: str) -> FakeProject | None:
-        return None if self.locked else self.projects[f'{self.path}/{name}']
+        if self.locked:
+            return None
+        self.current = self.projects[f'{self.path}/{name}']
+        return self.current
+
+    def GetCurrentProject(self) -> FakeProject | None:
+        return self.current
+
+    def CloseProject(self, project: FakeProject) -> bool:
+        self.closed.append(project)
+        self.current = None
+        return True
 
     def SaveProject(self) -> bool:
         self.saves += 1
@@ -155,6 +171,27 @@ class ScriptingTimelinesTests(unittest.TestCase):
     def test_restamp_of_a_timeline_that_is_not_a_duplicate_is_refused(self) -> None:
         self.assertEqual(self.adapter.stamp(REF, 'Ep1', OTHER, replaces=STAMP), StampFailure('Only a duplicate is re-stamped; no other timeline carries that stamp'))
         self.assertEqual(self.ep1.markers[0]['customData'], STAMP)
+
+    def test_the_canonical_timeline_is_never_restamped_even_renamed(self) -> None:
+        copy = FakeTimeline('u9', 'Ep1 copy', STAMP)
+        self.manager.projects[REF].timelines.append(copy)
+        self.ep1.name = 'Ep1 renamed'
+        self.assertEqual(self.adapter.stamp(REF, 'Ep1 renamed', OTHER, replaces=STAMP, canonical='u1'), StampFailure('That is the canonical Timeline; T6 does not re-stamp it'))
+        self.assertEqual((self.ep1.markers[0]['customData'], copy.markers[0]['customData'], self.manager.saves), (STAMP, STAMP, 0))
+        self.assertEqual(self.adapter.stamp(REF, 'u9', OTHER, replaces=STAMP, canonical='u1'), ResolveTimeline(uuid='u9', name='Ep1 copy', stamp=OTHER))
+
+    def test_closes_the_project_it_loaded_and_restores_the_database(self) -> None:
+        self.manager.db = 'db2'
+        self.assertEqual(self.adapter.stamp(REF, 'Ep2', OTHER), ResolveTimeline(uuid='u2', name='Ep2', stamp=OTHER))
+        self.assertEqual((self.manager.closed, self.manager.current, self.manager.db), ([self.manager.projects[REF]], None, 'db2'))
+        self.manager.db = 'db2'
+        self.assertEqual(self.adapter.read('db1/Shows/missing'), StampFailure('The Resolve project is missing'))
+        self.assertEqual((len(self.manager.closed), self.manager.db), (1, 'db2'))  # nothing loaded, nothing closed; the database is back
+
+    def test_a_project_already_open_is_left_open(self) -> None:
+        self.manager.current = self.manager.projects[REF]
+        self.adapter.timelines(REF)
+        self.assertEqual((self.manager.closed, self.manager.current), ([], self.manager.projects[REF]))
 
     def test_read_back_mismatch_is_a_failure_and_not_saved(self) -> None:
         self.ep2.drop_writes = True

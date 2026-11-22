@@ -1,5 +1,6 @@
 """Timeline link, restamp and list against the in-memory t6 database, a fake Resolve reader and a fake Resolve worker."""
 import json
+import time
 import unittest
 from typing import Any
 
@@ -9,7 +10,8 @@ from t6.ids import EntityKind, T6Id
 from t6.media import MediaStore
 from t6.preview import PreviewTokens
 from t6.registry import Registered
-from t6.resolve.stamp_jobs import ResolveStampJobs
+from t6.queue_dismiss import JobDismissals
+from t6.resolve.stamp_jobs import LEASE_EXPIRED, ResolveStampJobs
 from t6.resolve.testing import FakeTimelineReader
 from t6.resolve.timelines import ResolveTimeline
 from t6.timeline import TimelineStore
@@ -132,7 +134,7 @@ class TimelineTests(unittest.TestCase):
         done = self.store.restamp(values, actor='alice', idempotency_key='re', confirm=preview.token)
         assert isinstance(done, Done), done
         self.assertEqual((done.result['timeline_id'], done.result['stamp_state']), (new, 'pending'))
-        self.assertEqual(self.jobs()[1], {'project': self.project, 'resolve_project': RESOLVE_REF, 'timeline': 'Ep1 v1 copy', 'stamp': new, 'replaces': STAMP})
+        self.assertEqual(self.jobs()[1], {'project': self.project, 'resolve_project': RESOLVE_REF, 'timeline': 'Ep1 v1 copy', 'stamp': new, 'replaces': STAMP, 'canonical': 'u'})
         self.assertEqual(self.store.restamp(values, actor='alice', idempotency_key='re', confirm=preview.token), done)
         self.assertEqual(len(self.jobs()), 2)
         self.assertEqual({t['id']: t['stamp_state'] for t in self.store.list(self.project)}, {STAMP: 'stamped', new: 'pending'})
@@ -153,6 +155,97 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual(rule(project=self.register('q')), 'timeline_stamp')
         self.assertEqual(rule(timeline=' '), 'input')
         self.assertEqual(len(self.store.list(self.project)), 1)
+
+    def test_restamp_refuses_a_bad_project_and_an_inactive_resolve_project(self) -> None:
+        self.link('Ep1 v1', STAMP, 'one')
+        values = {'project': self.project, 'timeline': 'Ep1 v1 copy', 'stamp': STAMP}
+        bad = self.store.restamp({**values, 'project': 'nope'}, actor='alice')
+        assert isinstance(bad, Refused)
+        self.assertEqual(bad.rule, 'project')
+        self.registry.db.execute('UPDATE media_locations SET active=0 WHERE id=?', (self.resolve_media,))
+        inactive = self.store.restamp(values, actor='alice')
+        assert isinstance(inactive, Refused)
+        self.assertEqual(inactive.rule, 'resolve_project')
+
+    def test_restamp_refuses_the_canonical_by_its_verified_resolve_id_and_the_job_carries_that_id(self) -> None:
+        self.link('Ep1 v1', STAMP, 'one')
+        self.work()  # the fake worker reports Resolve ID 'u'
+        renamed = self.store.restamp({'project': self.project, 'timeline': 'u', 'stamp': STAMP}, actor='alice')
+        assert isinstance(renamed, Refused)
+        self.assertEqual(renamed.rule, 'timeline')
+        values = {'project': self.project, 'timeline': 'Ep1 v1 copy', 'stamp': STAMP}
+        preview = self.store.restamp(values, actor='alice', idempotency_key='re')
+        assert isinstance(preview, Preview), preview
+        self.assertIsInstance(self.store.restamp(values, actor='alice', idempotency_key='re', confirm=preview.token), Done)
+        self.assertEqual(self.jobs()[-1]['canonical'], 'u')
+
+    def test_a_failed_restamp_linked_again_still_replaces_the_duplicated_stamp(self) -> None:
+        self.link('Ep1 v1', STAMP, 'one')
+        self.work()
+        self.resolve.add(RESOLVE_REF, ResolveTimeline(uuid='u9', name='Ep1 v1 copy', stamp=STAMP))
+        values = {'project': self.project, 'timeline': 'Ep1 v1 copy', 'stamp': STAMP}
+        preview = self.store.restamp(values, actor='alice', idempotency_key='re')
+        assert isinstance(preview, Preview), preview
+        new = preview.plan['stamp']
+        self.assertIsInstance(self.store.restamp(values, actor='alice', idempotency_key='re', confirm=preview.token), Done)
+        self.work('Resolve is not running')
+        relinked = self.link('Ep1 v1 copy', new, 'again')  # the copy still carries the stamp it replaces
+        self.assertEqual(relinked.result['stamp_state'], 'pending')
+        self.assertEqual(self.jobs()[-1], {'project': self.project, 'resolve_project': RESOLVE_REF, 'timeline': 'Ep1 v1 copy', 'stamp': new, 'replaces': STAMP, 'canonical': 'u'})
+
+    def test_a_stamp_job_whose_worker_stopped_fails_its_timeline_and_is_never_run_again(self) -> None:
+        self.link('Ep1 v1', STAMP, 'one')
+        claim = ResolveStampJobs(self.registry).claim('resolve')
+        assert claim is not None
+        later = time.time() + 301  # the lease ran out: the worker stopped mid-job
+        self.registry._clock = lambda: later
+        self.assertEqual(self.state(STAMP), ('failed', LEASE_EXPIRED))
+        self.assertIsNone(ResolveStampJobs(self.registry).claim('resolve'))
+        self.assertEqual([j['job'] for j in JobDismissals(self.registry, self.tokens).failed()], [claim.job_id])
+        relinked = self.link('Ep1 v1', STAMP, 'again')
+        self.assertEqual((relinked.result['created'], relinked.result['stamp_state']), (False, 'pending'))
+        self.work()
+        self.assertEqual(self.state(STAMP), ('stamped', None))
+
+    def test_a_stamped_timeline_without_its_marker_is_not_verified(self) -> None:
+        self.link('Ep1 v1', STAMP, 'one')
+        self.work()
+        self.store.reader = FakeTimelineReader({RESOLVE_REF: [ResolveTimeline(uuid='u1', name='Ep1 v1', stamp=None)]})  # the marker is gone
+        refused = self.store.write({'project': self.project, 'timeline': 'Ep1 v1', 'stamp': STAMP}, actor='alice', idempotency_key='gone')
+        assert isinstance(refused, Refused), refused
+        self.assertEqual(refused.rule, 'stamp')
+
+    def test_linking_a_failed_timeline_again_without_a_stamp_keeps_its_stamp(self) -> None:
+        self.resolve.add(RESOLVE_REF, ResolveTimeline(uuid='u2', name='Unstamped', stamp=None))
+        values = {'project': self.project, 'timeline': 'Unstamped'}
+        preview = self.store.write(values, actor='alice', idempotency_key='gen')
+        assert isinstance(preview, Preview)
+        stamp = preview.plan['stamp']
+        self.assertIsInstance(self.store.write(values, actor='alice', idempotency_key='gen', confirm=preview.token), Done)
+        self.work('Resolve is not running')
+        again = self.store.write(values, actor='alice', idempotency_key='gen2')
+        assert isinstance(again, Preview), again
+        self.assertEqual(again.plan['stamp'], stamp)
+        done = self.store.write(values, actor='alice', idempotency_key='gen2', confirm=again.token)
+        assert isinstance(done, Done), done
+        self.assertEqual((done.result['created'], done.result['stamp_state']), (False, 'pending'))
+        self.assertEqual([t['id'] for t in self.store.list(self.project) if t['id'] != STAMP], [stamp])
+
+    def test_a_failed_timeline_linked_again_under_its_new_name_updates_the_label_with_audit(self) -> None:
+        self.resolve.add(RESOLVE_REF, ResolveTimeline(uuid='u2', name='Unstamped', stamp=None))
+        values = {'project': self.project, 'timeline': 'Unstamped'}
+        preview = self.store.write(values, actor='alice', idempotency_key='gen')
+        assert isinstance(preview, Preview)
+        stamp = preview.plan['stamp']
+        self.assertIsInstance(self.store.write(values, actor='alice', idempotency_key='gen', confirm=preview.token), Done)
+        self.work('Resolve is not running')
+        self.resolve.rename(RESOLVE_REF, 'u2', 'Renamed')
+        self.link('Renamed', stamp, 'again')
+        self.assertEqual(next(t['canonical']['name'] for t in self.store.list(self.project) if t['id'] == stamp), 'Renamed')
+        self.assertEqual(self.jobs()[-1]['timeline'], 'Renamed')
+        audit = self.registry.audit(stamp)
+        self.assertEqual([a.action for a in audit], ['timeline_link', 'timeline_link'])
+        self.assertEqual(audit[-1].before, {'label': 'Unstamped', 'stamp_state': 'failed', 'stamp_reason': 'Resolve is not running'})
 
     def test_link_records_a_timeline_once_and_list_shows_its_canonical_copy(self) -> None:
         values = {'project': self.project, 'timeline': 'Ep1 v1', 'stamp': STAMP}

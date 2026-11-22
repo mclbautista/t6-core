@@ -49,6 +49,8 @@ class JobDismissals:
             # A dead transcribe job still has to fail its Transcript: do it now, so the dismissal never hides it from that sweep.
             from t6.transcript import TranscriptStore
             TranscriptStore(self.registry).fail_dead_runs(_db=db)
+            from t6.resolve.stamp_jobs import ResolveStampJobs  # and a dead stamp job its Timeline
+            ResolveStampJobs(self.registry).fail_dead(db)
             job = self.queue.get(values['job'], db=db)
             if job is None:
                 return Refused(rule='job', reason='Job not found')

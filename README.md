@@ -1896,7 +1896,10 @@ finishes jobs through `POST /v1/resolve/{claim,extend,report,fail}` on the t6
 API's tailnet listener, which accept only the `resolve` identity. A job is never
 run again: any failure (Resolve not running, project locked or missing, a
 different stamp already there) ends it dead with the reason, `t6 queue failed`
-lists it and `t6 queue dismiss` clears it.
+lists it and `t6 queue dismiss` clears it. A job whose worker stops mid-job is
+not claimed again when its lease runs out: it is dead and its Timeline failed.
+The worker closes each Resolve project it loads (Resolve locks it until then)
+and switches back to the database that was current.
 
 | Variable | Meaning |
 | --- | --- |

@@ -2,8 +2,10 @@
 import contextlib
 import io
 import json
+import sys
 import tempfile
 import threading
+import types
 import unittest
 from pathlib import Path
 from typing import Any
@@ -146,7 +148,7 @@ class ResolveRoleTests(unittest.TestCase):
     def test_resolve_role_never_opens_database(self) -> None:
         stop = threading.Event()
         stop.set()
-        with patch('t6.resolve.worker.importlib.util.find_spec', return_value=object()), \
+        with patch.dict(sys.modules, {'DaVinciResolveScript': types.ModuleType('DaVinciResolveScript')}), \
                 patch('t6.worker.internal_queue.InternalJobQueue', side_effect=AssertionError('database opened')), \
                 patch('sqlite3.connect', side_effect=AssertionError('database opened')):
             self.assertEqual(main(self.settings, transport=self.Transport(), stop=stop), 0)  # type: ignore[arg-type]
@@ -158,6 +160,30 @@ class ResolveRoleTests(unittest.TestCase):
         with contextlib.redirect_stderr(errors):
             self.assertEqual(main(self.settings, transport=self.Transport(), stop=stop), 2)  # type: ignore[arg-type]
         self.assertIn('DaVinciResolveScript', errors.getvalue())
+
+    def broken_module(self) -> None:
+        """A `DaVinciResolveScript` that is found but cannot load `fusionscript`, as Resolve's own module fails."""
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        (Path(directory.name) / 'DaVinciResolveScript.py').write_text('raise ImportError("Could not locate module dependencies")\n')
+        patcher = patch.object(sys, 'path', [directory.name, *sys.path])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(sys.modules.pop, 'DaVinciResolveScript', None)
+
+    def test_exits_2_when_the_scripting_module_is_found_but_cannot_load_fusionscript(self) -> None:
+        self.broken_module()
+        stop = threading.Event()
+        stop.set()
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            self.assertEqual(main(self.settings, transport=self.Transport(), stop=stop), 2)  # type: ignore[arg-type]
+        self.assertIn('Could not locate module dependencies', errors.getvalue())
+
+    def test_a_broken_scripting_module_is_not_reported_as_resolve_not_running(self) -> None:
+        self.broken_module()
+        with self.assertRaisesRegex(ImportError, 'Could not locate module dependencies'):
+            ScriptingTimelines().read(REF)
 
 
 if __name__ == '__main__':

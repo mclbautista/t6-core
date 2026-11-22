@@ -3,13 +3,16 @@
 The stamp is the `t6t_` ID in the custom data of a marker at the timeline's first frame. Reading it needs
 Resolve running or the bay scanner, so the reader is a seam. `ScriptingTimelines` reads and writes through
 the Resolve scripting API. Its one write is the stamp marker (ADR 0002, rule 10 exception): add it, update
-its custom data for a re-stamp, read it back. It never deletes a marker and saves only a project it changed.
+its custom data for a re-stamp, read it back. It never deletes a marker and saves only a project it changed. It
+closes every project it loads (Resolve locks a loaded project until it is closed) and makes the database that
+was current before current again.
 """
 
 from __future__ import annotations
 
 import importlib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -39,12 +42,9 @@ class StampFailure:
 
 
 def scripting_resolve() -> Any:
-    """The running Resolve app from `DaVinciResolveScript` (shipped with Resolve Studio), or None."""
-    try:
-        module = importlib.import_module("DaVinciResolveScript")
-    except ImportError:
-        return None
-    return module.scriptapp("Resolve")
+    """The running Resolve app from `DaVinciResolveScript` (shipped with Resolve Studio), or None when Resolve is not
+    running. A module that cannot be imported raises ImportError: that is a broken install, not Resolve being closed."""
+    return importlib.import_module("DaVinciResolveScript").scriptapp("Resolve")
 
 
 class ScriptingTimelines:
@@ -59,19 +59,23 @@ class ScriptingTimelines:
         return None if isinstance(found, StampFailure) else found
 
     def read(self, resolve_project: str) -> tuple[ResolveTimeline, ...] | StampFailure:
-        loaded = self._load(resolve_project)
-        if isinstance(loaded, StampFailure):
-            return loaded
-        return tuple(_timeline(t) for t in _scripted(loaded[1]))
+        with self._opened(resolve_project) as loaded:
+            if isinstance(loaded, StampFailure):
+                return loaded
+            return tuple(_timeline(t) for t in _scripted(loaded[1]))
 
-    def stamp(self, resolve_project: str, timeline: str, stamp: str, *, replaces: str | None = None) -> ResolveTimeline | StampFailure:
+    def stamp(self, resolve_project: str, timeline: str, stamp: str, *, replaces: str | None = None,
+              canonical: str | None = None) -> ResolveTimeline | StampFailure:
         """Write `stamp` on the first frame of the timeline named `timeline` (or with that unique id), read it
         back and save. A timeline already carrying `stamp` is left as it is. `replaces` re-stamps a duplicate:
-        the timeline's current stamp, which must also be on another timeline of the project."""
-        loaded = self._load(resolve_project)
-        if isinstance(loaded, StampFailure):
-            return loaded
-        manager, project = loaded
+        the timeline's current stamp, which must also be on another timeline of the project. `canonical` is the
+        unique id of the canonical Timeline, which is never the target."""
+        with self._opened(resolve_project) as loaded:
+            if isinstance(loaded, StampFailure):
+                return loaded
+            return self._stamp(*loaded, timeline, stamp, replaces, canonical)
+
+    def _stamp(self, manager: Any, project: Any, timeline: str, stamp: str, replaces: str | None, canonical: str | None) -> ResolveTimeline | StampFailure:
         scripted = [(t, _timeline(t)) for t in _scripted(project)]
         matches = [(t, seen) for t, seen in scripted if timeline in (seen.name, seen.uuid)]
         if not matches:
@@ -79,6 +83,8 @@ class ScriptingTimelines:
         if len(matches) > 1:
             return StampFailure("More than one timeline of that name; give its Resolve ID")
         target, seen = matches[0]
+        if canonical is not None and seen.uuid == canonical:
+            return StampFailure("That is the canonical Timeline; T6 does not re-stamp it")
         others = [s for _, s in scripted if s.uuid != seen.uuid]
         if any(s.stamp == stamp for s in others):
             return StampFailure("The stamp is already on another timeline of the Resolve project")
@@ -103,16 +109,36 @@ class ScriptingTimelines:
             return StampFailure("The marker was written but Resolve did not save the project")
         return _timeline(target)
 
-    def _load(self, resolve_project: str) -> tuple[Any, Any] | StampFailure:
-        """Load `<database>/<folder>/.../<project>`: the project manager and the project, or why not."""
+    @contextmanager
+    def _opened(self, resolve_project: str) -> Iterator[tuple[Any, Any] | StampFailure]:
+        """Load `<database>/<folder>/.../<project>` for the block: the project manager and the project, or why not.
+        After the block the project is closed, unless it was already the current project, and the database that was
+        current before is made current again."""
         parts = resolve_project.split("/")
         if len(parts) < 2 or not all(parts):
-            return StampFailure("The Resolve project ref must be <database>/<folder>/<project>")
-        database, folders, name = parts[0], parts[1:-1], parts[-1]
+            yield StampFailure("The Resolve project ref must be <database>/<folder>/<project>")
+            return
         resolve = self._resolve()
         if resolve is None:
-            return StampFailure("Resolve is not running")
+            yield StampFailure("Resolve is not running")
+            return
         manager = resolve.GetProjectManager()
+        database, name = parts[0], parts[-1]
+        before = manager.GetCurrentDatabase() or {}
+        current = manager.GetCurrentProject()
+        was_current = before.get("DbName") == database and bool(current) and current.GetName() == name
+        loaded = self._load(manager, database, parts[1:-1], name)
+        try:
+            yield loaded if isinstance(loaded, StampFailure) else (manager, loaded)
+        finally:
+            if not isinstance(loaded, StampFailure) and not was_current:
+                manager.CloseProject(loaded)
+            if before and (manager.GetCurrentDatabase() or {}).get("DbName") != before.get("DbName"):
+                manager.SetCurrentDatabase(before)
+
+    @staticmethod
+    def _load(manager: Any, database: str, folders: list[str], name: str) -> Any:
+        """The project `name` in `database`/`folders`, loaded, or why not."""
         if (manager.GetCurrentDatabase() or {}).get("DbName") != database:
             wanted = [d for d in manager.GetDatabaseList() or [] if d.get("DbName") == database]
             if not wanted or not manager.SetCurrentDatabase(wanted[0]):
@@ -124,7 +150,7 @@ class ScriptingTimelines:
         project = manager.LoadProject(name)
         if not project:
             return StampFailure("The Resolve project cannot be loaded (locked or open elsewhere)")
-        return manager, project
+        return project
 
 
 def _scripted(project: Any) -> list[Any]:

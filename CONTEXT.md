@@ -139,7 +139,10 @@ Resolve worker; no person types it. This is the one Resolve write T6 makes
 as **pending** and queues a `resolve.stamp` job. The Resolve worker writes the
 marker and reads it back; a success marks the Timeline **stamped** (verified),
 and a failure marks it **failed** with the reason (`queue failed` shows the
-job). Linking a failed Timeline again (new key) queues it again. `timeline list`
+job). A job is tried once: if the worker stops mid-job its lease runs out, the
+job is dead and the Timeline failed. Linking a failed Timeline again (new key)
+queues it again, with or without `--stamp` (by its label, it keeps its stamp);
+it takes the name given as its label, in Audit. `timeline list`
 shows each Timeline's stamp state. Timelines linked before T6 wrote stamps
 count as stamped. A Timeline that already
 carries a stamp is not given a new one (pass `--stamp`), except that at confirm a timeline
@@ -151,7 +154,9 @@ Project that is not registered.
   `resolve.stamp` jobs through the t6 API; it never opens the t6 database. It
   writes only the stamp marker (add, update, read back) and never deletes a
   marker. Before writing it refuses a timeline that carries a different stamp,
-  or a stamp already on another timeline of the project.
+  or a stamp already on another timeline of the project. It closes each
+  Resolve project it loads (Resolve locks a loaded project until then) and
+  makes the database that was current before current again.
 
 - A Timeline records its `t6t_` ID (the stamp), its Resolve project (the
   Project's active resolve-project Media location, on the project server) and
@@ -162,8 +167,12 @@ Project that is not registered.
   Resolve project (a duplicate keeps the same stamp). The fix is re-stamping
   by code: `timeline restamp` (previewed) gives the copy that is not the
   canonical Timeline a new `t6t_` ID, records it as a pending Timeline, and the
-  Resolve worker replaces the stamp on it. Linking the same stamp again for the same Resolve project
-  records nothing new, whatever the name now is.
+  Resolve worker replaces the stamp on it. The canonical Timeline is refused by
+  its label or by the Resolve unique id its stamp was verified on, and the
+  worker refuses that id again at write time; the Timeline's Resolve project
+  must still be active. A failed re-stamp linked again still replaces the
+  duplicated stamp. Linking the same stamp again for the same Resolve project
+  records nothing new, whatever the name now is (a failed one aside, above).
 - A Resolve unique id is not the key: it changes on duplicate and import.
 - A **Version** may name its source Timeline (`version add --timeline`); the
   Timeline must belong to the Deliverable's Project.
