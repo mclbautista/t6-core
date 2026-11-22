@@ -882,7 +882,7 @@ if isinstance(result, Ok):
   and sends one Telegram message through the gateway's `/notify` to
   the first active Project Chat link, or `T6_REVIEW_CHAT` (and `T6_REVIEW_TOPIC`
   if set) when no link is found. The main worker resolves the Frame.io project through its
-  Media location (kind `frameio-project`). When `T6_NOTION_TOKEN` and the Projects and Contacts data sources are set, the message ends with the Telegram handle (`@handle`, deduplicated) of each person in the linked Project's `Prod Coor/Supe`, read from the local Notion mirror one page at a time; with no link, no coordinator or no handle it is sent without a tag. The message has the file's title, who
+  Media location (kind `frameio-project`). When `T6_NOTION_TOKEN` and the Projects and Contacts data sources are set, the message ends with the Telegram handle (`@handle`, deduplicated) of each person in the linked Project's `T6 Post Coordinator` (never `Prod Coor/Supe`, the production's post supervisor, a client), read from the local Notion mirror one page at a time; with no link, no coordinator or no handle it is sent without a tag. The message has the file's title, who
   commented, when they started and stopped (Manila time), how many comments they
   made and how many the file has in total, and two links: the newest share
   that is on, not expired and made from the file (its short URL, or "no share

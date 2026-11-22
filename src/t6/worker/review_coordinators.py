@@ -6,7 +6,9 @@ from t6.notion.reads import ContactReader, ProjectReader
 
 
 class ReviewCoordinators:
-    """`Prod Coor/Supe` of the linked Project, as Telegram handles, read from the local Notion mirror.
+    """`T6 Post Coordinator` of the linked Project, as Telegram handles, read from the local Notion mirror.
+
+    Never `Prod Coor/Supe`: that is the production's post supervisor, a client, not T6's coordinator.
 
     Reads one Project page and one Contact page for each coordinator (`freshness="mirror"`, never a data source scan).
     Anything missing (no link, no coordinator, no handle, a page that cannot be read) is left out: the caller sends the
@@ -22,7 +24,7 @@ class ReviewCoordinators:
         if page is None:
             return ()
         handles: list[str] = []
-        for contact_id in self._projects.get(page, freshness="mirror").prod_coor_supe_ids:
+        for contact_id in self._projects.get(page, freshness="mirror").post_coordinator_ids:
             try:
                 handle = (self._contacts.get(contact_id, freshness="mirror").telegram_handle or "").strip().lstrip("@").strip()
             except Exception:
