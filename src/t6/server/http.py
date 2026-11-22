@@ -8,7 +8,7 @@ VPS's Tailscale address). Secrets come from the environment.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import threading
@@ -16,19 +16,29 @@ import threading
 from t6.server.app import Request, Response, WebhookApp
 
 MAX_BODY_BYTES = 1_000_000
+CATALOG_SNAPSHOT_PATH = "/v1/drive/catalog-snapshot"
+CATALOG_BODY_BYTES = 16_000_000
+"""A Drive scan lists every file (100 to 250 bytes each, so 1 to 2 MB for 8,000), and preview and confirm each send it whole.
+Only the tailnet listener raises the limit for that one path (#549); every other path keeps `MAX_BODY_BYTES`."""
 
 __all__ = ["make_server"]
 
 
 def make_server(
-    address: tuple[str, int], handle: Callable[[Request], Response]
+    address: tuple[str, int],
+    handle: Callable[[Request], Response],
+    *,
+    body_limits: Mapping[str, int] | None = None,
 ) -> ThreadingHTTPServer:
-    """A server that passes every request to `handle`. Call `serve_forever` on it."""
+    """A server that passes every request to `handle`. Call `serve_forever` on it.
+
+    A request body may be `MAX_BODY_BYTES`; `body_limits` raises that for the exact paths it names."""
+    limits = dict(body_limits or {})
 
     class Handler(BaseHTTPRequestHandler):
         def _respond(self) -> None:
             length = int(self.headers.get("Content-Length") or 0)
-            if length > MAX_BODY_BYTES:
+            if length > limits.get(self.path.split("?", 1)[0], MAX_BODY_BYTES):
                 answer = Response(413)
             else:
                 body = self.rfile.read(length) if length else b""

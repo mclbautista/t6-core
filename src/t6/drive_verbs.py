@@ -20,7 +20,7 @@ from typing import Any, NamedTuple
 
 from t6 import verbflow
 from t6.domain.studio_time import MANILA
-from t6.drives import Assignment, CustodyEvent, CustodyKind, Drive, DriveStatus, DriveStore, FormFactor, Party, PartyKind, Ref, Role, open_duplicate
+from t6.drives import Assignment, CatalogEntry, CustodyEvent, CustodyKind, Drive, DriveStatus, DriveStore, FormFactor, Party, PartyKind, Ref, Role, catalog_entries, diff_catalog, fold_catalog, open_duplicate
 from t6.drives.sqlite import SqliteDriveStore, audit_json
 from t6.preview import PreviewTokens
 from t6.registry.core import normalize_page_id
@@ -28,8 +28,8 @@ from t6.registry.sqlite import SqliteProjectRegistry
 from t6.verbs import Ambiguous, Outcome, Refused
 
 FACT_VERBS = ('add', 'edit', 'promote_serial')
-WRITE_VERBS = ('receive', 'release', 'return', 'retire', 'assign', 'unassign', 'swing_assign', 'swing_unassign', 'swing_return', *FACT_VERBS)
-_TEXT_FACTS = ('label', 'serial', 'suspected_serial', 'review_note', 'description', 'brand', 'model', 'format', 'owner_studio_id', 'warranty', 'remarks')
+WRITE_VERBS = ('catalog_snapshot', 'receive', 'release', 'return', 'retire', 'assign', 'unassign', 'swing_assign', 'swing_unassign', 'swing_return', *FACT_VERBS)
+_TEXT_FACTS = ('label', 'serial', 'suspected_serial', 'review_note', 'description', 'brand', 'model', 'format', 'owner_studio_id', 'warranty', 'remarks', 'office_location', 'qr_code')
 _EDITABLE = (*_TEXT_FACTS, 'form_factor', 'needs_review', 'capacity_tb', 'ownership_known', 'purchase_date')
 _KINDS = {'receive': CustodyKind.RECEIVED, 'release': CustodyKind.RELEASED, 'return': CustodyKind.RETURNED, 'retire': CustodyKind.RETIRED}
 _CANNOT_FOLLOW: dict[str, set[DriveStatus | None]] = {'receive': {DriveStatus.IN_CUSTODY, DriveStatus.RETIRED}, 'release': {DriveStatus.RELEASED, DriveStatus.RETIRED},
@@ -114,6 +114,8 @@ class DriveVerbs:
     def _validate(self, verb: str, values: dict[str, Any]) -> Refused | None:
         if verb.startswith('swing_'):
             return self._validate_swing(verb, values)
+        if verb == 'catalog_snapshot':
+            return self._validate_catalog(values)
         if verb in FACT_VERBS:
             return self._validate_fact(verb, values)
         drives = values.get('drives') if verb == 'release' else [values.get('drive')]
@@ -155,6 +157,19 @@ class DriveVerbs:
             return Refused(rule='input', reason='A Drive is required')
         elif verb == 'edit' and not any(name in values for name in _EDITABLE):
             return Refused(rule='input', reason='Name at least one fact to change: ' + ', '.join(_EDITABLE))
+        return None
+
+    @staticmethod
+    def _validate_catalog(values: dict[str, Any]) -> Refused | None:
+        if not isinstance(values.get('drive'), str):
+            return Refused(rule='input', reason='A Drive is required')
+        try:
+            date.fromisoformat(values['captured_on'])
+        except (KeyError, TypeError, ValueError):
+            return Refused(rule='input', reason='captured_on must be a date as YYYY-MM-DD')
+        entries = values.get('entries')
+        if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
+            return Refused(rule='input', reason='entries must be a list of path, kind and size_bytes objects')
         return None
 
     @staticmethod
@@ -200,6 +215,40 @@ class DriveVerbs:
             return Refused(rule='serial', reason=f'Serial {held.serial} is already recorded on Drive {held.id}')
         return None
 
+    @staticmethod
+    def _qr_clash(store: DriveStore, drive_id: str, qr_code: str | None) -> Refused | None:
+        held = store.find_by_qr_code(qr_code) if qr_code else None
+        if held is not None and held.id != drive_id:
+            return Refused(rule='qr_code', reason=f'QR code {held.qr_code} is already on Drive {held.id}')
+        return None
+
+    def _plan_catalog(self, store: DriveStore, values: dict[str, Any], key: str) -> Plan | Refused:
+        """Plan a scan. The preview holds counts, not the manifest: confirm sends the manifest again and the token binds it."""
+        drive_id, captured_on = values['drive'], date.fromisoformat(values['captured_on'])
+        if store.get_drive(drive_id) is None:
+            return Refused(rule='drive', reason=f'Drive {drive_id} not found')
+        try:
+            entries = catalog_entries(values['entries'])
+        except (TypeError, ValueError) as error:
+            return Refused(rule='input', reason=str(error))
+        history = store.catalog_snapshots(drive_id)
+        latest = history[-1] if history else None
+        if latest is not None and captured_on <= latest.captured_on:
+            return Refused(rule='catalog_order', reason=f'Drive {drive_id} was already scanned on {latest.captured_on.isoformat()}; a scan must be dated after it')
+        before = fold_catalog([store.catalog_diff(drive_id, snapshot.id) or () for snapshot in history])
+        changes = diff_catalog(before, entries)
+        root = (values.get('root_path') or '').strip() or '/'
+        plan: dict[str, Any] = {
+            'action': 'drive_catalog_snapshot', 'drive_ids': [drive_id], 'idempotency_key': key, 'captured_on': captured_on.isoformat(), 'root_path': root,
+            'parent_snapshot_id': latest.id if latest else None, 'entry_count': len(entries), 'total_bytes': sum(e.size_bytes or 0 for e in entries),
+            'added': sum(c.change == 'added' for c in changes), 'modified': sum(c.change == 'modified' for c in changes),
+            'removed': sum(c.change == 'removed' for c in changes)}
+        return Plan(plan, [drive_id, latest.id if latest else None], lambda store_: self._catalog(store_, drive_id, captured_on, root, entries, plan))
+
+    def _catalog(self, store: DriveStore, drive_id: str, captured_on: date, root: str, entries: tuple[CatalogEntry, ...], plan: dict[str, Any]) -> list[Change]:
+        snapshot, _ = store.record_catalog(drive_id, captured_on, root, entries, self.registry._clock())
+        return [(drive_id, None, {**plan, 'snapshot_id': snapshot.id})]
+
     def _plan_fact(self, store: DriveStore, verb: str, values: dict[str, Any], key: str) -> Plan | Refused:
         plan: dict[str, Any] = {'action': 'drive_' + verb, 'idempotency_key': key}
         if verb == 'add':
@@ -212,7 +261,7 @@ class DriveVerbs:
                 added = Drive(**facts)
             except ValueError as error:
                 return Refused(rule='input', reason=str(error))
-            clash = self._serial_clash(store, added.id, added.serial)
+            clash = self._serial_clash(store, added.id, added.serial) or self._qr_clash(store, added.id, added.qr_code)
             if clash is not None:
                 return clash
             plan.update(drive_ids=[added.id], facts=audit_json(added))
@@ -245,7 +294,8 @@ class DriveVerbs:
             edited = replace(drive, **changes)
         except ValueError as error:
             return Refused(rule='input', reason=str(error))
-        clash = self._serial_clash(store, drive.id, edited.serial) if 'serial' in changes else None
+        clash = (self._serial_clash(store, drive.id, edited.serial) if 'serial' in changes else None) or (
+            self._qr_clash(store, drive.id, edited.qr_code) if 'qr_code' in changes else None)
         if clash is not None:
             return clash
         plan.update(drive_ids=[drive.id], facts=audit_json(edited))
@@ -325,6 +375,8 @@ class DriveVerbs:
     def _plan(self, store: DriveStore, verb: str, values: dict[str, Any], key: str, actor: str) -> Plan | Refused | Ambiguous:
         if verb.startswith('swing_'):
             return self._plan_swing(store, verb, values, key)
+        if verb == 'catalog_snapshot':
+            return self._plan_catalog(store, values, key)
         if verb in FACT_VERBS:
             return self._plan_fact(store, verb, values, key)
         ids = list(dict.fromkeys(values['drives'])) if verb == 'release' else [values['drive']]

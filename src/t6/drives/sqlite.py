@@ -10,9 +10,9 @@ from datetime import date
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from t6.drives import (Assignment, CustodyEvent, CustodyKind, Drive, DriveStatus,
-                       DuplicateAssignment, DuplicateSerial, FormFactor, Party, PartyKind, Ref, Role,
-                       SourceRow, UnknownDrive, derive_status, normalize_serial, open_duplicate)
+from t6.drives import (Assignment, CatalogContents, CatalogDiffEntry, CatalogEntry, CatalogSnapshot, CustodyEvent, CustodyKind, Drive, DriveStatus,
+                       DuplicateAssignment, DuplicateQrCode, DuplicateSerial, FormFactor, Party, PartyKind, Ref, Role,
+                       SourceRow, UnknownDrive, derive_status, fold_catalog, new_catalog_snapshot, normalize_qr_code, normalize_serial, open_duplicate)
 from t6.ids import EntityKind, T6Id
 from t6.registry.core import normalize_page_id
 from t6.registry.sqlite import SqliteProjectRegistry
@@ -107,10 +107,15 @@ class SqliteDriveStore:
         held = db.execute('SELECT id FROM drives WHERE serial=?', (drive.serial,)).fetchone() if drive.serial else None
         if held and held[0] != drive.id:
             raise DuplicateSerial(drive.serial or '')
+        qr_held = db.execute('SELECT id FROM drives WHERE qr_code=?', (drive.qr_code,)).fetchone() if drive.qr_code else None
+        if qr_held and qr_held[0] != drive.id:
+            raise DuplicateQrCode(drive.qr_code or '')
         if new:
-            db.execute('INSERT INTO drives VALUES (?, ?, ?, ?)', (drive.id, drive.serial, drive.suspected_serial, _dump(drive)))
+            db.execute('INSERT INTO drives (id, serial, suspected_serial, data, qr_code) VALUES (?, ?, ?, ?, ?)',
+                       (drive.id, drive.serial, drive.suspected_serial, _dump(drive), drive.qr_code))
         else:
-            db.execute('UPDATE drives SET serial=?, suspected_serial=?, data=? WHERE id=?', (drive.serial, drive.suspected_serial, _dump(drive), drive.id))
+            db.execute('UPDATE drives SET serial=?, suspected_serial=?, data=?, qr_code=? WHERE id=?',
+                       (drive.serial, drive.suspected_serial, _dump(drive), drive.qr_code, drive.id))
 
     def add_drive(self, drive: Drive) -> Drive:
         with self._tx() as db:
@@ -132,6 +137,62 @@ class SqliteDriveStore:
         with self._tx() as db:
             row = db.execute('SELECT data FROM drives WHERE serial=?', (normalize_serial(serial),)).fetchone()
             return _drive(row[0]) if row else None
+
+    def find_by_qr_code(self, qr_code: str) -> Drive | None:
+        try:
+            code = normalize_qr_code(qr_code)
+        except ValueError:
+            return None
+        with self._tx() as db:
+            row = db.execute('SELECT data FROM drives WHERE qr_code=?', (code,)).fetchone() if code else None
+            return _drive(row[0]) if row else None
+
+    @staticmethod
+    def _snapshot(row: Sequence[Any]) -> CatalogSnapshot:
+        return CatalogSnapshot(id=row[0], drive_id=row[1], captured_on=date.fromisoformat(row[2]), parent_snapshot_id=row[3], root_path=row[4],
+                               entry_count=row[5], total_bytes=row[6], created_at=row[7])
+
+    _SNAPSHOT_COLUMNS = 'id, drive_id, captured_on, parent_snapshot_id, root_path, entry_count, total_bytes, created_at'
+
+    @staticmethod
+    def _changes(db: sqlite3.Connection, snapshot_id: str) -> tuple[CatalogDiffEntry, ...]:
+        rows = db.execute('SELECT path, kind, change, size_bytes, mtime, checksum FROM drive_catalog_changes WHERE snapshot_id=? ORDER BY path', (snapshot_id,))
+        return tuple(CatalogDiffEntry(path=r[0], kind=r[1], change=r[2], size_bytes=r[3], mtime=r[4], checksum=r[5]) for r in rows)
+
+    def _history(self, db: sqlite3.Connection, drive_id: str, on: date | None = None) -> list[tuple[CatalogSnapshot, tuple[CatalogDiffEntry, ...]]]:
+        self._get(db, drive_id)
+        sql = f'SELECT {self._SNAPSHOT_COLUMNS} FROM drive_catalog_snapshots WHERE drive_id=?' + (' AND captured_on<=?' if on else '') + ' ORDER BY captured_on'
+        rows = db.execute(sql, (drive_id, on.isoformat()) if on else (drive_id,)).fetchall()
+        return [(snapshot, self._changes(db, snapshot.id)) for snapshot in map(self._snapshot, rows)]
+
+    def record_catalog(self, drive_id: str, captured_on: date, root_path: str, entries: Sequence[CatalogEntry], created_at: float
+                       ) -> tuple[CatalogSnapshot, tuple[CatalogDiffEntry, ...]]:
+        with self._tx() as db:
+            snapshot, diff = new_catalog_snapshot(drive_id, self._history(db, drive_id), captured_on, root_path, entries, created_at)
+            db.execute(f'INSERT INTO drive_catalog_snapshots ({self._SNAPSHOT_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                       (snapshot.id, drive_id, captured_on.isoformat(), snapshot.parent_snapshot_id, snapshot.root_path, snapshot.entry_count,
+                        snapshot.total_bytes, created_at))
+            db.executemany('INSERT INTO drive_catalog_changes VALUES (?, ?, ?, ?, ?, ?, ?)',
+                           [(snapshot.id, c.path, c.kind, c.change, c.size_bytes, c.mtime, c.checksum) for c in diff])
+            return snapshot, diff
+
+    def catalog_snapshots(self, drive_id: str) -> tuple[CatalogSnapshot, ...]:
+        with self._tx() as db:
+            return tuple(snapshot for snapshot, _ in self._history(db, drive_id))
+
+    def catalog_diff(self, drive_id: str, snapshot_id: str) -> tuple[CatalogDiffEntry, ...] | None:
+        with self._tx() as db:
+            if db.execute('SELECT 1 FROM drive_catalog_snapshots WHERE id=? AND drive_id=?', (snapshot_id, drive_id)).fetchone() is None:
+                return None
+            return self._changes(db, snapshot_id)
+
+    def contents_at(self, drive_id: str, on: date) -> CatalogContents | None:
+        with self._tx() as db:
+            history = self._history(db, drive_id, on)
+            if not history:
+                return None
+            tree = fold_catalog(changes for _, changes in history)
+            return CatalogContents(snapshot=history[-1][0], entries=tuple(tree[path] for path in sorted(tree)))
 
     def has_suspected_serial(self, serial: str) -> bool:
         with self._tx() as db:

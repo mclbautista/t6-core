@@ -674,6 +674,103 @@ class DriveVerbTests(unittest.TestCase):
         self.assertEqual(changed.rule, 'drive_changed')
         self.assertEqual(self.registry.activity(project)[0].action, 'drive_release')
 
+    def test_drive_add_and_edit_keep_the_office_location_and_qr_code_and_refuse_a_second_holder(self) -> None:
+        self.write('add', {'label': 'Shelf drive', 'office_location': ' Office A / Shelf 1 ', 'qr_code': ' ab-12 '})
+        added = next(d for d in self.store.list_drives() if d.label == 'Shelf drive')
+        self.assertEqual((added.office_location, added.qr_code), ('Office A / Shelf 1', 'AB-12'))
+        refused = self.call('drive', 'add', {'label': 'Copy', 'qr_code': 'ab-12'})
+        self.assertEqual((refused.rule, added.id in refused.reason), ('qr_code', True))
+        self.assertEqual(self.call('drive', 'edit', {'drive': self.drives[0], 'qr_code': 'AB-12'}).rule, 'qr_code')
+        self.assertEqual(self.call('drive', 'edit', {'drive': self.drives[0], 'qr_code': 'no good'}).rule, 'input')
+        self.write('edit', {'drive': self.drives[0], 'office_location': 'Office A / Shelf 2', 'qr_code': 'ab-13'})
+        self.write('edit', {'drive': added.id, 'qr_code': ''})
+        self.assertEqual(self.write('edit', {'drive': self.drives[1], 'qr_code': 'ab-12'}).result['facts']['qr_code'], 'AB-12')
+        got = self.read('get', {'drive': self.drives[0]})['drive']
+        self.assertEqual((got['office_location'], got['qr_code']), ('Office A / Shelf 2', 'AB-13'))
+
+    def test_drive_find_by_qr_code_and_list_by_office_location(self) -> None:
+        self.write('edit', {'drive': self.drives[0], 'office_location': 'Office A / Shelf 1', 'qr_code': 'QR-1'})
+        self.write('edit', {'drive': self.drives[1], 'office_location': 'Office B / Shelf 9'})
+        found = self.read('find', {'qr_code': 'qr-1'})
+        self.assertEqual([(m['id'], m['match']) for m in found['matches']], [(self.drives[0], 'qr_code')])
+        self.assertEqual(self.read('find', {'qr_code': 'QR-9'})['matches'], [])
+        self.assertEqual([m['id'] for m in self.read('find', {'serial': 'synth-1'})['matches']], [self.drives[1]])
+        for both in ({}, {'serial': 'SYNTH-0', 'qr_code': 'QR-1'}):
+            with self.assertRaises(ValueError):
+                self.call('drive', 'find', both)
+        listed = self.read('list', {'office_location': 'office a'})['drives']
+        self.assertEqual([d['id'] for d in listed], [self.drives[0]])
+        self.assertEqual([d['id'] for d in self.read('list', {'q': 'qr-1'})['drives']], [self.drives[0]])
+
+    def scan(self, on: str, entries: list[dict[str, Any]], drive: int = 0, key: str | None = None) -> Any:
+        return self.write('catalog-snapshot', {'drive': self.drives[drive], 'captured_on': on, 'root_path': 'Volume', 'entries': entries}, key)
+
+    def test_a_catalog_snapshot_previews_counts_and_keeps_only_the_changes(self) -> None:
+        files = [{'path': f'Show A/clip{n}.mov', 'kind': 'file', 'size_bytes': 100} for n in range(3)]
+        preview = self.call('drive', 'catalog-snapshot', {'drive': self.drives[0], 'captured_on': '2026-03-01', 'entries': files, 'idempotency_key': 'p1'})
+        self.assertIsInstance(preview, Preview)
+        self.assertEqual({k: preview.plan[k] for k in ('entry_count', 'total_bytes', 'added', 'modified', 'removed', 'parent_snapshot_id')},
+                         {'entry_count': 3, 'total_bytes': 300, 'added': 3, 'modified': 0, 'removed': 0, 'parent_snapshot_id': None})
+        self.assertNotIn('entries', preview.plan)  # a count, not the manifest
+        self.assertEqual(self.read('catalog-snapshots', {'drive': self.drives[0]})['snapshots'], [])  # a preview writes nothing
+        self.scan('2026-03-01', files, key='s1')
+        second = [files[0], {**files[1], 'size_bytes': 150}, {'path': 'notes.txt', 'kind': 'file', 'size_bytes': 5}]
+        done = self.scan('2026-03-10', second, key='s2')
+        self.assertEqual({k: done.result[k] for k in ('added', 'modified', 'removed')}, {'added': 1, 'modified': 1, 'removed': 1})
+        snapshots = self.read('catalog-snapshots', {'drive': self.drives[0]})['snapshots']
+        self.assertEqual([(s['captured_on'], s['entry_count'], s['total_bytes']) for s in snapshots], [('2026-03-01', 3, 300), ('2026-03-10', 3, 255)])
+        self.assertEqual(snapshots[1]['parent_snapshot_id'], snapshots[0]['id'])
+        changes = self.read('catalog-diff', {'drive': self.drives[0], 'snapshot': snapshots[1]['id']})['changes']
+        self.assertEqual([(c['path'], c['change']) for c in changes], [('Show A/clip1.mov', 'modified'), ('Show A/clip2.mov', 'removed'), ('notes.txt', 'added')])
+        at = self.read('catalog-at', {'drive': self.drives[0], 'on': '2026-03-05'})
+        self.assertEqual((at['snapshot']['captured_on'], [e['path'] for e in at['entries']]), ('2026-03-01', [f['path'] for f in files]))
+        under = self.read('catalog-at', {'drive': self.drives[0], 'on': '2026-04-01', 'prefix': 'Show A'})
+        self.assertEqual([e['path'] for e in under['entries']], ['Show A/clip0.mov', 'Show A/clip1.mov'])
+        audit = self.registry.db.execute("SELECT action FROM audit WHERE project_id=? AND action='drive_catalog_snapshot'", (self.drives[0],)).fetchall()
+        self.assertEqual(len(audit), 2)
+
+    def test_a_catalog_snapshot_is_idempotent_and_its_refusals_change_nothing(self) -> None:
+        entries = [{'path': 'a.txt', 'kind': 'file', 'size_bytes': 1}]
+        values = {'drive': self.drives[0], 'captured_on': '2026-03-01', 'root_path': 'Volume', 'entries': entries, 'idempotency_key': 'same'}
+        first = self.scan('2026-03-01', entries, key='same')
+        replay = self.call('drive', 'catalog-snapshot', values)
+        self.assertEqual(self.call('drive', 'catalog-snapshot', {**values, 'confirm': replay.token}), first)
+        self.assertEqual(len(self.read('catalog-snapshots', {'drive': self.drives[0]})['snapshots']), 1)
+        self.assertEqual(self.call('drive', 'catalog-snapshot', {**values, 'entries': [], 'idempotency_key': 'same'}).rule, 'idempotency_key')
+        for bad, rule in (({'captured_on': '2026-03-01'}, 'catalog_order'), ({'captured_on': '2026-02-01'}, 'catalog_order'), ({'captured_on': 'soon'}, 'input'),
+                          ({'captured_on': '2026-04-01', 'entries': [{'path': '../x', 'kind': 'file', 'size_bytes': 1}]}, 'input'),
+                          ({'captured_on': '2026-04-01', 'entries': [{'path': 'a', 'kind': 'dir'}, {'path': 'a', 'kind': 'dir'}]}, 'input'),
+                          ({'captured_on': '2026-04-01', 'entries': [{'path': 'a', 'kind': 'file'}]}, 'input'),
+                          ({'captured_on': '2026-04-01', 'entries': [{'path': 'a', 'kind': 'dir', 'surprise': 1}]}, 'input'),
+                          ({'captured_on': '2026-04-01', 'drive': 't6d_' + '0' * 32}, 'drive')):
+            with self.subTest(bad=bad):
+                self.assertEqual(self.call('drive', 'catalog-snapshot', {**values, 'idempotency_key': f'bad-{bad}', **bad}).rule, rule)
+        self.assertEqual(self.call('drive', 'catalog-snapshot', {**values, 'idempotency_key': 'other'}, actor='reader').rule, 'permission')
+        self.assertEqual(len(self.read('catalog-snapshots', {'drive': self.drives[0]})['snapshots']), 1)
+
+    def test_a_catalog_snapshot_is_refused_at_confirm_when_another_scan_landed_after_the_preview(self) -> None:
+        entries = [{'path': 'a.txt', 'kind': 'file', 'size_bytes': 1}]
+        values = {'drive': self.drives[0], 'captured_on': '2026-03-10', 'entries': entries, 'idempotency_key': 'late'}
+        preview = self.call('drive', 'catalog-snapshot', values)
+        self.scan('2026-03-01', entries, key='earlier')
+        self.assertEqual(self.call('drive', 'catalog-snapshot', {**values, 'confirm': preview.token}).rule, 'drive_changed')
+
+    def test_a_scan_of_eight_thousand_files_is_kept_and_read_back_whole(self) -> None:
+        files = [{'path': f'Show A/Day {n // 500:02d}/clip{n:05d}.mov', 'kind': 'file', 'size_bytes': n, 'mtime': '2026-01-01T00:00:00', 'checksum': f'{n:032x}'} for n in range(8000)]
+        self.assertGreater(len(json.dumps(files)), 1_000_000)  # the size the 1 MB request limit is raised for
+        self.scan('2026-03-01', files, key='big1')
+        files[7] = {**files[7], 'size_bytes': 1}
+        self.scan('2026-03-02', files, key='big2')
+        self.assertEqual(len(self.read('catalog-at', {'drive': self.drives[0], 'on': '2026-03-02'})['entries']), 8000)
+        stored = self.registry.db.execute('SELECT COUNT(*) FROM drive_catalog_changes').fetchone()[0]
+        self.assertEqual(stored, 8001)  # the second scan stored its one change, not 8000 rows
+
+    def test_catalog_reads_refuse_what_is_not_there(self) -> None:
+        self.assertEqual(self.call('drive', 'catalog-snapshots', {'drive': 'nope'}, actor='reader').rule, 'drive')
+        self.assertEqual(self.call('drive', 'catalog-diff', {'drive': self.drives[0], 'snapshot': 'snap_x'}, actor='reader').rule, 'snapshot')
+        self.assertEqual(self.call('drive', 'catalog-at', {'drive': self.drives[0], 'on': '2026-03-01'}, actor='reader').rule, 'snapshot')
+        self.assertEqual(self.call('drive', 'catalog-at', {'drive': self.drives[0], 'on': 'soon'}, actor='reader').rule, 'input')
+
     def test_catalogue_and_cli(self) -> None:
         from cli_api_fake import client_patch
         from t6.cli import main

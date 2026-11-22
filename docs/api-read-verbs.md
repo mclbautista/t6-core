@@ -247,8 +247,8 @@ when `concern record-message` recorded a message for it with that `brief_date`.
 
 ### Drive reads
 
-`drive list`, `drive get`, `drive find`, `drive shipments`, `drive shipment` and
-`drive exceptions` are read only. Every Drive they return carries a `version`, a
+`drive list`, `drive get`, `drive find`, `drive shipments`, `drive shipment`,
+`drive exceptions`, `drive catalog-snapshots`, `drive catalog-diff` and `drive catalog-at` are read only. Every Drive they return carries a `version`, a
 digest of its facts, to pass back as `expected_version` to `drive edit`. `drive
 list` carries each Drive's `open_assignments`, so the inventory needs no `drive
 get` per row. `drive get` shows each Assignment's `remarks`. `drive shipment` returns
@@ -256,3 +256,5 @@ the Drives' facts as they were at release and the `recipient`; for a shipment wi
 no kept facts it returns the current facts and `facts_at_release` is false. See
 `docs/drive-identity.md` for the write side. `t6.client.APIError` carries the HTTP
 status of the response as `status`, so a caller can tell a 5xx from a 4xx.
+`drive find` takes `serial` or `qr_code`, `drive list` takes `office_location`, and the
+three catalog reads show a Drive's scans; see the catalog section of `docs/drive-identity.md`.

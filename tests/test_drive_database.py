@@ -18,6 +18,7 @@ class DriveDatabaseTests(unittest.TestCase):
         from unittest.mock import patch
         import test_drives
         import test_drive_identity
+        import test_drive_catalog
         registries: list[MemoryRegistry] = []
         def make_store() -> SqliteDriveStore:
             registry = MemoryRegistry()
@@ -27,10 +28,12 @@ class DriveDatabaseTests(unittest.TestCase):
                     db.execute("INSERT INTO projects VALUES (?, 1, NULL, NULL, 'out', 0)", (identifier,))
             return SqliteDriveStore(registry)
         suite = unittest.TestSuite([unittest.TestLoader().loadTestsFromModule(test_drives),
-                                    unittest.TestLoader().loadTestsFromModule(test_drive_identity)])
+                                    unittest.TestLoader().loadTestsFromModule(test_drive_identity),
+                                    unittest.TestLoader().loadTestsFromModule(test_drive_catalog)])
         result = unittest.TestResult()
         try:
-            with patch.object(test_drives, 'make_store', make_store), patch.object(test_drive_identity, 'InMemoryDriveStore', make_store):
+            with patch.object(test_drives, 'make_store', make_store), patch.object(test_drive_identity, 'InMemoryDriveStore', make_store), \
+                patch.object(test_drive_catalog, 'make_store', make_store):
                 suite.run(result)
         finally:
             for registry in registries:

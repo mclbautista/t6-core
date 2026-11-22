@@ -15,11 +15,16 @@ from t6.registry.core import normalize_page_id
 
 from t6.drives import (
     Assignment,
+    CatalogContents,
+    CatalogDiffEntry,
+    CatalogEntry,
+    CatalogSnapshot,
     CustodyEvent,
     CustodyKind,
     Drive,
     DriveStatus,
     DuplicateAssignment,
+    DuplicateQrCode,
     DuplicateSerial,
     FormFactor,
     Party,
@@ -27,6 +32,9 @@ from t6.drives import (
     SourceRow,
     UnknownDrive,
     derive_status,
+    fold_catalog,
+    new_catalog_snapshot,
+    normalize_qr_code,
     normalize_serial,
     open_duplicate,
 )
@@ -55,6 +63,7 @@ class InMemoryDriveStore:
         self._sources: dict[str, list[SourceRow]] = {}
         self._exceptions: list[ReviewItem] = []
         self._previews: dict[str, str] = {}
+        self._catalog: dict[str, list[tuple[CatalogSnapshot, tuple[CatalogDiffEntry, ...]]]] = {}
         self._shipments = 0
         self._shipped: list[tuple[str, CustodyEvent]] = []
         self._shipment_facts: dict[str, tuple[str | None, dict[str, Drive]]] = {}
@@ -69,10 +78,49 @@ class InMemoryDriveStore:
         if drive.id in self._drives:
             raise ValueError(f"Drive ID {drive.id!r} is already recorded")
         self._check_serial(drive)
+        self._check_qr_code(drive)
         self._drives[drive.id] = drive
         self._events[drive.id] = []
         self._assignments[drive.id] = []
+        self._catalog[drive.id] = []
         return drive
+
+    def _check_qr_code(self, drive: Drive) -> None:
+        if drive.qr_code is not None:
+            held = self.find_by_qr_code(drive.qr_code)
+            if held is not None and held.id != drive.id:
+                raise DuplicateQrCode(drive.qr_code)
+
+    def find_by_qr_code(self, qr_code: str) -> Drive | None:
+        try:
+            code = normalize_qr_code(qr_code)
+        except ValueError:
+            return None
+        return next((drive for drive in self._drives.values() if code and drive.qr_code == code), None)
+
+    def record_catalog(self, drive_id: str, captured_on: date, root_path: str, entries: Sequence[CatalogEntry], created_at: float
+                       ) -> tuple[CatalogSnapshot, tuple[CatalogDiffEntry, ...]]:
+        self._drive(drive_id)
+        history = self._catalog[drive_id]
+        snapshot, diff = new_catalog_snapshot(drive_id, history, captured_on, root_path, entries, created_at)
+        history.append((snapshot, diff))
+        return snapshot, diff
+
+    def catalog_snapshots(self, drive_id: str) -> tuple[CatalogSnapshot, ...]:
+        self._drive(drive_id)
+        return tuple(snapshot for snapshot, _ in self._catalog[drive_id])
+
+    def catalog_diff(self, drive_id: str, snapshot_id: str) -> tuple[CatalogDiffEntry, ...] | None:
+        self._drive(drive_id)
+        return next((diff for snapshot, diff in self._catalog[drive_id] if snapshot.id == snapshot_id), None)
+
+    def contents_at(self, drive_id: str, on: date) -> CatalogContents | None:
+        self._drive(drive_id)
+        history = [item for item in self._catalog[drive_id] if item[0].captured_on <= on]
+        if not history:
+            return None
+        tree = fold_catalog(diff for _, diff in history)
+        return CatalogContents(snapshot=history[-1][0], entries=tuple(tree[path] for path in sorted(tree)))
 
     def _check_serial(self, drive: Drive) -> None:
         if drive.serial is not None:
@@ -89,6 +137,7 @@ class InMemoryDriveStore:
     def set_facts(self, drive_id: str, changes: Mapping[str, Any]) -> Drive:
         drive = replace(self._drive(drive_id), **changes)
         self._check_serial(drive)
+        self._check_qr_code(drive)
         self._drives[drive_id] = drive
         return drive
 
