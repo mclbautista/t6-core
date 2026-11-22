@@ -6,6 +6,7 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ### Added
 
+- **Start Project** on the operator `/project` card (#540). An operator can queue a Project Start for a Project, check its plan and confirm it, which requests the `project start` Approval and offers its card. Operator only; see `docs/operator-actions.md`.
 - A new or changed Project rebuilds `privacy_registry.json` by itself (#539). Applying a Project start, and registering or changing a Project, queue a `privacy_registry.rebuild` job with no name in it; the main worker rebuilds the file when it has `T6_NOTION_TOKEN`, `T6_READ_PRIVACY_REGISTRY` and `T6_READ_DATA_SOURCES`.
 
 ### Fixed
