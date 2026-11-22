@@ -177,6 +177,8 @@ class VerbAPI:
         seen['identity'] = actor
         if path.startswith('/v1/transcribe/'):
             return self._transcribe_route(path, request, actor)
+        if path.startswith('/v1/resolve/'):
+            return self._resolve_route(path, request, actor)
         if path == '/tap':
             return self._tap(request, actor)
         behalf = request.header('x-telegram-user-id')
@@ -516,6 +518,42 @@ class VerbAPI:
             except Invalid as error:
                 return Response(400, {'error': error.error}) if error.error else Response(400)
         except (ValueError, KeyError, TypeError):
+            return Response(400, {'error': 'invalid request'})
+
+    def _resolve_route(self, path: str, request: Request, actor: str) -> Response:
+        """The Resolve worker's `resolve.stamp` jobs: claim, extend, report, fail. Only the `resolve` identity is let in."""
+        from t6.resolve.stamp_jobs import ClaimLost, Forbidden, Invalid, NotFound, ResolveStampJobs
+        if request.method != 'POST':
+            return Response(405)
+        jobs = ResolveStampJobs(self.people.registry)
+        try:
+            body = json.loads(request.body)
+            if not isinstance(body, dict):
+                raise ValueError('Expected an object')
+            action = path.removeprefix('/v1/resolve/')
+            if action == 'claim':
+                claim = jobs.claim(actor)
+                job = None if claim is None else {'job_id': claim.job_id, 'kind': claim.kind, 'payload': dict(claim.payload), 'dedupe_key': claim.dedupe_key, 'token': claim.token, 'attempt': claim.attempt}
+                return Response(200, {'job': cast(JsonValue, job)})
+            if action not in ('extend', 'report', 'fail'):
+                return Response(404)
+            job_id = body.get('job_id')
+            if not isinstance(job_id, int):
+                return Response(400, {'error': 'job_id required'})
+            if action == 'extend':
+                jobs.extend(job_id, body.get('token'), actor)
+            elif action == 'report':
+                jobs.report(job_id, body.get('token'), body.get('data'), actor)
+            else:
+                jobs.fail(job_id, body.get('token'), body.get('reason'), actor)
+            return Response(200, {'accepted': True})
+        except Forbidden:
+            return Response(403)
+        except NotFound:
+            return Response(404)
+        except ClaimLost:
+            return Response(409, {'error': 'claim lost'})
+        except (Invalid, ValueError, KeyError, TypeError):
             return Response(400, {'error': 'invalid request'})
 
     def _contact_page(self, person_id: str) -> str | None:
@@ -1529,7 +1567,7 @@ def request_line(path: str, identity: str | None, response: Response, seconds: f
     """
     entry = routes.get(path)
     verb = '.'.join(part for part in (entry.noun, entry.verb.replace(' ', '.')) if part) if entry else \
-        'transcribe' if path.startswith('/v1/transcribe/') else _FIXED_PATHS.get(path, 'unknown')
+        'transcribe' if path.startswith('/v1/transcribe/') else 'resolve' if path.startswith('/v1/resolve/') else _FIXED_PATHS.get(path, 'unknown')
     body = response.body if isinstance(response.body, Mapping) else {}
     kind = body.get('outcome')
     if response.status == 401:

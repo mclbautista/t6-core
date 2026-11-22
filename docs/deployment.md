@@ -16,6 +16,7 @@ as you go.
 | `python -m t6.worker` (queue `main`) | supervised separately, same image | nothing | the Notion token and the gateway secret; reaches the server over the tailnet |
 | `python -m t6.worker` (queue `frameio`) | Mac mini, same image, its own container and volume | nothing | the Adobe credential and the Frame.io token file (`T6_FRAMEIO_TOKEN_FILE`); nothing else mounts that volume. For the briefing feed it also needs `T6_API_URL`, the t6 API on Sixto (where the Media locations are), and `T6_REGISTRY_READ_SECRET`, that API's read-only registry grant; both or neither, and not the VPS edge, which has no registry. `T6_SERVER_URL` and `T6_WORKER_SECRET` stay the VPS queue server and the `frameio` grant, with no registry read. Variables: README, [Frame.io](../README.md#frameio) |
 | `python -m t6.worker` (queue `transcribe`) | Mac mini or a host that mounts the NAS shares, same image | nothing | `ELEVENLABS_API_KEY` (no other process holds it) and `T6_TRANSCRIBE_SHARES`, the path of a JSON file mapping each NAS share name to its mount point on that host. It exits 2 when that file is unset, unreadable, not an object of strings, or empty, and refuses (`outside_shares`) any folder outside the mapped mount points. It reaches the server through the API only and never opens the database. `T6_TRANSCRIBE_RATE` (USD per audio hour, default `0.4`) is read by `python -m t6.server`, not by the worker. Variables: README, [Transcription](../README.md#transcription) |
+| `python -m t6.worker` (queue `resolve`) | one Mac with Resolve Studio, as a user LaunchAgent in the session Resolve runs in | nothing | the `resolve` API secret and the Resolve scripting variables. It reaches the t6 API (`/v1/resolve/*`) only and never opens the database. Variables: README, [Resolve worker](../README.md#resolve-worker) |
 
 One server owns the files; there is no second writer. The public listener answers
 404 to everything but `/webhook` paths and `/frameio/callback`, so the registry, queue and operator routes
@@ -165,7 +166,7 @@ Neither queue gets a re-run: fix the data another way, then dismiss.
 ## Request log
 
 The API writes one line to stderr for each request to a `/v1/` verb route, `/tap` and the
-transcribe routes. `/health` is not logged. The format is fixed:
+transcribe and resolve routes. `/health` is not logged. The format is fixed:
 
 ```
 t6.server: request time=2026-11-16T07:03:05.123Z identity=reports verb=llm.run outcome=done ms=412
@@ -175,7 +176,7 @@ t6.server: request time=2026-11-16T07:03:05.123Z identity=reports verb=llm.run o
 - `identity`: the service name, or the T6 Person ID (`t6n_...`) of a Person-bound secret or of
   the Telegram user the gateway acts for. `-` when the secret was not known.
 - `verb`: `noun.verb` (`project.hold`, `llm.run`; a noun without a verb is the noun alone).
-  `unknown` for a path that is no route, `tap`, `commands`, `transcribe` and `admin.media.migrate`
+  `unknown` for a path that is no route, `tap`, `commands`, `transcribe`, `resolve` and `admin.media.migrate`
   for the routes outside the verb table.
 - `outcome`: `done`, `preview`, `refused:<rule>` (the rule name of the refusal, for example
   `permission`, `masking`, `unauthorized`) or `error:<HTTP status>` (a bad body is `error:422`).
@@ -292,7 +293,7 @@ The `main` jobs the API starts itself go to the internal job table in the t6 dat
 
 ### Project Start plans (main worker and API only)
 
-`project start` queues a `project_start.preview` internal job on the `main` queue. The main worker with `T6_DATABASE` set builds the plan and answers with the Preview and its token; the caller reads it with `t6 project start <project> --job <id>`. The worker needs `T6_PREVIEW_SIGNING_KEY` (the same key the API signs with, so the API accepts the token at confirm) and `T6_NOTION_TOKEN` (it reads the Project Type to choose the milestone template). Without the signing key the plan jobs stay queued and the worker's start-up log says `project start` plans are off. The plan lists the steps a person does by hand (NAS folders, the Resolve project, the Resolve timelines with their stamps); no worker writes to the NAS or to Resolve. The plan also reads the Project's name from Notion (`ProjectsRow.name`) for the Frame.io project.
+`project start` queues a `project_start.preview` internal job on the `main` queue. The main worker with `T6_DATABASE` set builds the plan and answers with the Preview and its token; the caller reads it with `t6 project start <project> --job <id>`. The worker needs `T6_PREVIEW_SIGNING_KEY` (the same key the API signs with, so the API accepts the token at confirm) and `T6_NOTION_TOKEN` (it reads the Project Type to choose the milestone template). Without the signing key the plan jobs stay queued and the worker's start-up log says `project start` plans are off. The plan lists the steps a person does by hand (NAS folders, the Resolve project, the Resolve timelines); no worker writes to the NAS, and the only Resolve write is the timeline stamp, which the Resolve worker makes when a timeline is linked with `timeline link`. The plan also reads the Project's name from Notion (`ProjectsRow.name`) for the Frame.io project.
 
 #### Project Start and Frame.io (netops note; no live setting is changed by the code)
 

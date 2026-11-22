@@ -2039,19 +2039,45 @@ class TimelineLinkInput(BaseModel):
     confirm: str | None = None
 
 
+StampState = Literal['pending', 'stamped', 'failed']
+
+
 class TimelineWriteOutput(BaseModel):
     timeline_id: str
     project_id: str
     created: bool
     idempotency_key: str
+    stamp_state: StampState
+    stamp_job: int | None = None
+
+
+class TimelineRestampInput(BaseModel):
+    project: str
+    timeline: str
+    stamp: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class TimelineRestampOutput(TimelineWriteOutput):
+    replaces: str
 
 
 class TimelineListInput(BaseModel):
     project: str
 
 
+class TimelineEntry(BaseModel):
+    id: str
+    stamp: str
+    project_id: str
+    stamp_state: StampState
+    stamp_reason: str | None = None
+    canonical: dict[str, Any]
+
+
 class TimelineListOutput(BaseModel):
-    timelines: list[dict[str, Any]]
+    timelines: list[TimelineEntry]
 
 
 def timeline_write(inputs: TimelineLinkInput, open_notion: Callable[..., Any]) -> Outcome:
@@ -2060,6 +2086,16 @@ def timeline_write(inputs: TimelineLinkInput, open_notion: Callable[..., Any]) -
         return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
     people = _people()
     return TimelineStore(people.registry, people.tokens).write(
+        inputs.model_dump(exclude={'confirm', 'idempotency_key'}), actor=_actor.get(),
+        idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
+def timeline_restamp(inputs: TimelineRestampInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.timeline import TimelineStore
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    people = _people()
+    return TimelineStore(people.registry, people.tokens).restamp(
         inputs.model_dump(exclude={'confirm', 'idempotency_key'}), actor=_actor.get(),
         idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
 
@@ -2677,8 +2713,9 @@ VERBS = (
     Verb('media', 'unlink', 'Unlink a Media location', (), MediaUnlinkInput, MediaWriteOutput, 'coordinator', 'Preview and confirm the unlink.', media_write),
     Verb('frameio', 'project link', 'Link a Frame.io project to a Project', (), FrameioProjectInput, MediaWriteOutput, 'staff', 'One Frame.io project belongs to one Project. Preview and confirm.', frameio_project_link),
     Verb('frameio', 'project unlink', 'Unlink a Frame.io project from a Project', (), FrameioProjectInput, MediaWriteOutput, 'staff', 'Moving is unlink then link. Preview and confirm.', frameio_project_unlink),
-    Verb('timeline', 'link', 'Record a hand-written Timeline stamp', (), TimelineLinkInput, TimelineWriteOutput, 'staff', 'The stamp is written by hand in Resolve; one Timeline per stamp. Without --stamp t6 creates the stamp and the preview shows it. Preview and confirm.', timeline_write),
-    Verb('timeline', 'list', 'List Timelines of a Project', (), TimelineListInput, TimelineListOutput, 'reader', 'Read Timelines with their canonical copy.', timeline_list, read_only=True),
+    Verb('timeline', 'link', 'Link a Resolve timeline and stamp it by code', (), TimelineLinkInput, TimelineWriteOutput, 'staff', 'The Resolve worker writes the stamp; one Timeline per stamp. Without --stamp t6 creates the stamp and the preview shows it. Confirm records the Timeline pending and queues one stamp job; the job marks it stamped or failed with the reason. Linking a failed Timeline again queues it again. Preview and confirm.', timeline_write),
+    Verb('timeline', 'restamp', 'Give a duplicated timeline a new stamp', (), TimelineRestampInput, TimelineRestampOutput, 'staff', 'For a copy carrying the stamp of a Timeline of the Project: t6 creates a new stamp, records the copy as a pending Timeline and queues one stamp job that replaces the old stamp on it. The canonical Timeline keeps its stamp. Preview and confirm.', timeline_restamp),
+    Verb('timeline', 'list', 'List Timelines of a Project', (), TimelineListInput, TimelineListOutput, 'reader', 'Read Timelines with their canonical copy and stamp state (pending, stamped, failed with the reason).', timeline_list, read_only=True),
     Verb('media', 'list', 'List Media locations', (), MediaListInput, MediaListOutput, 'reader', 'Read Media locations.', media_list, read_only=True),
     Verb('bay', 'book', 'Book a Bay', (), BayBookInput, BookingOutput, 'bookings', 'Overlaps require force.', booking_write),
     Verb('bay', 'list', 'List Bays', (), BayListInput, BayListOutput, 'reader', 'Read the Bays in the registry: each Bay ID with the page ID of its Notion row. Names stay in Notion.', bay_list, read_only=True),
@@ -3009,12 +3046,12 @@ def add_parsers(commands: Any) -> None:
                 parser.add_argument('--confirm')
             parser.set_defaults(registered_verb=entry)
             continue
-        if entry.handler in (timeline_write, timeline_list):
+        if entry.handler in (timeline_write, timeline_restamp, timeline_list):
             parser = parser.add_parser(entry.verb, help=entry.description)
             parser.add_argument('project')
-            if entry.handler is timeline_write:
+            if entry.handler is not timeline_list:
                 parser.add_argument('timeline')
-                parser.add_argument('--stamp')
+                parser.add_argument('--stamp', required=entry.handler is timeline_restamp)
                 parser.add_argument('--idempotency-key')
                 parser.add_argument('--confirm')
             parser.set_defaults(registered_verb=entry)

@@ -1,6 +1,6 @@
 # 2. The consumer contract: every app uses t6-core
 
-Date: 2026-11-13. Status: accepted; amended 2026-11-14 and 2026-11-16. Source: specs #115 and #178.
+Date: 2026-11-13. Status: accepted; amended 2026-11-14, 2026-11-16 and 2026-11-22. Source: specs #115, #178 and #577.
 
 ## Context
 
@@ -64,6 +64,16 @@ Every app follows these ten rules. Each has its reason.
 10. **Resolve** stays read-only until the live project server schema is
     verified. *Why:* writes against an unverified schema can corrupt a
     project.
+
+    Exception, 2026-11-22 (#577): T6 writes one thing in Resolve, the `t6t_`
+    stamp marker on a timeline's first frame. It may add that marker, update
+    its custom data and read it back. It never deletes a marker, writes
+    nothing else in Resolve and never saves a project it did not have to
+    change. Only the Resolve worker writes: it runs on one Mac with Resolve
+    Studio and is the only holder of Resolve scripting access. It writes
+    through the Resolve scripting API; the project server database stays
+    read-only. Owner, 2026-11-22: stamping "should be done by code". *Why:*
+    stamps typed by hand get skipped or mistyped, and nothing checks them.
 
 ## Consequences
 

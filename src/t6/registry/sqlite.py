@@ -383,6 +383,12 @@ _MIGRATIONS = (
         root_path TEXT NOT NULL, entry_count INTEGER NOT NULL, total_bytes INTEGER NOT NULL, created_at REAL NOT NULL, UNIQUE (drive_id, captured_on));
     CREATE TABLE drive_catalog_changes (snapshot_id TEXT NOT NULL REFERENCES drive_catalog_snapshots(id), path TEXT NOT NULL, kind TEXT NOT NULL, change TEXT NOT NULL,
         size_bytes INTEGER, mtime TEXT, checksum TEXT, PRIMARY KEY (snapshot_id, path))"""),
+    # Timelines gain a stamp state: the Resolve worker writes the stamp (#582). Rows linked before were stamped by hand.
+    # `replaces` is the duplicated stamp a re-stamp overwrites; `resolve_uuid` the Resolve unique id the stamp was verified on.
+    (48, False, """ALTER TABLE timelines ADD COLUMN stamp_state TEXT NOT NULL DEFAULT 'stamped' CHECK (stamp_state IN ('pending', 'stamped', 'failed'));
+    ALTER TABLE timelines ADD COLUMN stamp_reason TEXT;
+    ALTER TABLE timelines ADD COLUMN replaces TEXT;
+    ALTER TABLE timelines ADD COLUMN resolve_uuid TEXT"""),
 )
 
 
