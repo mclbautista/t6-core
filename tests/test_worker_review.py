@@ -136,6 +136,13 @@ class ReviewMessageTests(ServerTestCase):
         self.assertIn("<b>A guest</b>", guest)
         self.assertIn("1 comment ", guest)
 
+    def test_the_reviewer_name_is_escaped_in_the_message(self) -> None:
+        self.comment("c1", "<i>Guest</i> & Co", "u-a", "2026-11-12T10:00:00Z")
+        self.clock.advance(15 * MINUTE)
+        self.run_worker()
+        (text,) = self.gateway.texts()
+        self.assertIn("<b>&lt;i&gt;Guest&lt;/i&gt; &amp; Co</b>", text)
+
     def comment_at_frame(self, comment_id: str, author_id: str, frame: int, at: str = "2026-11-12T10:00:00Z") -> None:
         self.fake.add_comment("f1", comment_id, "text", "Ana Reyes", author_id=author_id, created_at=at, timestamp=frame)
         self.webhook(comment_id)
