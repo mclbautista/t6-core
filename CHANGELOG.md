@@ -4,10 +4,36 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.15] - 2026-11-22
+
+The Notion mirror, one privacy registry, human-only Concern snooze, no more Notion-edit pings, Frame.io review details and Drive catalog snapshots. Migration 47 takes the schema from 46 to 47 (Drive `qr_code` and the catalog snapshot tables); it is not forward-only.
+
 ### Added
 
+- A local SQLite WAL mirror shared by the Notion readers, with per-read freshness `mirror` or `live` (#511).
+- One `privacy_registry.json` for masked reads and LLM calls (#538). A new or changed Project rebuilds it by itself: applying a Project start, and registering or changing a Project, queue a `privacy_registry.rebuild` job with no name in it; the main worker rebuilds the file when it has `T6_NOTION_TOKEN`, `T6_READ_PRIVACY_REGISTRY` and `T6_READ_DATA_SOURCES` (#539). The file is written with mode 0600 (#534).
 - **Start Project** on the operator `/project` card (#540). An operator can queue a Project Start for a Project, check its plan and confirm it, which requests the `project start` Approval and offers its card. Operator only; see `docs/operator-actions.md`.
-- A new or changed Project rebuilds `privacy_registry.json` by itself (#539). Applying a Project start, and registering or changing a Project, queue a `privacy_registry.rebuild` job with no name in it; the main worker rebuilds the file when it has `T6_NOTION_TOKEN`, `T6_READ_PRIVACY_REGISTRY` and `T6_READ_DATA_SOURCES`.
+- `llm run` routes one provider and API key per task tag (#541); a multi-turn skill loop with a privacy airlock in `t6.llm.run` (#524), and configured skills on `LLMService` and `/v1/llm/run` (#525).
+- Verb `concern snooze`, for human operators only: it refuses the automatic actor, services and non-operators (#543).
+- Deadlines: "tomorrow" resolves to the end of shift, or 23:59 when no shift is known (#544).
+- Frame.io review messages show the comment timecode and the clip's total timecode (#546), a guest reviewer's name read from the public share page when the comment has no owner (#545; best effort, falls back to "A guest"), and end with the `@handle` of the linked Project's `Prod Coor/Supe` read from the Notion mirror (#547).
+- Drives carry `office_location` and a unique `qr_code`; `drive find` takes `qr_code` and `drive list` takes `office_location` (#549). Every Drive's `version` changes once on this release.
+- Drive catalog snapshots: `drive catalog-snapshot` records a dated scan as the changes since the last one; reads `drive catalog-snapshots`, `catalog-diff` and `catalog-at` (#549). The request limit is 16 MB for `POST /v1/drive/catalog-snapshot` on the tailnet listener only; every other path keeps 1 MB.
+
+### Changed
+
+- Concerns no longer go quiet or expire on a timer; `concern_silence` jobs are no longer scheduled, and old ones change nothing (#543).
+- `concern list --raise-at-psr` lists every Concern that is neither closed nor snoozed, oldest evidence first, with `evidence_at`; the `label` field is gone (#555). Rows an older release left `quiet` or `expired` are listed as open.
+- Flagged Notion edits to Job Orders and Projects no longer message the operators, and unbound Notion pages are no longer offered to the operator chat; the review item, audit, activity and last-seen state are kept, and queued `notion.state_flagged` jobs drain without a message (#548).
+- PM-notes LLM scanning is separate from the deterministic `ConcernStore` (#542); timeline link, project start and transcript confirm run on verbflow (#561); one Notion names builder and one Identities protocol (#560).
+
+### Fixed
+
+- A refused write verb no longer drops the sync intents queued with it (#562).
+
+## [0.6.14] - 2026-11-21
+
+Bays name matching: `Deco 203` is no longer confused with `Deco 202`. No migration: the schema stays at 46.
 
 ### Fixed
 
