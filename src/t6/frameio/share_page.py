@@ -15,6 +15,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from t6.frameio.tokens import USER_AGENT
+
 PAGE_HOSTS = ("f.io", "frame.io")
 """A share page is read only on these hosts or their subdomains, so a URL from an API answer cannot point the worker elsewhere."""
 PAGE_TIMEOUT_SECONDS = 5.0
@@ -37,7 +39,9 @@ def fetch_share_page(url: str) -> str | None:
     if not _frame_io_host(url):
         return None
     try:
-        with urllib.request.urlopen(url, timeout=PAGE_TIMEOUT_SECONDS) as response:  # noqa: S310 - https and host checked
+        # Frame.io answers Python's default User-Agent with a bare 403 page, as it does on the API (t6 0.3.8).
+        request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(request, timeout=PAGE_TIMEOUT_SECONDS) as response:  # noqa: S310 - https and host checked
             if not _frame_io_host(response.geturl()):  # a redirect must stay on Frame.io
                 return None
             raw = response.read(PAGE_LIMIT_BYTES + 1)

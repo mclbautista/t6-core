@@ -2,6 +2,8 @@
 
 import json
 import unittest
+from unittest import mock
+import urllib.request
 
 from t6.frameio.api import FrameioApi
 from t6.frameio.model import GUEST_ID, GUEST_NAME, ResolvedComment
@@ -9,6 +11,7 @@ from t6.frameio.reads import FrameioReads
 from t6.frameio.requests import ResolveComment
 from t6.frameio.share_page import fetch_share_page, guest_name
 from t6.frameio.testing import FakeFrameio, StaticTokens
+from t6.frameio.tokens import USER_AGENT
 
 ACCOUNT = "acc-1"
 
@@ -36,6 +39,32 @@ class GuestNameParsingTest(unittest.TestCase):
         name = guest_name(html, "c1")
         assert name is not None
         self.assertTrue(name.startswith("Guest Ana") and len(name) == 80 and "\x00" not in name)
+
+    def test_the_page_is_fetched_as_the_t6_worker_not_as_python(self) -> None:
+        # Frame.io answers Python's default User-Agent with a bare 403 page, so the name was never read (#545).
+        sent: list[urllib.request.Request] = []
+
+        class Response:
+            def __enter__(self) -> "Response":
+                return self
+
+            def __exit__(self, *exc: object) -> None:
+                return None
+
+            def geturl(self) -> str:
+                return "https://f.io/s1"
+
+            def read(self, limit: int) -> bytes:
+                return b"<html></html>"
+
+        def urlopen(request: urllib.request.Request, timeout: float) -> Response:
+            sent.append(request)
+            return Response()
+
+        with mock.patch("urllib.request.urlopen", urlopen):
+            self.assertEqual(fetch_share_page("https://f.io/s1"), "<html></html>")
+        self.assertEqual(sent[0].get_header("User-agent"), USER_AGENT)
+        self.assertEqual(sent[0].full_url, "https://f.io/s1")
 
     def test_only_frame_io_https_pages_are_fetched(self) -> None:
         for url in ("http://f.io/s1", "https://example.com/s1", "https://frame.io.example.com/s1", "file:///etc/passwd"):
