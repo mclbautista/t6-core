@@ -2236,6 +2236,8 @@ class DriveAddInput(BaseModel):
     remarks: str | None = None
     needs_review: bool = False
     review_note: str | None = None
+    office_location: str | None = None  # where the Drive sits in the office, in the studio's own words
+    qr_code: str | None = None  # the code on the Drive's label; one Drive holds it, in any case
     idempotency_key: str | None = None
     confirm: str | None = None
 
@@ -2258,6 +2260,8 @@ class DriveEditInput(BaseModel):
     purchase_date: str | None = None
     warranty: str | None = None
     remarks: str | None = None
+    office_location: str | None = None
+    qr_code: str | None = None
     expected_version: str | None = None
     idempotency_key: str | None = None
     confirm: str | None = None
@@ -2286,7 +2290,8 @@ def drive_fact_write(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outc
     if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
         return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
     people = _people()
-    verb = next(name for model, name in ((DriveAddInput, 'add'), (DriveEditInput, 'edit'), (DrivePromoteSerialInput, 'promote_serial'))
+    verb = next(name for model, name in ((DriveAddInput, 'add'), (DriveEditInput, 'edit'), (DrivePromoteSerialInput, 'promote_serial'),
+                                         (DriveCatalogSnapshotInput, 'catalog_snapshot'))
                 if type(inputs) is model)
     return DriveVerbs(people.registry, people.tokens).write(
         verb, inputs.model_dump(exclude={'idempotency_key', 'confirm'}, exclude_none=True), actor=_actor.get(),
@@ -2299,6 +2304,7 @@ class DriveListInput(BaseModel):
     needs_review: bool | None = None
     project: str | None = None
     status: Literal['in custody', 'released', 'retired', 'unknown'] | None = None
+    office_location: str | None = None  # a Drive whose location contains this text, in any case
 
 
 class DriveGetInput(BaseModel):
@@ -2306,7 +2312,14 @@ class DriveGetInput(BaseModel):
 
 
 class DriveFindInput(BaseModel):
-    serial: str
+    serial: str | None = None
+    qr_code: str | None = None
+
+    @model_validator(mode='after')
+    def _one_of(self) -> 'DriveFindInput':
+        if bool((self.serial or '').strip()) == bool((self.qr_code or '').strip()):
+            raise ValueError('Give either serial or qr_code')
+        return self
 
 
 class DriveShipmentsInput(BaseModel):
@@ -2350,6 +2363,8 @@ class DriveItem(BaseModel):
     purchase_date: str | None
     warranty: str | None
     remarks: str | None
+    office_location: str | None
+    qr_code: str | None
     version: str
     status: str
 
@@ -2400,12 +2415,92 @@ class DriveGetOutput(BaseModel):
 
 
 class DriveMatch(DriveItem):
-    match: Literal['accepted', 'suspected']
+    match: Literal['accepted', 'suspected', 'qr_code']
 
 
 class DriveFindOutput(BaseModel):
-    serial: str
+    serial: str | None = None
+    qr_code: str | None = None
     matches: list[DriveMatch]
+
+
+class DriveCatalogSnapshotInput(BaseModel):
+    """A dated scan of a Drive's contents. Each scan is kept as the changes since the one before it."""
+    drive: str
+    captured_on: str  # the day of the scan, YYYY-MM-DD; later than the Drive's last scan
+    root_path: str = '/'  # what was scanned, such as the volume name
+    entries: list[dict[str, Any]]  # each: path (relative, forward slashes), kind (file or dir), and for a file size_bytes, optional mtime and checksum
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class DriveCatalogSnapshotOutput(BaseModel):
+    action: str
+    drive_ids: list[str]
+    captured_on: str
+    root_path: str
+    parent_snapshot_id: str | None
+    entry_count: int
+    total_bytes: int
+    added: int
+    modified: int
+    removed: int
+    idempotency_key: str
+
+
+class DriveCatalogSnapshotsInput(BaseModel):
+    drive: str
+
+
+class DriveCatalogDiffInput(BaseModel):
+    drive: str
+    snapshot: str
+
+
+class DriveCatalogAtInput(BaseModel):
+    drive: str
+    on: str  # a day, YYYY-MM-DD: the tree as of the latest scan on or before it
+    prefix: str | None = None  # only the paths under this folder
+
+
+class DriveCatalogSnapshotItem(BaseModel):
+    id: str
+    captured_on: str
+    parent_snapshot_id: str | None
+    root_path: str
+    entry_count: int
+    total_bytes: int
+
+
+class DriveCatalogSnapshotsOutput(BaseModel):
+    snapshots: list[DriveCatalogSnapshotItem]
+
+
+class DriveCatalogChange(BaseModel):
+    path: str
+    kind: str
+    change: Literal['added', 'modified', 'removed']
+    size_bytes: int | None
+    mtime: str | None
+    checksum: str | None
+
+
+class DriveCatalogDiffOutput(BaseModel):
+    snapshot: DriveCatalogSnapshotItem
+    changes: list[DriveCatalogChange]
+
+
+class DriveCatalogEntryItem(BaseModel):
+    path: str
+    kind: str
+    size_bytes: int | None
+    mtime: str | None
+    checksum: str | None
+
+
+class DriveCatalogAtOutput(BaseModel):
+    snapshot: DriveCatalogSnapshotItem
+    entries: list[DriveCatalogEntryItem]
 
 
 class DriveShipmentItem(BaseModel):
@@ -2460,7 +2555,23 @@ def drive_read(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
             if result is None:
                 return Refused(rule='drive', reason=f'Drive {inputs.drive} not found')
         elif isinstance(inputs, DriveFindInput):
-            result = drive_reads.find(store, inputs.serial)
+            result = drive_reads.find(store, inputs.serial, inputs.qr_code)
+        elif isinstance(inputs, DriveCatalogSnapshotsInput):
+            result = drive_reads.catalog_snapshots(store, inputs.drive)
+            if result is None:
+                return Refused(rule='drive', reason=f'Drive {inputs.drive} not found')
+        elif isinstance(inputs, DriveCatalogDiffInput):
+            result = drive_reads.catalog_diff(store, inputs.drive, inputs.snapshot)
+            if result is None:
+                return Refused(rule='snapshot', reason=f'Drive {inputs.drive} has no snapshot {inputs.snapshot}')
+        elif isinstance(inputs, DriveCatalogAtInput):
+            try:
+                day = IsoDate.fromisoformat(inputs.on)
+            except ValueError:
+                return Refused(rule='input', reason='on must be a date as YYYY-MM-DD')
+            result = drive_reads.catalog_at(store, inputs.drive, day, inputs.prefix)
+            if result is None:
+                return Refused(rule='snapshot', reason=f'Drive {inputs.drive} had no scan by {inputs.on}')
         elif isinstance(inputs, DriveShipmentInput):
             result = drive_reads.shipment(store, inputs.shipment)
             if result is None:
@@ -2548,9 +2659,13 @@ VERBS = (
     Verb('drive', 'add', 'Register a Drive', (), DriveAddInput, DriveFactsOutput, 'drives', 'Preview and confirm; a serial already recorded is refused, naming the Drive that holds it.', drive_fact_write),
     Verb('drive', 'edit', 'Correct the facts of a Drive', (), DriveEditInput, DriveFactsOutput, 'drives', 'Preview and confirm; changes only the facts named, and an empty value clears one. expected_version (from drive get or list) refuses the edit if the Drive changed since. Custody events and Assignments are not touched.', drive_fact_write),
     Verb('drive', 'promote-serial', 'Accept the suspected serial of a Drive', (), DrivePromoteSerialInput, DriveFactsOutput, 'drives', 'Preview and confirm; the suspected serial becomes the accepted one, only if no other Drive holds it.', drive_fact_write),
-    Verb('drive', 'list', 'List Drives with their custody status', (), DriveListInput, DriveListOutput, 'reader', 'Filters (q, serial, needs_review, project, status) combine with AND. project is a T6 Project ID with an open Assignment. Each Drive carries its version and open Assignments.', drive_read, read_only=True),
+    Verb('drive', 'catalog-snapshot', 'Record a dated scan of a Drive\'s contents', (), DriveCatalogSnapshotInput, DriveCatalogSnapshotOutput, 'drives', 'Preview and confirm; send the whole manifest both times (the token binds it). Only what changed since the Drive\'s last scan is kept, and the preview counts added, modified and removed paths. A scan must be dated after the last one. A scan can be large (about 8,000 files is 1 to 2 MB), so this verb accepts a request up to 16 MB on the tailnet listener only.', drive_fact_write),
+    Verb('drive', 'catalog-snapshots', 'List the scans of a Drive', (), DriveCatalogSnapshotsInput, DriveCatalogSnapshotsOutput, 'reader', 'Oldest first, each with its date, entry count and total bytes.', drive_read, read_only=True),
+    Verb('drive', 'catalog-diff', 'Show what one scan of a Drive changed', (), DriveCatalogDiffInput, DriveCatalogDiffOutput, 'reader', 'The paths added, modified or removed by the snapshot, in path order.', drive_read, read_only=True),
+    Verb('drive', 'catalog-at', 'Show what a Drive held on a day', (), DriveCatalogAtInput, DriveCatalogAtOutput, 'reader', 'The whole tree as of the latest scan dated on or before the day, in path order; prefix limits it to one folder. Refused when the Drive had no scan by then.', drive_read, read_only=True),
+    Verb('drive', 'list', 'List Drives with their custody status', (), DriveListInput, DriveListOutput, 'reader', 'Filters (q, serial, needs_review, project, status, office_location) combine with AND. project is a T6 Project ID with an open Assignment. Each Drive carries its version and open Assignments.', drive_read, read_only=True),
     Verb('drive', 'get', 'Show one Drive', (), DriveGetInput, DriveGetOutput, 'reader', 'Facts, status, custody events in append order, numbered Assignments, source rows and linked Deliveries.', drive_read, read_only=True),
-    Verb('drive', 'find', 'Find Drives by serial', (), DriveFindInput, DriveFindOutput, 'reader', 'Matches an accepted or a suspected serial, in any spelling.', drive_read, read_only=True),
+    Verb('drive', 'find', 'Find Drives by serial', (), DriveFindInput, DriveFindOutput, 'reader', 'Give a serial or a qr_code. A serial matches an accepted or a suspected one, in any spelling; a QR code matches in any case.', drive_read, read_only=True),
     Verb('drive', 'shipments', 'List Drive shipments', (), DriveShipmentsInput, DriveShipmentsOutput, 'reader', 'One entry for each shipment, in the order first released.', drive_read, read_only=True),
     Verb('drive', 'shipment', 'Show one Drive shipment', (), DriveShipmentInput, DriveShipmentOutput, 'reader', 'The Drives of the shipment with their release events and the recipient. Facts are as they were at release; facts_at_release is false for an earlier shipment, which shows current facts.', drive_read, read_only=True),
     Verb('drive', 'exceptions', 'List the Drive import exceptions', (), DriveExceptionsInput, DriveExceptionsOutput, 'reader', 'Rows the Drive import could not read, kept for review.', drive_read, read_only=True),
@@ -2736,6 +2851,11 @@ def _boolean(value: str) -> bool:
     if value.lower() in {"false", "0"}:
         return False
     raise argparse.ArgumentTypeError("expected true or false")
+
+
+def _json_list_file(value: str) -> Any:
+    """A command-line argument naming a JSON file whose content is a list of objects (a Drive scan manifest)."""
+    return json.loads(Path(value).read_text(encoding='utf-8'))
 
 
 def _argument_type(annotation: Any) -> tuple[Any, bool]:
@@ -3175,6 +3295,10 @@ def add_parsers(commands: Any) -> None:
             parser.set_defaults(registered_verb=entry)
             continue
         for name, field in entry.input_model.model_fields.items():
+            if field.annotation == list[dict[str, Any]]:  # too big for flags: the argument names a JSON file
+                parser.add_argument("--" + name.replace("_", "-"), type=_json_list_file, required=field.is_required(), metavar="FILE",
+                                    help="Path of a JSON file holding the list of objects")
+                continue
             arg_type, is_list = _argument_type(field.annotation)
             options: dict[str, Any] = {"type": arg_type, "required": field.is_required(),
                                        "default": None if field.is_required() else field.get_default(call_default_factory=True)}

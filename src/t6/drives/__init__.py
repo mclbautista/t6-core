@@ -20,7 +20,7 @@ from uuid import uuid4
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Iterable, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Iterable, Literal, Protocol, Sequence
 
 from t6.vocabulary import DRIVE_ROLES
 
@@ -29,12 +29,18 @@ if TYPE_CHECKING:
 
 __all__ = [
     "Assignment",
+    "CatalogContents",
+    "CatalogDiffEntry",
+    "CatalogEntry",
+    "CatalogOutOfOrder",
+    "CatalogSnapshot",
     "CustodyEvent",
     "CustodyKind",
     "Drive",
     "DriveStatus",
     "DriveStore",
     "DuplicateAssignment",
+    "DuplicateQrCode",
     "DuplicateSerial",
     "Ownership",
     "FormFactor",
@@ -45,13 +51,19 @@ __all__ = [
     "Role",
     "SourceRow",
     "UnknownDrive",
+    "catalog_entries",
     "derive_status",
+    "diff_catalog",
+    "fold_catalog",
+    "new_catalog_snapshot",
+    "normalize_qr_code",
     "normalize_serial",
     "open_duplicate",
     "parse_capacity_tb",
     "shipment_manifest",
 ]
 
+_QR_CODE = re.compile(r"[A-Z0-9_-]{2,64}")
 _NOTE = re.compile(r"\([^)]*\)|\[[^\]]*\]")
 _SPACES = re.compile(r"\s+")
 _SIZE = re.compile(r"(\d+(?:\.\d+)?)\s*(TB|T|GB|G)(?![A-Z])", re.IGNORECASE)
@@ -66,6 +78,20 @@ def normalize_serial(raw: str) -> str:
     """
     without_notes = _NOTE.sub(" ", raw)
     return _SPACES.sub(" ", without_notes).strip().upper()
+
+
+def normalize_qr_code(raw: str) -> str | None:
+    """The QR code as stored: trimmed and upper-cased, so a scan in any case finds the Drive.
+
+    A blank code is no code (None). Otherwise it must be 2 to 64 letters, digits, hyphens or underscores, so it
+    is safe in a URL path (`/qr/<code>`) and in a printed label.
+    """
+    code = raw.strip().upper()
+    if not code:
+        return None
+    if not _QR_CODE.fullmatch(code):
+        raise ValueError("a QR code is 2 to 64 letters, digits, hyphens or underscores")
+    return code
 
 
 def parse_capacity_tb(text: str) -> float:
@@ -134,6 +160,8 @@ class Drive:
     purchase_date: date | None = field(default=None, compare=False)
     warranty: str | None = field(default=None, compare=False)
     remarks: str | None = field(default=None, compare=False)
+    office_location: str | None = field(default=None, compare=False)
+    qr_code: str | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"t6d_[0-9a-f]{32}", self.id):
@@ -147,8 +175,10 @@ class Drive:
                 object.__setattr__(self, name, normalized)
         if self.capacity_tb is not None and self.capacity_tb <= 0:
             raise ValueError(f"capacity must be more than 0 TB, got {self.capacity_tb}")
-        for name in ("label", "description", "brand", "model", "format", "owner_studio_id", "warranty", "remarks", "review_note"):
+        for name in ("label", "description", "brand", "model", "format", "owner_studio_id", "warranty", "remarks", "review_note", "office_location"):
             object.__setattr__(self, name, _blank_to_none(getattr(self, name)))
+        if self.qr_code is not None:
+            object.__setattr__(self, "qr_code", normalize_qr_code(self.qr_code))
         if not self.ownership_known and self.owner_studio_id is not None:
             raise ValueError("a Drive of unknown ownership cannot have an owning Studio")
         if not any((self.serial, self.suspected_serial, self.label, self.description,
@@ -397,6 +427,151 @@ class DuplicateSerial(ValueError):
         self.serial = serial
 
 
+class DuplicateQrCode(ValueError):
+    """A Drive with this QR code is already recorded."""
+
+    def __init__(self, qr_code: str) -> None:
+        super().__init__(f"a Drive with QR code {qr_code!r} is already recorded")
+        self.qr_code = qr_code
+
+
+class CatalogOutOfOrder(ValueError):
+    """A catalog snapshot dated on or before the Drive's latest one.
+
+    Each snapshot is stored as the changes since the one before it, so scans are recorded in date order.
+    """
+
+    def __init__(self, captured_on: date, latest: date) -> None:
+        super().__init__(f"a catalog scan must be dated after the latest one ({latest.isoformat()}), not {captured_on.isoformat()}")
+        self.captured_on, self.latest = captured_on, latest
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CatalogEntry:
+    """One file or folder of a scanned Drive.
+
+    `path` is relative to the scanned root, with forward slashes. A file has a size; a folder has none. `mtime` is
+    the scan's own text (ISO 8601 is expected) and `checksum` is optional; both are kept as given.
+    """
+
+    path: str
+    kind: Literal["file", "dir"]
+    size_bytes: int | None = None
+    mtime: str | None = None
+    checksum: str | None = None
+
+    def __post_init__(self) -> None:
+        parts = [part.strip() for part in self.path.replace("\\", "/").strip().strip("/").split("/")]
+        if self.path.strip().startswith("/") or not all(parts) or any(part in (".", "..") for part in parts) or "\x00" in self.path:
+            raise ValueError(f"cannot read catalog path {self.path!r}: expected a relative path inside the Drive")
+        object.__setattr__(self, "path", "/".join(parts))
+        if self.kind not in ("file", "dir"):
+            raise ValueError(f"catalog kind must be file or dir, not {self.kind!r}")
+        if self.kind == "dir" and self.size_bytes is not None:
+            raise ValueError("a folder has no size")
+        if self.kind == "file" and (not isinstance(self.size_bytes, int) or isinstance(self.size_bytes, bool) or self.size_bytes < 0):
+            raise ValueError("a file needs a size in bytes, 0 or more")
+        for name in ("mtime", "checksum"):
+            object.__setattr__(self, name, _blank_to_none(getattr(self, name)))
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CatalogDiffEntry:
+    """One change a snapshot made to the tree before it. A removed entry keeps the facts it had."""
+
+    path: str
+    kind: Literal["file", "dir"]
+    change: Literal["added", "modified", "removed"]
+    size_bytes: int | None = None
+    mtime: str | None = None
+    checksum: str | None = None
+
+    @property
+    def entry(self) -> CatalogEntry:
+        return CatalogEntry(path=self.path, kind=self.kind, size_bytes=self.size_bytes, mtime=self.mtime, checksum=self.checksum)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CatalogSnapshot:
+    """One dated scan of a Drive. Its entries are not stored whole: see `CatalogDiffEntry`.
+
+    `entry_count` and `total_bytes` describe the whole tree as of this scan, not just the changes.
+    """
+
+    id: str
+    drive_id: str
+    captured_on: date
+    parent_snapshot_id: str | None
+    root_path: str
+    entry_count: int
+    total_bytes: int
+    created_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogContents:
+    """What a Drive held on a date: the scan in effect that day and the whole tree as of it, in path order."""
+
+    snapshot: CatalogSnapshot
+    entries: tuple[CatalogEntry, ...]
+
+
+def catalog_entries(raw: Iterable[Mapping[str, Any]]) -> tuple[CatalogEntry, ...]:
+    """Read a scan's manifest: each entry checked, a path listed twice refused, the result in path order."""
+    entries = [CatalogEntry(**dict(item)) for item in raw]
+    paths = [entry.path for entry in entries]
+    if len(set(paths)) != len(paths):
+        raise ValueError("a catalog path is listed more than once")
+    return tuple(sorted(entries, key=lambda entry: entry.path))
+
+
+def diff_catalog(previous: Mapping[str, CatalogEntry], incoming: Sequence[CatalogEntry]) -> tuple[CatalogDiffEntry, ...]:
+    """What changed from `previous` (path to entry) to `incoming`, in path order."""
+    now = {entry.path: entry for entry in incoming}
+    changes: list[CatalogDiffEntry] = []
+    for path in sorted(previous.keys() | now.keys()):
+        old, new = previous.get(path), now.get(path)
+        if new is not None and old is None:
+            change = "added"
+        elif new is None:
+            change, new = "removed", old
+        elif new != old:
+            change = "modified"
+        else:
+            continue
+        assert new is not None
+        changes.append(CatalogDiffEntry(path=path, kind=new.kind, change=change, size_bytes=new.size_bytes, mtime=new.mtime, checksum=new.checksum))  # type: ignore[arg-type]
+    return tuple(changes)
+
+
+def fold_catalog(diffs: Iterable[Iterable[CatalogDiffEntry]]) -> dict[str, CatalogEntry]:
+    """The tree after applying each snapshot's changes in order."""
+    tree: dict[str, CatalogEntry] = {}
+    for changes in diffs:
+        for change in changes:
+            if change.change == "removed":
+                tree.pop(change.path, None)
+            else:
+                tree[change.path] = change.entry
+    return tree
+
+
+def new_catalog_snapshot(drive_id: str, history: Sequence[tuple[CatalogSnapshot, Sequence[CatalogDiffEntry]]], captured_on: date, root_path: str,
+                         entries: Sequence[CatalogEntry], created_at: float) -> tuple[CatalogSnapshot, tuple[CatalogDiffEntry, ...]]:
+    """The snapshot and the changes a new scan adds to a Drive's `history` (oldest first).
+
+    Raises CatalogOutOfOrder when the scan is not dated after the latest one.
+    """
+    latest = history[-1][0] if history else None
+    if latest is not None and captured_on <= latest.captured_on:
+        raise CatalogOutOfOrder(captured_on, latest.captured_on)
+    diff = diff_catalog(fold_catalog(changes for _, changes in history), entries)
+    snapshot = CatalogSnapshot(id=f"snap_{uuid4().hex}", drive_id=drive_id, captured_on=captured_on, parent_snapshot_id=latest.id if latest else None,
+                               root_path=root_path.strip() or "/", entry_count=len(entries), total_bytes=sum(entry.size_bytes or 0 for entry in entries),
+                               created_at=created_at)
+    return snapshot, diff
+
+
 class DriveStore(Protocol):
     """Store addressed by exact, case-sensitive permanent Drive IDs.
 
@@ -418,6 +593,30 @@ class DriveStore(Protocol):
 
     def find_by_serial(self, serial: str) -> Drive | None:
         """Normalize and match accepted serials only; never suspected values."""
+        ...
+
+    def find_by_qr_code(self, qr_code: str) -> Drive | None:
+        """Find by QR code, in any case. Unknown codes return None."""
+        ...
+
+    def record_catalog(self, drive_id: str, captured_on: date, root_path: str, entries: Sequence[CatalogEntry], created_at: float
+                       ) -> tuple[CatalogSnapshot, tuple[CatalogDiffEntry, ...]]:
+        """Record a dated scan as the changes since the Drive's latest one, and return the snapshot with those changes.
+
+        Raises UnknownDrive, or CatalogOutOfOrder when `captured_on` is not after the latest snapshot.
+        """
+        ...
+
+    def catalog_snapshots(self, drive_id: str) -> tuple[CatalogSnapshot, ...]:
+        """The Drive's snapshots, oldest first. Raises UnknownDrive."""
+        ...
+
+    def catalog_diff(self, drive_id: str, snapshot_id: str) -> tuple[CatalogDiffEntry, ...] | None:
+        """What one snapshot changed, in path order; None when the Drive has no such snapshot."""
+        ...
+
+    def contents_at(self, drive_id: str, on: date) -> CatalogContents | None:
+        """The tree as of the latest snapshot dated on or before `on`; None when the Drive had none by then. Raises UnknownDrive."""
         ...
 
     def has_suspected_serial(self, serial: str) -> bool:

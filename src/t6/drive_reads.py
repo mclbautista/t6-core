@@ -7,8 +7,9 @@ from __future__ import annotations
 
 from datetime import date
 
-from t6.drives import Assignment, CustodyEvent, Drive, DriveStore, Party, Ref, normalize_serial
-from t6.verbs import (DriveAssignmentItem, DriveEventItem, DriveExceptionItem, DriveExceptionsOutput, DriveFindOutput, DriveGetOutput, DriveItem,
+from t6.drives import Assignment, CatalogSnapshot, CustodyEvent, Drive, DriveStore, Party, Ref, normalize_serial
+from t6.verbs import (DriveCatalogAtOutput, DriveCatalogChange, DriveCatalogDiffOutput, DriveCatalogEntryItem, DriveCatalogSnapshotItem,
+                      DriveCatalogSnapshotsOutput, DriveAssignmentItem, DriveEventItem, DriveExceptionItem, DriveExceptionsOutput, DriveFindOutput, DriveGetOutput, DriveItem,
                       DriveListItem, DriveListOutput, DriveMatch, DriveParty, DriveRef, DriveRelease, DriveShipmentItem, DriveShipmentOutput,
                       DriveShipmentsOutput, DriveSourceItem)
 
@@ -31,7 +32,7 @@ def _item(store: DriveStore, drive: Drive) -> DriveItem:
                      needs_review=drive.needs_review, review_note=drive.review_note, brand=drive.brand, model=drive.model, capacity_tb=drive.capacity_tb,
                      format=drive.format, form_factor=drive.form_factor.value if drive.form_factor else None, ownership=drive.ownership.value,
                      owner_studio_id=drive.owner_studio_id, purchase_date=_day(drive.purchase_date), warranty=drive.warranty, remarks=drive.remarks,
-                     version=drive.version, status=status.value if status else 'unknown')
+                     office_location=drive.office_location, qr_code=drive.qr_code, version=drive.version, status=status.value if status else 'unknown')
 
 
 def _event(event: CustodyEvent) -> DriveEventItem:
@@ -46,8 +47,10 @@ def _assignment(number: int, assignment: Assignment) -> DriveAssignmentItem:
 
 
 def list_drives(store: DriveStore, *, q: str | None = None, serial: str | None = None, needs_review: bool | None = None,
-                project: str | None = None, status: str | None = None) -> DriveListOutput:
+                project: str | None = None, status: str | None = None,
+                office_location: str | None = None) -> DriveListOutput:
     serial, project = (serial or '').strip(), (project or '').strip()
+    place = (office_location or '').strip().casefold()
     drives: tuple[Drive, ...] = store.list_drives()
     if serial:
         held = store.find_by_serial(serial)
@@ -55,7 +58,8 @@ def list_drives(store: DriveStore, *, q: str | None = None, serial: str | None =
     needle = (q or '').strip().casefold()
     out = {drive.id for drive, _ in store.open_assignments(Ref(page_id=project))} if project else None
     kept = [d for d in drives
-            if (not needle or any(needle in (value or '').casefold() for value in (d.id, d.serial, d.suspected_serial, d.label, d.description)))
+            if (not needle or any(needle in (value or '').casefold() for value in (d.id, d.serial, d.suspected_serial, d.label, d.description, d.qr_code, d.office_location)))
+            and (not place or place in (d.office_location or '').casefold())
             and (needs_review is None or d.needs_review == needs_review) and (out is None or d.id in out)]
     items = [(_item(store, d), d) for d in kept]
     return DriveListOutput(drives=[DriveListItem(**item.model_dump(), open_assignments=[_assignment(n, a) for n, a in enumerate(store.list_assignments(d.id), 1) if a.is_open])
@@ -72,12 +76,53 @@ def get(store: DriveStore, drive_id: str) -> DriveGetOutput | None:
                           deliveries=list(store.drive_deliveries(drive_id)))
 
 
-def find(store: DriveStore, serial: str) -> DriveFindOutput:
-    normalized = normalize_serial(serial)
-    held = store.find_by_serial(serial)
+def find(store: DriveStore, serial: str | None = None, qr_code: str | None = None) -> DriveFindOutput:
+    if qr_code and qr_code.strip():
+        try:
+            held = store.find_by_qr_code(qr_code)
+        except ValueError:
+            held = None
+        return DriveFindOutput(qr_code=held.qr_code if held else qr_code.strip().upper(),
+                               matches=[DriveMatch(match='qr_code', **_item(store, held).model_dump())] if held else [])
+    normalized = normalize_serial(serial or '')
+    held = store.find_by_serial(serial or '')
     matches = [DriveMatch(match='accepted', **_item(store, held).model_dump())] if held else []
     matches += [DriveMatch(match='suspected', **_item(store, d).model_dump()) for d in store.list_drives() if normalized and d.suspected_serial == normalized]
     return DriveFindOutput(serial=normalized, matches=matches)
+
+
+def _snapshot(snapshot: CatalogSnapshot) -> DriveCatalogSnapshotItem:
+    return DriveCatalogSnapshotItem(id=snapshot.id, captured_on=snapshot.captured_on.isoformat(), parent_snapshot_id=snapshot.parent_snapshot_id,
+                                    root_path=snapshot.root_path, entry_count=snapshot.entry_count, total_bytes=snapshot.total_bytes)
+
+
+def catalog_snapshots(store: DriveStore, drive_id: str) -> DriveCatalogSnapshotsOutput | None:
+    if store.get_drive(drive_id) is None:
+        return None
+    return DriveCatalogSnapshotsOutput(snapshots=[_snapshot(s) for s in store.catalog_snapshots(drive_id)])
+
+
+def catalog_diff(store: DriveStore, drive_id: str, snapshot_id: str) -> DriveCatalogDiffOutput | None:
+    if store.get_drive(drive_id) is None:
+        return None
+    changes = store.catalog_diff(drive_id, snapshot_id)
+    snapshot = next((s for s in store.catalog_snapshots(drive_id) if s.id == snapshot_id), None)
+    if changes is None or snapshot is None:
+        return None
+    return DriveCatalogDiffOutput(snapshot=_snapshot(snapshot), changes=[
+        DriveCatalogChange(path=c.path, kind=c.kind, change=c.change, size_bytes=c.size_bytes, mtime=c.mtime, checksum=c.checksum) for c in changes])
+
+
+def catalog_at(store: DriveStore, drive_id: str, on: date, prefix: str | None = None) -> DriveCatalogAtOutput | None:
+    if store.get_drive(drive_id) is None:
+        return None
+    found = store.contents_at(drive_id, on)
+    if found is None:
+        return None
+    folder = (prefix or '').strip().strip('/')
+    kept = [e for e in found.entries if not folder or e.path == folder or e.path.startswith(folder + '/')]
+    return DriveCatalogAtOutput(snapshot=_snapshot(found.snapshot), entries=[
+        DriveCatalogEntryItem(path=e.path, kind=e.kind, size_bytes=e.size_bytes, mtime=e.mtime, checksum=e.checksum) for e in kept])
 
 
 def shipments(store: DriveStore) -> DriveShipmentsOutput:

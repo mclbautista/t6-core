@@ -109,6 +109,16 @@ the shipment. `drive shipment` returns the kept facts and the recipient. A shipm
 with no kept facts, released before migration 42 or made by the workbook importers,
 returns the Drives' current facts and `facts_at_release: false`.
 
+## Finding a Drive on a shelf, and what it holds (#549)
+
+A Drive carries two more facts, both set with `drive add` and `drive edit` and both part of `Drive.version`: `office_location` (free text such as `Office A / Shelf 1`) and `qr_code`. A QR code is trimmed and upper-cased, 2 to 64 characters of A-Z, 0-9, `-` and `_` so it is safe in a URL; one Drive holds a code, and a second holder is refused with rule `qr_code` (`DuplicateQrCode` in the store). A blank clears either fact. `drive find` takes `serial` or `qr_code` (exactly one); a QR match has `match: "qr_code"`. `drive list` takes `office_location` (contains, any case), and `q` also searches both facts. Adding the two facts changes every Drive's `version` once, on the release that ships them.
+
+`drive catalog-snapshot` records a dated scan of a Drive's contents (`drive`, `captured_on`, `root_path`, `entries`). Each entry is `path` (relative, forward slashes), `kind` (`file` or `dir`), and for a file `size_bytes`, with optional `mtime` and `checksum`. A scan is kept as the changes since the Drive's last scan (`added`, `modified`, `removed`), so a Drive that barely changed costs a few rows, not a copy of the tree. The first scan is all `added`; an unchanged scan is recorded with no changes; a scan must be dated after the last one (rule `catalog_order`). The Preview holds counts and the parent snapshot, not the manifest: send the manifest again at confirm, and the token binds it. Confirm is refused with `drive_changed` if another scan landed after the Preview.
+
+Reads: `drive catalog-snapshots` lists a Drive's scans, `drive catalog-diff` shows what one scan changed, and `drive catalog-at` (`on`, optional `prefix`) shows the whole tree as of the latest scan dated on or before the day, refused when the Drive had no scan by then. In the store these are `record_catalog`, `catalog_snapshots`, `catalog_diff` and `contents_at`; the fold and diff rules are shared by the SQLite and in-memory stores. Tables are `drive_catalog_snapshots` and `drive_catalog_changes` (migration 47), and `drives.qr_code` has a unique index.
+
+**Request size.** About 8,000 files is 1 to 2 MB of JSON, over the 1 MB request limit, and the manifest is sent twice (Preview and confirm). The limit is raised to 16 MB for `POST /v1/drive/catalog-snapshot` only, and only on the tailnet listener, where the verb API is served; every other path keeps 1 MB. The CLI reads the manifest from a file: `t6 drive catalog-snapshot --drive ID --captured-on 2026-03-01 --entries manifest.json`. The 16 MB is checked from the `Content-Length` before the body is read, like the 1 MB limit.
+
 ## Import receipts
 
 Both workbook entrypoints use `DriveStore.import_row(row_key, drive, assignment,

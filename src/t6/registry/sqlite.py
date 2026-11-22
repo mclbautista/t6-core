@@ -376,6 +376,13 @@ _MIGRATIONS = (
     ALTER TABLE concern_brief_messages ADD COLUMN brief_date TEXT"""),
     # Every open's activity backfill looks up activity by audit_id; without this it scans activity once per audit row (#502).
     (46, False, "CREATE INDEX IF NOT EXISTS activity_by_audit ON activity (audit_id)"),
+    # Drives gain a QR code (found by it, held by one Drive) and dated catalog snapshots kept as the changes since the one before (#549).
+    (47, False, """ALTER TABLE drives ADD COLUMN qr_code TEXT;
+    CREATE UNIQUE INDEX drives_by_qr_code ON drives (qr_code) WHERE qr_code IS NOT NULL;
+    CREATE TABLE drive_catalog_snapshots (id TEXT PRIMARY KEY, drive_id TEXT NOT NULL REFERENCES drives(id), captured_on TEXT NOT NULL, parent_snapshot_id TEXT,
+        root_path TEXT NOT NULL, entry_count INTEGER NOT NULL, total_bytes INTEGER NOT NULL, created_at REAL NOT NULL, UNIQUE (drive_id, captured_on));
+    CREATE TABLE drive_catalog_changes (snapshot_id TEXT NOT NULL REFERENCES drive_catalog_snapshots(id), path TEXT NOT NULL, kind TEXT NOT NULL, change TEXT NOT NULL,
+        size_bytes INTEGER, mtime TEXT, checksum TEXT, PRIMARY KEY (snapshot_id, path))"""),
 )
 
 

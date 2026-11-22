@@ -18,7 +18,7 @@ from t6.verbs import (
     MediaLinkInput, MediaUnlinkInput, TimelineLinkInput, TimelineListInput, FrameioProjectInput, MediaListInput, MediaMigrateInput,
     TranscriptCreateInput, TranscriptGetInput, TranscriptSpeakersInput, TranscriptTranslateInput,
     DriveReceiveInput, DriveReleaseInput, DriveReturnInput, DriveRetireInput, DriveAssignInput, DriveUnassignInput,
-    DriveAddInput, DriveEditInput, DrivePromoteSerialInput, DriveListInput, DriveGetInput, DriveFindInput, DriveShipmentsInput, DriveShipmentInput, DriveExceptionsInput,
+    DriveAddInput, DriveEditInput, DrivePromoteSerialInput, DriveListInput, DriveGetInput, DriveFindInput, DriveCatalogSnapshotInput, DriveCatalogSnapshotsInput, DriveCatalogDiffInput, DriveCatalogAtInput, DriveShipmentsInput, DriveShipmentInput, DriveExceptionsInput,
     MachineEditInput, MachineListInput, MachineSyncInput,
     SwingAssignInput, SwingUnassignInput, SwingReturnInput, SwingOverdueInput,
     BayBookInput, BayListInput, BookingMoveInput, BookingExtendInput, BookingCancelInput, BookingGetInput, BookingListInput,
@@ -175,6 +175,18 @@ class Client:
 
     def drive_find(self, inputs: DriveFindInput) -> Result:
         return self.call('drive', 'find', inputs)
+
+    def drive_catalog_snapshot(self, inputs: DriveCatalogSnapshotInput) -> Result:
+        return self.call('drive', 'catalog-snapshot', inputs)
+
+    def drive_catalog_snapshots(self, inputs: DriveCatalogSnapshotsInput) -> Result:
+        return self.call('drive', 'catalog-snapshots', inputs)
+
+    def drive_catalog_diff(self, inputs: DriveCatalogDiffInput) -> Result:
+        return self.call('drive', 'catalog-diff', inputs)
+
+    def drive_catalog_at(self, inputs: DriveCatalogAtInput) -> Result:
+        return self.call('drive', 'catalog-at', inputs)
 
     def drive_shipments(self, inputs: DriveShipmentsInput) -> Result:
         return self.call('drive', 'shipments', inputs)
