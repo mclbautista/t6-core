@@ -1,5 +1,7 @@
 """The `privacy_registry.rebuild` job replaces privacy_registry.json so masked reads and LLM calls hide a new Project at once (#539)."""
 import json
+import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,6 +31,13 @@ class RebuildTests(unittest.TestCase):
         self.assertEqual(result, {'people': 1, 'projects': 1})
         self.assertNotIn('Show One', json.dumps(result))
         self.assertEqual(json.loads(self.output.read_text(encoding='utf-8'))['projects'], [{'name': 'Show One'}])
+
+    def test_the_file_is_private_to_its_owner_even_with_a_loose_umask(self) -> None:
+        old = os.umask(0o022)
+        self.addCleanup(os.umask, old)
+        self.rebuild(object())
+        self.rebuild(object())  # a second rebuild replaces it and keeps the mode
+        self.assertEqual(stat.S_IMODE(self.output.stat().st_mode), 0o600)
 
     def test_a_project_added_later_is_masked_after_the_next_rebuild_with_no_restart(self) -> None:
         self.rebuild(object())
