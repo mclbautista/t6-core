@@ -126,20 +126,48 @@ the times from the Person's shift pattern. Booking verbs (`bay book`,
   service account) are never changed. Revoke sets view; it does not
   delete the entry.
 
+## Bay scans
+
+Decided in ADR 0008 (#18). Not built yet.
+
+- A **local copy** is a Resolve project held in a bay's local disk database rather than on the project server.
+- A **bay scan report** is what one bay's nightly job sends to t6: the scan time, the Resolve version and the bay's
+  local copies. It is tied to a Bay (`t6b_`) through the machine serial and the Machine to Bays mapping, never by name.
+  t6 keeps the latest one per Bay.
+- **Drift** is a local copy that does not match the project server by the definition #374 settles. The drift report
+  only reports; nothing is changed.
+
 ## Timelines
 
 A **Timeline** (`t6t_`) is a DaVinci Resolve sequence timeline known by its
-**stamp**: the `t6t_` ID a person writes by hand into the custom data of a
-marker at the timeline's first frame. The stamp is the identity; the Resolve
-name is only a label, so editors may rename and back up freely. Writing the
-stamp is a Resolve write and stays manual. Nothing in T6 writes to Resolve.
+**stamp**: the `t6t_` ID in the custom data of a marker at the timeline's
+first frame. The stamp is the identity; the Resolve name is only a label, so
+editors may rename and back up freely. T6 writes the stamp by code, through the
+Resolve worker; no person types it. This is the one Resolve write T6 makes
+(ADR 0002, rule 10).
 `timeline link` without `--stamp` creates the stamp: the preview shows the new
-`t6t_` ID (the same one for the same key), the confirm records exactly it, and
-the person then writes it into the marker by hand. A Timeline that already
+`t6t_` ID (the same one for the same key), and the confirm records exactly it
+as **pending** and queues a `resolve.stamp` job. The Resolve worker writes the
+marker and reads it back; a success marks the Timeline **stamped** (verified),
+and a failure marks it **failed** with the reason (`queue failed` shows the
+job). A job is tried once: if the worker stops mid-job its lease runs out, the
+job is dead and the Timeline failed. Linking a failed Timeline again (new key)
+queues it again, with or without `--stamp` (by its label, it keeps its stamp);
+it takes the name given as its label, in Audit. `timeline list`
+shows each Timeline's stamp state. Timelines linked before T6 wrote stamps
+count as stamped. A Timeline that already
 carries a stamp is not given a new one (pass `--stamp`), except that at confirm a timeline
-carrying exactly the stamp the preview showed is accepted (the person has written it
-by hand); a retried confirm with the same key returns the first result. `timeline list` refuses a
+carrying exactly the stamp the preview showed is accepted; a retried confirm with the same key returns the first result. `timeline list` refuses a
 Project that is not registered.
+
+- **Resolve worker**: the one process that holds Resolve scripting access and
+  the only Resolve writer. It runs on one Mac with Resolve Studio and claims
+  `resolve.stamp` jobs through the t6 API; it never opens the t6 database. It
+  writes only the stamp marker (add, update, read back) and never deletes a
+  marker. Before writing it refuses a timeline that carries a different stamp,
+  or a stamp already on another timeline of the project. It closes each
+  Resolve project it loads (Resolve locks a loaded project until then) and
+  makes the database that was current before current again.
 
 - A Timeline records its `t6t_` ID (the stamp), its Resolve project (the
   Project's active resolve-project Media location, on the project server) and
@@ -147,9 +175,15 @@ Project that is not registered.
   in other Resolve projects are not recorded.
 - **One Timeline per stamp.** Linking a stamp already linked to another Project
   or Resolve project is refused, and so is a stamp found on two timelines of the
-  Resolve project (a duplicate keeps the same stamp). The fix, re-stamping the
-  copy, is manual. Linking the same stamp again for the same Resolve project
-  records nothing new, whatever the name now is.
+  Resolve project (a duplicate keeps the same stamp). The fix is re-stamping
+  by code: `timeline restamp` (previewed) gives the copy that is not the
+  canonical Timeline a new `t6t_` ID, records it as a pending Timeline, and the
+  Resolve worker replaces the stamp on it. The canonical Timeline is refused by
+  its label or by the Resolve unique id its stamp was verified on, and the
+  worker refuses that id again at write time; the Timeline's Resolve project
+  must still be active. A failed re-stamp linked again still replaces the
+  duplicated stamp. Linking the same stamp again for the same Resolve project
+  records nothing new, whatever the name now is (a failed one aside, above).
 - A Resolve unique id is not the key: it changes on duplicate and import.
 - A **Version** may name its source Timeline (`version add --timeline`); the
   Timeline must belong to the Deliverable's Project.
@@ -206,7 +240,8 @@ for Bookings.
   per Project) apply. A retry after a failed step resumes without repeating
   the steps already done.
 - **Manual steps** the plan lists and does not do: creating the NAS folders, the
-  Resolve project, the Resolve timelines with their stamps (manual stamping).
+  Resolve project and the Resolve timelines. Their stamps are written by code
+  when each timeline is linked (`timeline link`).
   The apply records each in Activity (`project_start_manual`) with `project_start`.
 - **Frame.io step**: the apply asks the Frame.io worker (the only token holder)
   through the `frameio` queue for one Frame.io project and one folder per

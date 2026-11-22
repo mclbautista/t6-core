@@ -1887,6 +1887,37 @@ with `pip install 't6[resolve]'`.
 The table layout in `t6.resolve.schema` was checked read-only against the live
 server (PostgreSQL 13.4, server app 20) on 2026-11-16.
 
+### Resolve worker
+
+`python -m t6.worker` with `T6_WORKER_QUEUE=resolve` runs `resolve.stamp` jobs on
+one Mac with Resolve Studio: it loads the Resolve project, writes the Timeline
+stamp on the timeline's first frame through the scripting API, reads it back and
+saves (ADR 0002, rule 10 exception). It never opens the t6 database. It claims and
+finishes jobs through `POST /v1/resolve/{claim,extend,report,fail}` on the t6
+API's tailnet listener, which accept only the `resolve` identity. A job is never
+run again: any failure (Resolve not running, project locked or missing, a
+different stamp already there) ends it dead with the reason, `t6 queue failed`
+lists it and `t6 queue dismiss` clears it. A job whose worker stops mid-job is
+not claimed again when its lease runs out: it is dead and its Timeline failed.
+The worker closes each Resolve project it loads (Resolve locks it until then)
+and switches back to the database that was current.
+
+| Variable | Meaning |
+| --- | --- |
+| `T6_SERVER_URL` | The t6 API on its tailnet listener (where the database is), not the VPS edge. |
+| `T6_WORKER_SECRET` | A secret that `T6_API_SECRETS` on the API maps to `resolve`. |
+| `T6_WORKER_QUEUE` | `resolve`. |
+| `RESOLVE_SCRIPT_API` | `/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting` |
+| `RESOLVE_SCRIPT_LIB` | `/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion/fusionscript.so` |
+| `PYTHONPATH` | Must include `$RESOLVE_SCRIPT_API/Modules/`. The worker exits 2 when `DaVinciResolveScript` cannot be imported. |
+
+Resolve must run in the logged-in user's session, with Preferences, System,
+General, External scripting using set to Local. Run the worker as a user
+LaunchAgent (`~/Library/LaunchAgents`, `KeepAlive` true, the variables above in
+`EnvironmentVariables`), not a LaunchDaemon, so it reaches that session. The host
+needs a tailnet tag that may reach the t6 API; the deploy itself is
+mclbautista/t6-netops#151.
+
 ### CLI rename table
 
 Release 0.5.0 removed the old commands. Each now fails with exit status 2 and
@@ -2006,7 +2037,7 @@ A recorded live run (#213) must pass before the task is released.
 The full server exposes the studio API on its tailnet listener. Set
 `T6_API_SECRETS` to a JSON object mapping each distinct bearer secret to one
 Person ID (for example `t6n_...`) or one of `gateway`, `worker`, `reports`,
-`watchdog`, `munki`, `hermes`, `mcp`, `transcribe` and `Sixto (auto)`. `Sixto (auto)` is the actor of
+`watchdog`, `munki`, `hermes`, `mcp`, `transcribe`, `resolve` and `Sixto (auto)`. `Sixto (auto)` is the actor of
 automatic Concern changes: it may run Concern verbs and nothing else, and its
 reach is fixed in code, not in `T6_API_SERVICE_PERMISSIONS`. Keep this
 configuration secret. Set

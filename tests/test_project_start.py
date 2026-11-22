@@ -157,7 +157,7 @@ class ProjectStartTests(unittest.TestCase):
         self.assertEqual((steps[2]['project_name'], steps[2]['folders']), ('Show', ['Ep01', 'Ep02']))
         self.assertEqual(self.writer.calls, [])  # the preview asks Frame.io for nothing
         self.assertEqual(self.frameio.requests + [str(p) for p, _ in self.frameio.posts], [])
-        self.assertEqual(preview.plan['manual_steps'], ['NAS folders', 'Resolve project', 'Resolve timelines with their stamps'])
+        self.assertEqual(preview.plan['manual_steps'], ['NAS folders', 'Resolve project', 'Resolve timelines'])
         template = steps[6]
         self.assertEqual(template['template'], 'film')
         self.assertIn('piclock', template['milestones'])
@@ -536,7 +536,7 @@ class ProjectStartTests(unittest.TestCase):
         entries = [(i.action, i.summary) for i in self.registry.activity(self.project) if i.action.startswith('project_start')]
         self.assertIn(('project_start', 'project started'), entries)
         manual = [summary for action, summary in entries if action == 'project_start_manual']
-        self.assertEqual(sorted(manual), ['manual step: NAS folders', 'manual step: Resolve project', 'manual step: Resolve timelines with their stamps'])
+        self.assertEqual(sorted(manual), ['manual step: NAS folders', 'manual step: Resolve project', 'manual step: Resolve timelines'])
 
     def test_confirming_with_a_changed_input_is_refused_and_creates_nothing(self) -> None:
         preview = self.preview()

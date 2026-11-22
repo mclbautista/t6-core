@@ -8,7 +8,8 @@ runs `run_apply`: the plan is built again, then the Frame.io step, then the t6 s
 milestone template of the Project Type, the Media locations and the initial Bookings) through the stores that own
 them, each under a key derived from the Start's own key, so a retry creates nothing twice. A denied Approval ends
 the Start and applies nothing. The steps that are done by hand (NAS folders, the Resolve project, the Resolve
-timelines with their stamps) are listed in the plan and recorded in Activity when the Start is applied.
+timelines) are listed in the plan and recorded in Activity when the Start is applied. The timelines' stamps are
+written by code when each is linked with `timeline link`.
 
 The apply runs as the Person who confirmed the Start. If the plan is no longer the one confirmed, a step is
 refused or Frame.io fails, nothing more is applied and the Start is `failed` with the reason (Audit and Activity);
@@ -59,8 +60,8 @@ GATE = 'project start'
 MANUAL_STEPS = (
     ('nas folders', 'NAS folders', 'Create the NAS folders by hand: no worker has NAS write yet.'),
     ('resolve project', 'Resolve project', 'Create the Resolve project by hand, then link it with `media link`.'),
-    ('resolve timelines', 'Resolve timelines with their stamps',
-     'Create the Resolve timelines and write their stamps by hand (manual stamping), then record each with `timeline link`.'),
+    ('resolve timelines', 'Resolve timelines',
+     'Create the Resolve timelines by hand, then link each with `timeline link`: the Resolve worker writes its stamp.'),
 )
 # User-supplied `media` may not name these: the Frame.io Media locations come from the Frame.io step only.
 FRAMEIO_KINDS = ('frameio-project', 'frameio-folder')

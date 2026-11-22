@@ -20,7 +20,7 @@ from t6.vocabulary import PERSON_KINDS
 AUTO_ACTOR = 'Sixto (auto)'
 """The named service behind automatic Concern changes. It may run Concern verbs and nothing else."""
 
-SERVICES = frozenset({'gateway', 'worker', 'reports', 'watchdog', 'munki', 'hermes', 'mcp', 'transcribe', AUTO_ACTOR})
+SERVICES = frozenset({'gateway', 'worker', 'reports', 'watchdog', 'munki', 'hermes', 'mcp', 'transcribe', 'resolve', AUTO_ACTOR})
 
 # Internal actors: named, not a Person, used only inside the worker by one handler. They are not in SERVICES, so no API secret
 # can name them and `T6_API_SERVICE_PERMISSIONS` cannot grant them anything; their grants are fixed here.
