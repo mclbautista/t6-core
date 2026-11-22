@@ -52,6 +52,20 @@ def clip_remaining_seconds(duration: float, frame_rate: float, frame: float) -> 
     return max(0.0, duration - frame / frame_rate)
 
 
+def format_timecode(seconds: float) -> str:
+    """Format clip seconds as `MM:SS` under an hour, or `HH:MM:SS` at an hour or longer."""
+    if seconds != seconds or seconds <= 0:
+        return "00:00"
+    if seconds == float("inf"):
+        return "00:00"
+    whole = int(seconds + 1e-9)
+    hours, rem = divmod(whole, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
 class _Json:
     """JSON codec for a flat dataclass of text, flags, times and tuples of text."""
 
@@ -220,6 +234,10 @@ class ResolvedComment(_Json):
     """Where in the clip the comment sits, in frames (Frame.io's `timestamp`), or None."""
     remaining_seconds: float | None = None
     """How much of the clip is left after the comment, or None when it is not known."""
+    comment_timecode: str | None = None
+    """Where in the clip the comment sits (`MM:SS` or `HH:MM:SS`), or None when unknown."""
+    total_timecode: str | None = None
+    """Total length of the clip (`MM:SS` or `HH:MM:SS`), or None when unknown."""
 
     @classmethod
     def from_api(cls, raw: Mapping[str, Any], frameio_project_id: str) -> ResolvedComment:

@@ -18,7 +18,7 @@ message is sent anyway with "unknown" where the answer is missing.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 from datetime import datetime, timezone
 import html
@@ -38,9 +38,25 @@ SEND_ANYWAY_AT_ATTEMPT = 3
 
 UNKNOWN = "unknown"
 
+
 def link(url: str, label: str) -> str:
     """A Telegram HTML hyperlink. Both parts are escaped, the URL for use inside `href`."""
     return f'<a href="{html.escape(url, quote=True)}">{html.escape(label, quote=False)}</a>'
+
+
+def _timecode_line(payload: Mapping[str, JsonValue]) -> str:
+    """Comment and/or clip total timecode line (HTML-escaped), or empty string when neither is present."""
+    raw_comment = payload.get("comment_timecode")
+    raw_total = payload.get("total_timecode")
+    comment_tc = raw_comment.strip() if isinstance(raw_comment, str) and raw_comment.strip() else None
+    total_tc = raw_total.strip() if isinstance(raw_total, str) and raw_total.strip() else None
+    if comment_tc is not None and total_tc is not None:
+        return f"Timecode: {html.escape(comment_tc, quote=False)} / {html.escape(total_tc, quote=False)}\n"
+    if comment_tc is not None:
+        return f"Timecode: {html.escape(comment_tc, quote=False)}\n"
+    if total_tc is not None:
+        return f"Clip duration: {html.escape(total_tc, quote=False)}\n"
+    return ""
 
 
 class ReviewMessage:
@@ -104,6 +120,7 @@ class ReviewMessage:
             f"Frame.io link: {asset}\n"
             f"Started: {long_date(first)}\n"
             f"Stopped: {long_date(last)}\n"
+            f"{_timecode_line(payload)}"
             f"{comments} from them, {UNKNOWN if total is None else total} on the file in total"
         )
         target = self._target(project_id) if self._target is not None else None

@@ -436,13 +436,18 @@ class JobQueue:
                 ).rowcount
                 if not added:
                     return False
+            existing = db.execute(
+                "SELECT payload FROM timers WHERE queue = ? AND key = ?", (queue, key)
+            ).fetchone()
+            merged: dict[str, JsonValue] = dict(json.loads(existing[0])) if existing is not None else {}
+            merged.update(payload or {})
             db.execute(
                 "INSERT INTO timers (queue, key, kind, payload, fire_at, count, first_at, last_at) "
                 "VALUES (?, ?, ?, ?, ?, 1, ?, ?) ON CONFLICT (queue, key) DO UPDATE SET "
                 "kind = excluded.kind, payload = excluded.payload, "
                 "fire_at = MAX(fire_at, excluded.fire_at), count = count + 1, "
                 "first_at = COALESCE(first_at, excluded.first_at), last_at = excluded.last_at",
-                (queue, key, kind, json.dumps(dict(payload or {})), now + quiet_seconds, at, at),
+                (queue, key, kind, json.dumps(merged), now + quiet_seconds, at, at),
             )
             return True
 
