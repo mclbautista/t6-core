@@ -150,6 +150,7 @@ class ReviewMessageTests(ServerTestCase):
         self.run_worker()
         (ana,) = self.gateway.texts()
         self.assertIn("<b>Ana Reyes</b>", ana)
+        self.assertIn("Timecode: 01:27 / 02:46\n", ana)
 
     def test_a_comment_earlier_in_the_clip_does_not_bring_the_message_forward(self) -> None:
         self.fake.set_clip("f1", 600.0, 25.0)
@@ -163,6 +164,7 @@ class ReviewMessageTests(ServerTestCase):
         self.run_worker()
         (ana,) = self.gateway.texts()
         self.assertIn("2 comments", ana)
+        self.assertIn("Timecode: 08:20 / 10:00\n", ana)
 
     def test_without_the_clip_length_the_fixed_fifteen_minutes_apply(self) -> None:
         self.comment_at_frame("c1", "u-a", 2108)  # no Duration or Frame Rate on the file
@@ -171,7 +173,34 @@ class ReviewMessageTests(ServerTestCase):
         self.assertEqual(self.gateway.texts(), [])
         self.clock.advance(1)
         self.run_worker()
-        self.assertEqual(len(self.gateway.texts()), 1)
+        (text,) = self.gateway.texts()
+        self.assertNotIn("Timecode:", text)
+        self.assertNotIn("Clip duration:", text)
+
+    def test_timecodes_are_html_escaped_and_rendered_when_only_one_is_known(self) -> None:
+        from t6.worker.client import WorkerJob
+
+        for extra, expected in (
+            ({"comment_timecode": "01:27<bad>", "total_timecode": "02:46&more"}, "Timecode: 01:27&lt;bad&gt; / 02:46&amp;more\n"),
+            ({"comment_timecode": "01:27"}, "Timecode: 01:27\n"),
+            ({"total_timecode": "02:46"}, "Clip duration: 02:46\n"),
+        ):
+            with self.subTest(expected=expected):
+                gw = FakeNotify()
+                review = ReviewMessage(GatewayClient(gw, "secret"), CHAT, None, self.ask)
+                payload: dict[str, Any] = {
+                    "file_id": "f1",
+                    "frameio_project_id": "fp1",
+                    "user_id": "u-a",
+                    "user_name": "Ana Reyes",
+                    "count": 1,
+                    "first_at": 1700000000.0,
+                    "last_at": 1700000000.0,
+                    **extra,
+                }
+                review.notify(WorkerJob(1, "main", "frameio.review_done", f"k:{extra}", payload, "lease", 1))
+                (text,) = gw.texts()
+                self.assertIn(expected, text)
 
     def sent_share_line(self) -> str:
         self.comment("c1", "Ana Reyes", "u-a", "2026-11-12T10:00:00Z")

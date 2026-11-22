@@ -448,12 +448,26 @@ class WebhookApp:
             isinstance(remaining, (int, float)) and not isinstance(remaining, bool) and 0 <= remaining < float("inf")
         ):
             return Response(400, {"error": "remaining_seconds must be a number of seconds, 0 or more"})
+        timecodes: dict[str, str] = {}
+        for field_name in ("comment_timecode", "total_timecode"):
+            raw_tc = body.get(field_name)
+            if raw_tc is not None:
+                if not isinstance(raw_tc, str) or not raw_tc.strip():
+                    return Response(400, {"error": f"{field_name} must be a non-empty string"})
+                timecodes[field_name] = raw_tc.strip()
         try:
             moment = datetime.fromisoformat(str(texts["created_at"]))
         except ValueError:
             return Response(400, {"error": "created_at must be an ISO 8601 time"})
         if moment.tzinfo is None:
             moment = moment.replace(tzinfo=timezone.utc)
+        job_payload: dict[str, JsonValue] = {
+            "file_id": texts["file_id"],
+            "frameio_project_id": texts["frameio_project_id"],
+            "user_id": texts["user_id"],
+            "user_name": name,
+            **timecodes,
+        }
         counted = self._queue.arm_timer(
             MAIN_QUEUE,
             f"frameio.review:{texts['file_id']}:{texts['user_id']}",
@@ -461,12 +475,7 @@ class WebhookApp:
             self._config.review_quiet_seconds
             if remaining is None
             else float(remaining) + self._config.review_loop_allowance_seconds,
-            {
-                "file_id": texts["file_id"],
-                "frameio_project_id": texts["frameio_project_id"],
-                "user_id": texts["user_id"],
-                "user_name": name,
-            },
+            job_payload,
             event_key=f"frameio:review:{texts['comment_id']}",
             at=moment.timestamp(),
         )

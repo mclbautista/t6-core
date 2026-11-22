@@ -37,6 +37,7 @@ from t6.frameio.model import (
     _text,
     _time,
     clip_remaining_seconds,
+    format_timecode,
 )
 from t6.media_links import MediaLinks
 from t6.frameio.requests import (
@@ -325,8 +326,30 @@ class FrameioReads:
         if not isinstance(data, dict):
             raise ValueError(f"Frame.io gave no comment {request.comment_id}")
         comment = ResolvedComment.from_api(data, request.frameio_project_id)
-        remaining = self._remaining_seconds(request.account_id, comment)
-        return comment if remaining is None else replace(comment, remaining_seconds=remaining)
+        duration, frame_rate = self._clip_metadata(request.account_id, comment.file_id)
+        updates: dict[str, object] = {}
+        if duration is not None:
+            updates["total_timecode"] = format_timecode(duration)
+        if comment.frame is not None and frame_rate is not None:
+            updates["comment_timecode"] = format_timecode(comment.frame / frame_rate)
+            if duration is not None:
+                updates["remaining_seconds"] = clip_remaining_seconds(duration, frame_rate, comment.frame)
+        return comment if not updates else replace(comment, **updates)  # type: ignore[arg-type]
+
+    def _clip_metadata(self, account_id: str, file_id: str) -> tuple[float | None, float | None]:
+        """The file's `Duration` (seconds) and `Frame Rate` (fps), or None when missing or unreadable."""
+        path = f"/v4/accounts/{_id(account_id)}/files/{_id(file_id)}/metadata"
+        try:
+            data = self._api.get(path).get("data")
+        except FrameioError:
+            return None, None
+        found: dict[str, float] = {}
+        for entry in (data.get("metadata") if isinstance(data, dict) else None) or ():
+            name = entry.get("field_definition_name") if isinstance(entry, dict) else None
+            number = _number(entry.get("value")) if isinstance(entry, dict) else None
+            if isinstance(name, str) and number is not None:
+                found.setdefault(name.strip().casefold(), number)
+        return found.get(DURATION_FIELD), found.get(FRAME_RATE_FIELD)
 
     def _remaining_seconds(self, account_id: str, comment: ResolvedComment) -> float | None:
         """Clip seconds left after the comment, from the file's `Duration` and `Frame Rate`; None when unknown.
@@ -336,18 +359,7 @@ class FrameioReads:
         """
         if comment.frame is None:
             return None
-        path = f"/v4/accounts/{_id(account_id)}/files/{_id(comment.file_id)}/metadata"
-        try:
-            data = self._api.get(path).get("data")
-        except FrameioError:
-            return None
-        found: dict[str, float] = {}
-        for entry in (data.get("metadata") if isinstance(data, dict) else None) or ():
-            name = entry.get("field_definition_name") if isinstance(entry, dict) else None
-            number = _number(entry.get("value")) if isinstance(entry, dict) else None
-            if isinstance(name, str) and number is not None:
-                found.setdefault(name.strip().casefold(), number)
-        duration, frame_rate = found.get(DURATION_FIELD), found.get(FRAME_RATE_FIELD)
+        duration, frame_rate = self._clip_metadata(account_id, comment.file_id)
         if duration is None or frame_rate is None:
             return None
         return clip_remaining_seconds(duration, frame_rate, comment.frame)

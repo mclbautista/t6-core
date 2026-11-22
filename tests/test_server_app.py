@@ -188,7 +188,8 @@ class DedupeTests(ServerTestCase):
         self.assertEqual(self.app.public(frameio_request(self.clock, body)).status, 400)
 
     def arm(self, comment_id: str = "c1", file_id: str = "f1", user_id: str = "u1", at: str = "2026-11-12T10:00:00+00:00",
-            secret: str = FRAMEIO_WORKER_SECRET, remaining_seconds: object = None) -> Response:
+            secret: str = FRAMEIO_WORKER_SECRET, remaining_seconds: object = None,
+            comment_timecode: object = None, total_timecode: object = None) -> Response:
         body: dict[str, object] = {
             "comment_id": comment_id,
             "file_id": file_id,
@@ -199,6 +200,10 @@ class DedupeTests(ServerTestCase):
         }
         if remaining_seconds is not None:
             body["remaining_seconds"] = remaining_seconds
+        if comment_timecode is not None:
+            body["comment_timecode"] = comment_timecode
+        if total_timecode is not None:
+            body["total_timecode"] = total_timecode
         request = Request("POST", "/review/timers", {"Authorization": f"Bearer {secret}"}, json.dumps(body, allow_nan=True).encode())
         return self.app.tailnet(request)
 
@@ -302,6 +307,34 @@ class DedupeTests(ServerTestCase):
         for bad in ("soon", -1, True, float("inf")):
             with self.subTest(bad=bad):
                 self.assertEqual(self.arm(remaining_seconds=bad).status, 400)
+
+    def test_the_review_timer_route_forwards_and_merges_timecodes(self) -> None:
+        self.assertEqual(self.arm("c1", comment_timecode="01:27", total_timecode="02:46").status, 200)
+        self.clock.advance(60)
+        # Follow-up comment without a frame timestamp preserves the earlier comment's timecode.
+        self.assertEqual(self.arm("c2", total_timecode="02:46").status, 200)
+        self.clock.advance(15 * 60)
+        claim = self.queue.claim("main", 60)
+        assert claim is not None
+        self.assertEqual(claim.payload["comment_timecode"], "01:27")
+        self.assertEqual(claim.payload["total_timecode"], "02:46")
+        self.queue.ack(claim.job_id, claim.token)
+
+        # A newer framed comment updates comment_timecode.
+        self.assertEqual(self.arm("c3", comment_timecode="01:27", total_timecode="02:46").status, 200)
+        self.assertEqual(self.arm("c4", comment_timecode="02:10", total_timecode="02:46").status, 200)
+        self.clock.advance(15 * 60)
+        claim2 = self.queue.claim("main", 60)
+        assert claim2 is not None
+        self.assertEqual(claim2.payload["comment_timecode"], "02:10")
+        self.assertEqual(claim2.payload["total_timecode"], "02:46")
+
+    def test_the_review_timer_route_refuses_bad_timecodes(self) -> None:
+        bad_values: tuple[object, ...] = (123, "", "   ", True, [])
+        for bad in bad_values:
+            with self.subTest(bad=bad):
+                self.assertEqual(self.arm(comment_timecode=bad).status, 400)
+                self.assertEqual(self.arm(total_timecode=bad).status, 400)
 
     def test_quiet_time_defaults_to_fifteen_minutes_and_rejects_bad_values(self) -> None:
         self.assertEqual(ServerConfig.from_env({}).review_quiet_seconds, 15 * 60.0)

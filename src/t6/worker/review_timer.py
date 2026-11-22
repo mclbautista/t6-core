@@ -32,6 +32,10 @@ class ReviewTimerClient:
         }
         if comment.remaining_seconds is not None:
             body["remaining_seconds"] = comment.remaining_seconds
+        if comment.comment_timecode is not None:
+            body["comment_timecode"] = comment.comment_timecode
+        if comment.total_timecode is not None:
+            body["total_timecode"] = comment.total_timecode
         status, answer = self._transport.send("POST", "/review/timers", self._headers, json.dumps(body).encode())
         if status != 200:
             raise QueueRejected(status, str(answer.get("error", answer)))
