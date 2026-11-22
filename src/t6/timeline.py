@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 import json
-import secrets
 from typing import Any
 
+from t6 import verbflow
 from t6.ids import EntityKind, T6Id
 from t6.preview import PreviewTokens
 from t6.registry.sqlite import SqliteProjectRegistry
 from t6.resolve.timelines import TimelineReader
-from t6.verbs import Ambiguous, Done, Outcome, Refused
+from t6.verbs import Ambiguous, Outcome, Refused
 
 
 class TimelineStore:
@@ -48,26 +48,15 @@ class TimelineStore:
             T6Id.parse(project, EntityKind.PROJECT)
         except ValueError:
             return Refused(rule='project', reason='Project must be a T6 Project ID')
-        if (idempotency_key is not None and not idempotency_key.strip()) or (confirm and not idempotency_key):
-            return Refused(rule='idempotency_key', reason='A nonblank idempotency key is required')
-        key = idempotency_key or secrets.token_hex(16)
-        inputs = {'project': project, 'timeline': name, 'idempotency_key': key, **({} if generated else {'stamp': stamp})}
-        verb = 'timeline link'
-        fingerprint = json.dumps({'verb': verb, 'actor': actor, **inputs}, sort_keys=True, separators=(',', ':'))
-        nonce = self.tokens.verify(confirm, verb, actor, inputs) if confirm else None
-        if isinstance(nonce, Refused):
-            return nonce
+        values = {'project': project, 'timeline': name, **({} if generated else {'stamp': stamp})}
+        request = verbflow.begin(self.tokens, 'timeline link', actor, values, idempotency_key, confirm)
+        if isinstance(request, Refused):
+            return request
+        nonce, key = request.nonce, request.key
         with self.registry._transaction() as db:
-            previous = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key=?', (key,)).fetchone()
-            if previous and previous[0] != fingerprint:
-                return Refused(rule='idempotency_key', reason='Idempotency key was used for a different request')
-            if previous:  # a retried confirm gets the first result, its token spent or not
-                if nonce:
-                    db.execute('INSERT OR IGNORE INTO used_preview_tokens VALUES (?)', (nonce,))
-                    return Done(result=json.loads(previous[1]))
-                return self.tokens.create(verb, actor, inputs, json.loads(previous[1]))
-            if nonce and db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce=?', (nonce,)).fetchone():
-                return Refused(rule='token_used', reason='Preview token has already been used')
+            settled = verbflow.settle(db, self.tokens, request, replay_spent=True)  # a retried confirm gets the first result, its token spent or not
+            if settled:
+                return settled
             if not db.execute('SELECT 1 FROM projects WHERE id=?', (project,)).fetchone():
                 return Refused(rule='project', reason='Project not found')
             media = db.execute("SELECT id, ref FROM media_locations WHERE owner_id=? AND kind='resolve-project' AND active=1 ORDER BY id", (project,)).fetchall()
@@ -86,8 +75,7 @@ class TimelineStore:
                 return plan_or_refusal
             plan = plan_or_refusal
             if nonce is None:
-                preview = self.tokens.create(verb, actor, inputs, plan)
-                preview_nonce = self.tokens.verify(preview.token, verb, actor, inputs)
+                preview, preview_nonce = verbflow.issue(self.tokens, request, plan)
                 db.execute('INSERT INTO timeline_previews VALUES (?, ?)', (preview_nonce, json.dumps(plan)))
                 return preview
             assert saved
@@ -102,9 +90,7 @@ class TimelineStore:
                 db.execute('INSERT INTO timelines VALUES (?, ?, ?, ?)', (stamp, plan['project_id'], plan['resolve_media_id'], plan['label']))
                 audit = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, NULL, ?)', (stamp, 'timeline_link', actor, now, json.dumps(result)))
                 db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (plan['project_id'], stamp, now, actor, 'timeline_link', 'timeline link', audit.lastrowid))
-            db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
-            db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(result)))
-            return Done(result=result)
+            return verbflow.finish(db, request, result)
 
     @staticmethod
     def _generated_stamp(db: Any, project: str, key: str, previewed: str | None) -> str:

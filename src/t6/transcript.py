@@ -223,8 +223,8 @@ class TranscriptStore:
         else may be running (`busy`, before or after the preview check); `build` makes the payload from the saved
         preview. Only then is the token spent.
         """
-        if db.execute('SELECT 1 FROM used_preview_tokens WHERE nonce=?', (nonce,)).fetchone():
-            return Refused(rule='token_used', reason='Preview token has already been used')
+        if spent := verbflow.token_spent(db, nonce):
+            return spent
         if busy_first and (refusal := busy()):
             return refusal
         saved = db.execute('SELECT snapshot FROM transcript_previews WHERE nonce=?', (nonce,)).fetchone()
@@ -238,7 +238,7 @@ class TranscriptStore:
         payload = build(snapshot)
         if isinstance(payload, Refused):
             return payload
-        db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
+        verbflow.spend(db, nonce)
         return payload
 
     def _open(self, db: Any, kind: str, transcript: str) -> bool:
