@@ -2215,6 +2215,7 @@ def drive_mapping_apply(inputs: BaseModel, open_notion: Callable[..., Any]) -> O
 
 class DriveReloadInput(BaseModel):
     workbook: str
+    tracker: str | None = None
     idempotency_key: str | None = None
     confirm: str | None = None
 
@@ -2225,6 +2226,9 @@ class DriveWithoutSerial(BaseModel):
 
 
 class DriveReloadOutput(BaseModel):
+    movements_read: int
+    movements_matched: int
+    movements_unmatched: int
     rows_read: int
     drives: int
     assignments: int
@@ -2245,9 +2249,91 @@ def drive_reload(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
     people = _people()
     try:
         return reload_drives(people.registry, people.tokens, WorkbookSheetSource(inputs.workbook),
+                             tracker=WorkbookSheetSource(inputs.tracker) if inputs.tracker else None,
                              actor=_actor.get(), idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
     except (OSError, ValueError) as error:
         return Refused(rule='sheet', reason=str(error))
+
+
+class DriveProjectsInput(BaseModel):
+    pass
+
+
+class DriveProjectCount(BaseModel):
+    project: DriveRef
+    total: int
+    in_house: int
+    released: int
+
+
+class DriveProjectsOutput(BaseModel):
+    projects: list[DriveProjectCount]
+
+
+def drive_projects(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.drive_reads import project_counts
+    from t6.drives.sqlite import SqliteDriveStore
+    registry = _people().registry
+    with registry._transaction() as db:
+        return Done(result={'projects': project_counts(SqliteDriveStore(registry, within=db))})
+
+
+class MovementCorrectInput(BaseModel):
+    movement: str
+    drive: str | None = None
+    on: str | None = None
+    direction: Literal['IN', 'OUT'] | None = None
+    person: str | None = None
+    place: Literal['TABLE', 'CABINET', 'SHELF', 'BOX'] | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class MovementCorrectOutput(BaseModel):
+    movement: MovementItem
+
+
+def movement_correct(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.drives.movements import correct_movement
+    assert isinstance(inputs, MovementCorrectInput)
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    changes = inputs.model_dump(exclude={'movement', 'idempotency_key', 'confirm'}, exclude_unset=True)
+    if changes.get('direction', 'IN') is None or not changes:
+        return Refused(rule='movement', reason='Give at least one correction; direction must be IN or OUT')
+    if changes.get('on'):
+        try:
+            changes['on'] = IsoDate.fromisoformat(changes['on'])
+        except ValueError:
+            return Refused(rule='date', reason='Use an ISO date (YYYY-MM-DD)')
+    people = _people()
+    return correct_movement(people.registry, people.tokens, inputs.movement, changes, actor=_actor.get(),
+                            idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+
+
+class MovementListInput(BaseModel):
+    project: str | None = None
+    drive: str | None = None
+    person: str | None = None
+    q: str | None = None
+    start: str | None = None
+    end: str | None = None
+
+
+class MovementListOutput(BaseModel):
+    movements: list[MovementItem]
+
+
+def movement_list(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.drives.movements import list_movements
+    values = inputs.model_dump()
+    try:
+        for field in ('start', 'end'):
+            values[field] = IsoDate.fromisoformat(values[field]) if values[field] else None
+    except ValueError:
+        return Refused(rule='date', reason='Use ISO dates (YYYY-MM-DD)')
+    with _people().registry._transaction() as db:
+        return Done(result={'movements': list_movements(db, **values)})
 
 
 class DriveReceiveInput(BaseModel):
@@ -2516,6 +2602,23 @@ class DriveExceptionsInput(BaseModel):
 class DriveRef(BaseModel):
     page_id: str | None
     text: str | None
+
+
+class MovementItem(BaseModel):
+    id: str
+    drive: str | None
+    label: str | None
+    on: str | None
+    direction: Literal['IN', 'OUT']
+    person: str | None
+    recorder: str | None
+    place: Literal['TABLE', 'CABINET', 'SHELF', 'BOX'] | None
+    project: DriveRef
+    origin: DriveSourceItem | None
+    capture: str | None
+    corrects: str | None
+    description: str | None
+    remarks: str | None
 
 
 class DriveParty(BaseModel):
@@ -2832,6 +2935,9 @@ VERBS = (
     Verb('transcript', 'get', 'Get a Transcript', (), TranscriptGetInput, TranscriptGetOutput, 'reader', 'Read progress and summary.', transcript_get, read_only=True),
     Verb('drive', 'mapping propose', 'Write proposed sheet Project mappings for review', (), DriveMappingProposeInput, DriveMappingOutput, 'drives', 'Propose exact names, then codes, then fuzzy names; never store mappings.', drive_mapping_propose),
     Verb('drive', 'mapping apply', 'Store a checked sheet Project mapping file', (), DriveMappingApplyInput, DriveMappingOutput, 'drives', 'Preview and confirm mappings to registered T6 Project IDs. Null removes a mapping.', drive_mapping_apply),
+    Verb('drive', 'projects', 'Project Drive counts', (), DriveProjectsInput, DriveProjectsOutput, 'reader', 'Distinct Drives per Project with an open Assignment, grouped by derived custody status.', drive_projects, read_only=True),
+    Verb('movement', 'correct', 'Append a Movement correction', (), MovementCorrectInput, MovementCorrectOutput, 'drives', 'Preview and confirm a correction; the original Movement and custody events remain.', movement_correct),
+    Verb('movement', 'list', 'Search the Movement log', (), MovementListInput, MovementListOutput, 'reader', 'Filters combine with AND; includes unresolved rows and corrections.', movement_list, read_only=True),
     Verb('drive', 'reload', 'Replace Drive data from the per-project sheet', (), DriveReloadInput, DriveReloadOutput, 'drives', 'Preview and confirm a complete reload, preserving accepted serial IDs.', drive_reload),
     Verb('drive', 'receive', 'Receive a Drive into custody', (), DriveReceiveInput, DriveWriteOutput, 'drives', 'Preview and confirm; appends a received event. Refused for a Drive in custody or retired.', drive_write),
     Verb('drive', 'release', 'Release Drives in one shipment', (), DriveReleaseInput, DriveWriteOutput, 'drives', 'Preview and confirm; one released event per Drive, grouped by shipment, with the Drives\' facts kept as they are now. Optional reason and free-text recipient. Refused whole if a Drive is released or retired.', drive_write),

@@ -185,3 +185,16 @@ def shipment(store: DriveStore, shipment_id: str) -> DriveShipmentOutput | None:
 def exceptions(store: DriveStore) -> DriveExceptionsOutput:
     return DriveExceptionsOutput(exceptions=[DriveExceptionItem(workbook=i.workbook, sheet=i.sheet, row=i.row, reason=i.reason, detail=i.detail)
                                              for i in store.exceptions()])
+
+
+def project_counts(store: DriveStore) -> list[dict[str, Any]]:
+    projects: dict[Ref, set[str]] = {}
+    statuses = store.statuses()
+    for drive in store.list_drives():
+        for assignment in store.list_assignments(drive.id):
+            if assignment.is_open and assignment.project is not None:
+                projects.setdefault(assignment.project, set()).add(drive.id)
+    return [{'project': _ref(project).model_dump(), 'total': len(ids),
+             'in_house': sum(statuses.get(did) is DriveStatus.IN_CUSTODY for did in ids),
+             'released': sum(statuses.get(did) is DriveStatus.RELEASED for did in ids)}
+            for project, ids in projects.items()]
