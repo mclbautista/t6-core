@@ -6,7 +6,7 @@ from datetime import date, datetime
 import re
 from typing import Any
 
-from t6.concern import WEEK, ConcernStore, _close, _insert, _open_duplicate
+from t6.concern import ConcernStore, _close, _insert, _open_duplicate
 from t6.ids import EntityKind, T6Id
 from t6.person import AUTO_ACTOR
 from t6.domain.studio_time import MANILA
@@ -33,15 +33,26 @@ class ConcernScanner:
         ConcernStore._log(db, project, concern, AUTO_ACTOR, action, now, before, {'quote': quote}, quote)
         db.execute('INSERT INTO concern_pm_changes (project_id, concern_id, action, quote, at) VALUES (?, ?, ?, ?, ?)', (project, concern, action, quote, now))
 
-    def apply_pending(self, project: str) -> None:
+    def apply_pending(self, before: float) -> int:
+        """Close every Concern whose pending close was made before `before` (a Monday 08:30 Manila, the start of that PSR); returns how many closed.
+
+        A veto has already deleted its row, and a data close deletes the row of the Concern it closes. A person's close sets
+        `manual_override`; a Done line closes like the scan does."""
         now = self.registry._clock()
+        applied = 0
         with self.registry._transaction() as db:
-            rows = db.execute('SELECT p.concern_id, p.quote, p.revision, c.state, c.revision, c.manual_override FROM concern_pm_pending p JOIN concerns c ON c.id = p.concern_id WHERE c.project_id = ? AND p.due <= ?', (project, now)).fetchall()
-            for concern, quote, revision, state, current, override in rows:
-                if revision == current and not override and state != 'closed':
+            rows = db.execute('SELECT p.concern_id, p.actor, p.source, p.quote, c.project_id, c.state FROM concern_pending_closes p JOIN concerns c ON c.id = p.concern_id WHERE p.created_at < ? ORDER BY p.created_at, p.concern_id', (before,)).fetchall()
+            for concern, actor, source, quote, project, state in rows:
+                if state != 'closed':
                     _close(db, concern, now)
-                    self._pm_log(db, project, concern, 'concern_auto_resolve', quote, now, state)
-                db.execute('DELETE FROM concern_pm_pending WHERE concern_id = ?', (concern,))
+                    if source == 'close':
+                        db.execute('UPDATE concerns SET manual_override = 1 WHERE id = ?', (concern,))
+                        ConcernStore._log(db, project, concern, AUTO_ACTOR, 'concern_auto_resolve', now, state, {'closed_by': actor}, 'Concern closed after PSR')
+                    else:
+                        self._pm_log(db, project, concern, 'concern_auto_resolve', quote, now, state)
+                    applied += 1
+                db.execute('DELETE FROM concern_pending_closes WHERE concern_id = ?', (concern,))
+        return applied
 
     def _rejected(self, project: str, as_of: str, text: str, db: Any = None) -> None:
         """Count a rejected answer for a line; after MAX_ATTEMPTS the line is recorded and not sent again."""
@@ -99,8 +110,8 @@ class ConcernScanner:
                 if choice in ('continues', 'settles'):
                     row = db.execute('SELECT state, revision, manual_override, as_of FROM concerns WHERE id = ? AND project_id = ?', (concern, project)).fetchone()
                     original = offered[concern]
-                    if row and row[2]:
-                        # A person's decision wins: there is nothing to do, so the line is never sent again.
+                    if row and row[2] and not db.execute('SELECT 1 FROM concern_pending_closes WHERE concern_id = ?', (concern,)).fetchone():
+                        # A person's decision wins: there is nothing to do, so the line is never sent again. A pending close can still be vetoed.
                         db.execute('INSERT OR IGNORE INTO concern_pm_lines VALUES (?, ?, ?)', (project, as_of, text))
                         continue
                     if not row or row[1] != original[4] or as_of <= row[3]:
@@ -119,16 +130,15 @@ class ConcernScanner:
                     assert isinstance(concern, str)
                     state, revision = row[0], row[1]
                     db.execute("UPDATE concerns SET as_of = ?, evidence_at = ?, state = 'open', revision = revision + 1 WHERE id = ?", (as_of, now, concern))
-                    db.execute('DELETE FROM concern_pm_pending WHERE concern_id = ?', (concern,))
+                    db.execute('DELETE FROM concern_pending_closes WHERE concern_id = ?', (concern,))
                     self._pm_log(db, project, concern, 'concern_auto_continue', quote, now, state)
                     done['continued'] += 1
                 elif choice == 'settles' and row[0] != 'closed':
                     assert isinstance(concern, str)
                     db.execute('UPDATE concerns SET as_of = ?, revision = revision + 1 WHERE id = ?', (as_of, concern))
-                    db.execute('INSERT OR REPLACE INTO concern_pm_pending VALUES (?, ?, ?, ?, ?)', (concern, as_of, quote, now + WEEK, row[1] + 1))
+                    # A Done line is a pending close the next PSR decides (#639); a person's close already pending is kept.
+                    db.execute("INSERT OR IGNORE INTO concern_pending_closes (concern_id, as_of, quote, source, created_at) VALUES (?, ?, ?, 'done_line', ?)", (concern, as_of, quote, now))
                     self._pm_log(db, project, concern, 'concern_auto_announce', quote, now, row[0])
                     done['announced'] += 1
-                    from t6.worker.internal_queue import InternalJobQueue
-                    InternalJobQueue(self.registry, clock=lambda: now).submit('main', 'concern_pm_close', f'{concern}:{row[1] + 1}', {'project': project}, run_at=now + WEEK, db=db)
                 db.execute('INSERT INTO concern_pm_lines VALUES (?, ?, ?)', (project, as_of, text))
         return done

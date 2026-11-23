@@ -452,6 +452,8 @@ class VerbAPI:
         elif (entry.noun, entry.verb) == ('concern', 'observe'):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._concern_observe(inputs, actor)
+        elif (entry.noun, entry.verb) == ('concern', 'resolve') and not self.is_closer(actor):
+            outcome = self.people.authorize(actor, entry.role) or Refused(rule='closer', reason='Only Closers may close a Concern')
         elif (entry.noun, entry.verb) == ('concern', 'raise') and inputs.owner is not None and inputs.owner not in self._coordinators(inputs.project):
             outcome = self.people.authorize(actor, entry.role) or Refused(rule='owner', reason='Owner must be a Project coordinator')
         elif entry.handler is None:
@@ -1094,8 +1096,17 @@ class VerbAPI:
             except ClassifyRefused as refused:
                 print(f't6.server: concern scan stopped: llm run refused rule={refused.rule} {counts} projects={scanned}', file=sys.stderr, flush=True)  # rule only: no text
                 return False
-        # #639 hooks in here: when `slot` is a Monday in Manila, apply the pending closes now, at the end of the run, after every new line was read.
-        print(f't6.server: concern scan {counts} projects={scanned} skipped={skipped} ' + ' '.join(f'{name}={count}' for name, count in changes.items()), file=sys.stderr, flush=True)  # counts only: no text
+        # Pending closes are applied at the end of the run, after every new line was read (#639): every close made before the latest
+        # Monday 08:30 Manila, the start of that PSR, on or before the slot. The Monday 21:00 run applies them; a failed run applies
+        # nothing, and the next run that completes applies what it left.
+        from datetime import timedelta
+        from t6.domain.studio_time import MANILA
+        day = datetime.fromtimestamp(slot, MANILA)
+        psr = (day - timedelta(days=day.weekday())).replace(hour=8, minute=30, second=0, microsecond=0)
+        if psr.timestamp() > slot:
+            psr -= timedelta(days=7)
+        applied = ConcernScanner(ConcernStore(self.people.registry, self.people.tokens)).apply_pending(psr.timestamp())
+        print(f't6.server: concern scan {counts} projects={scanned} skipped={skipped} ' + ' '.join(f'{name}={count}' for name, count in changes.items()) + f' applied={applied}', file=sys.stderr, flush=True)  # counts only: no text
         return True
 
     def _coordinators(self, project_id: str) -> set[str]:
@@ -1129,7 +1140,14 @@ class VerbAPI:
             if inputs.raise_at_psr == inputs.open:
                 return Refused(rule='input', reason='Pass exactly one of raise_at_psr and open')
             concerns = ConcernStore(self.people.registry, self.people.tokens)
-            return Done(result={'concerns': concerns.open_concerns(inputs.project) if inputs.open else concerns.raise_at_psr(inputs.project)})
+            pending = concerns.pending_closes(inputs.project)
+            if any(item['close_by'] for item in pending):
+                from t6.verbs import PersonListInput
+                people = self._typed_read('person', 'list', PersonListInput())
+                names = {p['t6_id']: p['name'] for p in people.result['people'] if p['t6_id']} if isinstance(people, Done) else {}
+                for item in pending:
+                    item['close_by_name'] = names.get(item['close_by'])
+            return Done(result={'concerns': concerns.open_concerns(inputs.project) if inputs.open else concerns.raise_at_psr(inputs.project), 'pending': pending})
         if (noun, verb) == ('project', 'notes-history'):
             from t6.pm_notes import history
             if self.people.registry.get(inputs.project) is None:

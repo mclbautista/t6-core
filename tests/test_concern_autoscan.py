@@ -133,7 +133,7 @@ class HistoryTests(unittest.TestCase):
         api = self.api()
         first = [{'as_of': '2026-11-23', 'text': 'Waiting on client'}, {'as_of': '2026-11-23', 'text': 'Grade booked'}]
         log = self.run_once(api, first)
-        self.assertEqual(log, 't6.server: concern scan archived=1 projects=1 skipped=0 raised=1 continued=0 announced=0\n')
+        self.assertEqual(log, 't6.server: concern scan archived=1 projects=1 skipped=0 raised=1 continued=0 announced=0 applied=0\n')
         self.now += DAY
         edited = [{'as_of': '2026-11-23', 'text': 'Waiting on client'}, {'as_of': '2026-11-23', 'text': 'Grade booked Friday'}]
         self.run_once(api, edited)

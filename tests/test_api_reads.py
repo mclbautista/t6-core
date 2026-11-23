@@ -337,6 +337,20 @@ class ReadTests(unittest.TestCase):
         self.assertTrue(all(c['chronic'] for c in rows))
         self.assertEqual(rows[0]['text'], 'Client Corp has not replied')
 
+    def test_concern_list_names_who_closed_a_pending_concern(self) -> None:
+        from t6.verbs import ConcernListInput
+        project = self.seed_concerns()
+        closer = self.bound_person(self.person, 7)
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO concern_pending_closes VALUES ('t6c_new', ?, 'close', NULL, NULL, 500.0)", (closer,))
+        for inputs in (ConcernListInput(open=True, project=project), ConcernListInput(raise_at_psr=True, project=project)):
+            listed = Client(self.client.base_url, 'unmasked-secret').concern_list(inputs)
+            assert isinstance(listed, Done)
+            self.assertNotIn('t6c_new', [c['id'] for c in listed.result['concerns']])
+            [pending] = listed.result['pending']
+            self.assertEqual((pending['id'], pending['text'], pending['close_by'], pending['close_by_name'], pending['close_at'], pending['close_source']),
+                             ('t6c_new', 'Client Corp has not replied', closer, 'Ana Cruz', 500.0, 'close'))
+
     def test_concern_list_needs_exactly_one_of_the_two_lists(self) -> None:
         from t6.verbs import ConcernListInput
         project = self.seed_concerns()

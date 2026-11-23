@@ -35,6 +35,11 @@ class ConcernTests(unittest.TestCase):
         self.assertEqual(done, self.store.write(verb, values, actor='person', idempotency_key=key, confirm=retry.token))
         return done.result
 
+    def close(self, concern: str, key: str) -> None:
+        """A person's close, then the Monday run that applies it."""
+        self.write('resolve', {'concern': concern}, key)
+        ConcernScanner(self.store).apply_pending(self.now + 1)
+
     def raise_concern(self) -> str:
         return str(self.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'client', 'anchor': 'Waiting kay client — raw line', 'as_of': '2026-11-01'}, 'raise')['concern_id'])
 
@@ -72,7 +77,7 @@ class ConcernTests(unittest.TestCase):
         self.write('note', {'concern': concern, 'text': 'Still waiting'}, 'fresh-note')
         refused = self.store.write('resolve', {'concern': concern}, actor='person', idempotency_key='stale', confirm=stale.token)
         self.assertIsInstance(refused, Refused)
-        self.write('resolve', {'concern': concern}, 'closed')
+        self.close(concern, 'closed')
         self.assertEqual(self._get(concern)['state'], 'closed')
 
     def test_snooze_is_gone(self) -> None:
@@ -284,7 +289,7 @@ class ConcernTests(unittest.TestCase):
         refused = self.store.write('raise', {'project': self.project, 'anchor': 'x', 'text': 'MISSING   role', 'as_of': '2026-11-16', 'source': 'leave'}, actor='reports')
         assert isinstance(refused, Refused)
         self.assertEqual(refused.rule, 'duplicate')
-        self.write('resolve', {'concern': first}, 'close-first')
+        self.close(first, 'close-first')
         second = self.raise_flag('Missing role', as_of='2026-11-20')
         self.assertNotEqual(first, second)
         refused = self.store.write('reopen', {'concern': first}, actor='person')
@@ -294,7 +299,7 @@ class ConcernTests(unittest.TestCase):
     def test_closed_at_is_written_by_every_path_that_closes_and_cleared_by_reopen(self) -> None:
         resolved = self.raise_concern()
         self.now += 10
-        self.write('resolve', {'concern': resolved}, 'resolve-it')
+        self.close(resolved, 'resolve-it')
         self.assertEqual(self._get(resolved)['closed_at'], self.now)
         self.now += 10
         self.write('reopen', {'concern': resolved}, 'reopen-it')
@@ -309,9 +314,9 @@ class ConcernTests(unittest.TestCase):
         self.assertIsNone(self._get(ids['submission_before_playdate'])['closed_at'])
         pending = self.raise_flag('Line to close')
         with self.registry._transaction() as db:
-            db.execute('INSERT INTO concern_pm_pending VALUES (?, ?, ?, ?, ?)', (pending, '2026-11-17', 'quote', self.now, 1))
+            db.execute("INSERT INTO concern_pending_closes VALUES (?, NULL, 'done_line', '2026-11-17', 'quote', ?)", (pending, self.now))
         self.now += 10
-        ConcernScanner(self.store).apply_pending(self.project)
+        ConcernScanner(self.store).apply_pending(self.now)
         self.assertEqual((self._get(pending)['state'], self._get(pending)['closed_at']), ('closed', self.now))
 
     def test_open_concerns_are_every_state_but_closed_oldest_first_with_the_chronic_mark(self) -> None:

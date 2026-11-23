@@ -8,6 +8,8 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 - Job Orders: the On Hold Status, in the not-started group, so it never counts as processed. `jo list`, `jo get` and `jo find` return `health_name`, one of the six Health values (Closed, Blocked, Delayed, Urgent, Advanced, On Track) read by its words, ignoring emoji; `health_flags` stays until its callers move (#637).
 - `project notes-history`: every dated PM Notes line each autoscan read (first seen, last seen, removed), newest first, for Closers (`T6_CLOSER_TELEGRAM_IDS`) and the Project's coordinators. Migration 56 adds `pm_notes_history` and `concern_autoscan_runs`. Not forward-only (#638).
+- `concern list` returns a second list, `pending`, in both modes: every Concern with a pending close, with every field of an `--open` item plus `close_by`, `close_by_name`, `close_at`, `close_source` (`close` or `done_line`) and `close_quote`. A Concern with a pending close is only in `pending` (#639).
+- The Closer setting decides `concern resolve`: a Person whose Telegram user id is not on `T6_CLOSER_TELEGRAM_IDS` is refused with rule `closer` (#639).
 
 ### Removed
 
@@ -17,6 +19,7 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 - `concern list --raise-at-psr` lists every Concern that is not closed; it no longer filters on snoozed (#636).
 - Concern autoscan: runs once a day at `T6_CONCERN_AUTOSCAN_AT` (default 21:00 Manila) instead of on an interval, with one catch-up at start when the last slot was missed; `T6_CONCERN_AUTOSCAN_SECONDS` is gone. Each run archives PM Notes before scanning (#638).
+- Closes wait for the next PSR: `concern resolve` and a Done line (the scan's `settles`) record a pending close instead of closing, and no longer schedule a `concern_pm_close` timer (a queued one is acknowledged and does nothing). The Monday 21:00 autoscan applies, at the end of its run, every pending close made before that Monday 08:30 Manila; a failed run applies nothing and the next completed run applies what it left. A continuing line before then is a veto; `concern reopen` on a pending close is Undo. `manual_override` is set only when a Close is applied. Data closes stay immediate. The run log adds `applied=N`. Migration 57 adds `concern_pending_closes` and moves the open week-timer rows into it; `concern_pm_pending` stays, empty, so the previous release still opens the file. Not forward-only (#639).
 
 ## [0.6.22] - 2026-11-23
 

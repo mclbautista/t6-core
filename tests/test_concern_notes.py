@@ -46,11 +46,11 @@ class ConcernNotesTests(unittest.TestCase):
         self.assertEqual(self.concern(concern)['state'], 'open')
         changes = ConcernScanner(self.store).changes(self.project, '2026-01-01')
         self.assertEqual([c['action'] for c in changes], ['concern_auto_raise', 'concern_auto_announce'])
-        self.now += WEEK - 1
-        ConcernScanner(self.store).apply_pending(self.project)
+        self.assertEqual(self.store.pending_closes()[0]['close_source'], 'done_line')
+        self.now += WEEK
+        ConcernScanner(self.store).apply_pending(self.now - WEEK)  # a PSR that started when the line was read does not decide it
         self.assertEqual(self.concern(concern)['state'], 'open')
-        self.now += 1
-        ConcernScanner(self.store).apply_pending(self.project)
+        ConcernScanner(self.store).apply_pending(self.now)
         self.assertEqual(self.concern(concern)['state'], 'closed')
         values = {'concern': concern}
         preview = self.store.write('reopen', values, actor='person', idempotency_key='undo')
@@ -76,7 +76,7 @@ class ConcernNotesTests(unittest.TestCase):
         assert isinstance(preview, Preview)
         self.assertIsInstance(self.store.write('reopen', {'concern': concern}, actor='person', idempotency_key='reject', confirm=preview.token), Done)
         self.now += WEEK
-        ConcernScanner(self.store).apply_pending(self.project)
+        ConcernScanner(self.store).apply_pending(self.now)
         self.assertEqual(self.concern(concern)['state'], 'open')
 
     def test_reworded_line_continues_with_same_id_and_age(self) -> None:
@@ -198,13 +198,13 @@ class ConcernAutoScanTests(ConcernNotesTests):
         err = io.StringIO()
         with patch.object(api, '_coordinators', return_value=set()), patch.object(api, '_typed_read', return_value=notes), contextlib.redirect_stderr(err):
             self.assertTrue(api.autoscan(self.now))
-        self.assertEqual(err.getvalue(), 't6.server: concern scan archived=1 projects=0 skipped=1 raised=0 continued=0 announced=0\n')  # counted, never silent (#596)
+        self.assertEqual(err.getvalue(), 't6.server: concern scan archived=1 projects=0 skipped=1 raised=0 continued=0 announced=0 applied=0\n')  # counted, never silent (#596)
         answer = {'choice': 'new', 'quote': 'Waiting on client', 'waiting_on': 'client'}
         err = io.StringIO()
         with patch.object(api, '_coordinators', return_value={'coordinator'}), patch.object(api, '_typed_read', return_value=notes), patch('t6.concern_task.classify', return_value=answer), contextlib.redirect_stderr(err):
             self.assertTrue(api.autoscan(self.now))
         self.assertEqual(len(ConcernScanner(self.store).changes(self.project, '2026-01-01')), 1)
-        self.assertEqual(err.getvalue(), 't6.server: concern scan archived=1 projects=1 skipped=0 raised=1 continued=0 announced=0\n')
+        self.assertEqual(err.getvalue(), 't6.server: concern scan archived=1 projects=1 skipped=0 raised=1 continued=0 announced=0 applied=0\n')
 
     def test_a_refused_llm_run_stops_the_whole_scan_after_one_call(self) -> None:
         # A refusal of the request itself holds for every line; re-sending each line made 51k refused calls on Sixto (#504).

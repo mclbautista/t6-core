@@ -139,8 +139,8 @@ that the edge route file and the API need.
 | `T6_REGISTRY_DB` | Project registry database path, default `t6-registry.sqlite` |
 | `T6_CONCERN_AUTOSCAN` | Set to `1` to run the autoscan in the API server: it archives every Project's dated PM Notes lines in the PM Notes history, then scans them for Concerns. Off by default; needs the LLM service. |
 | `T6_CONCERN_OBSERVE_CLOSES` | Set to `1` to let `concern observe` close a Concern its run did not find. Off by default: a run closes nothing. |
-| `T6_CONCERN_AUTOSCAN_AT` | Manila time of the daily autoscan as `HH:MM`, default `21:00`. It never runs at start, except one catch-up when the most recent run time has no completed run (the time of the last completed run is kept in the registry). A run stops at the first `llm run` refusal and logs its rule; a stopped or failed run is not retried until the next day. Each run logs counts only: `archived`, `projects`, `skipped`, `raised`, `continued`, `announced` |
-| `T6_CLOSER_TELEGRAM_IDS` | The Closer setting: Telegram user IDs allowed to Close a Concern, comma separated. Closers and a Project's coordinators may read `project notes-history`. Private config only; unset means no Closers |
+| `T6_CONCERN_AUTOSCAN_AT` | Manila time of the daily autoscan as `HH:MM`, default `21:00`. It never runs at start, except one catch-up when the most recent run time has no completed run (the time of the last completed run is kept in the registry). A run stops at the first `llm run` refusal and logs its rule; a stopped or failed run is not retried until the next day. Each run logs counts only: `archived`, `projects`, `skipped`, `raised`, `continued`, `announced`, `applied` (pending closes it closed) |
+| `T6_CLOSER_TELEGRAM_IDS` | The Closer setting: Telegram user IDs allowed to Close a Concern (`concern resolve`; anyone else is refused with rule `closer`), comma separated. Closers and a Project's coordinators may read `project notes-history`. Private config only; unset means no Closers |
 | `T6_OPERATOR_IDS` | Telegram user IDs allowed to tap operator cards and send `/project`, comma separated; the first receives the cards core starts, and a `/project` card goes to whoever sent it. Unset turns operator actions off |
 | `T6_STANDING_CC` | A Contact page ID, added to the cc of every Job Order (`t6.domain.studio_people.standing_cc`). Unset means none |
 | `T6_OPERATOR_DB`, `T6_OPERATOR_TTL_SECONDS` | operator action database, default `t6-operator.sqlite`; how long a card stays live, default 7 days |
@@ -2307,7 +2307,30 @@ oldest first, with `age_seconds` and `chronic` (open longer than
 Concern that is not closed, oldest last evidence first, with
 owner, `waiting_on`, `age_seconds` and `evidence_at`; age never hides one. `text`
 is masked like `waiting_on` and `anchor` for a caller without real-name access;
-reading it needs the `unmasked` permission.
+reading it needs the `unmasked` permission. Both modes also return `pending`:
+every Concern with a pending close, oldest first. A Concern with a pending close
+is only in `pending`, never in `concerns`. A `pending` item holds every field of
+an `--open` item plus `close_by` (the Person who closed it, null for a Done
+line), `close_by_name` (their Contact name, null when unknown), `close_at` (when),
+`close_source` (`close` or `done_line`) and `close_quote` (the Done line's words,
+null for a close). See `docs/api-read-verbs.md`.
+
+Closes wait for the next PSR. `concern resolve` (preview, then confirm) is a
+Close: only a Closer may make it (the `coordinator` role plus a Telegram user id
+on `T6_CLOSER_TELEGRAM_IDS`; anyone else is refused with rule `closer`). It does
+not close the Concern: it records a pending close with who and when. A Done line
+(the PM Notes scan's `settles`) records one too. The Monday 21:00 autoscan
+applies, at the end of its run, every pending close made before that Monday
+08:30 Manila, so a close made on Monday after 08:30 waits for the following
+Monday. A failed run applies nothing; the next run that completes applies what
+it left. Before that, a dated line the scan reads as continuing the Concern is a
+veto: it deletes the pending close. `concern reopen` on a Concern with a pending
+close is Undo: it cancels the close and leaves the Concern open. An applied
+Close sets `manual_override`, so later lines no longer change that Concern.
+A second Close on a Concern that already has one is refused with rule `state`;
+a date-sanity Concern still refuses `resolve` with rule `rule_made`. Data closes
+(a Job Order done, an approval granted, a milestone met, a Project date filled
+in) stay immediate and drop any pending close.
 
 A Concern never goes quiet or expires on its own: no timer changes its state.
 
@@ -2335,7 +2358,7 @@ Project, `open` (`id`, `text`, `source`, `opened_on`, `age_days`, `weeks`,
 `closed`. `--dry-run` computes the same reply and writes nothing. Every real run
 writes one `concern_observe` audit row and one log line holding the counts, never
 text, names or IDs; the PM Notes scan writes a line of its counts too
-(`projects`, `raised`, `continued`, `announced`).
+(`projects`, `raised`, `continued`, `announced`, `applied`).
 
 `concern counts` (role `reader`, read only; `t6 concern counts --since DATE
 --until DATE [--project P]`) answers how many Concerns each PSR raised and how

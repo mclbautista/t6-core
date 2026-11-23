@@ -413,6 +413,12 @@ _MIGRATIONS = (
     (56, False, """CREATE TABLE pm_notes_history (project_id TEXT NOT NULL REFERENCES projects(id), as_of TEXT NOT NULL, line TEXT NOT NULL,
         first_seen REAL NOT NULL, last_seen REAL NOT NULL, removed REAL, PRIMARY KEY (project_id, as_of, line));
     CREATE TABLE concern_autoscan_runs (id INTEGER PRIMARY KEY CHECK (id = 1), completed_at REAL NOT NULL)"""),
+    # A pending close is decided at the next PSR (#639): who closed (`actor`, NULL for a Done line), its `source` (`close` or
+    # `done_line`) and when. The week timer's rows move here; `concern_pm_pending` stays, empty, so the previous release still opens the file.
+    (57, False, """CREATE TABLE concern_pending_closes (concern_id TEXT PRIMARY KEY REFERENCES concerns(id), actor TEXT, source TEXT NOT NULL,
+        as_of TEXT, quote TEXT, created_at REAL NOT NULL);
+    INSERT INTO concern_pending_closes SELECT concern_id, NULL, 'done_line', as_of, quote, due - 604800 FROM concern_pm_pending;
+    DELETE FROM concern_pm_pending"""),
 )
 
 

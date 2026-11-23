@@ -217,6 +217,37 @@ true, else rule `input`. `raise_at_psr` lists every Concern that is not closed, 
 `waiting_on` and `anchor`, is masked for a caller without real-name access, so a
 caller that renders names needs the `unmasked` permission and the `reader` role.
 
+Both modes also return `pending`: every Concern with a pending close (a Close
+or a Done line the next PSR decides), oldest first, optionally for one
+`project`. A Concern with a pending close is only in `pending`, never in
+`concerns`, so a consumer reads both lists from one call. A `pending` item holds
+the same fields as an `open: true` item (`id`, `project_id`, `owner_id`,
+`waiting_on`, `text`, `source`, `anchor`, `as_of`, `opened_at`, `evidence_at`,
+`state`, `settles_id`, `age_seconds`, `chronic`) in both modes, plus:
+
+- `close_by`: the T6 Person ID of the Closer, or null for a Done line.
+- `close_by_name`: that Person's Contact name, or null when it cannot be read.
+- `close_at`: when the close was made (Unix seconds).
+- `close_source`: `close` (a Closer through `concern resolve`) or `done_line`
+  (a PM Notes line the scan read as settling it).
+- `close_quote`: the Done line's words, or null for a close.
+
+```json
+{"outcome": "done", "result": {
+  "concerns": [{"id": "t6c_...", "project_id": "t6p_...", "owner_id": "t6n_...", "waiting_on": "client", "age_seconds": 1209600, "evidence_at": 1795000000.0}],
+  "pending": [{"id": "t6c_...", "project_id": "t6p_...", "owner_id": "t6n_...", "waiting_on": "lab",
+               "text": "Waiting on lab for the DCP", "source": "pm_notes_scan", "anchor": "Waiting on lab for the DCP",
+               "as_of": "2026-11-20", "opened_at": 1795500000.0, "evidence_at": 1795600000.0, "state": "open",
+               "settles_id": null, "age_seconds": 345600, "chronic": false,
+               "close_by": "t6n_...", "close_by_name": "A. Closer", "close_at": 1795800000.0,
+               "close_source": "close", "close_quote": null}]
+}}
+```
+
+The Monday 21:00 autoscan applies a pending close made before that Monday 08:30
+Manila unless a dated line continued the Concern first (a veto). `concern
+reopen` on a Concern with a pending close is Undo and removes it from `pending`.
+
 ### Concern observe
 
 `concern observe` is a write that a scheduled app calls once for each run:

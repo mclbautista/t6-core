@@ -573,12 +573,17 @@ a term describes behaviour that is decided but not yet built, it says so.
   removed plus a new line. Closers and the Project's coordinators read it
   (verb `project notes-history`).
 - **Close**: a person's close of a Concern through Sixto (verb `resolve`). Only
-  a **Closer** may Close: a Telegram user id on the Closer setting. It becomes
-  a pending close (being built; today it closes at once).
+  a **Closer** may Close: a Telegram user id on the Closer setting
+  (`T6_CLOSER_TELEGRAM_IDS`); anyone else is refused with `closer`. It becomes
+  a pending close. Undo (verb `reopen`) cancels it.
 - **Done line**: a dated line that says a Concern is finished (the scan's
   `settles`). It becomes a pending close. It replaces "announce".
 - **Pending close**: a Close or Done line waiting for the next Monday 21:00
-  autoscan. That run applies it at its end unless a veto came first.
+  autoscan. That run applies it at its end unless a veto came first. A close
+  made after Monday 08:30 Manila waits for the following Monday. A failed run
+  applies nothing; the next run that completes applies what it left. A
+  Concern with a pending close is still open, but `concern list` shows it only
+  in its `pending` list.
 - **Veto**: a dated line, dated between the pending close and that Monday's
   autoscan, that the scan reads as continuing the Concern. It cancels the
   pending close. The MOM does not count.

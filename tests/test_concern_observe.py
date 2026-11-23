@@ -13,6 +13,7 @@ from unittest.mock import patch
 from t6.client import Client
 from t6.concern import CHRONIC_DAYS, WEEK, ConcernStore
 from t6.concern_observe import observe
+from t6.concern_scan import ConcernScanner
 from t6.domain.studio_time import MANILA
 from t6.ids import EntityKind, T6Id
 from t6.notion.testing import FakeNotion, title
@@ -65,6 +66,7 @@ class ObserveTests(unittest.TestCase):
     def close(self, concern: str) -> None:
         preview = self.store.write('resolve', {'concern': concern}, actor='person', idempotency_key='close-' + concern)
         self.store.write('resolve', {'concern': concern}, actor='person', idempotency_key='close-' + concern, confirm=preview.token)  # type: ignore[union-attr]
+        ConcernScanner(self.store).apply_pending(self.now + 1)  # the Monday run decides the pending close
 
     def finding(self, text: str, source: str = 'flag_rule', **more: Any) -> dict[str, Any]:
         return {'project': self.project, 'text': text, 'source': source, **more}
@@ -119,8 +121,7 @@ class ObserveTests(unittest.TestCase):
     def test_a_concern_closed_by_a_person_shows_once_and_the_same_text_starts_a_new_one(self) -> None:
         item = self.open_of(self.go('2026-11-16', [self.finding('No editor is named')]))[0]
         self.now += 3 * DAY
-        preview = self.store.write('resolve', {'concern': item['id']}, actor='person', idempotency_key='close')
-        self.store.write('resolve', {'concern': item['id']}, actor='person', idempotency_key='close', confirm=preview.token)  # type: ignore[union-attr]
+        self.close(item['id'])
         self.now += 4 * DAY
         result = self.go('2026-11-23', [self.finding('No editor is named')])
         [project] = result['projects']

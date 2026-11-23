@@ -779,6 +779,7 @@ class ConcernListInput(BaseModel):
 
 class ConcernListOutput(BaseModel):
     concerns: list[dict[str, Any]]
+    pending: list[dict[str, Any]] = []
 
 
 class ConcernFinding(BaseModel):
@@ -866,7 +867,7 @@ def concern_list(inputs: ConcernListInput, open_notion: Callable[..., Any]) -> O
     if inputs.raise_at_psr == inputs.open:
         return Refused(rule='input', reason='Pass exactly one of raise_at_psr and open')
     store = ConcernStore(_people().registry, _people().tokens)
-    return Done(result={'concerns': store.open_concerns(inputs.project) if inputs.open else store.raise_at_psr(inputs.project)})
+    return Done(result={'concerns': store.open_concerns(inputs.project) if inputs.open else store.raise_at_psr(inputs.project), 'pending': store.pending_closes(inputs.project)})
 
 
 def concern_scan(inputs: ConcernScanInput, open_notion: Callable[..., Any]) -> Outcome:
@@ -3084,12 +3085,12 @@ VERBS = (
     Verb("concern", "scan", "Scan PM Notes for Concerns", (), ConcernScanInput, ConcernScanOutput, "coordinator", "Match new dated lines through llm run.", concern_scan),
     Verb("concern", "observe", "Hand over the findings of one brief run", (), ConcernObserveInput, ConcernObserveOutput, "coordinator", "The API decides which findings are new, known or not seen; it closes nothing unless T6_CONCERN_OBSERVE_CLOSES is on.", concern_observe),
     Verb("concern", "counts", "Count the Concerns each PSR listed", (), ConcernCountsInput, ConcernCountsOutput, "reader", "Counts only: listed, sent, new, closed, ages and sources for each run date.", concern_counts, read_only=True),
-    Verb("concern", "list", "List Concerns to raise at PSR", (), ConcernListInput, ConcernListOutput, "reader", "With raise_at_psr: every Concern that is not closed, oldest evidence first, with owner, waiting on, age and the date of its last evidence. Age never decides inclusion.", concern_list, read_only=True),
+    Verb("concern", "list", "List Concerns to raise at PSR", (), ConcernListInput, ConcernListOutput, "reader", "With raise_at_psr: every Concern that is not closed, oldest evidence first, with owner, waiting on, age and the date of its last evidence. Age never decides inclusion. Both modes also return `pending`: the Concerns with a pending close, only there, with who closed them and when.", concern_list, read_only=True),
     Verb("concern", "changes", "Read automatic Concern changes", (), ConcernChangesInput, ConcernChangesOutput, "reader", "Read receipts since a date.", concern_changes, read_only=True),
     Verb("concern", "get", "Get a Concern", (), ConcernGetInput, ConcernGetOutput, "reader", "Read a Concern and its age.", concern_get, read_only=True),
     Verb("concern", "raise", "Raise a Concern", (), ConcernRaiseInput, ConcernOutput, "coordinator", "Record a line waiting on a party.", concern_write),
     Verb("concern", "note", "Add a Concern note", (), ConcernNoteInput, ConcernOutput, "coordinator", "Notes are append-only.", concern_write),
-    Verb("concern", "resolve", "Resolve a Concern", (), ConcernResolveInput, ConcernOutput, "coordinator", "A person resolves the Concern.", concern_write),
+    Verb("concern", "resolve", "Resolve a Concern", (), ConcernResolveInput, ConcernOutput, "coordinator", "A Closer's close is pending until the next PSR: the Monday autoscan applies it unless a PM Notes line continues the Concern first. Reopen cancels it.", concern_write),
     Verb("concern", "reopen", "Reopen a Concern", (), ConcernReopenInput, ConcernOutput, "coordinator", "Keep its original age.", concern_write),
     Verb("jo", "get", "Get a Job Order", (), JoGetInput, JoGetOutput, "reader", "Read a Job Order.", None, read_only=True),
     Verb("jo", "raise", "Raise a Job Order", (), JoRaiseInput, JoWriteOutput, "coordinator", "Create a Job Order.", jo_write),
