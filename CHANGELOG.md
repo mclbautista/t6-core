@@ -7,6 +7,7 @@ All notable changes to this project are documented here, following [Keep a Chang
 ### Added
 
 - Job Orders: the On Hold Status, in the not-started group, so it never counts as processed. `jo list`, `jo get` and `jo find` return `health_name`, one of the six Health values (Closed, Blocked, Delayed, Urgent, Advanced, On Track) read by its words, ignoring emoji; `health_flags` stays until its callers move (#637).
+- `project notes-history`: every dated PM Notes line each autoscan read (first seen, last seen, removed), newest first, for Closers (`T6_CLOSER_TELEGRAM_IDS`) and the Project's coordinators. Migration 56 adds `pm_notes_history` and `concern_autoscan_runs`. Not forward-only (#638).
 
 ### Removed
 
@@ -15,6 +16,7 @@ All notable changes to this project are documented here, following [Keep a Chang
 ### Changed
 
 - `concern list --raise-at-psr` lists every Concern that is not closed; it no longer filters on snoozed (#636).
+- Concern autoscan: runs once a day at `T6_CONCERN_AUTOSCAN_AT` (default 21:00 Manila) instead of on an interval, with one catch-up at start when the last slot was missed; `T6_CONCERN_AUTOSCAN_SECONDS` is gone. Each run archives PM Notes before scanning (#638).
 
 ## [0.6.22] - 2026-11-23
 

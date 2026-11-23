@@ -187,13 +187,6 @@ class ConcernAutoScanTests(ConcernNotesTests):
         queue = JobQueue(tmp.name + '/queue')
         return VerbAPI(People(self.registry, PreviewTokens('secret')), queue, {'gateway': 'gateway'}, lambda _: None, WebhookApp(queue, ServerConfig(), registry=self.registry), llm_service=object())
 
-    def test_the_automatic_scan_is_off_unless_configured(self) -> None:
-        from t6.server.__main__ import concern_autoscan_seconds
-        self.assertIsNone(concern_autoscan_seconds({}))
-        self.assertIsNone(concern_autoscan_seconds({'T6_CONCERN_AUTOSCAN': '0'}))
-        self.assertEqual(concern_autoscan_seconds({'T6_CONCERN_AUTOSCAN': '1'}), 86400.0)  # once a day
-        self.assertEqual(concern_autoscan_seconds({'T6_CONCERN_AUTOSCAN': 'on', 'T6_CONCERN_AUTOSCAN_SECONDS': '5'}), 60.0)
-
     def test_scan_reads_each_projects_notes_and_skips_projects_without_a_coordinator(self) -> None:
         from unittest.mock import patch
         api = self.api()
@@ -204,14 +197,14 @@ class ConcernAutoScanTests(ConcernNotesTests):
         import io
         err = io.StringIO()
         with patch.object(api, '_coordinators', return_value=set()), patch.object(api, '_typed_read', return_value=notes), contextlib.redirect_stderr(err):
-            self.assertEqual(api.scan_concerns(), 0)
-        self.assertEqual(err.getvalue(), 't6.server: concern scan projects=0 skipped=1 raised=0 continued=0 announced=0\n')  # counted, never silent (#596)
+            self.assertTrue(api.autoscan(self.now))
+        self.assertEqual(err.getvalue(), 't6.server: concern scan archived=1 projects=0 skipped=1 raised=0 continued=0 announced=0\n')  # counted, never silent (#596)
         answer = {'choice': 'new', 'quote': 'Waiting on client', 'waiting_on': 'client'}
         err = io.StringIO()
         with patch.object(api, '_coordinators', return_value={'coordinator'}), patch.object(api, '_typed_read', return_value=notes), patch('t6.concern_task.classify', return_value=answer), contextlib.redirect_stderr(err):
-            self.assertEqual(api.scan_concerns(), 1)
+            self.assertTrue(api.autoscan(self.now))
         self.assertEqual(len(ConcernScanner(self.store).changes(self.project, '2026-01-01')), 1)
-        self.assertEqual(err.getvalue(), 't6.server: concern scan projects=1 skipped=0 raised=1 continued=0 announced=0\n')
+        self.assertEqual(err.getvalue(), 't6.server: concern scan archived=1 projects=1 skipped=0 raised=1 continued=0 announced=0\n')
 
     def test_a_refused_llm_run_stops_the_whole_scan_after_one_call(self) -> None:
         # A refusal of the request itself holds for every line; re-sending each line made 51k refused calls on Sixto (#504).
@@ -231,7 +224,7 @@ class ConcernAutoScanTests(ConcernNotesTests):
         api.llm_service = Refusing()
         err = io.StringIO()
         with patch.object(api, '_coordinators', return_value={'coordinator'}), patch.object(api, '_typed_read', return_value=notes), contextlib.redirect_stderr(err):
-            self.assertEqual(api.scan_concerns(), 0)
+            self.assertFalse(api.autoscan(self.now))  # not completed: the schedule does not store it
         self.assertEqual(len(calls), 1)
-        self.assertEqual(err.getvalue(), 't6.server: concern scan stopped: llm run refused rule=masking projects=0\n')
+        self.assertEqual(err.getvalue(), 't6.server: concern scan stopped: llm run refused rule=masking archived=1 projects=0\n')
         self.assertEqual(ConcernScanner(self.store).changes(self.project, '2026-01-01'), [])

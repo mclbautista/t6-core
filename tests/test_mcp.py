@@ -67,7 +67,7 @@ class MCPTests(unittest.TestCase):
         'deliverable__candidates', 'deliverable__get', 'deliverable__hand-to-mouth', 'deliverable__list', 'deliverable__sabit', 'departments',
         'drive__catalog-at', 'drive__catalog-diff', 'drive__catalog-snapshots', 'drive__exceptions', 'drive__find', 'drive__get', 'drive__list', 'drive__projects', 'drive__shipment', 'drive__shipments', 'external-link__find', 'jo__find', 'jo__get', 'jo__list', 'machine__list', 'media__list', 'meeting-notes__list', 'movement__list', 'package__get',
         'package__list', 'person__find', 'person__get', 'person__list', 'project__activity', 'project__flags',
-        'project__get', 'project__list', 'project__notes', 'project__resolve', 'queue__failed', 'standing-cc', 'studio__notices', 'swing__overdue', 'text__withhold', 'timeline__list', 'transcript__get',
+        'project__get', 'project__list', 'project__notes', 'project__notes-history', 'project__resolve', 'queue__failed', 'standing-cc', 'studio__notices', 'swing__overdue', 'text__withhold', 'timeline__list', 'transcript__get',
         'version__find', 'version__get']
 
     def test_tool_list_is_the_written_list_of_read_tools_and_has_no_writes(self) -> None:

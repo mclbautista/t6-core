@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import secrets
 import sys
-import time
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -15,6 +14,7 @@ from t6.operator import ActionStore, OperatorService
 from t6.person import People
 from t6.preview import PreviewTokens
 from t6.registry import SqliteProjectRegistry
+from t6.server.autoscan import autoscan_at, run_forever
 from t6.server.app import Request, Response, ServerConfig, WebhookApp
 from t6.server.http import serve
 from t6.server.queue import JobQueue
@@ -23,6 +23,7 @@ from t6.server.llm import service_from_env
 from t6.server.verbs import (
     PrivacyList,
     VerbAPI,
+    closer_telegram_ids,
     read_config_from_env,
     read_data_source_configs_from_env,
     secrets_from_env,
@@ -56,22 +57,6 @@ def mirror_reader_from_env(
     max_ages = {cfg.id: cfg.max_age_seconds for cfg in source_configs.values()}
     enabled = [cfg.id for cfg in source_configs.values()]
     return MirrorReader(path, max_age_seconds=max_ages, enabled_data_sources=enabled)
-
-
-def concern_autoscan_seconds(environ: Mapping[str, str]) -> float | None:
-    """Seconds between automatic PM Notes scans, or None when the scan is off (the default)."""
-    if environ.get("T6_CONCERN_AUTOSCAN", "").strip().lower() not in {"1", "true", "on", "yes"}:
-        return None
-    return max(60.0, float(environ.get("T6_CONCERN_AUTOSCAN_SECONDS", "86400")))
-
-
-def _autoscan(api: VerbAPI, seconds: float) -> None:
-    while True:
-        try:
-            api.scan_concerns()
-        except Exception as error:  # One bad scan must not stop the next.
-            print(f"t6.server: concern scan failed: {type(error).__name__}", file=sys.stderr, flush=True)
-        time.sleep(seconds)
 
 
 def main() -> int:
@@ -134,10 +119,10 @@ def main() -> int:
                       translate_enabled=environ.get('T6_TRANSCRIPT_TRANSLATE', '').lower() == 'true',
                       concern_observe_closes=environ.get('T6_CONCERN_OBSERVE_CLOSES', '').strip().lower() in {'1', 'true', 'on', 'yes'},
                       request_log=lambda line: print(line, file=sys.stderr, flush=True),
-                      mirror=mirror)
-        interval = concern_autoscan_seconds(environ)
-        if interval is not None and api.llm_service is not None:
-            threading.Thread(target=_autoscan, args=(api, interval), daemon=True).start()
+                      mirror=mirror, closers=closer_telegram_ids(environ))
+        autoscan = autoscan_at(environ)
+        if autoscan is not None and api.llm_service is not None:
+            threading.Thread(target=run_forever, args=(api.autoscan, registry, autoscan), daemon=True).start()
         def tailnet(request: Request) -> Response:
             if request.path.split("?", 1)[0].startswith("/v1/") or request.path.split("?", 1)[0] in {"/health", "/tap"}:
                 return api(request)

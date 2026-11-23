@@ -408,6 +408,11 @@ _MIGRATIONS = (
     INSERT INTO drive_practice VALUES (1, 1)"""),
     # Snooze is gone (#636): every snoozed Concern is reopened with no override. Rows are reopened, never deleted.
     (55, False, "UPDATE concerns SET state = 'open', manual_override = 0, revision = revision + 1 WHERE state = 'snoozed'"),
+    # PM Notes history: every dated line each autoscan read, kept for good; `removed` is the first run the line was absent (#638).
+    # The autoscan keeps the time of its last completed run, so a missed 21:00 is caught up once at start.
+    (56, False, """CREATE TABLE pm_notes_history (project_id TEXT NOT NULL REFERENCES projects(id), as_of TEXT NOT NULL, line TEXT NOT NULL,
+        first_seen REAL NOT NULL, last_seen REAL NOT NULL, removed REAL, PRIMARY KEY (project_id, as_of, line));
+    CREATE TABLE concern_autoscan_runs (id INTEGER PRIMARY KEY CHECK (id = 1), completed_at REAL NOT NULL)"""),
 )
 
 

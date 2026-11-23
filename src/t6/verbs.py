@@ -1126,6 +1126,14 @@ class ProjectNotesOutput(BaseModel):
     lines: list[dict[str, str]]
 
 
+class ProjectNotesHistoryInput(ReadInput):
+    project: str
+
+
+class ProjectNotesHistoryOutput(BaseModel):
+    lines: list[dict[str, str | None]]
+
+
 class ProjectFlagsItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -3009,6 +3017,7 @@ VERBS = (
     Verb("external-link", "find", "Find an External Link", (), ExternalLinkFindInput, ExternalLinkFindOutput, "reader", "Resolve an external reference.", api_read, read_only=True),
     Verb("project", "get", "Get a Project", (), ProjectGetInput, ProjectGetOutput, "reader", "Read a Project.", api_read, read_only=True),
     Verb("project", "notes", "Read dated PM Notes", (), ProjectNotesInput, ProjectNotesOutput, "reader", "Read dated PM Notes lines.", api_read, read_only=True),
+    Verb("project", "notes-history", "Read a Project's PM Notes history", (), ProjectNotesHistoryInput, ProjectNotesHistoryOutput, "reader", "Every dated line the autoscan has archived for the Project (its t6 ID), newest first, with first seen, last seen and removed (the first run the line was absent) as Manila dates. Only Closers and the Project's coordinators may read it.", api_read, read_only=True),
     Verb("project", "flags", "Read Project flags", (), ProjectFlagsInput, ProjectFlagsOutput, "reader", "Recompute data gaps and date warnings.", api_read, read_only=True),
     Verb("person", "list", "List Contacts", (), PersonListInput, PersonListOutput, "reader", "Read Contacts.", api_read, read_only=True),
     Verb('text', 'withhold', 'Withhold credentials from text', (), TextWithholdInput, TextWithholdOutput, 'reader', 'Give up to 200 texts; each comes back in order with labelled credential values (password, passcode, pass, pin, pw) replaced by the placeholder. Nothing is stored. Use it before showing message text outside its chat.', text_withhold, read_only=True),

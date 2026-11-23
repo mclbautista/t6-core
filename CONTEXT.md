@@ -564,8 +564,14 @@ a term describes behaviour that is decided but not yet built, it says so.
   one under an "As of <date>" header; only dated lines are read.
 - **Autoscan**: the run that reads new dated lines, archives them in the PM
   Notes history and matches them to Concerns. It runs daily at 21:00 Manila
-  and not at API start (being built; today it runs every 24 h from start).
-  The Monday 21:00 run, after the PSR, is the one that settles pending closes.
+  and not at API start; one catch-up runs at start when the most recent 21:00
+  has no completed run. The Monday 21:00 run, after the PSR, is the one that
+  settles pending closes.
+- **PM Notes history**: every dated line the autoscan has read, one row per
+  Project, date and line text, with first seen, last seen and removed (the
+  first run the line was absent). It is kept for good; an edited line shows as
+  removed plus a new line. Closers and the Project's coordinators read it
+  (verb `project notes-history`).
 - **Close**: a person's close of a Concern through Sixto (verb `resolve`). Only
   a **Closer** may Close: a Telegram user id on the Closer setting. It becomes
   a pending close (being built; today it closes at once).
