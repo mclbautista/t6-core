@@ -140,7 +140,7 @@ def _apply(db: Any, store: ConcernStore, run_date: str, findings: list[dict[str,
             counts['known'] += 1
             if existing in OBSERVED:  # a Concern of a person, the scan or a date rule is left alone
                 label = source if SOURCES.index(source) < SOURCES.index(existing) else existing
-                db.execute("UPDATE concerns SET text = ?, source = ?, evidence_at = ?, state = CASE WHEN state = 'snoozed' THEN state ELSE 'open' END, revision = revision + 1 WHERE id = ?", (text, label, now, concern))
+                db.execute("UPDATE concerns SET text = ?, source = ?, evidence_at = ?, state = 'open', revision = revision + 1 WHERE id = ?", (text, label, now, concern))
                 if state != 'open':
                     store._log(db, project, concern, AUTO_ACTOR, 'concern_auto_continue', now, state, {'run_date': run_date}, 'Concern found again in the findings')
         seen.add(concern)

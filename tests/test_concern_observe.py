@@ -116,18 +116,6 @@ class ObserveTests(unittest.TestCase):
         self.now += 8 * WEEK
         self.assertEqual(self.open_of(self.go('2027-01-18', []))[0]['state'], 'open')
 
-    def test_a_snoozed_concern_found_again_stays_snoozed(self) -> None:
-        item = self.open_of(self.go('2026-11-16', [self.finding('No editor is named')]))[0]
-        preview = self.store.write('snooze', {'concern': item['id']}, actor='coordinator', idempotency_key='s')
-        self.store.write('snooze', {'concern': item['id']}, actor='coordinator', idempotency_key='s', confirm=preview.token)  # type: ignore[union-attr]
-        self.now += 2 * WEEK
-        self.go('2026-11-30', [self.finding('No editor is named')])
-        record = self.store.get(item['id'])
-        assert record is not None
-        self.assertEqual((record['state'], record['evidence_at']), ('snoozed', self.now))
-        self.go('2026-12-07', [])
-        self.assertEqual(self.store.get(item['id'])['state'], 'snoozed')  # type: ignore[index]
-
     def test_a_concern_closed_by_a_person_shows_once_and_the_same_text_starts_a_new_one(self) -> None:
         item = self.open_of(self.go('2026-11-16', [self.finding('No editor is named')]))[0]
         self.now += 3 * DAY

@@ -118,7 +118,7 @@ class ConcernScanner:
                 elif choice == 'continues':
                     assert isinstance(concern, str)
                     state, revision = row[0], row[1]
-                    db.execute("UPDATE concerns SET as_of = ?, evidence_at = ?, state = CASE WHEN state = 'snoozed' THEN state ELSE 'open' END, revision = revision + 1 WHERE id = ?", (as_of, now, concern))
+                    db.execute("UPDATE concerns SET as_of = ?, evidence_at = ?, state = 'open', revision = revision + 1 WHERE id = ?", (as_of, now, concern))
                     db.execute('DELETE FROM concern_pm_pending WHERE concern_id = ?', (concern,))
                     self._pm_log(db, project, concern, 'concern_auto_continue', quote, now, state)
                     done['continued'] += 1

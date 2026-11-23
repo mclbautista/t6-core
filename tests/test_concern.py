@@ -75,45 +75,12 @@ class ConcernTests(unittest.TestCase):
         self.write('resolve', {'concern': concern}, 'closed')
         self.assertEqual(self._get(concern)['state'], 'closed')
 
-    def snooze(self, concern: str, key: str = 'snooze', actor: str = 'coordinator') -> Any:
-        preview = self.store.write('snooze', {'concern': concern}, actor=actor, idempotency_key=key)
-        if not isinstance(preview, Preview):
-            return preview
-        return self.store.write('snooze', {'concern': concern}, actor=actor, idempotency_key=key, confirm=preview.token)
-
-    def test_a_human_snoozes_and_reopen_wakes_it(self) -> None:
+    def test_snooze_is_gone(self) -> None:
         concern = self.raise_concern()
-        done = self.snooze(concern)
-        self.assertIsInstance(done, Done)
-        record = self._get(concern)
-        self.assertEqual(record['state'], 'snoozed')
-        self.assertEqual([c['id'] for c in self.store.open_concerns()], [concern])
-        self.assertIsInstance(self.snooze(concern, 'again'), Refused)
-        self.write('reopen', {'concern': concern}, 'wake')
+        refused = self.store.write('snooze', {'concern': concern}, actor='coordinator', idempotency_key='snooze')
+        self.assertIsInstance(refused, Refused)
+        self.assertEqual(refused.rule, 'input')
         self.assertEqual(self._get(concern)['state'], 'open')
-        actions = [a.action for a in self.registry.activity(self.project) if a.subject_id == concern]
-        self.assertEqual(actions.count('concern_snooze'), 1)
-
-    def test_snooze_is_human_only(self) -> None:
-        from t6.person import AUTO_ACTOR, SERVICES, INTERNAL_ACTORS
-        concern = self.raise_concern()
-        for actor in (AUTO_ACTOR, *sorted(SERVICES), *sorted(INTERNAL_ACTORS)):
-            refused = self.snooze(concern, 'k-' + actor, actor)
-            self.assertIsInstance(refused, Refused, actor)
-            self.assertEqual(refused.rule, 'human_only')
-        self.assertEqual(self._get(concern)['state'], 'open')
-
-    def test_a_closed_or_missing_concern_cannot_be_snoozed(self) -> None:
-        concern = self.raise_concern()
-        self.write('resolve', {'concern': concern}, 'resolve')
-        self.assertIsInstance(self.snooze(concern), Refused)
-        self.assertIsInstance(self.snooze('t6c_missing', 'missing'), Refused)
-
-    def test_a_note_keeps_a_snoozed_concern_snoozed(self) -> None:
-        concern = self.raise_concern()
-        self.snooze(concern)
-        self.write('note', {'concern': concern, 'text': 'Update'}, 'note')
-        self.assertEqual(self._get(concern)['state'], 'snoozed')
 
     def test_jo_done_closes_linked_concern_and_manual_reopen_sticks(self) -> None:
         from t6.job_order import JobOrderStore
@@ -159,7 +126,7 @@ class ConcernTests(unittest.TestCase):
         assert record is not None
         self.assertEqual(record['state'], 'closed')
 
-    def test_raise_at_psr_lists_every_open_unsnoozed_concern_oldest_evidence_first(self) -> None:
+    def test_raise_at_psr_lists_every_open_concern_oldest_evidence_first(self) -> None:
         old = self.raise_concern()
         self.now += 6 * WEEK
         recent = str(self.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'lab', 'anchor': 'Waiting on lab', 'as_of': '2026-11-01'}, 'recent')['concern_id'])
@@ -172,13 +139,13 @@ class ConcernTests(unittest.TestCase):
         self.write('note', {'concern': old, 'text': 'May update'}, 'note')
         self.assertEqual([c['id'] for c in self.store.raise_at_psr()], [recent, old])
 
-    def test_raise_at_psr_skips_snoozed_and_closed_and_lists_a_woken_one_again(self) -> None:
-        snoozed, closed = self.raise_concern(), str(self.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'lab', 'anchor': 'Waiting on lab', 'as_of': '2026-11-01'}, 'other')['concern_id'])
-        self.snooze(snoozed)
+    def test_raise_at_psr_skips_closed_and_lists_a_reopened_one_again(self) -> None:
+        reopened, closed = self.raise_concern(), str(self.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'lab', 'anchor': 'Waiting on lab', 'as_of': '2026-11-01'}, 'other')['concern_id'])
+        self.write('resolve', {'concern': reopened}, 'resolve-first')
         self.write('resolve', {'concern': closed}, 'resolve')
         self.assertEqual(self.store.raise_at_psr(), [])
-        self.write('reopen', {'concern': snoozed}, 'wake')
-        self.assertEqual([c['id'] for c in self.store.raise_at_psr()], [snoozed])
+        self.write('reopen', {'concern': reopened}, 'reopen')
+        self.assertEqual([c['id'] for c in self.store.raise_at_psr()], [reopened])
 
     def test_validation_and_catalogue(self) -> None:
         result = self.store.write('raise', {'project': self.project, 'owner': 'coordinator', 'waiting_on': 'lab', 'anchor': ' ', 'as_of': '2026-01-01'}, actor='person')
