@@ -292,7 +292,7 @@ class ReadTests(unittest.TestCase):
         assert isinstance(project, Registered)
         owner = 't6n_' + '1' * 32
         with self.registry._transaction() as db:
-            for concern, state, opened in (('t6c_old_open', 'open', 0.0), ('t6c_snoozed', 'snoozed', 0.0), ('t6c_closed', 'closed', 0.0)):
+            for concern, state, opened in (('t6c_old_open', 'open', 0.0), ('t6c_closed', 'closed', 0.0)):
                 db.execute("INSERT INTO concerns (id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state) VALUES (?, ?, ?, 'Client Corp', 'Waiting on Client Corp', '2026-11-01', ?, 0, ?)", (concern, project.project.id, owner, opened, state))
         listed = self.client.concern_list(ConcernListInput(raise_at_psr=True, project=project.project.id))
         assert isinstance(listed, Done)
@@ -336,6 +336,20 @@ class ReadTests(unittest.TestCase):
         self.assertEqual(sorted(rows[0]), sorted(['id', 'project_id', 'owner_id', 'waiting_on', 'text', 'source', 'anchor', 'as_of', 'opened_at', 'evidence_at', 'state', 'settles_id', 'age_seconds', 'chronic']))
         self.assertTrue(all(c['chronic'] for c in rows))
         self.assertEqual(rows[0]['text'], 'Client Corp has not replied')
+
+    def test_concern_list_names_who_closed_a_pending_concern(self) -> None:
+        from t6.verbs import ConcernListInput
+        project = self.seed_concerns()
+        closer = self.bound_person(self.person, 7)
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO concern_pending_closes VALUES ('t6c_new', ?, 'close', NULL, NULL, 500.0, NULL)", (closer,))
+        for inputs in (ConcernListInput(open=True, project=project), ConcernListInput(raise_at_psr=True, project=project)):
+            listed = Client(self.client.base_url, 'unmasked-secret').concern_list(inputs)
+            assert isinstance(listed, Done)
+            self.assertNotIn('t6c_new', [c['id'] for c in listed.result['concerns']])
+            [pending] = listed.result['pending']
+            self.assertEqual((pending['id'], pending['text'], pending['close_by'], pending['close_by_name'], pending['close_at'], pending['close_source']),
+                             ('t6c_new', 'Client Corp has not replied', closer, 'Ana Cruz', 500.0, 'close'))
 
     def test_concern_list_needs_exactly_one_of_the_two_lists(self) -> None:
         from t6.verbs import ConcernListInput
@@ -592,7 +606,7 @@ class ReadTests(unittest.TestCase):
 
     def test_jo_reads_return_the_status_group_active_and_health_flags(self) -> None:
         from t6.verbs import JoListInput, JoGetInput
-        expected = {'Needs Intake Review': ('not_started', True), 'Pending': ('not_started', True), 'In progress': ('started', True),
+        expected = {'On Hold': ('not_started', True), 'Needs Intake Review': ('not_started', True), 'Pending': ('not_started', True), 'In progress': ('started', True),
                     'Needs Completion Review': ('started', True), 'Done': ('started', False), 'Cancelled': ('cancelled', False)}
         for status in expected:
             self.notion.add_page('job_orders', {JobOrdersRow.notion_name('name'): title('JO ' + status),
@@ -622,6 +636,26 @@ class ReadTests(unittest.TestCase):
         flags = {o['name']: o['health_flags'] for o in result.result['job_orders']}
         self.assertEqual((flags['Health Both'], flags['Health Urgent'], flags['Work']), (['Blocked', 'Delayed'], ['Urgent'], []))
 
+    def test_jo_reads_return_the_health_name_ignoring_emoji(self) -> None:
+        from t6.verbs import JoGetInput, JoListInput
+        orders = JobOrdersRow
+        outputs = {'Closed': '✅ Closed', 'Blocked': '🔴 Blocked', 'Delayed': '⚠️ Delayed', 'Urgent': '🔥 Urgent',
+                   'Advanced': '⚡ Advanced', 'Advanced VS16': '⚡️ Advanced', 'On Track': '🔵 On Track'}
+        for name, text in outputs.items():
+            self.notion.add_page('job_orders', {orders.notion_name('name'): title('Health ' + name),
+                                               orders.notion_name('health'): {'type': 'formula', 'formula': {'type': 'string', 'string': text}}})
+        result = self.client.jo_list(JoListInput())
+        assert isinstance(result, Done)
+        names = {o['name']: o['health_name'] for o in result.result['job_orders']}
+        for name in outputs:
+            with self.subTest(name=name):
+                self.assertEqual(names['Health ' + name], name.removesuffix(' VS16'))
+        self.assertIsNone(names['Work'])
+        page = next(o['page_id'] for o in result.result['job_orders'] if o['name'] == 'Health Advanced VS16')
+        got = self.client.jo_get(JoGetInput(ref=page))
+        assert isinstance(got, Done)
+        self.assertEqual(got.result['job_order']['health_name'], 'Advanced')
+
     def test_jo_get_includes_t6_state_for_t6_reference(self) -> None:
         from t6.job_order import JobOrderStore
         from t6.notion.job_orders import JobOrders
@@ -647,8 +681,8 @@ class ReadTests(unittest.TestCase):
         result = self.client.jo_get(JoGetInput(ref='t6j_unbound'))
         assert isinstance(result, Done), result
         order = result.result['job_order']
-        self.assertEqual((order['status_group'], order['active'], order['done'], order['health_flags'], order['project_ids']),
-                         ('not_started', True, False, [], ['t6p_one']))
+        self.assertEqual((order['status_group'], order['active'], order['done'], order['health_flags'], order['health_name'], order['project_ids']),
+                         ('not_started', True, False, [], None, ['t6p_one']))
 
     def test_camera_enrich_requires_preview_and_confirm(self) -> None:
         from t6.verbs import CameraEnrichInput, Preview
@@ -949,6 +983,17 @@ class ReadTests(unittest.TestCase):
         self.assertEqual(names(registered=True), {'Registered One', 'Registered Two'})
         self.assertEqual(names(registered=False), {'Unregistered Three'})
         self.assertEqual(names(), {'Registered One', 'Registered Two', 'Unregistered Three'})
+
+    def test_person_list_returns_master_brief_for_every_item(self) -> None:
+        from t6.verbs import PersonListInput
+        ids = self.add_contacts(('Briefed One', None), ('Plain Two', None), ('Unregistered Three', None))
+        for n, name in enumerate(('Briefed One0', 'Plain Two1'), start=1):
+            person_id = self.bound_person({'id': ids[name]}, n)
+            with self.registry._transaction() as db:
+                db.execute('UPDATE persons SET master_brief = ? WHERE id = ?', (int(n == 1), person_id))
+        result = self.client.person_list(PersonListInput())
+        assert isinstance(result, Done)
+        self.assertEqual({p['name']: p['master_brief'] for p in result.result['people'] if p['name'] != 'Ana Cruz'}, {'Briefed One': True, 'Plain Two': False, 'Unregistered Three': False})
 
     def test_person_list_kind_filters_on_the_registered_kind(self) -> None:
         from t6.verbs import PersonListInput

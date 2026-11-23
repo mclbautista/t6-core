@@ -830,20 +830,12 @@ def main(
 
             internal_client = InternalQueueClient(InternalJobQueue(environ["T6_DATABASE"]))
         if internal_client is not None and settings.queue == "main":
-            from t6.concern import ConcernStore
-            from t6.concern_scan import ConcernScanner
-            from t6.preview import PreviewTokens
             from t6.registry.sqlite import SqliteProjectRegistry
 
-            concerns = ConcernStore(SqliteProjectRegistry(environ["T6_DATABASE"]), PreviewTokens("timer"))
             def concern_silence(job: WorkerJob) -> bool:
                 return True  # A Concern never goes quiet or expires: acknowledge a legacy job and change nothing.
             def concern_pm_close(job: WorkerJob) -> bool:
-                project = job.payload.get('project')
-                if not isinstance(project, str):
-                    raise ValueError('Invalid Concern close payload')
-                ConcernScanner(concerns).apply_pending(project)
-                return True
+                return True  # Pending closes wait for the Monday autoscan (#639): acknowledge a legacy timer job and change nothing.
             from t6.frameio.share_views import DeliveryShareViews, share_viewed_handler
 
             share_viewed = share_viewed_handler(DeliveryShareViews(SqliteProjectRegistry(environ["T6_DATABASE"])))

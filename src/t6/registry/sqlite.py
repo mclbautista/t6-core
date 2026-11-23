@@ -412,6 +412,21 @@ _MIGRATIONS = (
     CREATE VIEW drive_effective_events AS SELECT e.* FROM drive_events e
     WHERE e.id > COALESCE((SELECT MAX(r.event_id) FROM drive_status_resets r
     JOIN drive_events u ON u.id=r.event_id WHERE u.drive_id=e.drive_id), 0)"""),
+    # Snooze is gone (#636): every snoozed Concern is reopened with no override. Rows are reopened, never deleted.
+    (56, False, "UPDATE concerns SET state = 'open', manual_override = 0, revision = revision + 1 WHERE state = 'snoozed'"),
+    # PM Notes history: every dated line each autoscan read, kept for good; `removed` is the first run the line was absent (#638).
+    # The autoscan keeps the time of its last completed run, so a missed 21:00 is caught up once at start.
+    (57, False, """CREATE TABLE pm_notes_history (project_id TEXT NOT NULL REFERENCES projects(id), as_of TEXT NOT NULL, line TEXT NOT NULL,
+        first_seen REAL NOT NULL, last_seen REAL NOT NULL, removed REAL, PRIMARY KEY (project_id, as_of, line));
+    CREATE TABLE concern_autoscan_runs (id INTEGER PRIMARY KEY CHECK (id = 1), completed_at REAL NOT NULL)"""),
+    # A pending close is decided at the next PSR (#639): who closed (`actor`, NULL for a Done line), its `source` (`close` or
+    # `done_line`) and when. The week timer's rows move here; `concern_pm_pending` stays, empty, so the previous release still opens the file.
+    (58, False, """CREATE TABLE concern_pending_closes (concern_id TEXT PRIMARY KEY REFERENCES concerns(id), actor TEXT, source TEXT NOT NULL,
+        as_of TEXT, quote TEXT, created_at REAL NOT NULL);
+    INSERT INTO concern_pending_closes SELECT concern_id, NULL, 'done_line', as_of, quote, due - 604800 FROM concern_pm_pending;
+    DELETE FROM concern_pm_pending"""),
+    # A pending close keeps the settlement its Closer gave; the Concern takes it only when the close is applied.
+    (59, False, "ALTER TABLE concern_pending_closes ADD COLUMN settles_id TEXT"),
 )
 
 

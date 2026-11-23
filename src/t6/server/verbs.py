@@ -43,7 +43,7 @@ class VerbAPI:
                  frameio_queue: Any = None, concern_observe_closes: bool = False,
                  request_log: Callable[[str], None] | None = None, privacy_list: PrivacyList | None = None,
                  notion_source: NotionSource | None = None, mirror: MirrorReader | None = None,
-                 server_projects: Callable[[], Sequence[Any]] | None = None) -> None:
+                 server_projects: Callable[[], Sequence[Any]] | None = None, closers: frozenset[int] = frozenset()) -> None:
         import math
         if not math.isfinite(transcribe_rate) or transcribe_rate < 0:
             raise ValueError('Transcription rate must be finite and non-negative')
@@ -62,6 +62,7 @@ class VerbAPI:
         self.transcribe_rate = transcribe_rate
         self.translate_enabled = translate_enabled
         self.concern_observe_closes = concern_observe_closes
+        self.closers = closers  # the Closer setting: Telegram user ids (#638, #639)
         self.request_log = request_log
         self.frameio = QueueFrameioWriter(frameio_queue or LocalFrameioQueue(queue), timeout=frameio_timeout)  # asks the Frame.io worker; holds no token
         self.routes = {f'/v1/{v.noun}' + ('/' + v.verb.replace(' ', '/') if v.verb else ''): v for v in VERBS}
@@ -332,8 +333,10 @@ class VerbAPI:
         if (entry.noun, entry.verb) in {('transcript', 'create'), ('transcript', 'speakers'), ('transcript', 'translate')}:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._transcripts().request(entry.verb, inputs, actor, translate_enabled=self.translate_enabled)
-        elif (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'notes'), ('project', 'flags'), ('project', 'resolve'), ('concern', 'list'), ('concern', 'get'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'candidates'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find'), ('version', 'get')}:
+        elif (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'notes'), ('project', 'notes-history'), ('project', 'flags'), ('project', 'resolve'), ('concern', 'list'), ('concern', 'get'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'candidates'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find'), ('version', 'get')}:
             refusal = self.people.authorize(actor, entry.role)
+            if not refusal and (entry.noun, entry.verb) == ('project', 'notes-history') and not self.is_closer(actor) and actor not in self._coordinators(inputs.project):
+                refusal = Refused(rule='coordinator', reason="Only Closers and the Project's coordinators may read its PM Notes history")
             outcome = refusal or self._typed_read(entry.noun, entry.verb, inputs, seen=seen)
             if isinstance(outcome, Done) and entry.noun in {'project', 'concern', 'jo', 'person', 'camera', 'deliverable', 'meeting-notes', 'external-link', 'studio'} and not self._reads_unmasked(actor):
                 outcome = self._masked_outcome(outcome)
@@ -449,6 +452,8 @@ class VerbAPI:
         elif (entry.noun, entry.verb) == ('concern', 'observe'):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._concern_observe(inputs, actor)
+        elif (entry.noun, entry.verb) == ('concern', 'resolve') and not self.is_closer(actor) or (entry.noun, entry.verb) == ('concern', 'reopen') and not self.is_closer(actor) and self._pending_close(inputs.concern):
+            outcome = self.people.authorize(actor, entry.role) or Refused(rule='closer', reason='Only Closers may close a Concern or cancel its pending close')
         elif (entry.noun, entry.verb) == ('concern', 'raise') and inputs.owner is not None and inputs.owner not in self._coordinators(inputs.project):
             outcome = self.people.authorize(actor, entry.role) or Refused(rule='owner', reason='Owner must be a Project coordinator')
         elif entry.handler is None:
@@ -1049,34 +1054,67 @@ class VerbAPI:
         person = self.people.registry.bound_entity('notion', normalize_page_id(found.entity.page_id))
         return person if isinstance(person, str) else None
 
-    def scan_concerns(self) -> int:
-        """Scan the PM Notes of every Project in rotation for new Concern evidence; returns how many were scanned."""
+    def _pending_close(self, concern: str) -> bool:
+        with self.people.registry._transaction() as db:
+            return db.execute('SELECT 1 FROM concern_pending_closes WHERE concern_id = ?', (concern,)).fetchone() is not None
+
+    def is_closer(self, actor: str) -> bool:
+        """Whether `actor` is an active Person whose Telegram user id is on the Closer setting."""
+        person = self.people.get(actor)
+        return bool(person and person['active'] and person['telegram_id'] in self.closers)
+
+    def autoscan(self, slot: float) -> bool:
+        """One autoscan run for the daily `slot` (#638): archive every Project's PM Notes, then scan them for Concerns.
+
+        Returns True when the run completed; a refused LLM run stops it. Logs counts only, never text."""
         from t6.concern import ConcernStore
         from t6.concern_scan import ConcernScanner
         from t6.concern_task import ClassifyRefused, classify
+        from t6.pm_notes import archive
         from t6.registry import Rotation
         from t6.verbs import ProjectNotesInput
         if self.llm_service is None:
-            return 0
+            return False
+        projects = self.people.registry.list_projects(Rotation.IN)
+        notes: dict[str, list[dict[str, str]]] = {}
+        for project in projects:
+            read = self._typed_read('project', 'notes', ProjectNotesInput(project=project.id))
+            if isinstance(read, Done):
+                notes[project.id] = read.result['lines']
+                with self.people.registry._transaction() as db:
+                    archive(db, project.id, notes[project.id], self.people.registry._clock())
+        counts = f'archived={len(notes)}'
         scanned, skipped, changes = 0, 0, {'raised': 0, 'continued': 0, 'announced': 0}
-        for project in self.people.registry.list_projects(Rotation.IN):
-            owners = sorted(self._coordinators(project.id))
-            notes = self._typed_read('project', 'notes', ProjectNotesInput(project=project.id)) if owners else None
-            if not isinstance(notes, Done):
+        read_all: set[str] = set()  # the Projects whose every line was read in this run
+        for project in projects:
+            owners = sorted(self._coordinators(project.id)) if project.id in notes else []
+            if not owners:
                 skipped += 1  # no coordinator, or the notes could not be read: counted, never silent (#596)
                 continue
             owner = owners[0]
             try:
-                done = ConcernScanner(ConcernStore(self.people.registry, self.people.tokens)).process_notes(project.id, owner, notes.result['lines'], lambda payload: classify(self.llm_service, payload, actor=owner, registry=self.people.registry))
+                done = ConcernScanner(ConcernStore(self.people.registry, self.people.tokens)).process_notes(project.id, owner, notes[project.id], lambda payload: classify(self.llm_service, payload, actor=owner, registry=self.people.registry))
                 scanned += 1
+                if not done['unread']:
+                    read_all.add(project.id)
                 changes = {name: count + done[name] for name, count in changes.items()}
             except ValueError:
                 continue
             except ClassifyRefused as refused:
-                print(f't6.server: concern scan stopped: llm run refused rule={refused.rule} projects={scanned}', file=sys.stderr, flush=True)  # rule only: no text
-                return scanned
-        print(f't6.server: concern scan projects={scanned} skipped={skipped} ' + ' '.join(f'{name}={count}' for name, count in changes.items()), file=sys.stderr, flush=True)  # counts only: no text
-        return scanned
+                print(f't6.server: concern scan stopped: llm run refused rule={refused.rule} {counts} projects={scanned}', file=sys.stderr, flush=True)  # rule only: no text
+                return False
+        # Pending closes are applied at the end of the run, after every new line was read (#639), and only for the Projects whose lines were all read: every close made before the latest
+        # Monday 08:30 Manila, the start of that PSR, on or before the slot. The Monday 21:00 run applies them; a failed run applies
+        # nothing, and the next run that completes applies what it left.
+        from datetime import timedelta
+        from t6.domain.studio_time import MANILA
+        day = datetime.fromtimestamp(slot, MANILA)
+        psr = (day - timedelta(days=day.weekday())).replace(hour=8, minute=30, second=0, microsecond=0)
+        if psr.timestamp() > slot:
+            psr -= timedelta(days=7)
+        applied = ConcernScanner(ConcernStore(self.people.registry, self.people.tokens)).apply_pending(psr.timestamp(), read_all)
+        print(f't6.server: concern scan {counts} projects={scanned} skipped={skipped} ' + ' '.join(f'{name}={count}' for name, count in changes.items()) + f' applied={applied}', file=sys.stderr, flush=True)  # counts only: no text
+        return True
 
     def _coordinators(self, project_id: str) -> set[str]:
         """The Persons who coordinate a Project: its Notion post coordinators and its t6 coordinator roles."""
@@ -1099,7 +1137,7 @@ class VerbAPI:
         from t6.notion.reads import ProjectReader, DeliverableReader, is_live
         from t6.notion.job_orders import JobOrders
         from t6.notion.meeting_notes import note_from_page
-        from t6.domain.job_order_rules import status_group, is_active, is_done, health_flags
+        from t6.domain.job_order_rules import status_group, is_active, is_done, health_flags, health_name
         from t6.domain import project_rules
         from t6.registry import ProjectRefs, RegistryError
         from t6.registry.core import normalize_page_id
@@ -1109,7 +1147,20 @@ class VerbAPI:
             if inputs.raise_at_psr == inputs.open:
                 return Refused(rule='input', reason='Pass exactly one of raise_at_psr and open')
             concerns = ConcernStore(self.people.registry, self.people.tokens)
-            return Done(result={'concerns': concerns.open_concerns(inputs.project) if inputs.open else concerns.raise_at_psr(inputs.project)})
+            pending = concerns.pending_closes(inputs.project)
+            if any(item['close_by'] for item in pending):
+                from t6.verbs import PersonListInput
+                people = self._typed_read('person', 'list', PersonListInput())
+                names = {p['t6_id']: p['name'] for p in people.result['people'] if p['t6_id']} if isinstance(people, Done) else {}
+                for item in pending:
+                    item['close_by_name'] = names.get(item['close_by'])
+            return Done(result={'concerns': concerns.open_concerns(inputs.project) if inputs.open else concerns.raise_at_psr(inputs.project), 'pending': pending})
+        if (noun, verb) == ('project', 'notes-history'):
+            from t6.pm_notes import history
+            if self.people.registry.get(inputs.project) is None:
+                return refuse('project', 'Project not found', 'not_found')
+            with self.people.registry._transaction() as db:
+                return Done(result={'lines': history(db, inputs.project)})
         if (noun, verb) == ('concern', 'get'):
             from t6.concern import ConcernStore
             record = ConcernStore(self.people.registry, self.people.tokens).get(inputs.concern)
@@ -1209,7 +1260,7 @@ class VerbAPI:
         def order_result(order: Any) -> dict[str, Any]:
             item = asdict(order)
             group = status_group(order.status)
-            item.update(status_group=group.value if group else None, active=is_active(order.status), done=is_done(order.status), health_flags=list(health_flags(order.health)))
+            item.update(status_group=group.value if group else None, active=is_active(order.status), done=is_done(order.status), health_flags=list(health_flags(order.health)), health_name=health_name(order.health))
             item['t6_id'] = self.people.registry.bound_entity('notion', order.page_id)
             item['project_id'] = refs.identity(order.project_id) or order.project_id
             item['project_ids'] = [refs.identity(page) or page for page in order.project_ids]
@@ -1238,6 +1289,7 @@ class VerbAPI:
                             if inputs.kind
                             else {}
                         )
+                        master_briefs = {str(r[0]) for r in db.execute('SELECT id FROM persons WHERE master_brief = 1').fetchall()}
                     people = []
                     for c in raw_contacts:
                         key = normalize_page_id(c.page_id)
@@ -1245,6 +1297,7 @@ class VerbAPI:
                             raise RegistryError('notion_page_id must not be blank')
                         item = asdict(c)
                         item['t6_id'] = contact_bindings.get(key)
+                        item['master_brief'] = item['t6_id'] in master_briefs
                         if (inputs.registered is None or (item['t6_id'] is not None) == inputs.registered) and (
                             inputs.kind is None or kinds.get(item['t6_id'] or '') == inputs.kind
                         ):
@@ -1380,6 +1433,7 @@ class VerbAPI:
                                 **record['fields'], **record, 't6_id': record['id'],
                                 'status_group': group.value if group else None, 'active': is_active(status), 'done': is_done(status),
                                 'health_flags': list(health_flags(record['fields'].get('health'))),
+                                'health_name': health_name(record['fields'].get('health')),
                                 'project_ids': [record['project_id']] if record['project_id'] else []}})
                     else:
                         from t6.domain.job_order_rules import parse_telegram_key
@@ -1708,6 +1762,11 @@ def secrets_from_env(environ: Mapping[str, str]) -> dict[str, str]:
     if not isinstance(value, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in value.items()):
         raise ValueError('T6_API_SECRETS must be a JSON object mapping secrets to identities')
     return value
+
+
+def closer_telegram_ids(environ: Mapping[str, str]) -> frozenset[int]:
+    """The Closer setting: the Telegram user ids allowed to Close, comma-separated in `T6_CLOSER_TELEGRAM_IDS` (private config only)."""
+    return frozenset(int(value) for value in environ.get('T6_CLOSER_TELEGRAM_IDS', '').split(',') if value.strip())
 
 
 def service_permissions_from_env(environ: Mapping[str, str]) -> dict[str, frozenset[str]]:

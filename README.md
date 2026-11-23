@@ -137,9 +137,10 @@ that the edge route file and the API need.
 | `T6_REGISTRY_READ_SECRET` | registry caller that may only read Projects |
 | `T6_QUEUE_DB`, `T6_PUBLIC_BIND`, `T6_TAILNET_BIND` | database path, listener addresses |
 | `T6_REGISTRY_DB` | Project registry database path, default `t6-registry.sqlite` |
-| `T6_CONCERN_AUTOSCAN` | Set to `1` to scan PM Notes for Concerns automatically in the API server. Off by default; needs the LLM service. |
+| `T6_CONCERN_AUTOSCAN` | Set to `1` to run the autoscan in the API server: it archives every Project's dated PM Notes lines in the PM Notes history, then scans them for Concerns. Off by default; needs the LLM service. |
 | `T6_CONCERN_OBSERVE_CLOSES` | Set to `1` to let `concern observe` close a Concern its run did not find. Off by default: a run closes nothing. |
-| `T6_CONCERN_AUTOSCAN_SECONDS` | Seconds between automatic scans, default `86400` (once a day; the first scan runs at start), minimum `60`. A scan stops at the first `llm run` refusal and logs its rule |
+| `T6_CONCERN_AUTOSCAN_AT` | Manila time of the daily autoscan as `HH:MM`, default `21:00`. It never runs at start, except one catch-up when a run completed before the most recent run time and none since (the last slot served is kept in the registry); the first start after the upgrade has no stored run, so it only records that slot and waits for the next one. A run time that passes while a run is still going is served right after it. A run stops at the first `llm run` refusal and logs its rule; a stopped or failed run is not retried until the next day. Each run logs counts only: `archived`, `projects`, `skipped`, `raised`, `continued`, `announced`, `applied` (pending closes it closed) |
+| `T6_CLOSER_TELEGRAM_IDS` | The Closer setting: Telegram user IDs allowed to Close a Concern (`concern resolve`; anyone else is refused with rule `closer`), comma separated. Closers and a Project's coordinators may read `project notes-history`. Private config only; unset means no Closers |
 | `T6_OPERATOR_IDS` | Telegram user IDs allowed to tap operator cards and send `/project`, comma separated; the first receives the cards core starts, and a `/project` card goes to whoever sent it. Unset turns operator actions off |
 | `T6_STANDING_CC` | A Contact page ID, added to the cc of every Job Order (`t6.domain.studio_people.standing_cc`). Unset means none |
 | `T6_OPERATOR_DB`, `T6_OPERATOR_TTL_SECONDS` | operator action database, default `t6-operator.sqlite`; how long a card stays live, default 7 days |
@@ -2299,23 +2300,43 @@ be raised with no `owner`, and any Concern may have an empty `waiting_on`: the
 `person` raise still needs an owner. A Concern that is not closed is unique by
 Project and `text` (whitespace collapsed, case folded); a second one is refused
 with rule `duplicate`. `concern get` returns the new fields. `concern list
---open` returns every Concern that is not closed (`open` or `snoozed`; rows an
-older release marked `quiet` or `expired` are still returned as stored),
+--open` returns every Concern that is not closed (rows an older release
+marked `quiet` or `expired` are still returned as stored),
 oldest first, with `age_seconds` and `chronic` (open longer than
 `CHRONIC_DAYS`, 28); pass exactly one of `--raise-at-psr` and `--open`. `--raise-at-psr` lists every
-Concern that is neither closed nor snoozed, oldest last evidence first, with
+Concern that is not closed, oldest last evidence first, with
 owner, `waiting_on`, `age_seconds` and `evidence_at`; age never hides one. `text`
 is masked like `waiting_on` and `anchor` for a caller without real-name access;
-reading it needs the `unmasked` permission.
+reading it needs the `unmasked` permission. Both modes also return `pending`:
+every Concern with a pending close, oldest first. A Concern with a pending close
+is only in `pending`, never in `concerns`. A `pending` item holds every field of
+an `--open` item plus `close_by` (the Person who closed it, null for a Done
+line), `close_by_name` (their Contact name, null when unknown), `close_at` (when),
+`close_source` (`close` or `done_line`) and `close_quote` (the Done line's words,
+null for a close). See `docs/api-read-verbs.md`.
+
+Closes wait for the next PSR. `concern resolve` (preview, then confirm) is a
+Close: only a Closer may make it (the `coordinator` role plus a Telegram user id
+on `T6_CLOSER_TELEGRAM_IDS`; anyone else is refused with rule `closer`). It does
+not close the Concern: it records a pending close with who and when. A Done line
+(the PM Notes scan's `settles`) records one too. The Monday 21:00 autoscan
+applies, at the end of its run, every pending close made before that Monday
+08:30 Manila, so a close made on Monday after 08:30 waits for the following
+Monday. A run applies a pending close only for a Project whose notes it read and whose
+lines it all settled; a failed run applies nothing; the next run that completes
+applies what it left. Before that, a dated line the scan reads as continuing the Concern is a
+veto: it deletes the pending close, and it must be dated after the Concern's
+as-of date. `concern reopen` on a Concern with a pending close is Undo: only a
+Closer may make it (anyone else is refused with rule `closer`); it cancels the
+close and leaves the Concern open. The `settles_id` of a Close is set on the
+Concern only when the close is applied. An applied
+Close sets `manual_override`, so later lines no longer change that Concern.
+A second Close on a Concern that already has one is refused with rule `state`;
+a date-sanity Concern still refuses `resolve` with rule `rule_made`. Data closes
+(a Job Order done, an approval granted, a milestone met, a Project date filled
+in) stay immediate and drop any pending close.
 
 A Concern never goes quiet or expires on its own: no timer changes its state.
-`concern snooze` (role `operator`, preview and confirm, `idempotency_key`) sets
-an open Concern to `snoozed`. It is for a human operator only: the automatic
-actor, every service token and every internal actor are refused with rule
-`human_only`, and a Person without `operator` is refused as `permission`. A
-snoozed Concern stays in `concern list --open`, is not closed or woken by
-`concern observe` or `concern scan`, and `concern reopen` wakes it. Resolve
-still closes it.
 
 `concern observe` is how an app hands over the findings of one run (role
 `coordinator`; the reports service also needs `unmasked` to read the reply
@@ -2328,7 +2349,7 @@ that could not be read. The call is one step (no preview) and needs an
 nothing twice. At most 500 findings and 100 unavailable pairs. For each finding
 the API decides: new (no Concern that is not closed has the text in the Project:
 a Concern opens with `opened_at` the run date), known (evidence is added, an
-open or quiet or expired Concern is open again, a snoozed one stays snoozed, `opened_at` is kept), or, for a
+open or quiet or expired Concern is open again, `opened_at` is kept), or, for a
 Concern the run did not find, not seen (nothing changes). The same text after a Concern was closed is a new Concern with a new age.
 A Concern of source `person`, `pm_notes_scan` or `date_rule` is never created,
 aged or closed by the run; it is listed in `open`. A finding whose `owner` is not
@@ -2341,7 +2362,7 @@ Project, `open` (`id`, `text`, `source`, `opened_on`, `age_days`, `weeks`,
 `closed`. `--dry-run` computes the same reply and writes nothing. Every real run
 writes one `concern_observe` audit row and one log line holding the counts, never
 text, names or IDs; the PM Notes scan writes a line of its counts too
-(`projects`, `raised`, `continued`, `announced`).
+(`projects`, `raised`, `continued`, `announced`, `applied`).
 
 `concern counts` (role `reader`, read only; `t6 concern counts --since DATE
 --until DATE [--project P]`) answers how many Concerns each PSR raised and how
@@ -2363,8 +2384,8 @@ fuzzy value), and also returns `missing_roles` and `sanity` (the date problems,
 as kinds and dates, with `from_notes`). `project list` and `project get` return
 `status_key`, `status_group`, `snapshotted`, `missing_roles`, `relevant_dates`,
 `health_missing` and `health_rank`, and `project list` filters on `status_group`;
-`jo list`, `jo get` and `jo find` return `status_group`, `active`, `done` and
-`health_flags`. Apps do not evaluate these rules: see `docs/api-read-verbs.md`. Health-vs-evidence and source
+`jo list`, `jo get` and `jo find` return `status_group`, `active`, `done`,
+`health_flags` and `health_name`. Apps do not evaluate these rules: see `docs/api-read-verbs.md`. Health-vs-evidence and source
 conflict are judgments supplied by the reports app. Its stale-milestone
 judgment also depends on dated notes and later mentions, which are not stored
 as structured milestone expectations in t6; the read cannot infer that flag

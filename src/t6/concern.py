@@ -10,7 +10,7 @@ import statistics
 from typing import Any
 
 from t6.ids import EntityKind, T6Id
-from t6.person import AUTO_ACTOR, INTERNAL_ACTORS, SERVICES, People
+from t6.person import AUTO_ACTOR, People
 from t6.preview import PreviewTokens
 from t6.registry.sqlite import SqliteProjectRegistry, concern_key
 from t6.verbs import Done, Outcome, Refused
@@ -40,6 +40,7 @@ def _midnight(day: str) -> float:
 
 def _close(db: Any, concern: str, now: float) -> None:
     db.execute("UPDATE concerns SET state = 'closed', closed_at = ?, revision = revision + 1 WHERE id = ?", (now, concern))
+    db.execute('DELETE FROM concern_pending_closes WHERE concern_id = ?', (concern,))  # a closed Concern has no pending close
 
 
 def _open_duplicate(db: Any, project: str, text: str) -> bool:
@@ -80,22 +81,30 @@ class ConcernStore:
             record['notes'] = [dict(zip(('text', 'actor', 'at', 'message_id'), n)) for n in db.execute('SELECT text, actor, at, message_id FROM concern_notes WHERE concern_id = ? ORDER BY id', (concern,))]
             return record
 
-    def open_concerns(self, project: str | None = None) -> list[dict[str, Any]]:
-        """Every Concern that is not closed, oldest first."""
+    def open_concerns(self, project: str | None = None, pending: bool = False) -> list[dict[str, Any]]:
+        """Every Concern that is not closed, oldest first: those without a pending close, or with `pending` only those with one."""
         now = self.registry._clock()
         with self.registry._transaction() as db:
-            rows = db.execute(_SELECT + " WHERE state != 'closed' AND (? IS NULL OR project_id = ?) ORDER BY opened_at, id", (project, project)).fetchall()
+            rows = db.execute(_SELECT + f" WHERE state != 'closed' AND id {'' if pending else 'NOT '}IN (SELECT concern_id FROM concern_pending_closes) AND (? IS NULL OR project_id = ?) ORDER BY opened_at, id", (project, project)).fetchall()
+            closes = {r[0]: r[1:] for r in db.execute('SELECT concern_id, actor, source, quote, created_at FROM concern_pending_closes')} if pending else {}
         records = [self._record(row, now) for row in rows]
         for record in records:
             del record['closed_at']
             record['chronic'] = record['age_seconds'] > CHRONIC_DAYS * DAY
+            if pending:
+                by, source, quote, at = closes[record['id']]
+                record.update(close_by=by, close_by_name=None, close_at=at, close_source=source, close_quote=quote)
         return records
 
+    def pending_closes(self, project: str | None = None) -> list[dict[str, Any]]:
+        """Every Concern with a pending close, oldest first: its open fields plus who closed it and when. The next PSR decides it."""
+        return self.open_concerns(project, pending=True)
+
     def raise_at_psr(self, project: str | None = None) -> list[dict[str, Any]]:
-        """Every Concern that is neither closed nor snoozed, oldest evidence first. Age is shown and never decides inclusion."""
+        """Every Concern that is not closed and has no pending close, oldest evidence first. Age is shown and never decides inclusion."""
         now = self.registry._clock()
         with self.registry._transaction() as db:
-            rows = db.execute("SELECT id, project_id, owner_id, waiting_on, opened_at, evidence_at FROM concerns WHERE state NOT IN ('closed', 'snoozed') AND (? IS NULL OR project_id = ?) ORDER BY evidence_at, id", (project, project)).fetchall()
+            rows = db.execute("SELECT id, project_id, owner_id, waiting_on, opened_at, evidence_at FROM concerns WHERE state != 'closed' AND id NOT IN (SELECT concern_id FROM concern_pending_closes) AND (? IS NULL OR project_id = ?) ORDER BY evidence_at, id", (project, project)).fetchall()
         return [{'id': row[0], 'project_id': row[1], 'owner_id': row[2], 'waiting_on': row[3], 'age_seconds': max(0, now - row[4]), 'evidence_at': row[5]} for row in rows]
 
     def counts(self, since: str | None = None, until: str | None = None, project: str | None = None) -> Outcome:
@@ -178,10 +187,8 @@ class ConcernStore:
             return {r[0]: r[1] for r in db.execute('SELECT rule, concern_id FROM concern_date_rules WHERE project_id = ?', (project,))}
 
     def write(self, verb: str, values: dict[str, Any], *, actor: str, idempotency_key: str | None = None, confirm: str | None = None) -> Outcome:
-        if verb not in ('raise', 'note', 'resolve', 'reopen', 'record-message', 'snooze') or not actor.strip():
+        if verb not in ('raise', 'note', 'resolve', 'reopen', 'record-message') or not actor.strip():
             return Refused(rule='input', reason='A valid verb and actor are required')
-        if verb == 'snooze' and (actor in SERVICES or actor in INTERNAL_ACTORS):
-            return Refused(rule='human_only', reason='Only a human operator snoozes a Concern')
         if (idempotency_key is not None and not idempotency_key.strip()) or (confirm and not idempotency_key):
             return Refused(rule='idempotency_key', reason='A nonblank idempotency key is required')
         key = idempotency_key or secrets.token_hex(16)
@@ -244,15 +251,14 @@ class ConcernStore:
                 if not row:
                     return Refused(rule='concern', reason='Concern not found')
                 project, state, revision = row
+                pending = db.execute('SELECT 1 FROM concern_pending_closes WHERE concern_id = ?', (concern,)).fetchone() is not None
                 if verb in ('resolve', 'reopen') and db.execute('SELECT 1 FROM concern_date_rules WHERE concern_id = ?', (concern,)).fetchone():
                     return Refused(rule='rule_made', reason='Date-sanity Concerns follow data only')
                 if verb == 'note' and (not isinstance(values.get('text'), str) or not values['text'].strip()):
                     return Refused(rule='note', reason='A note is required')
                 if verb == 'reopen' and state == 'closed' and db.execute("SELECT 1 FROM concerns c JOIN concerns o ON o.project_id = c.project_id AND o.text_key = c.text_key AND o.state != 'closed' WHERE c.id = ?", (concern,)).fetchone():
                     return Refused(rule='duplicate', reason='A Concern with this text is already open in the Project')
-                if verb == 'snooze' and state not in ('open', 'quiet', 'expired'):
-                    return Refused(rule='state', reason='Only an open Concern can be snoozed')
-                if verb == 'resolve' and state == 'closed' or verb == 'reopen' and state == 'open' and not db.execute('SELECT 1 FROM concern_pm_pending WHERE concern_id = ?', (concern,)).fetchone():
+                if verb == 'resolve' and (state == 'closed' or pending) or verb == 'reopen' and state == 'open' and not pending:
                     return Refused(rule='state', reason='Concern cannot make that transition')
             settles = values.get('settles_id')
             deliverable, milestone = values.get('settles_deliverable'), values.get('settles_milestone')
@@ -298,11 +304,18 @@ class ConcernStore:
                 assert isinstance(concern, str) and revision is not None
                 db.execute('INSERT INTO concern_notes (concern_id, text, actor, at, message_id) VALUES (?, ?, ?, ?, ?)', (concern, values['text'], actor, now, values.get('message_id')))
                 db.execute("UPDATE concerns SET evidence_at = ?, state = CASE WHEN state = 'quiet' THEN 'open' ELSE state END, revision = revision + 1 WHERE id = ?", (now, concern))
-            elif verb == 'snooze':
-                db.execute("UPDATE concerns SET state = 'snoozed', manual_override = 1, revision = revision + 1 WHERE id = ?", (concern,))
+            elif verb == 'resolve':
+                # A person's close is a pending close: the next PSR decides it (#639). The Concern stays open until the Monday run.
+                db.execute('UPDATE concerns SET revision = revision + 1 WHERE id = ?', (concern,))
+                db.execute("INSERT INTO concern_pending_closes (concern_id, actor, source, created_at, settles_id) VALUES (?, ?, 'close', ?, ?)", (concern, actor, now, settles))
+            elif state == 'closed':
+                db.execute("UPDATE concerns SET state = 'open', closed_at = NULL, manual_override = 1, revision = revision + 1 WHERE id = ?", (concern,))
+            elif pending:
+                # Undo: reopening an open Concern cancels its pending close and leaves it as it was.
+                db.execute('UPDATE concerns SET revision = revision + 1 WHERE id = ?', (concern,))
+                db.execute('DELETE FROM concern_pending_closes WHERE concern_id = ?', (concern,))
             else:
-                db.execute('UPDATE concerns SET state = ?, closed_at = ?, manual_override = 1, settles_id = COALESCE(?, settles_id), revision = revision + 1 WHERE id = ?', ('closed' if verb == 'resolve' else 'open', now if verb == 'resolve' else None, settles, concern))
-                db.execute('DELETE FROM concern_pm_pending WHERE concern_id = ?', (concern,))
+                db.execute("UPDATE concerns SET state = 'open', manual_override = 1, revision = revision + 1 WHERE id = ?", (concern,))
             assert isinstance(concern, str)
             self._log(db, project, concern, actor, 'concern_' + verb, now, state, values, f'Concern {verb}' + (f": {values['text']}" if verb == 'note' else ''))
             result = {**plan, 'concern_id': concern}

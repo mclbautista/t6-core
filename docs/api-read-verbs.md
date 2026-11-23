@@ -111,8 +111,9 @@ order; empty unless the Status is In-Progress, In-Progress TVC or Airing),
 At Risk 1, On Track 2, Incoming 3, any other value 4, blank 5). `project list` also filters on
 `status_group`. `jo list`, `jo get` and `jo find` add `status_group`
 (`not_started`, `started`, `cancelled` or `null`), `active`, `done` (true when the status is
-Done; `active` is false for Done and Cancelled, so `done` tells them apart) and `health_flags`
-(Blocked, Delayed, Urgent, ignoring emoji). `project flags` also takes `as_of`
+Done; `active` is false for Done and Cancelled, so `done` tells them apart), `health_flags`
+(Blocked, Delayed, Urgent, ignoring emoji) and `health_name` (Closed, Blocked, Delayed, Urgent,
+Advanced or On Track, read by its words, ignoring emoji; `null` when blank). `project flags` also takes `as_of`
 (an ISO date, default today in Manila), `lead_warning_days` (default 30) and
 `stated`, a map of `playdate`, `submission_deadline` or `archival_deadline` to
 an ISO date the caller read from the PM Notes for a blank property, or `null`
@@ -178,6 +179,9 @@ what the referenced drafts actually called, including their local wrappers.
 
 `person list` and `person get` return the Person's kind, one of `staff`, `freelancer`,
 `client` or `vendor`. A freelancer does not have the staff role.
+Every `person list` item also has `master_brief` (boolean): true when the
+registered Person gets the master brief, false otherwise, including a Contact
+with no T6 ID.
 
 `project resolve` takes `text`, and an optional `in_text` (default `false`).
 With `in_text` true, `text` is longer text (for example `AB-101 pilot cut`) and
@@ -212,9 +216,40 @@ closed, oldest first, optionally for one `project`. Each item holds `id`,
 `project_id`, `owner_id`, `waiting_on`, `text`, `source`, `anchor`, `as_of`,
 `opened_at`, `evidence_at`, `state`, `settles_id`, `age_seconds` and `chronic`
 (open longer than 28 days). Exactly one of `raise_at_psr` and `open` must be
-true, else rule `input`. `raise_at_psr` lists every Concern that is neither closed nor snoozed, oldest last evidence first; each item holds `id`, `project_id`, `owner_id`, `waiting_on`, `age_seconds` and `evidence_at` (the time of its last evidence). Age never decides inclusion. `text`, like
+true, else rule `input`. `raise_at_psr` lists every Concern that is not closed, oldest last evidence first; each item holds `id`, `project_id`, `owner_id`, `waiting_on`, `age_seconds` and `evidence_at` (the time of its last evidence). Age never decides inclusion. `text`, like
 `waiting_on` and `anchor`, is masked for a caller without real-name access, so a
 caller that renders names needs the `unmasked` permission and the `reader` role.
+
+Both modes also return `pending`: every Concern with a pending close (a Close
+or a Done line the next PSR decides), oldest first, optionally for one
+`project`. A Concern with a pending close is only in `pending`, never in
+`concerns`, so a consumer reads both lists from one call. A `pending` item holds
+the same fields as an `open: true` item (`id`, `project_id`, `owner_id`,
+`waiting_on`, `text`, `source`, `anchor`, `as_of`, `opened_at`, `evidence_at`,
+`state`, `settles_id`, `age_seconds`, `chronic`) in both modes, plus:
+
+- `close_by`: the T6 Person ID of the Closer, or null for a Done line.
+- `close_by_name`: that Person's Contact name, or null when it cannot be read.
+- `close_at`: when the close was made (Unix seconds).
+- `close_source`: `close` (a Closer through `concern resolve`) or `done_line`
+  (a PM Notes line the scan read as settling it).
+- `close_quote`: the Done line's words, or null for a close.
+
+```json
+{"outcome": "done", "result": {
+  "concerns": [{"id": "t6c_...", "project_id": "t6p_...", "owner_id": "t6n_...", "waiting_on": "client", "age_seconds": 1209600, "evidence_at": 1795000000.0}],
+  "pending": [{"id": "t6c_...", "project_id": "t6p_...", "owner_id": "t6n_...", "waiting_on": "lab",
+               "text": "Waiting on lab for the DCP", "source": "pm_notes_scan", "anchor": "Waiting on lab for the DCP",
+               "as_of": "2026-11-20", "opened_at": 1795500000.0, "evidence_at": 1795600000.0, "state": "open",
+               "settles_id": null, "age_seconds": 345600, "chronic": false,
+               "close_by": "t6n_...", "close_by_name": "A. Closer", "close_at": 1795800000.0,
+               "close_source": "close", "close_quote": null}]
+}}
+```
+
+The Monday 21:00 autoscan applies a pending close made before that Monday 08:30
+Manila unless a dated line continued the Concern first (a veto). `concern
+reopen` on a Concern with a pending close is Undo and removes it from `pending`.
 
 ### Concern observe
 

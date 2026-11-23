@@ -18,6 +18,7 @@ from t6.domain import JobOrderStatus
 __all__ = [
     "DEPARTMENT_ALIASES",
     "HEALTH_FLAGS",
+    "HEALTH_NAMES",
     "JOB_ORDER_FILTER_CRITERIA",
     "JOB_ORDER_FILTER_QUESTION",
     "MFG_SHUTTLES",
@@ -26,6 +27,7 @@ __all__ = [
     "JobOrderStatusGroup",
     "canonical_name",
     "health_flags",
+    "health_name",
     "is_active",
     "is_deliverable_code",
     "is_done",
@@ -184,6 +186,7 @@ class JobOrderStatusGroup(StrEnum):
 
 
 _GROUPS = {
+    JobOrderStatus.ON_HOLD: JobOrderStatusGroup.NOT_STARTED,
     JobOrderStatus.NEEDS_INTAKE_REVIEW: JobOrderStatusGroup.NOT_STARTED,
     JobOrderStatus.PENDING: JobOrderStatusGroup.NOT_STARTED,
     JobOrderStatus.IN_PROGRESS: JobOrderStatusGroup.STARTED,
@@ -194,7 +197,7 @@ _GROUPS = {
 
 
 def status_group(status: str | None) -> JobOrderStatusGroup | None:
-    """Not started (Needs Intake Review, Pending), started (In progress, Needs
+    """Not started (On Hold, Needs Intake Review, Pending), started (In progress, Needs
     Completion Review, Done) or cancelled. None for a blank or unknown status."""
     try:
         return _GROUPS[JobOrderStatus(status or "")]
@@ -223,6 +226,17 @@ def health_flags(health: str | None) -> tuple[str, ...]:
     """The flags (Blocked, Delayed, Urgent) in a Job Order's Health text, ignoring emoji."""
     text = (health or "").lower()
     return tuple(flag for flag in HEALTH_FLAGS if flag.lower() in text)
+
+
+HEALTH_NAMES = ("Closed", "Blocked", "Delayed", "Urgent", "Advanced", "On Track")
+"""The values of the Notion Health formula, in the formula's order."""
+
+
+def health_name(health: str | None) -> str | None:
+    """The Health name (Closed, Blocked, Delayed, Urgent, Advanced, On Track) in a
+    Job Order's Health text, read by its words, ignoring emoji. None when blank or unknown."""
+    text = " ".join((health or "").lower().split())
+    return next((name for name in HEALTH_NAMES if name.lower() in text), None)
 
 
 JOB_ORDER_FILTER_QUESTION = "Is this message a Job Order, a request for work to be done?"
