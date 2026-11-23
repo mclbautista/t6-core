@@ -64,6 +64,12 @@ SHARE_CACHE_SECONDS = 3600.0
 """How long a share list or a share's asset list is kept in memory (`T6_FRAMEIO_SHARE_CACHE_SECONDS`; 0 is off)."""
 SHARE_SCAN_LIMIT = 30
 """How many of a project's newest live shares have their assets read (`T6_FRAMEIO_SHARE_SCAN_LIMIT`)."""
+SHARE_SCAN_BUDGET_SECONDS = 40.0
+"""How long one share lookup may read assets before it stops and leaves the rest unknown (`T6_FRAMEIO_SHARE_SCAN_BUDGET_SECONDS`).
+
+The Frame.io worker runs one request at a time, so a long cold scan makes every other request wait behind it.
+What was read is cached, so the next lookup carries on from there.
+"""
 _OLDEST = datetime.min.replace(tzinfo=timezone.utc)
 _NOT_A_STACK = frozenset({404, 422})
 """Statuses that mean a file's parent is a folder, not a version stack. Frame.io answers 422 for a folder ID on the version stack route."""
@@ -99,6 +105,7 @@ class FrameioReads:
         *,
         share_cache_seconds: float = SHARE_CACHE_SECONDS,
         share_scan_limit: int = SHARE_SCAN_LIMIT,
+        share_scan_budget_seconds: float = SHARE_SCAN_BUDGET_SECONDS,
         clock: Callable[[], float] = time.monotonic,
         workspace_id: str | None = None,
         page_fetch: PageFetch | None = None,
@@ -113,6 +120,7 @@ class FrameioReads:
         self._now = now
         self._share_cache_seconds = share_cache_seconds
         self._share_scan_limit = share_scan_limit
+        self._share_scan_budget_seconds = share_scan_budget_seconds
         self._clock = clock
         self._cache: dict[tuple[str, str, str], tuple[float, Any]] = {}
 
@@ -236,12 +244,14 @@ class FrameioReads:
         now = self._now()
         newest = sorted((s for s in shares if s.live(now)), key=lambda s: s.created_at or _OLDEST, reverse=True)
         scanned = {s.id for s in newest[: self._share_scan_limit]}
+        started = self._clock()
+        scan: dict[str, tuple[str, ...] | None] = {}
+        for share in newest:  # newest first, so the budget runs out on the oldest shares
+            if share.id in scanned:
+                out_of_time = self._clock() - started >= self._share_scan_budget_seconds
+                scan[share.id] = None if out_of_time and not self._is_cached("assets", share.id) else self._share_file_ids(share.id)
         return tuple(
-            replace(s, file_ids=self._share_file_ids(s.id))
-            if s.id in scanned
-            else replace(s, files_known=False)
-            if s.live(now)
-            else s
+            replace(s, file_ids=ids) if (ids := scan.get(s.id)) is not None else replace(s, files_known=False) if s.live(now) else s
             for s in shares
         )
 
@@ -261,6 +271,10 @@ class FrameioReads:
             if error.status == 404:
                 return ()
             raise
+
+    def _is_cached(self, kind: str, key: str) -> bool:
+        hit = self._cache.get((self._account(), kind, key))
+        return self._share_cache_seconds > 0 and hit is not None and hit[0] > self._clock()
 
     def _cached(self, kind: str, key: str, load: Callable[[], Any]) -> Any:
         """`load()`, remembered for `share_cache_seconds`. Nothing is remembered when `load` raises."""

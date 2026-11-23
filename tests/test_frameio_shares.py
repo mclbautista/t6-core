@@ -72,6 +72,26 @@ class ShareFilesTest(unittest.TestCase):
         self.assertTrue(shares["s1"].files_known and shares["s2"].files_known)
         self.assertEqual(len(self.asset_reads()), 2)
 
+    def test_a_scan_that_runs_out_of_time_stops_and_the_next_lookup_carries_on(self) -> None:
+        for index, created in enumerate(("2026-11-01T00:00:00Z", "2026-11-03T00:00:00Z", "2026-11-02T00:00:00Z")):
+            self.fake.add_share(PROJECT, f"s{index}", "x", file_ids=("f1",), created_at=created)
+        real_fetch = self.fake.fetch
+
+        def slow_fetch(url, headers):  # type: ignore[no-untyped-def]
+            if "/assets" in url:
+                self.clock.now += 6  # each asset read takes 6 s
+            return real_fetch(url, headers)
+
+        self.fake.fetch = slow_fetch  # type: ignore[method-assign]
+        reads = self.make(share_scan_budget_seconds=10)
+        shares = {s.id: s for s in reads.share_links(PROJECT)}
+        self.assertTrue(shares["s1"].files_known and shares["s2"].files_known)  # the two newest were read (6 s, 12 s)
+        self.assertFalse(shares["s0"].files_known)  # the oldest was left: the 10 s budget was spent
+        self.assertEqual(len(self.asset_reads()), 2)
+        shares = {s.id: s for s in reads.share_links(PROJECT)}  # the two read shares are cached, so there is time for the third
+        self.assertTrue(shares["s0"].files_known)
+        self.assertEqual(len(self.asset_reads()), 3)
+
     def test_a_second_lookup_inside_the_cache_time_makes_no_call(self) -> None:
         reads = self.make(share_cache_seconds=3600)
         self.fake.add_share(PROJECT, "s1", "a", file_ids=("f1",))
