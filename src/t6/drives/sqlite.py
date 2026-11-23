@@ -65,7 +65,7 @@ def _event(data: str) -> CustodyEvent:
     value = json.loads(data)
     value['kind'] = CustodyKind(value['kind'])
     value['on'] = _date(value['on'])
-    value['project'], value['logged_by'] = Ref(**value['project']), Ref(**value['logged_by'])
+    value['project'], value['logged_by'] = Ref(**value['project']) if value['project'] else None, Ref(**value['logged_by'])
     if value['party']:
         value['party'] = Party(PartyKind(value['party']['kind']), Ref(**value['party']['ref']))
     return CustodyEvent(**value)
@@ -290,7 +290,7 @@ class SqliteDriveStore:
     def status(self, drive_id: str) -> DriveStatus | None:
         with self._tx() as db:
             self._get(db, drive_id)
-            row = db.execute('SELECT data FROM drive_events WHERE drive_id=? ORDER BY id DESC LIMIT 1', (drive_id,)).fetchone()
+            row = db.execute('SELECT data FROM drive_effective_events WHERE drive_id=? ORDER BY id DESC LIMIT 1', (drive_id,)).fetchone()
             return derive_status((_event(row[0]),)) if row else None
 
     def statuses(self, drive_ids: Sequence[str] | None = None) -> dict[str, DriveStatus | None]:
@@ -300,8 +300,8 @@ class SqliteDriveStore:
                 for (did,) in db.execute('SELECT id FROM drives'):
                     result[str(did)] = None
                 rows = db.execute(
-                    'SELECT e.drive_id, e.data FROM drive_events e '
-                    'JOIN (SELECT drive_id, MAX(id) AS max_id FROM drive_events GROUP BY drive_id) m ON e.id = m.max_id'
+                    'SELECT e.drive_id, e.data FROM drive_effective_events e '
+                    'JOIN (SELECT drive_id, MAX(id) AS max_id FROM drive_effective_events GROUP BY drive_id) m ON e.id = m.max_id'
                 )
                 for did, raw in rows:
                     result[str(did)] = derive_status((_event(raw),))
@@ -311,8 +311,8 @@ class SqliteDriveStore:
                 for (did,) in db.execute(f'SELECT id FROM drives WHERE id IN ({marks})', chunk):
                     result[str(did)] = None
                 rows = db.execute(
-                    f'SELECT e.drive_id, e.data FROM drive_events e '
-                    f'JOIN (SELECT drive_id, MAX(id) AS max_id FROM drive_events WHERE drive_id IN ({marks}) GROUP BY drive_id) m '
+                    f'SELECT e.drive_id, e.data FROM drive_effective_events e '
+                    f'JOIN (SELECT drive_id, MAX(id) AS max_id FROM drive_effective_events WHERE drive_id IN ({marks}) GROUP BY drive_id) m '
                     f'ON e.id = m.max_id',
                     chunk,
                 )

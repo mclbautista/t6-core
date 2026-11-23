@@ -5,7 +5,7 @@ import hashlib
 import json
 import sqlite3
 from dataclasses import asdict, dataclass, replace
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -29,12 +29,15 @@ class Movement:
     person: str | None
     recorder: str | None
     place: Literal['TABLE', 'CABINET', 'SHELF', 'BOX'] | None
-    project: Ref
+    project: Ref | None
     origin: SourceRow | None = None
     capture: str | None = None
     corrects: str | None = None
     description: str | None = None
     remarks: str | None = None
+    recorder_telegram_id: int | None = None
+    shipment_id: str | None = None
+    posted_at: str | None = None
 
 
 def append(db: sqlite3.Connection, movement: Movement) -> None:
@@ -44,9 +47,12 @@ def append(db: sqlite3.Connection, movement: Movement) -> None:
 
 def list_movements(db: sqlite3.Connection, *, project: str | None = None, drive: str | None = None,
                    person: str | None = None, q: str | None = None, start: date | None = None,
-                   end: date | None = None) -> list[dict[str, Any]]:
+                   end: date | None = None, needs_project: bool = False) -> list[dict[str, Any]]:
     rows = [json.loads(row[0]) for row in db.execute('SELECT data FROM drive_movements ORDER BY rowid')]
-    return [row for row in rows if (not project or project in row['project'].values())
+    return [row for row in rows if (not project or row['project'] and project in row['project'].values())
+            and (not needs_project or not row['project'] and row['drive'] and not db.execute(
+                'SELECT 1 FROM drive_movements WHERE corrects=?', (row['id'],)).fetchone() and not db.execute(
+                "SELECT 1 FROM drive_captures WHERE id=? AND json_extract(data, '$.state')='undone'", (row['capture'],)).fetchone())
             and (not drive or row['drive'] == drive)
             and (not person or person.casefold() in (row['person'] or '').casefold())
             and (not q or any(q.casefold() in (row[key] or '').casefold()
@@ -59,7 +65,7 @@ def load_tracker(source: SheetSource, db: sqlite3.Connection, mapping: dict[str,
                  store: SqliteDriveStore, timeline: dict[str, list[CustodyEvent]], logged_by: Ref,
                  event_origins: dict[int, str]) -> list[Movement]:
     movements = []
-    labels: dict[tuple[Ref, str], set[str]] = {}
+    labels: dict[tuple[Ref | None, str], set[str]] = {}
     for drive in store.list_drives():
         for assignment in store.list_assignments(drive.id):
             if assignment.project and assignment.label:
@@ -99,13 +105,13 @@ def custody_event(movement: Movement, logged_by: Ref) -> CustodyEvent:
     party = Party(PartyKind.CONTACT, Ref(text=person)) if person and person.strip() != '-' else None
     return CustodyEvent(kind=CustodyKind.RELEASED if movement.direction == 'OUT' else CustodyKind.RECEIVED,
                         on=movement.on, party=party if movement.direction == 'OUT' else None,
-                        project=movement.project, logged_by=logged_by)
+                        project=movement.project, logged_by=logged_by, shipment_id=movement.shipment_id if movement.direction == 'OUT' else None)
 
 
 def _movement(row: dict[str, Any]) -> Movement:
     values = dict(row)
     values['on'] = date.fromisoformat(row['on']) if row['on'] else None
-    values['project'] = Ref(**row['project'])
+    values['project'] = Ref(**row['project']) if row['project'] else None
     values['origin'] = SourceRow(**row['origin']) if row['origin'] else None
     return Movement(**values)
 
@@ -141,19 +147,10 @@ def correct_movement(registry: SqliteProjectRegistry, tokens: PreviewTokens, mov
         # Corrections replace facts in the effective timeline, but never erase history.
         # Append the resulting custody fact when the corrected event is not the last
         # dated event, or when moving it leaves the original Drive with earlier custody.
-        active = [_movement(m) for m in list_movements(db)
-                  if not db.execute('SELECT 1 FROM drive_movements WHERE corrects=?', (m['id'],)).fetchone()]
-        from t6.drives.sqlite import _event
         for drive_id in dict.fromkeys(d for d in (original.drive, corrected.drive) if d):
-            candidates = [_event(row[0]) for row in db.execute(
-                'SELECT data FROM drive_events WHERE drive_id=? AND id NOT IN (SELECT event_id FROM drive_movement_events)',
-                (drive_id,))]
-            candidates.extend(custody_event(m, Ref(page_id=m.recorder) if m.recorder else Ref(text=actor))
-                              for m in active if m.drive == drive_id)
-            if candidates:
-                latest = sorted(candidates, key=lambda e: (e.kind is CustodyKind.RETIRED, e.on or date.min))[-1]
-                if not corrected.drive or drive_id != corrected.drive or latest != custody_event(corrected, Ref(page_id=actor)):
-                    _append_event(db, store, drive_id, latest, corrected.id)
+            latest = latest_custody(db, drive_id)
+            if latest and (drive_id != corrected.drive or latest != custody_event(corrected, Ref(page_id=actor))):
+                _append_event(db, store, drive_id, latest, corrected.id)
         return verbflow.finish(db, request, result)
 
 
@@ -161,3 +158,20 @@ def _append_event(db: sqlite3.Connection, store: SqliteDriveStore, drive_id: str
                   event: CustodyEvent, movement_id: str) -> None:
     store.append_event(drive_id, event)
     db.execute('INSERT INTO drive_movement_events VALUES (last_insert_rowid(), ?)', (movement_id,))
+
+
+def active_movements(db: sqlite3.Connection) -> list[Movement]:
+    undone = {row[0] for row in db.execute("SELECT id FROM drive_captures WHERE json_extract(data, '$.state')='undone'")}
+    corrected = {row[0] for row in db.execute('SELECT corrects FROM drive_movements WHERE corrects IS NOT NULL')}
+    return [_movement(m) for m in list_movements(db) if m['id'] not in corrected and m['capture'] not in undone]
+
+
+def latest_custody(db: sqlite3.Connection, drive_id: str, *, exclude_capture: str | None = None) -> CustodyEvent | None:
+    from t6.drives.sqlite import _event
+    candidates = [(_event(row[0]), 0.0) for row in db.execute(
+        'SELECT data FROM drive_effective_events WHERE drive_id=? AND id NOT IN (SELECT event_id FROM drive_movement_events)',
+        (drive_id,))]
+    candidates.extend((custody_event(m, Ref(page_id=m.recorder) if m.recorder else Ref(text=f'telegram:{m.recorder_telegram_id}' if m.recorder_telegram_id is not None else 'movement log')),
+                       datetime.fromisoformat(m.posted_at).timestamp() if m.posted_at else 0.0)
+                      for m in active_movements(db) if m.drive == drive_id and (exclude_capture is None or m.capture != exclude_capture))
+    return max(candidates, key=lambda item: (item[0].kind is CustodyKind.RETIRED, item[0].on or date.min, item[1]))[0] if candidates else None

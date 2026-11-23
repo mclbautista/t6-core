@@ -406,6 +406,12 @@ _MIGRATIONS = (
     CREATE TABLE drive_movement_events (event_id INTEGER PRIMARY KEY REFERENCES drive_events(id), movement_id TEXT NOT NULL REFERENCES drive_movements(id))"""),
     (54, False, """CREATE TABLE drive_practice (id INTEGER PRIMARY KEY CHECK (id=1), practice INTEGER NOT NULL CHECK (practice IN (0, 1)));
     INSERT INTO drive_practice VALUES (1, 1)"""),
+    (55, False, """CREATE TABLE drive_captures (id TEXT PRIMARY KEY, telegram_key TEXT NOT NULL UNIQUE,
+    data TEXT NOT NULL, photo BLOB NOT NULL);
+    CREATE TABLE drive_status_resets (event_id INTEGER PRIMARY KEY REFERENCES drive_events(id));
+    CREATE VIEW drive_effective_events AS SELECT e.* FROM drive_events e
+    WHERE e.id > COALESCE((SELECT MAX(r.event_id) FROM drive_status_resets r
+    JOIN drive_events u ON u.id=r.event_id WHERE u.drive_id=e.drive_id), 0)"""),
 )
 
 

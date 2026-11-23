@@ -282,7 +282,7 @@ class CustodyEvent:
     kind: CustodyKind
     on: date | None
     party: Party | None
-    project: Ref
+    project: Ref | None
     logged_by: Ref
     reason: str | None = None
     shipment_id: str | None = None

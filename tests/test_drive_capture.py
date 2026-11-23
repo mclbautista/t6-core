@@ -1,0 +1,293 @@
+"""Recording-channel captures through the HTTP verb API and fake photo provider."""
+import base64
+import json
+import os
+import threading
+from typing import Any
+from unittest.mock import patch
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+from test_drive_reload import DriveReloadFixture, HEADER
+from test_llm_drive_photo import photo
+from t6.llm.testing import FakeProvider
+from t6.server.http import make_server
+from t6.server.verbs import VerbAPI
+from t6.worker.internal_queue import InternalJobQueue
+
+
+class CaptureTests(DriveReloadFixture):
+    def setUp(self) -> None:
+        super().setUp()
+        self.enterContext(patch.dict(os.environ, {'T6_DRIVE_RECORDING_CHAT_ID': '-900001'}))
+        self.workbook({'SYNTHETIC PROJECT': [HEADER, ['Synthetic first', 'SAMPLE-FIRST'],
+                                            ['Synthetic second', 'SAMPLE-SECOND']]})
+        self.reload()
+        self.queue = InternalJobQueue(self.registry)
+        self.fake = FakeProvider()
+        api = VerbAPI(self.people, self.queue, {'synthetic-gateway': 'gateway', 'synthetic-other': 'worker'}, lambda _: None)
+        self.server = make_server(('127.0.0.1', 0), api)
+        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(thread.join)
+        self.addCleanup(self.server.shutdown)
+        self.post: dict[str, Any] = dict(chat_id=-900001, message_id=1, sender_telegram_id=900010,
+                         posted_at='2026-11-24T10:30:00+08:00', text='OUT Synthetic borrower',
+                         photo=base64.b64encode(photo(str(self.folder)).data).decode())
+
+    def api(self, verb: str, secret: str = 'synthetic-gateway', **values: Any) -> dict[str, Any]:
+        request = Request(f'http://127.0.0.1:{self.server.server_port}/v1/drive/{verb.replace(" ", "/")}',
+                          data=json.dumps(values).encode(), headers={'Authorization': 'Bearer ' + secret})
+        try:
+            response = urlopen(request)
+        except HTTPError as error:
+            response = error
+        with response:
+            result = json.load(response)
+        self.assertIn('outcome', result, result)
+        return dict(result)
+
+    def test_capture_stores_first_and_repeated_delivery_queues_nothing_new(self) -> None:
+        first = self.api('capture', **self.post)
+        self.assertEqual(first['outcome'], 'done', first)
+        capture = first['result']['capture']
+        self.assertEqual(self.api('capture', **{**self.post, 'text': 'IN'})['result']['capture'], capture)
+        result = self.api('capture result', capture=capture)['result']
+        self.assertEqual(result['state'], 'pending')
+        self.assertTrue(result['practice'])
+        self.assertEqual(result['lines'], [])
+        self.assertEqual(len(self.queue.find('drive.capture.resolve')), 1)
+        self.assertEqual(self.fake.calls, [])
+        self.assertEqual([d['status'] for d in self.drives()], ['in custody', 'in custody'])
+
+    def resolve(self, readings: list[dict[str, Any]]) -> None:
+        from t6.drives.capture import CaptureResolver
+        from t6.worker import Worker
+        from t6.worker.internal_queue import InternalQueueClient
+        self.fake.reply(json.dumps({'drives': readings}))
+        resolver = CaptureResolver(self.registry, self.fake)
+        worker = Worker(InternalQueueClient(self.queue), 'main', {'drive.capture.resolve': resolver.handle})
+        self.assertTrue(worker.run_once())
+
+    def test_two_photo_drives_make_two_movements_and_one_shipment(self) -> None:
+        from t6.verbs import VERBS, invoke
+        capture = self.api('capture', **self.post)['result']['capture']
+        self.resolve([{'label': label, 'serial': None, 'confidence': 0.99}
+                      for label in ('Synthetic first', 'Synthetic second')])
+        result = self.api('capture result', capture=capture)['result']
+        self.assertEqual(result['state'], 'resolved')
+        self.assertEqual(result['lines'], [dict(label=label, direction='OUT', person='Synthetic borrower')
+                                          for label in ('Synthetic first', 'Synthetic second')])
+        entry = next(v for v in VERBS if (v.noun, v.verb) == ('movement', 'list'))
+        rows = invoke(entry, entry.input_model(), actor='synthetic-keeper', people=self.people,
+                      open_notion=lambda _: None).result['movements']  # type: ignore[union-attr]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({m['capture'] for m in rows}, {capture})
+        self.assertEqual({m['on'] for m in rows}, {'2026-11-24'})
+        self.assertEqual({m['recorder_telegram_id'] for m in rows}, {900010})
+        self.assertEqual({m['recorder'] for m in rows}, {None})
+        self.assertEqual({m['project']['text'] for m in rows}, {'SYNTHETIC PROJECT'})
+        shipments = self.call('shipments').result['shipments']
+        self.assertEqual(len(shipments), 1)
+        self.assertEqual(shipments[0]['drive_count'], 2)
+        self.assertEqual({m['shipment_id'] for m in rows}, {shipments[0]['shipment_id']})
+        self.assertEqual({m['posted_at'] for m in rows}, {self.post['posted_at']})
+        self.assertEqual([d['status'] for d in self.drives()], ['released', 'released'])
+        self.assertEqual(len(self.fake.calls), 1)
+
+    def test_photo_label_wins_over_typed_label_and_notes_difference(self) -> None:
+        capture = self.api('capture', **{**self.post, 'text': 'OUT Synthetic borrower\nSynthetic second'})['result']['capture']
+        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
+        result = self.api('capture result', capture=capture)['result']
+        self.assertEqual(result['lines'], [dict(label='Synthetic first', direction='OUT', person='Synthetic borrower')])
+        self.assertEqual(len(result['differences']), 1)
+        self.assertIn('Synthetic second', result['differences'][0])
+        self.assertIn('Synthetic first', result['differences'][0])
+        self.assertEqual({d['label']: d['status'] for d in self.drives()},
+                         {'Synthetic first': 'released', 'Synthetic second': 'in custody'})
+
+    def test_unreadable_photo_is_exception_and_follow_up_resolves_same_capture(self) -> None:
+        capture = self.api('capture', **self.post)['result']['capture']
+        self.resolve([])
+        result = self.api('capture result', capture=capture)['result']
+        self.assertEqual(result['state'], 'exception')
+        self.assertEqual(result['message'], 'ask for the label')
+        self.assertEqual(result['photo_reference'], capture)
+        follow = self.api('capture', capture=capture, text='SAMPLE-FIRST')
+        self.assertEqual(follow['outcome'], 'done', follow)
+        self.assertEqual(follow['result']['capture'], capture)
+        self.assertEqual(follow['result']['state'], 'pending')
+        self.resolve([])
+        resolved = self.api('capture result', capture=capture)['result']
+        self.assertEqual(resolved['state'], 'resolved')
+        self.assertEqual(resolved['lines'], [dict(label='Synthetic first', direction='OUT', person='Synthetic borrower')])
+        self.assertEqual(self.api('capture', capture=capture, text='SAMPLE-FIRST')['result'], resolved)
+
+    def test_undo_appends_reversals_and_restores_previous_status_once(self) -> None:
+        capture = self.api('capture', **self.post)['result']['capture']
+        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
+        drive = self.drives()[0]['id']
+        self.assertEqual(self.call('get', drive=drive).result['drive']['status'], 'released')
+        undone = self.api('capture undo', capture=capture)
+        self.assertEqual(undone['outcome'], 'done', undone)
+        self.assertEqual(undone['result']['state'], 'undone')
+        events = self.call('get', drive=drive).result['events']
+        self.assertEqual([e['kind'] for e in events], ['received', 'released', 'received'])
+        self.assertEqual(self.call('get', drive=drive).result['drive']['status'], 'in custody')
+        self.assertEqual(self.api('capture undo', capture=capture), undone)
+        self.assertEqual(self.call('get', drive=drive).result['events'], events)
+
+    def test_other_chats_and_services_are_refused_before_storage_or_photo_read(self) -> None:
+        for chat in (-900002, -900003):
+            result = self.api('capture', **{**self.post, 'chat_id': chat})
+            self.assertEqual((result['outcome'], result['rule']), ('refused', 'recording_channel'))
+        with patch.dict(os.environ, {'T6_DRIVE_RECORDING_CHAT_ID': ''}):
+            self.assertEqual(self.api('capture', **self.post)['rule'], 'recording_channel')
+        self.assertEqual(self.api('capture', secret='synthetic-other', **self.post)['rule'], 'service')
+        self.assertEqual(self.queue.find('drive.capture.resolve'), [])
+        self.assertEqual(self.fake.calls, [])
+
+    def test_no_open_assignment_lands_on_needs_project_list(self) -> None:
+        from t6.verbs import VERBS, invoke
+        drive = self.drives()[0]['id']
+        values = dict(drive=drive, assignment=1, end='2026-11-23', idempotency_key='synthetic-unassign')
+        preview = self.call('unassign', **values)
+        self.call('unassign', **values, confirm=preview.token)
+        capture = self.api('capture', **self.post)['result']['capture']
+        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
+        self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'resolved')
+        entry = next(v for v in VERBS if (v.noun, v.verb) == ('movement', 'list'))
+        rows = invoke(entry, entry.input_model.model_validate({'needs_project': True}), actor='synthetic-keeper',
+                      people=self.people, open_notion=lambda _: None).result['movements']  # type: ignore[union-attr]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['drive'], drive)
+        self.assertIsNone(rows[0]['project'])
+
+    def test_in_uses_sender_as_receiver_and_recorder_and_keeps_place(self) -> None:
+        with self.registry._transaction() as db:
+            db.execute("UPDATE persons SET telegram_id=900010 WHERE id='synthetic-keeper'")
+        capture = self.api('capture', **{**self.post, 'text': 'IN SHELF\nSAMPLE-FIRST'})['result']['capture']
+        self.resolve([])
+        result = self.api('capture result', capture=capture)['result']
+        self.assertEqual(result['lines'], [dict(label='Synthetic first', direction='IN', person='synthetic-keeper')])
+        from t6.verbs import VERBS, invoke
+        entry = next(v for v in VERBS if (v.noun, v.verb) == ('movement', 'list'))
+        row = invoke(entry, entry.input_model(), actor='synthetic-keeper', people=self.people,
+                     open_notion=lambda _: None).result['movements'][0]  # type: ignore[union-attr]
+        self.assertEqual((row['direction'], row['person'], row['recorder'], row['place']),
+                         ('IN', 'synthetic-keeper', 'synthetic-keeper', 'SHELF'))
+        self.assertEqual(self.call('get', drive=row['drive']).result['events'][-1]['logged_by']['page_id'], 'synthetic-keeper')
+
+    def test_exceptions_list_and_reload_include_captures(self) -> None:
+        capture = self.api('capture', **self.post)['result']['capture']
+        self.resolve([])
+        unresolved = self.call('exceptions').result['captures']
+        self.assertEqual([row['capture'] for row in unresolved], [capture])
+        self.assertEqual(unresolved[0]['photo_reference'], capture)
+        self.reload('synthetic-wipe-captures')
+        self.assertEqual(self.api('capture result', capture=capture)['rule'], 'capture')
+        self.assertEqual(self.call('exceptions').result['captures'], [])
+
+    def test_production_worker_configuration_reaches_photo_resolution(self) -> None:
+        from t6.worker.__main__ import WorkerSettings, configured_handlers
+        from t6.worker.client import HttpTransport
+        from t6.worker import Worker
+        from t6.worker.internal_queue import InternalQueueClient
+        config = self.folder / 'llm.json'
+        config.write_text(json.dumps({'llm': {'default': 'synthetic', 'providers': {
+            'synthetic': {'base_url': 'https://synthetic.invalid', 'model': 'synthetic',
+                          'retention': 'zdr_enforced', 'api_key_env': 'SYNTHETIC_KEY', 'supports_images': True}}}}))
+        env = dict(T6_SERVER_URL='https://synthetic.invalid', T6_WORKER_SECRET='synthetic', T6_WORKER_QUEUE='main',
+                   T6_API_URL='https://synthetic.invalid', T6_DATABASE=str(self.folder / 't6.sqlite'), T6_LLM_CONFIG=str(config), T6_DRIVE_RECORDING_CHAT_ID='-900001')
+        capture = self.api('capture', **self.post)['result']['capture']
+        self.fake.reply(json.dumps({'drives': [{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}]}))
+        with patch('t6.llm.config.LLMConfig.provider_for', return_value=self.fake):
+            handlers = configured_handlers(env, WorkerSettings.from_env(env), HttpTransport('https://synthetic.invalid'))
+            self.assertIn('drive.capture.resolve', handlers.get('main', {}))
+            worker = Worker(InternalQueueClient(self.queue), 'main', handlers['main'])
+            self.assertTrue(worker.run_once())
+        self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'resolved')
+
+    def test_multiple_open_assignments_need_project_and_pending_undo_stops_read(self) -> None:
+        self.workbook({'SYNTHETIC ALPHA': [HEADER, ['Synthetic first', 'SAMPLE-FIRST']],
+                       'SYNTHETIC BETA': [HEADER, ['Synthetic first', 'SAMPLE-FIRST']]})
+        self.reload('synthetic-multiple')
+        capture = self.api('capture', **self.post)['result']['capture']
+        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
+        from t6.verbs import VERBS, invoke
+        entry = next(v for v in VERBS if (v.noun, v.verb) == ('movement', 'list'))
+        rows = invoke(entry, entry.input_model(needs_project=True), actor='synthetic-keeper',
+                      people=self.people, open_notion=lambda _: None).result['movements']  # type: ignore[union-attr]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['capture'], capture)
+        pending = self.api('capture', **{**self.post, 'message_id': 2})['result']['capture']
+        self.api('capture undo', capture=pending)
+        before = len(self.fake.calls)
+        self.resolve([])
+        self.assertEqual(len(self.fake.calls), before)
+        self.assertEqual(self.api('capture result', capture=pending)['result']['state'], 'undone')
+
+    def test_matching_is_exact_and_ignores_suspected_serials(self) -> None:
+        values = dict(label='Synthetic uncertain', suspected_serial='SAMPLE-SUSPECTED', idempotency_key='synthetic-uncertain')
+        preview = self.call('add', **values)
+        self.call('add', **values, confirm=preview.token)
+        for message, label, serial in ((2, 'Synthetic fir', None), (3, None, 'SAMPLE-SUSPECTED')):
+            with self.subTest(label=label, serial=serial):
+                capture = self.api('capture', **{**self.post, 'message_id': message})['result']['capture']
+                self.resolve([{'label': label, 'serial': serial, 'confidence': 0.9}])
+                self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'exception')
+                follow = self.api('capture', capture=capture, text='Synthetic first')
+                self.assertEqual(follow['outcome'], 'done')
+                self.resolve([{'label': label, 'serial': serial, 'confidence': 0.9}])
+                self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'resolved')
+
+    def test_resolution_rechecks_channel_before_sending_photo(self) -> None:
+        capture = self.api('capture', **self.post)['result']['capture']
+        with patch.dict(os.environ, {'T6_DRIVE_RECORDING_CHAT_ID': '-900002'}):
+            self.resolve([])
+        self.assertEqual(self.fake.calls, [])
+        self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'pending')
+
+    def test_undo_restores_unknown_when_drive_had_no_previous_events(self) -> None:
+        values = dict(label='Synthetic new', serial='SAMPLE-NEW', idempotency_key='synthetic-new')
+        preview = self.call('add', **values)
+        self.call('add', **values, confirm=preview.token)
+        capture = self.api('capture', **self.post)['result']['capture']
+        self.resolve([{'label': 'Synthetic new', 'serial': None, 'confidence': 0.9}])
+        self.api('capture undo', capture=capture)
+        drive = next(d for d in self.drives() if d['serial'] == 'SAMPLE-NEW')
+        self.assertEqual(drive['status'], 'unknown')
+        self.assertEqual(self.call('get', drive=drive['id']).result['drive']['status'], 'unknown')
+
+    def test_undo_in_restores_release_and_does_not_readd_undone_capture(self) -> None:
+        out = self.api('capture', **self.post)['result']['capture']
+        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
+        returned = self.api('capture', **{**self.post, 'message_id': 2, 'text': 'IN TABLE',
+                                        'posted_at': '2026-11-25T10:00:00+08:00'})['result']['capture']
+        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
+        self.api('capture undo', capture=returned)
+        self.assertEqual(self.drives()[0]['status'], 'released')
+        self.api('capture undo', capture=out)
+        self.assertEqual(self.drives()[0]['status'], 'in custody')
+        from t6.verbs import VERBS, invoke
+        entry = next(v for v in VERBS if (v.noun, v.verb) == ('movement', 'list'))
+        self.assertEqual(invoke(entry, entry.input_model(needs_project=True), actor='synthetic-keeper',
+                                people=self.people, open_notion=lambda _: None).result['movements'], [])  # type: ignore[union-attr]
+
+    def test_late_delivery_keeps_latest_post_status(self) -> None:
+        self.api('capture', **{**self.post, 'message_id': 2, 'text': 'IN',
+                              'posted_at': '2026-11-25T10:00:00+08:00'})
+        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
+        old = self.api('capture', **self.post)['result']['capture']
+        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
+        self.assertEqual(self.drives()[0]['status'], 'in custody')
+        self.api('capture undo', capture=old)
+        self.assertEqual(self.drives()[0]['status'], 'in custody')
+
+    def test_jpeg_photo_bytes_are_sent_with_their_image_type(self) -> None:
+        image = self.folder / 'synthetic.jpg'
+        image.write_bytes(b'\xff\xd8\xffsynthetic-jpeg-bytes')
+        self.api('capture', **{**self.post, 'photo': base64.b64encode(image.read_bytes()).decode()})
+        self.resolve([])
+        self.assertEqual(self.fake.calls[0].messages[-1]['image'].media_type.value, 'image/jpeg')

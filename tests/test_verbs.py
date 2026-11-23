@@ -41,6 +41,8 @@ class VerbTests(unittest.TestCase):
             assert match is not None
             for verb in match.group(1).split(","):
                 nested = [v for n, v in noun_pairs if v.startswith(verb + " ")]
+                if (noun, verb) in noun_pairs:
+                    from_help.add((noun, verb))
                 if nested:
                     from_help.update((noun, v) for v in nested)
                 elif verb not in aliases or (noun, verb) in pairs:

@@ -19,6 +19,7 @@ from t6.verbs import (
     VersionAddInput, VersionLockInput, VersionFindInput, VersionGetInput,
     MediaLinkInput, MediaUnlinkInput, TimelineLinkInput, TimelineRestampInput, TimelineListInput, FrameioProjectInput, MediaListInput, MediaMigrateInput,
     TranscriptCreateInput, TranscriptGetInput, TranscriptSpeakersInput, TranscriptTranslateInput,
+    DriveCaptureInput, DriveCaptureReadInput,
     DriveMappingProposeInput, DriveMappingApplyInput, DriveProjectsInput, DriveOverdueInput, MovementListInput, MovementCorrectInput,
     DriveCutoverInput, DriveReloadInput, DriveReceiveInput, DriveReleaseInput, DriveReturnInput, DriveRetireInput, DriveAssignInput, DriveUnassignInput,
     DriveAddInput, DriveEditInput, DrivePromoteSerialInput, DriveListInput, DriveGetInput, DriveFindInput, DriveCatalogSnapshotInput, DriveCatalogSnapshotsInput, DriveCatalogDiffInput, DriveCatalogAtInput, DriveShipmentsInput, DriveShipmentInput, DriveExceptionsInput,
@@ -160,6 +161,15 @@ class Client:
 
     def admin_media_migrate(self, inputs: MediaMigrateInput) -> Result:
         return self.call('admin/media', 'migrate', inputs)
+
+    def drive_capture(self, inputs: DriveCaptureInput) -> Result:
+        return self.call('drive', 'capture', inputs)
+
+    def drive_capture_undo(self, inputs: DriveCaptureReadInput) -> Result:
+        return self.call('drive', 'capture undo', inputs)
+
+    def drive_capture_result(self, inputs: DriveCaptureReadInput) -> Result:
+        return self.call('drive', 'capture result', inputs)
 
     def drive_projects(self, inputs: DriveProjectsInput) -> Result:
         return self.call('drive', 'projects', inputs)
