@@ -123,6 +123,17 @@ class MovementTests(reload_tests.DriveReloadFixture):
         self.assertEqual(done, repeated)
         return dict(done.result['movement'])
 
+    def test_correcting_place_updates_the_drive_fact_in_list_and_get(self) -> None:
+        self.workbook({'SYNTHETIC PROJECT': [HEADER, ['Synthetic first', 'SAMPLE-FIRST']]})
+        self.load_tracker([[date(2026, 4, 1), 'SYNTHETIC PROJECT', 'Synthetic first', None, 'IN', None]])
+        movement = self.call_movement('list').result['movements'][0]
+        for number, place in enumerate(('BOX', 'TABLE', None)):
+            movement = self.correct(movement['id'], f'place-{number}', place=place)
+            listed = self.drives()[0]
+            detail = self.call('get', drive=movement['drive']).result['drive']
+            for item in (listed, detail):
+                self.assertEqual((item['place'], item['office_location']), (place, place))
+
     def test_correction_appends_and_changes_derived_status(self) -> None:
         self.workbook({'SYNTHETIC PROJECT': [HEADER, ['Synthetic first', 'SAMPLE-FIRST']]})
         self.load_tracker([[date(2026, 4, 1), 'SYNTHETIC PROJECT', 'Synthetic first', None, 'OUT', 'Synthetic borrower']])

@@ -39,12 +39,20 @@ def _drive_fields(drive: Drive, status: DriveStatus | None) -> dict[str, Any]:
         'form_factor': drive.form_factor.value if drive.form_factor else None, 'ownership': drive.ownership.value,
         'owner_studio_id': drive.owner_studio_id, 'purchase_date': _day(drive.purchase_date), 'warranty': drive.warranty,
         'remarks': drive.remarks, 'office_location': drive.office_location, 'qr_code': drive.qr_code,
-        'version': drive.version, 'status': _status_value(status),
+        'version': drive.version, 'status': _status_value(status), 'place': drive.office_location,
     }
 
 
 def _item(store: DriveStore, drive: Drive) -> DriveItem:
-    return DriveItem(**_drive_fields(drive, store.status(drive.id)))
+    return DriveItem(**_drive_fields(drive, store.status(drive.id)), holder=_holder(store, drive.id))
+
+
+def _holder(store: DriveStore, drive_id: str) -> str | None:
+    events = store.list_events(drive_id)
+    last = events[-1] if events else None
+    if last and last.kind is CustodyKind.RELEASED and last.party:
+        return last.party.ref.text or last.party.ref.page_id
+    return None
 
 
 def _event(event: CustodyEvent) -> DriveEventItem:
@@ -64,7 +72,8 @@ def _slice(items: list[Drive], offset: int, limit: int | None) -> list[Drive]:
 
 def list_drives(store: DriveStore, *, q: str | None = None, serial: str | None = None, needs_review: bool | None = None,
                 project: str | None = None, status: str | None = None,
-                office_location: str | None = None, limit: int | None = None, offset: int = 0) -> DriveListOutput:
+                office_location: str | None = None, limit: int | None = None, offset: int = 0,
+                project_codes: dict[str, str] | None = None) -> DriveListOutput:
     serial, project = (serial or '').strip(), (project or '').strip()
     place = (office_location or '').strip().casefold()
     if serial:
@@ -73,9 +82,12 @@ def list_drives(store: DriveStore, *, q: str | None = None, serial: str | None =
     else:
         drives = store.list_drives()
     needle = (q or '').strip().casefold()
+    matching_projects = {pid for pid, code in (project_codes or {}).items() if needle in code.casefold()} if needle else set()
+    project_matches = {d.id for d in drives if matching_projects and any(
+        a.project and a.project.page_id in matching_projects for a in store.list_assignments(d.id))}
     out = {drive.id for drive, _ in store.open_assignments(Ref(page_id=project))} if project else None
     kept = [d for d in drives
-            if (not needle or any(needle in (value or '').casefold() for value in (d.id, d.serial, d.suspected_serial, d.label, d.description, d.qr_code, d.office_location)))
+            if (not needle or d.id in project_matches or any(needle in (value or '').casefold() for value in (d.id, d.serial, d.suspected_serial, d.label, d.description, d.qr_code, d.office_location)))
             and (not place or place in (d.office_location or '').casefold())
             and (needs_review is None or d.needs_review == needs_review) and (out is None or d.id in out)]
     if status:
@@ -95,6 +107,7 @@ def list_drives(store: DriveStore, *, q: str | None = None, serial: str | None =
         drives=[
             DriveListItem(
                 **_drive_fields(d, status_by_id.get(d.id)),
+                holder=_holder(store, d.id),
                 open_assignments=[_assignment(n, a) for n, a in open_by_drive.get(d.id, ())],
             )
             for d in page
