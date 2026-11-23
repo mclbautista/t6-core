@@ -61,14 +61,76 @@ class CaptureTests(DriveReloadFixture):
         self.assertEqual(self.fake.calls, [])
         self.assertEqual([d['status'] for d in self.drives()], ['in custody', 'in custody'])
 
-    def resolve(self, readings: list[dict[str, Any]]) -> None:
+    def resolve(self, readings: list[dict[str, Any]], choice: str = "match") -> None:
         from t6.drives.capture import CaptureResolver
         from t6.worker import Worker
         from t6.worker.internal_queue import InternalQueueClient
         self.fake.reply(json.dumps({'drives': readings}))
-        resolver = CaptureResolver(self.registry, self.fake)
+        self.fake.decisions({'model': 'synthetic-jev', 'answers': {'c0': {
+            'type': 'choice', 'choice': choice,
+            'probabilities': {'match': 1 if choice == 'match' else 0, 'maybe': 0, 'no': 1 if choice == 'no' else 0}}}})
+        resolver = CaptureResolver(self.registry, self.fake, decisions=self.fake)
         worker = Worker(InternalQueueClient(self.queue), 'main', {'drive.capture.resolve': resolver.handle})
         self.assertTrue(worker.run_once())
+
+    def test_not_transmittal_is_ignored_and_silent_without_retained_content(self) -> None:
+        from t6.verbs import VERBS, invoke
+        capture = self.api('capture', **{**self.post, 'text': 'Synthetic lunch photo'})['result']['capture']
+        self.resolve([{'label': 'Synthetic first', 'serial': 'SAMPLE-FIRST', 'confidence': 0.9}], 'no')
+        result = self.api('capture result', capture=capture)['result']
+        self.assertEqual(result['state'], 'ignored')
+        self.assertEqual(result['lines'], [])
+        self.assertEqual(result['differences'], [])
+        self.assertIsNone(result['message'])
+        self.assertIsNone(result['photo_reference'])
+        self.assertEqual(self.call('exceptions').result['captures'], [])
+        entry = next(v for v in VERBS if (v.noun, v.verb) == ('movement', 'list'))
+        self.assertEqual(invoke(entry, entry.input_model(), actor='synthetic-keeper', people=self.people,
+                                open_notion=lambda _: None).result['movements'], [])  # type: ignore[union-attr]
+        self.assertEqual([d['status'] for d in self.drives()], ['in custody', 'in custody'])
+        # Privacy contract: inspect durable evidence because the result never exposes post content.
+        with self.registry._transaction() as db:
+            row = db.execute('SELECT data, photo FROM drive_captures WHERE id=?', (capture,)).fetchone()
+        self.assertNotIn('Synthetic lunch photo', row[0])
+        self.assertNotIn('text', json.loads(row[0]))
+        self.assertEqual(row[1], b'')
+        self.assertEqual(self.api('capture', **self.post)['result'], result)
+        self.assertEqual(self.api('capture', capture=capture, text='Synthetic first')['result'], result)
+        self.assertEqual(self.api('capture undo', capture=capture)['result'], result)
+        self.assertEqual(len(self.queue.find('drive.capture.resolve')), 1)
+
+    def test_jev_errors_keep_posts_for_resolution(self) -> None:
+        from t6.drives.capture import CaptureResolver
+        from t6.llm.transport import DecisionsRequest
+        from t6.worker import Worker
+        from t6.worker.internal_queue import InternalQueueClient
+        for number, failure in enumerate(('timeout', 'api_error', 'malformed', 'policy'), 10):
+            for matched in (True, False):
+                with self.subTest(failure=failure, matched=matched):
+                    capture = self.api('capture', **{**self.post, 'message_id': number * 2 + matched})['result']['capture']
+                    readings = [{'label': 'Synthetic first', 'serial': 'SAMPLE-FIRST', 'confidence': 0.9}] if matched else []
+                    self.fake.reply(json.dumps({'drives': readings}))
+                    decisions = FakeProvider(retention='unknown' if failure == 'policy' else 'zdr_enforced')
+                    if failure == 'timeout':
+                        decisions.timeout()
+                    elif failure == 'api_error':
+                        decisions.api_error()
+                    else:
+                        decisions.decisions({})
+                    resolver = CaptureResolver(self.registry, self.fake, decisions=decisions)
+                    worker = Worker(InternalQueueClient(self.queue), 'main', {'drive.capture.resolve': resolver.handle})
+                    self.assertTrue(worker.run_once())
+                    result = self.api('capture result', capture=capture)['result']
+                    self.assertEqual(result['state'], 'resolved' if matched else 'exception')
+                    self.assertEqual(result['photo_reference'], capture)
+                    if failure != 'policy':
+                        request = decisions.calls[0].request
+                        self.assertIsInstance(request, DecisionsRequest)
+                        assert isinstance(request, DecisionsRequest)
+                        self.assertEqual(request.state, {
+                            'text': 'OUT Synthetic borrower', 'has_photo': 'true',
+                            'labels_and_serials': json.dumps([{'label': 'Synthetic first', 'serial': 'SAMPLE-FIRST'}] if matched else []),
+                        })
 
     def test_two_photo_drives_make_two_movements_and_one_shipment(self) -> None:
         from t6.verbs import VERBS, invoke
@@ -94,7 +156,7 @@ class CaptureTests(DriveReloadFixture):
         self.assertEqual({m['shipment_id'] for m in rows}, {shipments[0]['shipment_id']})
         self.assertEqual({m['posted_at'] for m in rows}, {self.post['posted_at']})
         self.assertEqual([d['status'] for d in self.drives()], ['released', 'released'])
-        self.assertEqual(len(self.fake.calls), 1)
+        self.assertEqual(len(self.fake.calls), 2)
 
     def test_photo_label_wins_over_typed_label_and_notes_difference(self) -> None:
         capture = self.api('capture', **{**self.post, 'text': 'OUT Synthetic borrower\nSynthetic second'})['result']['capture']
@@ -208,6 +270,35 @@ class CaptureTests(DriveReloadFixture):
             worker = Worker(InternalQueueClient(self.queue), 'main', handlers['main'])
             self.assertTrue(worker.run_once())
         self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'resolved')
+
+    def test_worker_uses_configured_decisions_transport_to_ignore_post(self) -> None:
+        from io import BytesIO
+        from t6.worker.__main__ import WorkerSettings, configured_handlers
+        from t6.worker.client import HttpTransport
+        from t6.worker import Worker
+        from t6.worker.internal_queue import InternalQueueClient
+        from t6.llm.decisions import DECISIONS_URL, JEV_MODEL
+        config = self.folder / 'llm.json'
+        config.write_text(json.dumps({'llm': {'default': 'synthetic', 'providers': {
+            'synthetic': {'base_url': 'https://synthetic.invalid', 'model': 'synthetic',
+                          'retention': 'zdr_enforced', 'api_key_env': 'SYNTHETIC_KEY', 'supports_images': True}}},
+            'decisions': {'api_key_env': 'SYNTHETIC_JEV_KEY', 'retention': 'zdr_enforced'}}))
+        env = dict(T6_SERVER_URL='https://synthetic.invalid', T6_WORKER_SECRET='synthetic', T6_WORKER_QUEUE='main',
+                   T6_API_URL='https://synthetic.invalid', T6_DATABASE=str(self.folder / 't6.sqlite'),
+                   T6_LLM_CONFIG=str(config), T6_DRIVE_RECORDING_CHAT_ID='-900001', SYNTHETIC_JEV_KEY='synthetic')
+        capture = self.api('capture', **self.post)['result']['capture']
+        self.fake.reply('{"drives": []}')
+        reply = {'model': JEV_MODEL, 'answers': {'c0': {
+            'type': 'choice', 'choice': 'no', 'probabilities': {'match': 0, 'maybe': 0, 'no': 1}}}}
+        with patch('t6.llm.config.LLMConfig.provider_for', return_value=self.fake):
+            handlers = configured_handlers(env, WorkerSettings.from_env(env), HttpTransport('https://synthetic.invalid'))
+        with patch('urllib.request.urlopen', return_value=BytesIO(json.dumps(reply).encode())) as send:
+            worker = Worker(InternalQueueClient(self.queue), 'main', handlers['main'])
+            self.assertTrue(worker.run_once())
+        self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'ignored')
+        request = send.call_args.args[0]
+        self.assertEqual(request.full_url, DECISIONS_URL)
+        self.assertEqual(json.loads(request.data)['model'], JEV_MODEL)
 
     def test_multiple_open_assignments_need_project_and_pending_undo_stops_read(self) -> None:
         self.workbook({'SYNTHETIC ALPHA': [HEADER, ['Synthetic first', 'SAMPLE-FIRST']],

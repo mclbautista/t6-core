@@ -16,8 +16,8 @@ from referencing import Registry as SchemaRegistry
 from referencing.exceptions import Unresolvable
 
 from t6.domain.message_filter import FILTER_RULES, verdict
-from t6.llm.config import ConfigError, LLMConfig
-from t6.llm.decisions import DECISIONS_URL, JEV_MODEL, CandidateDecisions, MalformedReply, OpenRouterDecisions, candidate_key
+from t6.llm.config import ConfigError, LLMConfig, decisions_from
+from t6.llm.decisions import CandidateDecisions, MalformedReply, OpenRouterDecisions, candidate_key
 from t6.llm.jsontext import repair_quotes, strip_fence
 from t6.llm.policy import RETENTIONS, DataPolicy, Retention
 from t6.llm.result import Reason, ScriptRun, Tokens
@@ -675,20 +675,6 @@ def _thresholds(filters: Any) -> dict[str, tuple[float, float]]:
     return result
 
 
-def _decisions_from(entry: Any, env: Mapping[str, str]) -> OpenRouterDecisions:
-    """The optional `decisions` key: url, model, retention (what the endpoint really has) and the key's variable name."""
-    if not isinstance(entry, dict) or set(entry) - {'url', 'model', 'retention', 'api_key_env'}:
-        raise ConfigError('decisions must be a mapping of url, model, retention and api_key_env')
-    retention = entry.get('retention', 'unknown')
-    texts = {key: entry.get(key, default) for key, default in (('url', DECISIONS_URL), ('model', JEV_MODEL), ('api_key_env', None))}
-    if retention not in RETENTIONS or not all(isinstance(v, str) and v.strip() for v in texts.values()):
-        raise ConfigError('decisions: retention must be "unknown" or "zdr_enforced"; url, model and api_key_env must be non-empty text')
-    api_key = env.get(texts['api_key_env'] or '', '')
-    if not api_key:
-        raise ConfigError(f"decisions: environment variable {texts['api_key_env']} is not set")
-    return OpenRouterDecisions(api_key=api_key, model=texts['model'] or '', url=texts['url'] or '', retention=retention)
-
-
 def _valid_env_name(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip()) and value == value.strip() and '=' not in value and not any(c.isspace() for c in value)
 
@@ -742,7 +728,7 @@ def service_from_env(env: Mapping[str, str], privacy_list: Callable[[], Registry
         names = config['privacy_registry']
         privacy = Registry(people=[Person(**p) for p in names.get('people', [])],
                            projects=[Project(**p) for p in names.get('projects', [])], ids=names.get('ids', []))
-    decisions = _decisions_from(config['decisions'], env) if 'decisions' in config else None
+    decisions = decisions_from(config['decisions'], env) if 'decisions' in config else None
     floors = config.get('provider_min_retention', {})
     if not isinstance(floors, dict) or any((name not in providers and not (name == 'decisions' and decisions)) or value not in RETENTIONS for name, value in floors.items()):
         raise ConfigError('provider_min_retention must map a configured provider name (or "decisions") to "unknown" or "zdr_enforced"')

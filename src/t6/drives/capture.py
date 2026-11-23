@@ -16,6 +16,7 @@ from t6.drives import Ref
 from t6.drives.movements import Movement, active_movements, append, custody_event, latest_custody, _append_event
 from t6.drives.sqlite import SqliteDriveStore
 from t6.llm.drive_photo import read_drive_photo
+from t6.llm.drive_transmittal import classify_transmittal
 from t6.llm.transport import Image, ImageType, Provider
 from t6.worker import WorkerJob
 
@@ -42,7 +43,7 @@ def capture_post(registry: SqliteProjectRegistry, inputs: DriveCaptureInput) -> 
                 return Refused(rule='recording_channel', reason='Only the configured recording channel is accepted')
             if not inputs.text.strip():
                 return Refused(rule='input', reason='Give a label or serial')
-            if data['state'] in ('resolved', 'undone') or data['state'] == 'pending' and data.get('follow_up') == inputs.text.strip():
+            if data['state'] in ('resolved', 'undone', 'ignored') or data['state'] == 'pending' and data.get('follow_up') == inputs.text.strip():
                 return Done(result=_result(data))
             data.update(follow_up=inputs.text.strip(), revision=data.get('revision', 0) + 1, state='pending')
             db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), inputs.capture))
@@ -76,7 +77,7 @@ def capture_post(registry: SqliteProjectRegistry, inputs: DriveCaptureInput) -> 
 
 
 def _result(data: dict[str, Any]) -> dict[str, Any]:
-    return {key: data[key] for key in ('capture', 'state', 'lines', 'differences')} | {'photo_reference': data['capture'], 'message': 'ask for the label' if data['state'] == 'exception' else None}
+    return {key: data[key] for key in ('capture', 'state', 'lines', 'differences')} | {'photo_reference': None if data['state'] == 'ignored' else data['capture'], 'message': 'ask for the label' if data['state'] == 'exception' else None}
 
 
 def capture_result(registry: SqliteProjectRegistry, capture: str) -> Outcome:
@@ -86,8 +87,9 @@ def capture_result(registry: SqliteProjectRegistry, capture: str) -> Outcome:
 
 
 class CaptureResolver:
-    def __init__(self, registry: SqliteProjectRegistry, provider: Provider, *, environ: Mapping[str, str] | None = None) -> None:
+    def __init__(self, registry: SqliteProjectRegistry, provider: Provider, *, decisions: Provider | None = None, environ: Mapping[str, str] | None = None) -> None:
         self.registry, self.provider, self.environ = registry, provider, environ
+        self.decisions = decisions
 
     def handle(self, job: WorkerJob) -> JsonValue:
         capture = str(job.payload['capture'])
@@ -102,12 +104,19 @@ class CaptureResolver:
             if admitted is None:
                 raise ValueError('Capture no longer belongs to the configured recording channel')
         reading = read_drive_photo(Image(admitted.photo, ImageType(data['media_type'])), provider=self.provider)
+        verdict = classify_transmittal(admitted.text, bool(admitted.photo), reading.drives, provider=self.decisions) if self.decisions is not None else 'transmittal'
         with self.registry._transaction() as db:
             row = db.execute('SELECT data FROM drive_captures WHERE id=?', (capture,)).fetchone()
             if row is None:
                 return {'skipped': 'capture removed by reload'}
             data = json.loads(row[0])
             if data['state'] != 'pending' or data.get('revision', 0) != job.payload.get('revision', 0):
+                return _result(data)
+            if verdict == 'not_transmittal':
+                data['state'] = 'ignored'
+                data.pop('text', None)
+                data.pop('follow_up', None)
+                db.execute('UPDATE drive_captures SET data=?, photo=? WHERE id=?', (json.dumps(data), b'', capture))
                 return _result(data)
             store = SqliteDriveStore(self.registry, within=db)
             drives = store.list_drives()
@@ -175,7 +184,7 @@ def undo_capture(registry: SqliteProjectRegistry, capture: str) -> Outcome:
         if row is None:
             return Refused(rule='capture', reason='Capture not found')
         data = json.loads(row[0])
-        if data['state'] == 'undone':
+        if data['state'] in ('undone', 'ignored'):
             return Done(result=_result(data))
         store = SqliteDriveStore(registry, within=db)
         active = active_movements(db)

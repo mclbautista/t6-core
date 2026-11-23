@@ -30,6 +30,7 @@ import os
 from collections.abc import Mapping
 from typing import Any, TypeVar
 
+from t6.llm.decisions import DECISIONS_URL, JEV_MODEL, OpenRouterDecisions
 from t6.llm.policy import RETENTIONS, Retention
 from t6.llm.transport import OpenAIChat, Provider, Send
 
@@ -168,5 +169,18 @@ def _no_unknown_keys(where: str, data: Mapping[Any, Any], allowed: frozenset[str
         raise ConfigError(f"{where}: unknown keys {', '.join(unknown)}{hint}")
 
 
-__all__ = ["ConfigError", "LLMConfig", "ProviderConfig"]
+def decisions_from(entry: Any, env: Mapping[str, str]) -> OpenRouterDecisions:
+    """The optional `decisions` key: url, model, retention (what the endpoint really has) and the key's variable name."""
+    if not isinstance(entry, dict) or set(entry) - {'url', 'model', 'retention', 'api_key_env'}:
+        raise ConfigError('decisions must be a mapping of url, model, retention and api_key_env')
+    retention = entry.get('retention', 'unknown')
+    texts = {key: entry.get(key, default) for key, default in (('url', DECISIONS_URL), ('model', JEV_MODEL), ('api_key_env', None))}
+    if retention not in RETENTIONS or not all(isinstance(v, str) and v.strip() for v in texts.values()):
+        raise ConfigError('decisions: retention must be "unknown" or "zdr_enforced"; url, model and api_key_env must be non-empty text')
+    api_key = env.get(texts['api_key_env'] or '', '')
+    if not api_key:
+        raise ConfigError(f"decisions: environment variable {texts['api_key_env']} is not set")
+    return OpenRouterDecisions(api_key=api_key, model=texts['model'] or '', url=texts['url'] or '', retention=retention)
 
+
+__all__ = ["ConfigError", "LLMConfig", "ProviderConfig", "decisions_from"]
