@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Fixed
+
+- Guest names on passphrase shares: the Frame.io worker sends `x-frameio-share-authentication` as base64 of `<share id>:<passphrase>`, the way Frame.io's web app builds it, instead of the guessed unlock call, which does not exist (#602).
+
 ## [0.6.20] - 2026-11-22
 
 The Frame.io review message tags T6's coordinator. No migration: the schema stays at 49.
