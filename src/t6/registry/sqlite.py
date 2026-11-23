@@ -404,6 +404,8 @@ _MIGRATIONS = (
     (53, False, """CREATE TABLE drive_movements (id TEXT PRIMARY KEY, corrects TEXT REFERENCES drive_movements(id), data TEXT NOT NULL);
     CREATE UNIQUE INDEX movement_correction ON drive_movements(corrects) WHERE corrects IS NOT NULL;
     CREATE TABLE drive_movement_events (event_id INTEGER PRIMARY KEY REFERENCES drive_events(id), movement_id TEXT NOT NULL REFERENCES drive_movements(id))"""),
+    (54, False, """CREATE TABLE drive_practice (id INTEGER PRIMARY KEY CHECK (id=1), practice INTEGER NOT NULL CHECK (practice IN (0, 1)));
+    INSERT INTO drive_practice VALUES (1, 1)"""),
 )
 
 

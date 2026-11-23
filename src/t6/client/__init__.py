@@ -20,7 +20,7 @@ from t6.verbs import (
     MediaLinkInput, MediaUnlinkInput, TimelineLinkInput, TimelineRestampInput, TimelineListInput, FrameioProjectInput, MediaListInput, MediaMigrateInput,
     TranscriptCreateInput, TranscriptGetInput, TranscriptSpeakersInput, TranscriptTranslateInput,
     DriveMappingProposeInput, DriveMappingApplyInput, DriveProjectsInput, MovementListInput, MovementCorrectInput,
-    DriveReloadInput, DriveReceiveInput, DriveReleaseInput, DriveReturnInput, DriveRetireInput, DriveAssignInput, DriveUnassignInput,
+    DriveCutoverInput, DriveReloadInput, DriveReceiveInput, DriveReleaseInput, DriveReturnInput, DriveRetireInput, DriveAssignInput, DriveUnassignInput,
     DriveAddInput, DriveEditInput, DrivePromoteSerialInput, DriveListInput, DriveGetInput, DriveFindInput, DriveCatalogSnapshotInput, DriveCatalogSnapshotsInput, DriveCatalogDiffInput, DriveCatalogAtInput, DriveShipmentsInput, DriveShipmentInput, DriveExceptionsInput,
     MachineEditInput, MachineListInput, MachineSyncInput,
     SwingAssignInput, SwingUnassignInput, SwingReturnInput, SwingOverdueInput,
@@ -169,6 +169,9 @@ class Client:
 
     def movement_correct(self, inputs: MovementCorrectInput) -> Result:
         return self.call('movement', 'correct', inputs)
+
+    def drive_cutover(self, inputs: DriveCutoverInput) -> Result:
+        return self.call('drive', 'cutover', inputs)
 
     def drive_reload(self, inputs: DriveReloadInput) -> Result:
         return self.call('drive', 'reload', inputs)

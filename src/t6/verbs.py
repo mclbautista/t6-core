@@ -2149,6 +2149,10 @@ def timeline_list(inputs: TimelineListInput, open_notion: Callable[..., Any]) ->
         return Refused(rule='project', reason=str(error))
 
 
+class DrivePracticeOutput(BaseModel):
+    practice: bool = True
+
+
 class DriveMappingProposeInput(BaseModel):
     workbook: str
     tracker: str | None = None
@@ -2169,7 +2173,7 @@ class DriveMappingEntry(BaseModel):
     project_name: str | None = None
 
 
-class DriveMappingOutput(BaseModel):
+class DriveMappingOutput(DrivePracticeOutput):
     mapping: list[DriveMappingEntry]
 
 
@@ -2214,10 +2218,14 @@ def drive_mapping_apply(inputs: BaseModel, open_notion: Callable[..., Any]) -> O
 
 
 class DriveReloadInput(BaseModel):
-    workbook: str
+    workbook: str | None = None
     tracker: str | None = None
     idempotency_key: str | None = None
     confirm: str | None = None
+
+
+class DriveCutoverInput(DriveReloadInput):
+    pass
 
 
 class DriveWithoutSerial(BaseModel):
@@ -2225,7 +2233,8 @@ class DriveWithoutSerial(BaseModel):
     label: str | None
 
 
-class DriveReloadOutput(BaseModel):
+class DriveReloadOutput(DrivePracticeOutput):
+    nightly_enabled: bool = True
     movements_read: int
     movements_matched: int
     movements_unmatched: int
@@ -2242,15 +2251,26 @@ class DriveReloadOutput(BaseModel):
 
 def drive_reload(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
     from t6.drives.reload import reload_drives
-    from t6.drives.sheets import WorkbookSheetSource
+    from t6.drives.sheets import SheetSource, WorkbookSheetSource, configured_sources
     if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
         return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
     assert isinstance(inputs, DriveReloadInput)
     people = _people()
+    from t6.drives.practice import practice_mode
+    if not practice_mode(people.registry):
+        return Refused(rule='cutover', reason='Drive reload is disabled after cutover')
+    source: SheetSource
+    tracker: SheetSource | None
     try:
-        return reload_drives(people.registry, people.tokens, WorkbookSheetSource(inputs.workbook),
-                             tracker=WorkbookSheetSource(inputs.tracker) if inputs.tracker else None,
-                             actor=_actor.get(), idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+        if inputs.workbook:
+            source, tracker = (WorkbookSheetSource(inputs.workbook),
+                               WorkbookSheetSource(inputs.tracker) if inputs.tracker else None)
+        else:
+            source, tracker = configured_sources(os.environ)
+        return reload_drives(people.registry, people.tokens, source,
+                             tracker=tracker,
+                             actor=_actor.get(), idempotency_key=inputs.idempotency_key, confirm=inputs.confirm,
+                             cutover=isinstance(inputs, DriveCutoverInput))
     except (OSError, ValueError) as error:
         return Refused(rule='sheet', reason=str(error))
 
@@ -2266,7 +2286,7 @@ class DriveProjectCount(BaseModel):
     released: int
 
 
-class DriveProjectsOutput(BaseModel):
+class DriveProjectsOutput(DrivePracticeOutput):
     projects: list[DriveProjectCount]
 
 
@@ -2289,7 +2309,7 @@ class MovementCorrectInput(BaseModel):
     confirm: str | None = None
 
 
-class MovementCorrectOutput(BaseModel):
+class MovementCorrectOutput(DrivePracticeOutput):
     movement: MovementItem
 
 
@@ -2320,7 +2340,7 @@ class MovementListInput(BaseModel):
     end: str | None = None
 
 
-class MovementListOutput(BaseModel):
+class MovementListOutput(DrivePracticeOutput):
     movements: list[MovementItem]
 
 
@@ -2395,7 +2415,7 @@ class DriveUnassignInput(BaseModel):
     confirm: str | None = None
 
 
-class DriveWriteOutput(BaseModel):
+class DriveWriteOutput(DrivePracticeOutput):
     action: str
     drive_ids: list[str]
     project_id: str | None = None
@@ -2459,7 +2479,7 @@ class SwingOverdueInput(BaseModel):
     pass
 
 
-class SwingOverdueOutput(BaseModel):
+class SwingOverdueOutput(DrivePracticeOutput):
     today: str
     overdue: list[dict[str, Any]]
 
@@ -2541,7 +2561,7 @@ class DrivePromoteSerialInput(BaseModel):
     confirm: str | None = None
 
 
-class DriveFactsOutput(BaseModel):
+class DriveFactsOutput(DrivePracticeOutput):
     action: str
     drive_ids: list[str]
     facts: dict[str, Any]
@@ -2684,12 +2704,12 @@ class DriveListItem(DriveItem):
     open_assignments: list[DriveAssignmentItem]  # the Assignments not yet ended, numbered as `drive get` numbers them
 
 
-class DriveListOutput(BaseModel):
+class DriveListOutput(DrivePracticeOutput):
     drives: list[DriveListItem]
     total: int
 
 
-class DriveGetOutput(BaseModel):
+class DriveGetOutput(DrivePracticeOutput):
     drive: DriveItem
     events: list[DriveEventItem]
     assignments: list[DriveAssignmentItem]
@@ -2701,7 +2721,7 @@ class DriveMatch(DriveItem):
     match: Literal['accepted', 'suspected', 'qr_code']
 
 
-class DriveFindOutput(BaseModel):
+class DriveFindOutput(DrivePracticeOutput):
     serial: str | None = None
     qr_code: str | None = None
     matches: list[DriveMatch]
@@ -2717,7 +2737,7 @@ class DriveCatalogSnapshotInput(BaseModel):
     confirm: str | None = None
 
 
-class DriveCatalogSnapshotOutput(BaseModel):
+class DriveCatalogSnapshotOutput(DrivePracticeOutput):
     action: str
     drive_ids: list[str]
     captured_on: str
@@ -2755,7 +2775,7 @@ class DriveCatalogSnapshotItem(BaseModel):
     total_bytes: int
 
 
-class DriveCatalogSnapshotsOutput(BaseModel):
+class DriveCatalogSnapshotsOutput(DrivePracticeOutput):
     snapshots: list[DriveCatalogSnapshotItem]
 
 
@@ -2768,7 +2788,7 @@ class DriveCatalogChange(BaseModel):
     checksum: str | None
 
 
-class DriveCatalogDiffOutput(BaseModel):
+class DriveCatalogDiffOutput(DrivePracticeOutput):
     snapshot: DriveCatalogSnapshotItem
     changes: list[DriveCatalogChange]
 
@@ -2781,7 +2801,7 @@ class DriveCatalogEntryItem(BaseModel):
     checksum: str | None
 
 
-class DriveCatalogAtOutput(BaseModel):
+class DriveCatalogAtOutput(DrivePracticeOutput):
     snapshot: DriveCatalogSnapshotItem
     entries: list[DriveCatalogEntryItem]
 
@@ -2794,7 +2814,7 @@ class DriveShipmentItem(BaseModel):
     drive_count: int
 
 
-class DriveShipmentsOutput(BaseModel):
+class DriveShipmentsOutput(DrivePracticeOutput):
     shipments: list[DriveShipmentItem]
 
 
@@ -2803,7 +2823,7 @@ class DriveRelease(BaseModel):
     event: DriveEventItem
 
 
-class DriveShipmentOutput(BaseModel):
+class DriveShipmentOutput(DrivePracticeOutput):
     """`releases` hold each Drive's facts as they were at release, unless `facts_at_release` is false: the
     shipment was released before facts were kept, and they are the Drive's current facts."""
     shipment_id: str
@@ -2820,7 +2840,7 @@ class DriveExceptionItem(BaseModel):
     detail: str
 
 
-class DriveExceptionsOutput(BaseModel):
+class DriveExceptionsOutput(DrivePracticeOutput):
     exceptions: list[DriveExceptionItem]
 
 
@@ -2938,6 +2958,7 @@ VERBS = (
     Verb('drive', 'projects', 'Project Drive counts', (), DriveProjectsInput, DriveProjectsOutput, 'reader', 'Distinct Drives per Project with an open Assignment, grouped by derived custody status.', drive_projects, read_only=True),
     Verb('movement', 'correct', 'Append a Movement correction', (), MovementCorrectInput, MovementCorrectOutput, 'drives', 'Preview and confirm a correction; the original Movement and custody events remain.', movement_correct),
     Verb('movement', 'list', 'Search the Movement log', (), MovementListInput, MovementListOutput, 'reader', 'Filters combine with AND; includes unresolved rows and corrections.', movement_list, read_only=True),
+    Verb('drive', 'cutover', 'Final reload and end Drive practice mode', (), DriveCutoverInput, DriveReloadOutput, 'operator', 'Preview and confirm the final reload; disables nightly and operator reloads.', drive_reload),
     Verb('drive', 'reload', 'Replace Drive data from the per-project sheet', (), DriveReloadInput, DriveReloadOutput, 'drives', 'Preview and confirm a complete reload, preserving accepted serial IDs.', drive_reload),
     Verb('drive', 'receive', 'Receive a Drive into custody', (), DriveReceiveInput, DriveWriteOutput, 'drives', 'Preview and confirm; appends a received event. Refused for a Drive in custody or retired.', drive_write),
     Verb('drive', 'release', 'Release Drives in one shipment', (), DriveReleaseInput, DriveWriteOutput, 'drives', 'Preview and confirm; one released event per Drive, grouped by shipment, with the Drives\' facts kept as they are now. Optional reason and free-text recipient. Refused whole if a Drive is released or retired.', drive_write),
@@ -3113,7 +3134,15 @@ def invoke(entry: Verb, inputs: BaseModel, *, actor: str, people: People,
     frameio_token = _frameio.set(frameio)
     notion_token = _notion_source.set(notion_source)
     try:
-        return entry.handler(inputs, open_notion)
+        outcome = entry.handler(inputs, open_notion)
+        if entry.noun in ('drive', 'movement', 'swing'):
+            from t6.drives.practice import practice_mode
+            practice = practice_mode(people.registry)
+            if isinstance(outcome, Done) and isinstance(outcome.result, dict):
+                outcome = outcome.model_copy(update={'result': {**outcome.result, 'practice': practice}})
+            elif isinstance(outcome, Preview) and isinstance(outcome.plan, dict):
+                outcome = outcome.model_copy(update={'plan': {**outcome.plan, 'practice': practice}})
+        return outcome
     finally:
         _actor.reset(token)
         _registry.reset(registry_token)

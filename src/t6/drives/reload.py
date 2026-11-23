@@ -20,12 +20,17 @@ from t6.verbs import Outcome, Refused
 
 
 def reload_drives(registry: SqliteProjectRegistry, tokens: PreviewTokens, source: SheetSource, *,
-                  tracker: SheetSource | None = None, actor: str, idempotency_key: str | None, confirm: str | None) -> Outcome:
+                  tracker: SheetSource | None = None, actor: str, idempotency_key: str | None, confirm: str | None, cutover: bool = False) -> Outcome:
+    from t6.drives.practice import practice_mode
+    if not practice_mode(registry):
+        return Refused(rule='cutover', reason='Drive reload is disabled after cutover')
     digest = hashlib.sha256(json.dumps([source.tabs(), tracker.tabs() if tracker else None], default=str, sort_keys=True).encode()).hexdigest()
-    request = verbflow.begin(tokens, 'drive reload', actor, {'workbook': source.workbook, 'tracker': tracker.workbook if tracker else None}, idempotency_key, confirm)
+    request = verbflow.begin(tokens, 'drive cutover' if cutover else 'drive reload', actor, {'workbook': source.workbook, 'tracker': tracker.workbook if tracker else None}, idempotency_key, confirm)
     if isinstance(request, Refused):
         return request
     with registry._transaction() as db:
+        if not db.execute('SELECT practice FROM drive_practice WHERE id=1').fetchone()[0]:
+            return Refused(rule='cutover', reason='Drive reload is disabled after cutover')
         settled = verbflow.settle(db, tokens, request)
         if settled:
             return settled
@@ -74,6 +79,9 @@ def reload_drives(registry: SqliteProjectRegistry, tokens: PreviewTokens, source
                                   'exceptions': len(store.exceptions()),
                                   'unmapped_projects': sorted(name for name in project_names(source, tracker)
                                                               if project_key(name) not in mapping)}
+        if cutover:
+            db.execute('UPDATE drive_practice SET practice=0 WHERE id=1')
+        report.update(practice=not cutover, nightly_enabled=not cutover)
         db.execute('INSERT INTO drive_reload_reports (at, actor, data) VALUES (?, ?, ?)',
                    (registry._clock(), actor, json.dumps(report)))
         return verbflow.finish(db, request, report)
