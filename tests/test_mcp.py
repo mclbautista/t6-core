@@ -65,7 +65,7 @@ class MCPTests(unittest.TestCase):
     TOOL_NAMES = [
         'bay__drift', 'bay__list', 'bay__scan__list', 'booking__get', 'booking__list', 'camera__get', 'concern__changes', 'concern__counts', 'concern__for-message', 'concern__get', 'concern__list', 'deliverable__bangko',
         'deliverable__candidates', 'deliverable__get', 'deliverable__hand-to-mouth', 'deliverable__list', 'deliverable__sabit', 'departments',
-        'drive__catalog-at', 'drive__catalog-diff', 'drive__catalog-snapshots', 'drive__exceptions', 'drive__find', 'drive__get', 'drive__list', 'drive__shipment', 'drive__shipments', 'external-link__find', 'jo__find', 'jo__get', 'jo__list', 'machine__list', 'media__list', 'meeting-notes__list', 'package__get',
+        'drive__catalog-at', 'drive__catalog-diff', 'drive__catalog-snapshots', 'drive__exceptions', 'drive__find', 'drive__get', 'drive__list', 'drive__projects', 'drive__shipment', 'drive__shipments', 'external-link__find', 'jo__find', 'jo__get', 'jo__list', 'machine__list', 'media__list', 'meeting-notes__list', 'movement__list', 'package__get',
         'package__list', 'person__find', 'person__get', 'person__list', 'project__activity', 'project__flags',
         'project__get', 'project__list', 'project__notes', 'project__resolve', 'queue__failed', 'standing-cc', 'studio__notices', 'swing__overdue', 'text__withhold', 'timeline__list', 'transcript__get',
         'version__find', 'version__get']

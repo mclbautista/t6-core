@@ -401,6 +401,9 @@ _MIGRATIONS = (
     (51, False, """CREATE TABLE drive_serial_ids (serial TEXT PRIMARY KEY, drive_id TEXT NOT NULL);
     CREATE TABLE drive_reload_reports (id INTEGER PRIMARY KEY, at REAL NOT NULL, actor TEXT NOT NULL, data TEXT NOT NULL)"""),
     (52, False, """CREATE TABLE drive_project_mapping (name TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id))"""),
+    (53, False, """CREATE TABLE drive_movements (id TEXT PRIMARY KEY, corrects TEXT REFERENCES drive_movements(id), data TEXT NOT NULL);
+    CREATE UNIQUE INDEX movement_correction ON drive_movements(corrects) WHERE corrects IS NOT NULL;
+    CREATE TABLE drive_movement_events (event_id INTEGER PRIMARY KEY REFERENCES drive_events(id), movement_id TEXT NOT NULL REFERENCES drive_movements(id))"""),
 )
 
 
@@ -440,6 +443,10 @@ def _migrate(db: sqlite3.Connection) -> None:
                 for operation in ("UPDATE", "DELETE"):
                     db.execute(f"CREATE TRIGGER drive_shipment_facts_no_{operation.lower()} BEFORE {operation} ON drive_shipment_facts "
                                "BEGIN SELECT RAISE(ABORT, 'drive shipment facts are append-only'); END")
+            if version == 53:
+                for operation in ("UPDATE", "DELETE"):
+                    db.execute(f"CREATE TRIGGER drive_movements_no_{operation.lower()} BEFORE {operation} ON drive_movements "
+                               "BEGIN SELECT RAISE(ABORT, 'movements are append-only'); END")
             if version == 35:
                 for operation in ("UPDATE", "DELETE"):
                     db.execute(f"CREATE TRIGGER drive_events_no_{operation.lower()} BEFORE {operation} ON drive_events "

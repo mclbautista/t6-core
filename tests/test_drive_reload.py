@@ -22,7 +22,7 @@ HEADER = ['HARD DRIVE LABEL', 'SERIAL NUMBER', 'BRAND NAME', 'TOTAL DISK SPACE',
           'FORMAT', 'DATE RECEIVED', 'DATE RELEASED', 'REMARKS']
 
 
-class DriveReloadTests(unittest.TestCase):
+class DriveReloadFixture(unittest.TestCase):
     def setUp(self) -> None:
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
@@ -69,6 +69,8 @@ class DriveReloadTests(unittest.TestCase):
     def drives(self) -> list[dict[str, Any]]:
         return list(self.call('list').result['drives'])
 
+
+class DriveReloadTests(DriveReloadFixture):
     def test_serial_on_three_tabs_loads_one_drive_with_three_text_assignments(self) -> None:
         self.workbook({name: [['PROJECT NAME: Ignored heading'], ['TOTAL', 1], ['IN-HOUSE', 1],
                               ['RELEASED', 0], HEADER, ['Synthetic MASTER', serial, 'Synthetic brand', '2TB', 'exFAT']]

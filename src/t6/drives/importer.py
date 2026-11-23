@@ -41,7 +41,7 @@ from t6.drives import (
     parse_capacity_tb,
     normalize_serial,
 )
-from t6.lookup import Lookup
+from t6.lookup import Index, Lookup
 from t6.drives.sheets import SheetSource, WorkbookSheetSource
 
 __all__ = [
@@ -133,6 +133,7 @@ def import_per_project_workbook(
     path: str | Path | SheetSource, store: DriveStore, *, lookup: Lookup, logged_by: Ref,
     reload: bool = False, serial_ids: dict[str, str] | None = None,
     project_mapping: dict[str, str] | None = None,
+    timeline: dict[str, list[CustodyEvent]] | None = None,
 ) -> ImportResult:
     """Import per-project rows, preserving uncertain facts without guessing identity.
 
@@ -148,7 +149,7 @@ def import_per_project_workbook(
     source = WorkbookSheetSource(path) if isinstance(path, (str, Path)) else path
     rows, review = _read_per_project(source, reload=reload)
     if reload:
-        imported = _reload_drive_rows(rows, store, logged_by, review, serial_ids or {}, project_mapping or {})
+        imported = _reload_drive_rows(rows, store, logged_by, review, serial_ids or {}, project_mapping or {}, timeline)
         _preserve_exceptions(store, review, rows)
         return ImportResult(imported, tuple(review))
     rows = _mark_receipts(store, rows)
@@ -223,7 +224,7 @@ def _filled(values: tuple[Any, ...]) -> bool:
 
 def _columns(values: tuple[Any, ...]) -> list[str]:
     names = [" ".join(str(value or "").upper().split()) for value in values]
-    return [_SERIAL_COLUMN if name in {"SERIAL #", "SERIAL NO", "SERIAL NO."} else name for name in names]
+    return [_SERIAL_COLUMN if name in {"SERIAL #", "SERIAL NO", "SERIAL NO."} else _LABEL if name == "LABEL" else name for name in names]
 
 
 def _cells(columns: list[str], values: tuple[Any, ...]) -> dict[str, Any]:
@@ -295,28 +296,27 @@ def _read_per_project(source: SheetSource, *, reload: bool = False) -> tuple[lis
     return [replace(row, workbook=source.workbook) for row in rows], review
 
 
-def _read_log_sheet(path: Path) -> tuple[list[_Row], list[_Row], list[ReviewItem]]:
+def _read_log_sheet(path: Path | SheetSource) -> tuple[list[_Row], list[_Row], list[ReviewItem]]:
     """The inventory rows and the movement rows of the log sheet workbook."""
     drive_rows, movements = [], []
     unparsed: list[ReviewItem] = []
-    from openpyxl import load_workbook  # the `drives` extra: only a workbook read needs it
-    workbook = load_workbook(path, read_only=True, data_only=True)
-    for sheet in workbook.worksheets:
-        project, project_row = sheet.title, 1
+    source = WorkbookSheetSource(path) if isinstance(path, Path) else path
+    for sheet_name, sheet_rows in source.tabs().items():
+        project, project_row = sheet_name, 1
         columns: list[str] | None = None
         released_on: date | None = None
-        for number, values in enumerate(sheet.iter_rows(values_only=True), start=1):
+        for number, values in enumerate(sheet_rows, start=1):
             texts = [str(value).strip() for value in values if value is not None]
             dated = next((m for m in map(_TAB_DATE.fullmatch, texts) if m), None)
-            if dated and columns is None:
+            if dated:
                 try:
                     released_on = _date(dated.group(1))
                 except ValueError:
-                    unparsed.append(ReviewItem(sheet.title, number, "unreadable", json.dumps(values, default=str, ensure_ascii=False), str(path.resolve())))
-            elif _LABEL in (text.upper() for text in texts):
+                    unparsed.append(ReviewItem(sheet_name, number, "unreadable", json.dumps(values, default=str, ensure_ascii=False), source.workbook))
+            elif any(text.upper() in {_LABEL, "LABEL"} for text in texts):
                 columns = _columns(values)
             elif columns is not None and _filled(values):
-                row = _Row(sheet.title, number, project, project_row, _cells(columns, values), released_on, raw_values=values)
+                row = _Row(sheet_name, number, project, project_row, _cells(columns, values), released_on, raw_values=values)
                 if "IN/OUT" in columns:
                     movements.append(row)
                 elif row.text(_LABEL) and not row.text(_SERIAL_COLUMN) and row.text("QUANTITY"):
@@ -324,11 +324,10 @@ def _read_log_sheet(path: Path) -> tuple[list[_Row], list[_Row], list[ReviewItem
                 elif _filled(values):
                     drive_rows.append(row)
             elif columns is None and _filled(values):
-                unparsed.append(ReviewItem(sheet.title, number, "unreadable", json.dumps(values, default=str, ensure_ascii=False), str(path.resolve())))
-    workbook.close()
+                unparsed.append(ReviewItem(sheet_name, number, "unreadable", json.dumps(values, default=str, ensure_ascii=False), source.workbook))
     return (
-        [replace(row, workbook=str(path.resolve())) for row in drive_rows],
-        [replace(row, workbook=str(path.resolve())) for row in movements],
+        [replace(row, workbook=source.workbook) for row in drive_rows],
+        [replace(row, workbook=source.workbook) for row in movements],
         unparsed,
     )
 
@@ -396,10 +395,11 @@ def _import_drive_rows(
 
 
 def _reload_drive_rows(rows: list[_Row], store: DriveStore, logged_by: Ref, review: list[ReviewItem],
-                       serial_ids: dict[str, str], project_mapping: dict[str, str]) -> int:
+                       serial_ids: dict[str, str], project_mapping: dict[str, str],
+                       pending: dict[str, list[CustodyEvent]] | None = None) -> int:
     from t6.drives.mapping import project_ref
     imported = 0
-    timeline: dict[str, list[CustodyEvent]] = defaultdict(list)
+    timeline: dict[str, list[CustodyEvent]] = pending if pending is not None else defaultdict(list)
     for row in rows:
         problems: list[str] = []
         try:
@@ -428,9 +428,10 @@ def _reload_drive_rows(rows: list[_Row], store: DriveStore, logged_by: Ref, revi
             store.set_facts(held, {"ownership_known": True})
         timeline[held].extend(events)
         imported += 1
-    for drive_id, events in timeline.items():
-        for event in sorted(events, key=lambda e: (e.kind is CustodyKind.RETIRED, e.on or date.min)):
-            store.append_event(drive_id, event)
+    if pending is None:
+        for drive_id, events in timeline.items():
+            for event in sorted(events, key=lambda e: (e.kind is CustodyKind.RETIRED, e.on or date.min)):
+                store.append_event(drive_id, event)
     return imported
 
 
@@ -724,3 +725,43 @@ def _date(value: Any) -> date | None:
         return datetime.strptime(" ".join([month[:3], *rest]), "%b %d %Y").date()
     except ValueError:
         raise ValueError(f"cannot read the date {value!r}") from None
+
+
+def reload_tracker_inventory(source: SheetSource, store: DriveStore, logged_by: Ref,
+                             mapping: dict[str, str], serial_ids: dict[str, str],
+                             timeline: dict[str, list[CustodyEvent]]) -> int:
+    """Tracker inventory contributes missing serials and review/retirement hints."""
+    from t6.drives.mapping import project_ref
+    rows, _, review = _read_log_sheet(source)
+    read = 0
+    for row in rows:
+        serial = _serial(row)
+        if not serial:
+            continue  # group headings and totals do not identify physical Drives
+        read += 1
+        held = store.find_by_serial(serial)
+        project = project_ref(row.project, mapping)
+        problems: list[str] = []
+        if held is None:
+            drive, assignment, events = _inventory_facts(row, Lookup(Index()), logged_by, problems)
+            if problems:
+                review.append(_unreadable(row, problems))
+                continue
+            drive = replace(drive, id=serial_ids.get(serial, drive.id), ownership_known='T6' in (drive.label or '').upper())
+            assignment = replace(assignment, project=project)
+            store.import_row(row.import_key, drive, assignment, [], source=SourceRow(row.workbook, row.sheet, row.number))
+            held = store.find_by_serial(serial)
+            assert held is not None
+            timeline.setdefault(held.id, []).extend(replace(event, project=project) for event in events)
+            if not events:
+                timeline[held.id].append(CustodyEvent(kind=CustodyKind.RECEIVED, on=None, party=None,
+                                                    project=project, logged_by=logged_by))
+        remarks = row.text('REMARKS') or ''
+        if 'DEFECTIVE' in remarks.upper():
+            note = '; '.join(dict.fromkeys(filter(None, (held.review_note, remarks))))
+            store.set_review(held.id, needs_review=True, note=note)
+        if 'DEAD DRIVE' in remarks.upper() and not any(e.kind is CustodyKind.RETIRED for e in timeline.get(held.id, [])):
+            timeline.setdefault(held.id, []).append(CustodyEvent(kind=CustodyKind.RETIRED, on=None, party=None,
+                                                               project=project, logged_by=logged_by, reason='DEAD DRIVE'))
+    store.record_exceptions(review)
+    return read
