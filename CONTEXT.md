@@ -91,7 +91,8 @@ Modelled in `t6.drives`.
 - **Capture**: a recording-channel post kept before reading or matching it,
   with its chat and message IDs, sender Telegram user ID, post time, text and
   photo. It is the source of the Movements resolved from that post.
-- **Recording channel**: the explicitly configured Telegram chat, TRANSMITTAL,
+- **Recording channel**: TRANSMITTAL, configured by Telegram chat ID plus topic ID
+  (the whole chat when no topic is configured),
   whose drive posts are recording input under [ADR 0009](docs/adr/0009-recording-channel.md).
   QR labels are not used for recording.
 - **Reload**: a complete replacement of Drive data from the source sheets,

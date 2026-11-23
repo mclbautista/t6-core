@@ -10,6 +10,7 @@ Drives are loaded from the custodian's sheets, and drive movements are recorded 
 
 ### Added
 
+- The recording channel is chat ID plus topic ID.
 - ADR 0009: TRANSMITTAL is a configured recording channel that amends ADR 0007 for one chat, plus the drive glossary terms (#628, part of #615).
 - `drive reload`: replaces all Drive data from the per-project sheet in one transaction, keeps each accepted serial's Drive ID across reloads, and writes a reload report (#629).
 - `t6.llm` image input and a drive photo-read task that returns labels and maker serials (#630).

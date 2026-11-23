@@ -352,6 +352,7 @@ stay outside this repository):
 
 - `T6_DRIVE_PROJECT_SPREADSHEET_ID`: the per-project source spreadsheet.
 - `T6_DRIVE_TRACKER_SPREADSHEET_ID`: the tracker source spreadsheet.
+- `T6_DRIVE_RECORDING_TOPIC_ID`: the recording channel topic (message_thread_id) inside the configured chat; unset admits the whole chat.
 - `GOOGLE_APPLICATION_CREDENTIALS`: the mounted service account key file.
 - `T6_DATABASE`: the shared t6 SQLite database.
 - `T6_PREVIEW_SIGNING_KEY`: the shared preview signing key.

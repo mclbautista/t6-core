@@ -2219,6 +2219,7 @@ def drive_mapping_apply(inputs: BaseModel, open_notion: Callable[..., Any]) -> O
 
 class DriveCaptureInput(BaseModel):
     chat_id: int | None = None
+    topic_id: int | None = None
     message_id: int | None = None
     sender_telegram_id: int | None = None
     posted_at: AwareDatetime | None = None
