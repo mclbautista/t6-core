@@ -247,7 +247,7 @@ class SqliteDriveStore:
             if not db.execute('SELECT 1 FROM projects WHERE id=?', (project.page_id,)).fetchone():
                 raise ValueError('assignment Project must be a registered t6 Project ID or unresolved text')
 
-    def import_row(self, row_key: str, drive: Drive, assignment: Assignment | None, events: Sequence[CustodyEvent], *, source: SourceRow | None = None) -> None:
+    def import_row(self, row_key: str, drive: Drive, assignment: Assignment | None, events: Sequence[CustodyEvent], *, source: SourceRow | None = None, deduplicate_assignment: bool = True) -> None:
         with self._tx() as db:
             if db.execute('SELECT 1 FROM drive_imports WHERE row_key=?', (row_key,)).fetchone():
                 return
@@ -265,7 +265,7 @@ class SqliteDriveStore:
                     raise ValueError('Drive ID is already recorded')
                 self._save(db, held, new=True)
             data = _dump(assignment) if assignment is not None else None
-            if data is not None and not db.execute('SELECT 1 FROM drive_assignments WHERE drive_id=? AND data=?', (held.id, data)).fetchone():
+            if data is not None and (not deduplicate_assignment or not db.execute('SELECT 1 FROM drive_assignments WHERE drive_id=? AND data=?', (held.id, data)).fetchone()):
                 db.execute('INSERT INTO drive_assignments (drive_id, data) VALUES (?, ?)', (held.id, data))
             for event in events:
                 self._append(db, held.id, event)

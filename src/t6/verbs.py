@@ -2149,6 +2149,42 @@ def timeline_list(inputs: TimelineListInput, open_notion: Callable[..., Any]) ->
         return Refused(rule='project', reason=str(error))
 
 
+class DriveReloadInput(BaseModel):
+    workbook: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class DriveWithoutSerial(BaseModel):
+    id: str
+    label: str | None
+
+
+class DriveReloadOutput(BaseModel):
+    rows_read: int
+    drives: int
+    assignments: int
+    released: int
+    retired: int
+    drives_without_serial: int
+    without_serial: list[DriveWithoutSerial]
+    exceptions: int
+
+
+def drive_reload(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.drives.reload import reload_drives
+    from t6.drives.sheets import WorkbookSheetSource
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    assert isinstance(inputs, DriveReloadInput)
+    people = _people()
+    try:
+        return reload_drives(people.registry, people.tokens, WorkbookSheetSource(inputs.workbook),
+                             actor=_actor.get(), idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+    except (OSError, ValueError) as error:
+        return Refused(rule='sheet', reason=str(error))
+
+
 class DriveReceiveInput(BaseModel):
     drive: str
     project: str
@@ -2729,6 +2765,7 @@ VERBS = (
     Verb('transcript', 'speakers', 'Name Transcript speakers', (), TranscriptSpeakersInput, TranscriptCreateOutput, 'staff', 'Preview and confirm speaker names.', api_read),
     Verb('transcript', 'translate', 'Translate a Transcript', (), TranscriptTranslateInput, TranscriptCreateOutput, 'staff', 'Preview and confirm translation.', api_read),
     Verb('transcript', 'get', 'Get a Transcript', (), TranscriptGetInput, TranscriptGetOutput, 'reader', 'Read progress and summary.', transcript_get, read_only=True),
+    Verb('drive', 'reload', 'Replace Drive data from the per-project sheet', (), DriveReloadInput, DriveReloadOutput, 'drives', 'Preview and confirm a complete reload, preserving accepted serial IDs.', drive_reload),
     Verb('drive', 'receive', 'Receive a Drive into custody', (), DriveReceiveInput, DriveWriteOutput, 'drives', 'Preview and confirm; appends a received event. Refused for a Drive in custody or retired.', drive_write),
     Verb('drive', 'release', 'Release Drives in one shipment', (), DriveReleaseInput, DriveWriteOutput, 'drives', 'Preview and confirm; one released event per Drive, grouped by shipment, with the Drives\' facts kept as they are now. Optional reason and free-text recipient. Refused whole if a Drive is released or retired.', drive_write),
     Verb('drive', 'return', 'Return a Drive to custody', (), DriveReturnInput, DriveWriteOutput, 'drives', 'Preview and confirm; appends a returned event. Only for a released Drive.', drive_write),

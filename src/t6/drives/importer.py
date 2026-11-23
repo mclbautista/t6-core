@@ -1,4 +1,4 @@
-"""One-off import of the legacy drive workbooks into a `DriveStore`.
+"""Import legacy drive workbooks and reload the per-project sheet into a `DriveStore`.
 
 Needs the `drives` extra (`pip install 't6[drives]'`) for the spreadsheet
 reader. The importer writes only through `DriveStore` and never guesses: every
@@ -42,6 +42,7 @@ from t6.drives import (
     normalize_serial,
 )
 from t6.lookup import Lookup
+from t6.drives.sheets import SheetSource, WorkbookSheetSource
 
 __all__ = [
     "ImportResult",
@@ -129,7 +130,8 @@ _FactsReader = Callable[[_Row, list[str]], _Facts]
 
 
 def import_per_project_workbook(
-    path: str | Path, store: DriveStore, *, lookup: Lookup, logged_by: Ref
+    path: str | Path | SheetSource, store: DriveStore, *, lookup: Lookup, logged_by: Ref,
+    reload: bool = False, serial_ids: dict[str, str] | None = None,
 ) -> ImportResult:
     """Import per-project rows, preserving uncertain facts without guessing identity.
 
@@ -137,8 +139,17 @@ def import_per_project_workbook(
     serials yield distinct review-flagged records, with candidates explicitly
     suspected. Unreadable rows remain traceable review items. Unchanged reruns
     use row receipts and append no duplicate history. See docs/drive-identity.md.
+
+    Reload mode accepts normalized serials shared across tabs, keeps each row's
+    Assignment to its tab name as text, and orders all custody events per Drive.
+    Its caller owns the replacement transaction and the persistent serial-ID map.
     """
-    rows, review = _read_per_project(Path(path))
+    source = WorkbookSheetSource(path) if isinstance(path, (str, Path)) else path
+    rows, review = _read_per_project(source, reload=reload)
+    if reload:
+        imported = _reload_drive_rows(rows, store, logged_by, review, serial_ids or {})
+        _preserve_exceptions(store, review, rows)
+        return ImportResult(imported, tuple(review))
     rows = _mark_receipts(store, rows)
     imported = _import_drive_rows(
         rows,
@@ -248,16 +259,16 @@ def _receipt(row: _Row, problems: list[str]) -> tuple[bool, date | None]:
     return True, _cell_date(value, problems)
 
 
-def _read_per_project(path: Path) -> tuple[list[_Row], list[ReviewItem]]:
+def _read_per_project(source: SheetSource, *, reload: bool = False) -> tuple[list[_Row], list[ReviewItem]]:
     rows = []
     review = []
-    from openpyxl import load_workbook  # the `drives` extra: only a workbook read needs it
-    workbook = load_workbook(path, read_only=True, data_only=True)
-    for sheet in workbook.worksheets:
+    for title, sheet_rows in source.tabs().items():
+        if reload and title.strip().upper() == "PROJECT TEMPLATE":
+            continue
         project: str | None = None
         project_row = 1
         columns: list[str] | None = None
-        for number, values in enumerate(sheet.iter_rows(values_only=True), start=1):
+        for number, values in enumerate(sheet_rows, start=1):
             first = str(values[0] or "").strip() if values else ""
             first_lines = first.splitlines()
             named = _PROJECT_NAME.search(first_lines[0]) if first_lines else None
@@ -269,19 +280,18 @@ def _read_per_project(path: Path) -> tuple[list[_Row], list[ReviewItem]]:
                     project_row = number
             elif columns is not None and _filled(values):
                 rows.append(
-                    _Row(sheet.title, number, project or sheet.title, project_row, _cells(columns, values), raw_values=values)
+                    _Row(title, number, (title if reload else project or title), project_row, _cells(columns, values), raw_values=values)
                 )
-            if columns is None:
+            if columns is None and not reload:
                 unparsed = ([*first_lines[1:], *values[1:]] if named else values)
                 for value in unparsed:
                     if value is not None:
                         for line in str(value).splitlines():
                             if line.strip():
                                 review.append(ReviewItem(
-                                    sheet.title, number, "pre-header line", line.strip(), str(path.resolve())
+                                    title, number, "pre-header line", line.strip(), source.workbook
                                 ))
-    workbook.close()
-    return [replace(row, workbook=str(path.resolve())) for row in rows], review
+    return [replace(row, workbook=source.workbook) for row in rows], review
 
 
 def _read_log_sheet(path: Path) -> tuple[list[_Row], list[_Row], list[ReviewItem]]:
@@ -384,6 +394,41 @@ def _import_drive_rows(
     return imported
 
 
+def _reload_drive_rows(rows: list[_Row], store: DriveStore, logged_by: Ref, review: list[ReviewItem],
+                       serial_ids: dict[str, str]) -> int:
+    imported = 0
+    timeline: dict[str, list[CustodyEvent]] = defaultdict(list)
+    for row in rows:
+        problems: list[str] = []
+        try:
+            drive, assignment, events = _per_project_facts(row, None, logged_by, problems)
+            if problems:
+                raise ValueError("; ".join(problems))
+        except ValueError as error:
+            review.append(_unreadable(row, [str(error)]))
+            continue
+        if drive.serial in serial_ids:
+            drive = replace(drive, id=serial_ids[drive.serial])
+        if not events:
+            events.append(CustodyEvent(kind=CustodyKind.RECEIVED, on=None, party=None,
+                                       project=Ref(text=row.project), logged_by=logged_by))
+        if row.sheet.strip().upper() == "DEAD DRIVES" or "DEAD DRIVE" in (row.text("REMARKS") or "").upper():
+            events.append(CustodyEvent(kind=CustodyKind.RETIRED, on=None, party=None,
+                                       project=Ref(text=row.project), logged_by=logged_by, reason="DEAD DRIVE"))
+        store.import_row(row.import_key, drive, assignment, [],
+                         source=SourceRow(row.workbook, row.sheet, row.number), deduplicate_assignment=False)
+        held = store.imported_drive(row.import_key)
+        assert held is not None
+        if "T6" in (drive.label or "").upper():
+            store.set_facts(held, {"ownership_known": True})
+        timeline[held].extend(events)
+        imported += 1
+    for drive_id, events in timeline.items():
+        for event in sorted(events, key=lambda e: (e.kind is CustodyKind.RETIRED, e.on or date.min)):
+            store.append_event(drive_id, event)
+    return imported
+
+
 def _unreadable(row: _Row, problems: list[str]) -> ReviewItem:
     return row.review("unreadable", f"{'; '.join(problems)}\n{row.evidence()}")
 
@@ -416,7 +461,7 @@ def _old_new_pairs(rows: list[_Row]) -> dict[int, str]:
     return pairs
 
 
-def _per_project_facts(row: _Row, lookup: Lookup, logged_by: Ref, problems: list[str]) -> _Facts:
+def _per_project_facts(row: _Row, lookup: Lookup | None, logged_by: Ref, problems: list[str]) -> _Facts:
     label = row.text(_LABEL)
     receipt, receipt_on = _receipt(row, problems)
     received = _cell_date(row.cells.get("DATE RECEIVED"), problems) or receipt_on
@@ -425,10 +470,11 @@ def _per_project_facts(row: _Row, lookup: Lookup, logged_by: Ref, problems: list
     receipt = receipt or row.text("DATE RECEIVED") is not None
     was_released = row.text("DATE RELEASED") is not None
     remarks = row.text("REMARKS")
-    recipient = (row.text("PERSON IN CHARGE") or remarks) if was_released else None
+    recipient = ((remarks or row.text("PERSON IN CHARGE")) if lookup is None else
+                 (row.text("PERSON IN CHARGE") or remarks)) if was_released else None
     if recipient == remarks:
         remarks = None
-    project = _project(row.project, lookup)
+    project = _project(row.project, lookup) if lookup is not None else Ref(text=row.project)
     drive = Drive(
         serial=_serial(row),
         brand=row.text("BRAND NAME"),
