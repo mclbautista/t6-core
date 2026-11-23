@@ -132,6 +132,7 @@ _FactsReader = Callable[[_Row, list[str]], _Facts]
 def import_per_project_workbook(
     path: str | Path | SheetSource, store: DriveStore, *, lookup: Lookup, logged_by: Ref,
     reload: bool = False, serial_ids: dict[str, str] | None = None,
+    project_mapping: dict[str, str] | None = None,
 ) -> ImportResult:
     """Import per-project rows, preserving uncertain facts without guessing identity.
 
@@ -141,13 +142,13 @@ def import_per_project_workbook(
     use row receipts and append no duplicate history. See docs/drive-identity.md.
 
     Reload mode accepts normalized serials shared across tabs, keeps each row's
-    Assignment to its tab name as text, and orders all custody events per Drive.
+    Assignment to its approved Project (or tab name as text), and orders all custody events per Drive.
     Its caller owns the replacement transaction and the persistent serial-ID map.
     """
     source = WorkbookSheetSource(path) if isinstance(path, (str, Path)) else path
     rows, review = _read_per_project(source, reload=reload)
     if reload:
-        imported = _reload_drive_rows(rows, store, logged_by, review, serial_ids or {})
+        imported = _reload_drive_rows(rows, store, logged_by, review, serial_ids or {}, project_mapping or {})
         _preserve_exceptions(store, review, rows)
         return ImportResult(imported, tuple(review))
     rows = _mark_receipts(store, rows)
@@ -395,7 +396,8 @@ def _import_drive_rows(
 
 
 def _reload_drive_rows(rows: list[_Row], store: DriveStore, logged_by: Ref, review: list[ReviewItem],
-                       serial_ids: dict[str, str]) -> int:
+                       serial_ids: dict[str, str], project_mapping: dict[str, str]) -> int:
+    from t6.drives.mapping import project_ref
     imported = 0
     timeline: dict[str, list[CustodyEvent]] = defaultdict(list)
     for row in rows:
@@ -409,12 +411,15 @@ def _reload_drive_rows(rows: list[_Row], store: DriveStore, logged_by: Ref, revi
             continue
         if drive.serial in serial_ids:
             drive = replace(drive, id=serial_ids[drive.serial])
+        project = project_ref(row.project, project_mapping)
+        assignment = replace(assignment, project=project)
+        events = [replace(event, project=project) for event in events]
         if not events:
             events.append(CustodyEvent(kind=CustodyKind.RECEIVED, on=None, party=None,
-                                       project=Ref(text=row.project), logged_by=logged_by))
+                                       project=project, logged_by=logged_by))
         if row.sheet.strip().upper() == "DEAD DRIVES" or "DEAD DRIVE" in (row.text("REMARKS") or "").upper():
             events.append(CustodyEvent(kind=CustodyKind.RETIRED, on=None, party=None,
-                                       project=Ref(text=row.project), logged_by=logged_by, reason="DEAD DRIVE"))
+                                       project=project, logged_by=logged_by, reason="DEAD DRIVE"))
         store.import_row(row.import_key, drive, assignment, [],
                          source=SourceRow(row.workbook, row.sheet, row.number), deduplicate_assignment=False)
         held = store.imported_drive(row.import_key)

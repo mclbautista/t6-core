@@ -19,6 +19,7 @@ from t6.verbs import (
     VersionAddInput, VersionLockInput, VersionFindInput, VersionGetInput,
     MediaLinkInput, MediaUnlinkInput, TimelineLinkInput, TimelineRestampInput, TimelineListInput, FrameioProjectInput, MediaListInput, MediaMigrateInput,
     TranscriptCreateInput, TranscriptGetInput, TranscriptSpeakersInput, TranscriptTranslateInput,
+    DriveMappingProposeInput, DriveMappingApplyInput,
     DriveReloadInput, DriveReceiveInput, DriveReleaseInput, DriveReturnInput, DriveRetireInput, DriveAssignInput, DriveUnassignInput,
     DriveAddInput, DriveEditInput, DrivePromoteSerialInput, DriveListInput, DriveGetInput, DriveFindInput, DriveCatalogSnapshotInput, DriveCatalogSnapshotsInput, DriveCatalogDiffInput, DriveCatalogAtInput, DriveShipmentsInput, DriveShipmentInput, DriveExceptionsInput,
     MachineEditInput, MachineListInput, MachineSyncInput,
@@ -162,6 +163,12 @@ class Client:
 
     def drive_reload(self, inputs: DriveReloadInput) -> Result:
         return self.call('drive', 'reload', inputs)
+
+    def drive_mapping_propose(self, inputs: DriveMappingProposeInput) -> Result:
+        return self.call('drive', 'mapping propose', inputs)
+
+    def drive_mapping_apply(self, inputs: DriveMappingApplyInput) -> Result:
+        return self.call('drive', 'mapping apply', inputs)
 
     def drive_receive(self, inputs: DriveReceiveInput) -> Result:
         return self.call('drive', 'receive', inputs)

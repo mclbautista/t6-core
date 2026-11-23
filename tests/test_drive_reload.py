@@ -1,5 +1,6 @@
 """Reload through the verb API; all workbook evidence is synthetic and temporary."""
 import os
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,9 +11,11 @@ from unittest.mock import patch
 from openpyxl import Workbook
 
 from t6.person import People
+from t6.notion.source import NotionSource
+from t6.notion.testing import FakeNotion, project_properties
 from t6.preview import PreviewTokens
-from t6.registry import SqliteProjectRegistry
-from t6.verbs import VERBS, Done, Preview, invoke
+from t6.registry import Rotation, SqliteProjectRegistry
+from t6.verbs import VERBS, Done, Preview, Refused, invoke
 
 
 HEADER = ['HARD DRIVE LABEL', 'SERIAL NUMBER', 'BRAND NAME', 'TOTAL DISK SPACE',
@@ -27,6 +30,10 @@ class DriveReloadTests(unittest.TestCase):
         self.path = self.folder / 'projects.xlsx'
         self.registry = SqliteProjectRegistry(self.folder / 't6.sqlite')
         self.people = People(self.registry, PreviewTokens('test'))
+        self.notion = FakeNotion()
+        self.notion.add_data_source('synthetic-projects')
+        client = self.enterContext(self.notion.client())
+        self.notion_source = NotionSource.from_client(client)
         with self.registry._transaction() as db:
             db.execute("INSERT INTO persons VALUES ('synthetic-keeper', 'staff', '[]', '[]', NULL, 0, 1)")
             db.execute("INSERT INTO person_permissions VALUES ('synthetic-keeper', 'drives')")
@@ -49,7 +56,7 @@ class DriveReloadTests(unittest.TestCase):
         self.assertEqual(len(entries), 1, f'drive {verb} must be registered')
         entry = entries[0]
         return invoke(entry, entry.input_model.model_validate(values), actor='synthetic-keeper',
-                      people=self.people, open_notion=lambda _: None)
+                      people=self.people, open_notion=lambda _: None, notion_source=self.notion_source)
 
     def reload(self, key: str = 'reload-one') -> dict[str, Any]:
         values = {'workbook': str(self.path), 'idempotency_key': key}
@@ -178,6 +185,128 @@ class DriveReloadTests(unittest.TestCase):
         (drive,) = self.drives()
         self.assertEqual(len(self.call('get', drive=drive['id']).result['assignments']), 2)
         self.assertEqual(report['assignments'], 2)
+
+    def test_unmapped_project_stays_text_and_is_listed_once_in_report(self) -> None:
+        self.workbook({'SYNTHETIC UNMAPPED': [HEADER, ['Synthetic first', 'SAMPLE-FIRST'],
+                                             ['Synthetic second', 'SAMPLE-SECOND']]})
+        report = self.reload()
+        self.assertEqual(report['unmapped_projects'], ['SYNTHETIC UNMAPPED'])
+        for drive in self.drives():
+            detail = self.call('get', drive=drive['id']).result
+            self.assertEqual(detail['assignments'][0]['project'],
+                             {'page_id': None, 'text': 'SYNTHETIC UNMAPPED'})
+
+    def test_applied_mapping_survives_reopen_and_reloads_with_normalized_names(self) -> None:
+        project = self.registry.register(actor='setup', idempotency_key='synthetic-mapping').project.id  # type: ignore[union-attr]
+        mapping = self.folder / 'mapping.json'
+        mapping.write_text(json.dumps([{'name': 'SYNTHETIC, MAPPED', 'project': project, 'certain': True}]))
+        self.workbook({'SYNTHETIC MAPPED': [HEADER, ['Synthetic mapped', 'SAMPLE-MAPPED', None, None, None,
+                                                    date(2026, 2, 1), date(2026, 3, 1), 'Synthetic recipient']],
+                       'SYNTHETIC,MAPPED': [HEADER, ['Synthetic reused', 'SAMPLE-MAPPED']]})
+        values = {'file': str(mapping), 'idempotency_key': 'apply-mapping'}
+        preview = self.call('mapping apply', **values)
+        self.assertIsInstance(preview, Preview)
+        self.assertEqual(self.reload()['unmapped_projects'], ['SYNTHETIC MAPPED', 'SYNTHETIC,MAPPED'])
+        self.assertIsInstance(self.call('mapping apply', **values, confirm=preview.token), Done)
+        for number in range(2):
+            self.registry = SqliteProjectRegistry(self.folder / 't6.sqlite')
+            self.people = People(self.registry, PreviewTokens('test'))
+            self.assertEqual(self.reload(f'mapped-reload-{number}')['unmapped_projects'], [])
+            (drive,) = self.drives()
+            detail = self.call('get', drive=drive['id']).result
+            self.assertEqual([a['project'] for a in detail['assignments']],
+                             [{'page_id': project, 'text': None}] * 2)
+            self.assertEqual([e['project'] for e in detail['events']],
+                             [{'page_id': project, 'text': None}] * 3)
+
+    def test_propose_lists_sheet_and_tracker_names_without_storing_mapping(self) -> None:
+        def register(name: str, code: str) -> str:
+            page = self.notion.add_page('synthetic-projects', project_properties(name=name))
+            return self.registry.register(actor='setup', idempotency_key=code, notion_page_id=page['id'],
+                                          code=code, rotation=Rotation.IN).project.id  # type: ignore[union-attr]
+
+        exact = register('Synthetic Aurora', 'SYN-A')
+        coded = register('Synthetic Borealis', 'SYN-B')
+        fuzzy = register('Synthetic Cobalt', 'SYN-C')
+        unbound = self.registry.register(actor='setup', idempotency_key='synthetic-unbound',
+                                         code='SYN-UNBOUND', rotation=Rotation.IN).project.id  # type: ignore[union-attr]
+        register('Synthetic Unrelated', 'Synthetic Aurora')  # exact name must beat a code
+        self.notion.add_page('synthetic-projects', project_properties(name='ZZZ UNREGISTERED ZZZ'))
+        names = ['Synthetic Aurora', 'SYN-B', 'Synthetic Cobxxx', 'Synthetic Cobal',
+                 'ZZZZZZZZZZ', 'ZZZ UNREGISTERED ZZZ', 'SYN-UNBOUND']
+        self.workbook({name: [HEADER, [f'Synthetic label {number}', f'SAMPLE-{number}']]
+                       for number, name in enumerate(names)})
+        tracker = self.folder / 'tracker.xlsx'
+        book = Workbook()
+        sheet = book.active
+        assert sheet is not None
+        sheet.title = 'SYNTHETIC MONTH'
+        sheet.append(['DATE', 'PROJECT NAME', 'LABEL', 'IN/OUT', 'RECEIVED BY'])
+        sheet.append([date(2026, 1, 1), 'Synthetic Aurora', 'Synthetic tracker', 'OUT', 'Synthetic recipient'])
+        sheet.append([date(2026, 1, 2), 'SYN-C', 'Synthetic tracker', 'IN'])
+        book.save(tracker)
+        book.close()
+        sources = self.folder / 'sources.json'
+        sources.write_text(json.dumps({'projects': 'synthetic-projects'}))
+        output = self.folder / 'proposal.json'
+        result = self.call('mapping propose', workbook=str(self.path), tracker=str(tracker),
+                           data_sources=str(sources), file=str(output))
+        self.assertIsInstance(result, Done)
+        entries = json.loads(output.read_text())
+        self.assertEqual(entries, result.result['mapping'])
+        self.assertEqual({e['name']: (e['project'], e['certain']) for e in entries},
+                         {'Synthetic Aurora': (exact, True), 'SYN-B': (coded, True),
+                          'Synthetic Cobxxx': (fuzzy, False), 'Synthetic Cobal': (fuzzy, True),
+                          'ZZZZZZZZZZ': (None, False), 'ZZZ UNREGISTERED ZZZ': (None, False),
+                          'SYN-C': (fuzzy, True), 'SYN-UNBOUND': (unbound, True)})
+        self.assertEqual(self.reload()['unmapped_projects'], sorted(names))
+
+    def test_mapping_commands_are_available_as_nested_operator_commands(self) -> None:
+        import argparse
+        from t6.verbs import add_parsers
+        parser = argparse.ArgumentParser()
+        with patch('t6.verbs.VERBS', tuple(v for v in VERBS if v.noun == 'drive')):
+            add_parsers(parser.add_subparsers(dest='command', required=True))
+        args = parser.parse_args(['drive', 'mapping', 'propose', '--workbook', str(self.path),
+                                  '--file', str(self.folder / 'mapping.json'), '--data-sources', 'sources.json'])
+        self.assertEqual(args.registered_verb.verb, 'mapping propose')
+        args = parser.parse_args(['drive', 'mapping', 'apply', '--file', str(self.folder / 'mapping.json'),
+                                  '--idempotency-key', 'synthetic-apply'])
+        self.assertEqual(args.registered_verb.verb, 'mapping apply')
+
+    def test_report_includes_unmapped_names_even_when_their_rows_cannot_load(self) -> None:
+        self.workbook({'SYNTHETIC UNREADABLE': [HEADER, [None, None, None, 'unreadable capacity']]})
+        report = self.reload()
+        self.assertEqual(report['drives'], 0)
+        self.assertEqual(report['unmapped_projects'], ['SYNTHETIC UNREADABLE'])
+
+    def test_apply_refuses_conflicting_or_unregistered_projects_without_partial_writes(self) -> None:
+        first = self.registry.register(actor='setup', idempotency_key='synthetic-first').project.id  # type: ignore[union-attr]
+        second = self.registry.register(actor='setup', idempotency_key='synthetic-second').project.id  # type: ignore[union-attr]
+        self.workbook({'SYNTHETIC CHECKED': [HEADER, ['Synthetic checked', 'SAMPLE-CHECKED']]})
+        mapping = self.folder / 'mapping.json'
+        for number, (name, project, rule) in enumerate([
+                ('SYNTHETIC, CHECKED', second, 'mapping'),
+                ('SYNTHETIC OTHER', 't6p_' + '0' * 24, 'project')]):
+            with self.subTest(rule=rule):
+                mapping.write_text(json.dumps([{'name': 'SYNTHETIC CHECKED', 'project': first},
+                                                {'name': name, 'project': project}]))
+                refused = self.call('mapping apply', file=str(mapping), idempotency_key=f'invalid-{number}')
+                self.assertIsInstance(refused, Refused)
+                self.assertEqual(refused.rule, rule)
+                self.assertEqual(self.reload(f'after-invalid-{number}')['unmapped_projects'], ['SYNTHETIC CHECKED'])
+
+    def test_apply_refuses_a_mapping_changed_after_preview(self) -> None:
+        project = self.registry.register(actor='setup', idempotency_key='synthetic-checked').project.id  # type: ignore[union-attr]
+        self.workbook({'SYNTHETIC CHECKED': [HEADER, ['Synthetic checked', 'SAMPLE-CHECKED']]})
+        mapping = self.folder / 'mapping.json'
+        mapping.write_text(json.dumps([{'name': 'SYNTHETIC CHECKED', 'project': project}]))
+        values = {'file': str(mapping), 'idempotency_key': 'changed-mapping'}
+        preview = self.call('mapping apply', **values)
+        self.assertIsInstance(preview, Preview)
+        mapping.write_text(json.dumps([{'name': 'SYNTHETIC DIFFERENT', 'project': project}]))
+        self.assertIsInstance(self.call('mapping apply', **values, confirm=preview.token), Refused)
+        self.assertEqual(self.reload()['unmapped_projects'], ['SYNTHETIC CHECKED'])
 
     def test_release_uses_remarks_recipient_when_person_in_charge_is_also_present(self) -> None:
         self.workbook({'SYNTHETIC RELEASE': [[*HEADER, 'PERSON IN CHARGE'],

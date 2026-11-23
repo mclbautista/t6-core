@@ -400,6 +400,7 @@ _MIGRATIONS = (
     CREATE INDEX IF NOT EXISTS delivery_drives_by_drive ON delivery_drives (drive_id)"""),
     (51, False, """CREATE TABLE drive_serial_ids (serial TEXT PRIMARY KEY, drive_id TEXT NOT NULL);
     CREATE TABLE drive_reload_reports (id INTEGER PRIMARY KEY, at REAL NOT NULL, actor TEXT NOT NULL, data TEXT NOT NULL)"""),
+    (52, False, """CREATE TABLE drive_project_mapping (name TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id))"""),
 )
 
 
