@@ -2149,6 +2149,70 @@ def timeline_list(inputs: TimelineListInput, open_notion: Callable[..., Any]) ->
         return Refused(rule='project', reason=str(error))
 
 
+class DriveMappingProposeInput(BaseModel):
+    workbook: str
+    tracker: str | None = None
+    data_sources: Path
+    file: str
+
+
+class DriveMappingApplyInput(BaseModel):
+    file: str
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class DriveMappingEntry(BaseModel):
+    name: str
+    project: str | None
+    certain: bool
+    project_name: str | None = None
+
+
+class DriveMappingOutput(BaseModel):
+    mapping: list[DriveMappingEntry]
+
+
+def drive_mapping_propose(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.cli import TOKEN_VARIABLE, _read_data_sources
+    from t6.drives.mapping import propose_mapping
+    from t6.drives.sheets import WorkbookSheetSource
+    from t6.notion.reads import ProjectReader
+    from t6.registry import ProjectRefs
+    assert isinstance(inputs, DriveMappingProposeInput)
+    token = os.environ.get(TOKEN_VARIABLE)
+    if _notion_source.get() is None and not token:
+        return Refused(rule='config', reason=f'Set {TOKEN_VARIABLE}')
+    try:
+        refs = ProjectRefs(_people().registry)
+        projects = tuple(refs.identified(project) for project in ProjectReader(
+            _verb_notion_source(open_notion, token or ''), _read_data_sources(inputs.data_sources)['projects']).list())
+        registered = {project.t6_id: project for project in projects if project.t6_id}
+        for project in _people().registry.list_projects():
+            if project.id not in registered:
+                registered[project.id] = Project(page_id=project.id, name='', t6_id=project.id,
+                                                  project_code=project.code, rotation=project.rotation.value)
+        mapping = propose_mapping(WorkbookSheetSource(inputs.workbook),
+                                  WorkbookSheetSource(inputs.tracker) if inputs.tracker else None,
+                                  tuple(registered.values()), inputs.file)
+        return Done(result={'mapping': mapping})
+    except (OSError, ValueError) as error:
+        return Refused(rule='mapping', reason=str(error))
+
+
+def drive_mapping_apply(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.drives.mapping import apply_mapping
+    if not os.environ.get('T6_PREVIEW_SIGNING_KEY'):
+        return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
+    assert isinstance(inputs, DriveMappingApplyInput)
+    people = _people()
+    try:
+        return apply_mapping(people.registry, people.tokens, inputs.file, actor=_actor.get(),
+                             idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
+    except (OSError, ValueError) as error:
+        return Refused(rule='mapping', reason=str(error))
+
+
 class DriveReloadInput(BaseModel):
     workbook: str
     idempotency_key: str | None = None
@@ -2169,6 +2233,7 @@ class DriveReloadOutput(BaseModel):
     drives_without_serial: int
     without_serial: list[DriveWithoutSerial]
     exceptions: int
+    unmapped_projects: list[str]
 
 
 def drive_reload(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
@@ -2765,6 +2830,8 @@ VERBS = (
     Verb('transcript', 'speakers', 'Name Transcript speakers', (), TranscriptSpeakersInput, TranscriptCreateOutput, 'staff', 'Preview and confirm speaker names.', api_read),
     Verb('transcript', 'translate', 'Translate a Transcript', (), TranscriptTranslateInput, TranscriptCreateOutput, 'staff', 'Preview and confirm translation.', api_read),
     Verb('transcript', 'get', 'Get a Transcript', (), TranscriptGetInput, TranscriptGetOutput, 'reader', 'Read progress and summary.', transcript_get, read_only=True),
+    Verb('drive', 'mapping propose', 'Write proposed sheet Project mappings for review', (), DriveMappingProposeInput, DriveMappingOutput, 'drives', 'Propose exact names, then codes, then fuzzy names; never store mappings.', drive_mapping_propose),
+    Verb('drive', 'mapping apply', 'Store a checked sheet Project mapping file', (), DriveMappingApplyInput, DriveMappingOutput, 'drives', 'Preview and confirm mappings to registered T6 Project IDs. Null removes a mapping.', drive_mapping_apply),
     Verb('drive', 'reload', 'Replace Drive data from the per-project sheet', (), DriveReloadInput, DriveReloadOutput, 'drives', 'Preview and confirm a complete reload, preserving accepted serial IDs.', drive_reload),
     Verb('drive', 'receive', 'Receive a Drive into custody', (), DriveReceiveInput, DriveWriteOutput, 'drives', 'Preview and confirm; appends a received event. Refused for a Drive in custody or retired.', drive_write),
     Verb('drive', 'release', 'Release Drives in one shipment', (), DriveReleaseInput, DriveWriteOutput, 'drives', 'Preview and confirm; one released event per Drive, grouped by shipment, with the Drives\' facts kept as they are now. Optional reason and free-text recipient. Refused whole if a Drive is released or retired.', drive_write),
@@ -3052,6 +3119,20 @@ def add_parsers(commands: Any) -> None:
                 alias_parser.add_argument('--idempotency-key')
                 alias_parser.add_argument('--confirm')
                 alias_parser.set_defaults(registered_verb=entry, gate=gate)
+        if entry.handler in (drive_mapping_propose, drive_mapping_apply):
+            if 'drive mapping' not in nouns:
+                nouns['drive mapping'] = parser.add_parser('mapping', help='Sheet Project mappings').add_subparsers(dest='drive_mapping_verb', required=True)
+            parser = nouns['drive mapping'].add_parser(entry.verb.split()[1], help=entry.description)
+            parser.add_argument('--file', required=True)
+            if entry.handler is drive_mapping_propose:
+                parser.add_argument('--workbook', required=True)
+                parser.add_argument('--tracker')
+                parser.add_argument('--data-sources', type=Path, required=True)
+            else:
+                parser.add_argument('--idempotency-key')
+                parser.add_argument('--confirm')
+            parser.set_defaults(registered_verb=entry)
+            continue
         if entry.handler is drive_write:
             parser = parser.add_parser(entry.verb, help=entry.description)
             if entry.verb == 'release':

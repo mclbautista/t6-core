@@ -8,6 +8,7 @@ from typing import Any
 from t6 import verbflow
 from t6.drives import DriveStatus, Ref
 from t6.drives.importer import import_per_project_workbook
+from t6.drives.mapping import load_mapping, project_key, project_names
 from t6.drives.sheets import SheetSource
 from t6.drives.sqlite import SqliteDriveStore
 from t6.lookup import Index, Lookup
@@ -45,7 +46,9 @@ def reload_drives(registry: SqliteProjectRegistry, tokens: PreviewTokens, source
             db.execute(f'DELETE FROM {table}')
         for _, sql in triggers:
             db.execute(sql)
-        result = import_per_project_workbook(source, store, lookup=Lookup(Index()), logged_by=Ref(text=actor), reload=True, serial_ids=serial_ids)
+        mapping = load_mapping(db)
+        result = import_per_project_workbook(source, store, lookup=Lookup(Index()), logged_by=Ref(text=actor), reload=True,
+                                             serial_ids=serial_ids, project_mapping=mapping)
         db.execute('INSERT OR IGNORE INTO drive_serial_ids SELECT serial, id FROM drives WHERE serial IS NOT NULL')
         drives = store.list_drives()
         statuses = [store.status(d.id) for d in drives]
@@ -54,7 +57,9 @@ def reload_drives(registry: SqliteProjectRegistry, tokens: PreviewTokens, source
                                   'released': statuses.count(DriveStatus.RELEASED), 'retired': statuses.count(DriveStatus.RETIRED),
                                   'drives_without_serial': sum(d.serial is None for d in drives),
                                   'without_serial': [{'id': d.id, 'label': d.label} for d in drives if d.serial is None],
-                                  'exceptions': len(store.exceptions())}
+                                  'exceptions': len(store.exceptions()),
+                                  'unmapped_projects': sorted(name for name in project_names(source)
+                                                              if project_key(name) not in mapping)}
         db.execute('INSERT INTO drive_reload_reports (at, actor, data) VALUES (?, ?, ?)',
                    (registry._clock(), actor, json.dumps(report)))
         return verbflow.finish(db, request, report)
