@@ -2,6 +2,8 @@
 
 Date: 2026-11-15. Status: accepted. Source: spec #178, Concern grill amendments.
 
+Amended by [ADR 0009](0009-recording-channel.md) for TRANSMITTAL, the configured Drive recording channel.
+
 ## Context
 
 T6 links Telegram chats and topics to Projects (ADR 0004). Those chats hold
