@@ -81,6 +81,33 @@ Modelled in `t6.drives`.
   no Project. Any other holder question goes to the exception queue with the
   page ID.
 
+### Drive recording and reloads
+
+- **Movement**: one IN or OUT of one Drive, or an unresolved label from a
+  loaded row, on a date, with the person as typed, recorder when known, Place,
+  Project and origin. It is append-only; a correction is a new entry.
+- **Movement log**: the searchable history of Movements, including loaded
+  movements that cannot be tied with certainty to a Drive.
+- **Capture**: a recording-channel post kept before reading or matching it,
+  with its chat and message IDs, sender Telegram user ID, post time, text and
+  photo. It is the source of the Movements resolved from that post.
+- **Recording channel**: the explicitly configured Telegram chat, TRANSMITTAL,
+  whose drive posts are recording input under [ADR 0009](docs/adr/0009-recording-channel.md).
+  QR labels are not used for recording.
+- **Reload**: a complete replacement of Drive data from the source sheets,
+  including Assignments, custody events, shipments, the Movement log,
+  exceptions and Captures, preserving each accepted serial's Drive ID.
+- **Reload report**: the account of a Reload's rows read, Drives, Project uses,
+  matched and unmatched movements, exceptions and unmatched Project names.
+- **Practice mode**: the period before Cutover when recordings are practice
+  records, reads and replies say "Practice", and the next Reload wipes them.
+- **Cutover**: the switch to t6 as the only Drive record: one final Reload,
+  the end of Practice mode, source sheets made read-only, and no further
+  Reloads.
+- **Place**: a Drive's in-office storage location: TABLE, CABINET, SHELF, BOX,
+  or none when unrecorded. An editor taking a Drive is an OUT, even when the
+  editor stays in the office.
+
 ## Bays and Bookings
 
 A **Bay** (`t6b_`) is a bookable place, today a row of the Notion Bays
