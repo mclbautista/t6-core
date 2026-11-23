@@ -839,6 +839,19 @@ def main(
             def unavailable_subscriptions(job: WorkerJob) -> bool:
                 raise RuntimeError('Chat subscriptions need a configured gateway')
             queue_handlers = {**queue_handlers, "abang_nudge": unavailable_abang_nudge, "chat_subscriptions": unavailable_subscriptions}
+        if settings.queue == 'main' and environ.get('T6_DATABASE') and environ.get('T6_DRIVE_PROJECT_SPREADSHEET_ID'):
+            from t6.drives.nightly import NightlyReload
+            from t6.preview import PreviewTokens
+            from t6.registry.sqlite import SqliteProjectRegistry
+            from t6.worker.internal_queue import InternalJobQueue
+
+            if not environ.get('T6_PREVIEW_SIGNING_KEY'):
+                raise ConfigError('missing environment variable: T6_PREVIEW_SIGNING_KEY')
+            drive_registry = SqliteProjectRegistry(environ['T6_DATABASE'])
+            nightly = NightlyReload(drive_registry, PreviewTokens(environ['T6_PREVIEW_SIGNING_KEY']),
+                                    InternalJobQueue(drive_registry), environ=environ)
+            nightly.schedule()
+            queue_handlers = {**queue_handlers, 'drive.reload': nightly.handle}
         if settings.queue == "main" and environ.get("T6_DATABASE") and environ.get("T6_GATEWAY_URL") and environ.get("T6_GATEWAY_SECRET"):
             from t6.registry.sqlite import SqliteProjectRegistry
             from t6.worker.linked_chats import LinkedChats

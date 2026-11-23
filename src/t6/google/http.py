@@ -71,12 +71,12 @@ class ServiceAccount:
         except (ValueError, TypeError) as error:
             raise ValueError('the Google credential has no usable private key') from error
 
-    def assertion(self, now: float) -> str:
+    def assertion(self, now: float, scope: str = SCOPE) -> str:
         from cryptography.hazmat.primitives import hashes
         from cryptography.hazmat.primitives.asymmetric import padding
         issued = int(now)
         header = _b64(json.dumps({'alg': 'RS256', 'typ': 'JWT'}, separators=(',', ':')).encode())
-        claims = _b64(json.dumps({'iss': self.email, 'scope': SCOPE, 'aud': self.token_uri, 'iat': issued, 'exp': issued + TOKEN_LIFETIME}, separators=(',', ':')).encode())
+        claims = _b64(json.dumps({'iss': self.email, 'scope': scope, 'aud': self.token_uri, 'iat': issued, 'exp': issued + TOKEN_LIFETIME}, separators=(',', ':')).encode())
         signature = self._key().sign(f'{header}.{claims}'.encode(), padding.PKCS1v15(), hashes.SHA256())
         return f'{header}.{claims}.{_b64(signature)}'
 

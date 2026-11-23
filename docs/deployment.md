@@ -344,3 +344,39 @@ A person who changes a Booking event in Google Calendar changes the Booking, thr
 - Known limit: the Google Events resource names no last editor, so the audit trail says "Google Calendar", not who. Open owner question: accept this, or make the calendars view-only and revert every edit made in Google Calendar.
 
 Workers can also poll internal jobs by setting `T6_DATABASE` to the local t6 SQLite database path. The worker polls that job table and its configured VPS queue in turn, and looks at the job table every 0.25 s while it waits between polls; the database must be shared with internal job submitters. Back up the database before upgrading. The main worker also requires `T6_GATEWAY_URL` and `T6_GATEWAY_SECRET` for linked-chat subscriptions and pulls; the secret must authenticate the `t6core` module. It reconciles subscriptions on startup and each worker poll, and retries gateway failures on a later poll. It stores message IDs and flags, and member IDs and presence, but no message content. The main worker with `T6_DATABASE` also handles `frameio.share_viewed`: route the Frame.io `share.viewed` webhook (`/webhook/frameio/shares`) to the `main` queue. The job carries the webhook body; a view of a share recorded on a Delivery writes one Activity entry per event, and any other share is dropped. The Frame.io worker never opens the t6 database.
+
+## Drive sheets, practice and cutover
+
+The API and main worker share these settings (keys only; credentials and sheet IDs
+stay outside this repository):
+
+- `T6_DRIVE_PROJECT_SPREADSHEET_ID`: the per-project source spreadsheet.
+- `T6_DRIVE_TRACKER_SPREADSHEET_ID`: the tracker source spreadsheet.
+- `GOOGLE_APPLICATION_CREDENTIALS`: the mounted service account key file.
+- `T6_DATABASE`: the shared t6 SQLite database.
+- `T6_PREVIEW_SIGNING_KEY`: the shared preview signing key.
+
+Install the `drives` and `google` extras, enable the Sheets API, and share both
+spreadsheets with the service account as viewer. Sheets requests use only the
+`spreadsheets.readonly` scope. No source-sheet writes are made.
+
+`drive reload` without workbook arguments reads both configured spreadsheets;
+`--workbook` and optional `--tracker` keep the existing local workbook workflow.
+Preview, then confirm with the same idempotency key. Existing `drives` permission
+allows on-demand reloads. Practice mode is stored in the database, initially on;
+Drive, Movement and Swing reads and successful replies include `practice`, and
+reload replaces the practice Drive data.
+
+With the project spreadsheet configured, the main worker queues `drive.reload`
+at midnight in `Asia/Manila`, once per date. Each run queues the next night before
+reading, and startup restores the schedule without duplicating it. A failed read
+keeps the previous load; inspect `queue failed` for the failure. The nightly job
+uses the same preview/confirm reload workflow.
+
+An operator runs `drive cutover`, previews the final reload, then confirms it with
+the same idempotency key. The final replacement and the switch out of practice
+are atomic. A failed final read leaves practice and the nightly job enabled.
+After success, replies carry `practice: false` and `nightly_enabled: false`;
+`drive reload` refuses with rule `cutover`, and already queued nightly jobs finish
+without reading or replacing data. Make the source sheets read-only for staff as
+the manual cutover step; the adapter has no write scope to change their sharing.
