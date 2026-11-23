@@ -479,6 +479,36 @@ class VerbAPITests(unittest.TestCase):
             status, _ = self.request('/v1/jo/raise', {'message': {**base, 'posted_at': '2026-11-12T09:00:00'}, 'fields': {}})
             self.assertEqual(status, 422)
 
+    def test_job_order_raise_preview_returns_cc_ids_with_standing_cc(self) -> None:
+        _, project, person, _ = self.message_setup()
+        standing = '11111111-1111-1111-1111-111111111111'
+        extra = '22222222-2222-2222-2222-222222222222'
+        message = {'header_text': 'ORC - TO - JO #063', 'deadline_text': '', 'posted_at': '2026-11-12T09:00:00+08:00',
+                   'chat_id': -100123, 'message_id': 457, 'assignees': [person], 'cc': [extra], 'project': project}
+        with patch.dict(os.environ, {'T6_NOTION_TOKEN': 'secret', 'T6_STANDING_CC': standing}):
+            preview, done = self.raise_from_message(message)
+        self.assertEqual(preview['plan']['cc_ids'], [extra, standing])
+        self.assertEqual(preview['plan']['fields']['cc_ids'], [extra, standing])
+        self.assertEqual(done['result']['cc_ids'], [extra, standing])
+
+    def test_job_order_raise_accepts_unbound_contact_page_id_for_end_of_shift(self) -> None:
+        from t6.notion.generated import ContactsRow
+        from t6.notion.testing import select, title
+
+        fake, project, _, _ = self.message_setup()
+        unbound = fake.add_page('contacts', {ContactsRow.notion_name('name'): title('Secret Freelancer'), ContactsRow.notion_name('end_of_shift'): select('6:00 PM')})
+        no_shift = fake.add_page('contacts', {ContactsRow.notion_name('name'): title('No Shift Freelancer')})
+        base = {'header_text': 'ORC - TO - JO #064', 'deadline_text': 'end of shift', 'posted_at': '2026-11-12T09:00:00+08:00',
+                'chat_id': -100123, 'project': project}
+        with patch.dict(os.environ, {'T6_NOTION_TOKEN': 'secret'}):
+            preview, _ = self.raise_from_message({**base, 'message_id': 458, 'assignees': [unbound['id']]})
+            self.assertEqual((preview['plan']['deadline'], preview['plan']['deadline_source']), ('2026-11-12T18:00:00+08:00', 'shift'))
+            fallback, _ = self.raise_from_message({**base, 'message_id': 459, 'assignees': [no_shift['id']]})
+            self.assertEqual((fallback['plan']['deadline'], fallback['plan']['deadline_source']), ('2026-11-12T23:59:00+08:00', 'fallback'))
+            self.assertNotIn('No Shift Freelancer', json.dumps(fallback['plan']['deadline_findings']))
+            missing = self.raise_from_message({**base, 'message_id': 460, 'assignees': ['99999999-9999-9999-9999-999999999999']})[0]
+            self.assertEqual((missing['outcome'], missing['rule']), ('refused', 'person'))
+
     def test_department_aliases_setting_adds_an_alias(self) -> None:
         _, project, _, _ = self.message_setup()
         message = {'header_text': 'ORC - ED - JO #7', 'posted_at': '2026-11-12T09:00:00+08:00', 'chat_id': 1, 'message_id': 2, 'project': project}

@@ -242,6 +242,23 @@ class MeetingNotesVerbTests(unittest.TestCase):
             self.assertEqual(result.rule, "permission")
         self.assertEqual(len(self.audit()), 1)
 
+    def test_append_idempotency_key_replays_conflicts_and_refuses_blank(self) -> None:
+        saved = self.create()
+        calls = self.counting("append_block_children")
+        first = self.reports.meeting_notes_append(MeetingNotesAppendInput(note=saved["page_id"], blocks=[block("Once")], idempotency_key="append-1"))
+        again = self.reports.meeting_notes_append(MeetingNotesAppendInput(note=saved["page_id"], blocks=[block("Once")], idempotency_key="append-1"))
+        assert isinstance(first, Done) and isinstance(again, Done)
+        self.assertEqual(again.result, first.result)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(self.listed(title="Weekly minutes")[0]["body"]), 1)
+        self.assertEqual([row[0] for row in self.audit()].count("meeting_note_append"), 1)
+        conflict = self.reports.meeting_notes_append(MeetingNotesAppendInput(note=saved["page_id"], blocks=[block("Different")], idempotency_key="append-1"))
+        assert isinstance(conflict, Refused)
+        self.assertEqual(conflict.rule, "idempotency_key")
+        blank = self.reports.meeting_notes_append(MeetingNotesAppendInput(note=saved["page_id"], blocks=[block("Blank")], idempotency_key="   "))
+        assert isinstance(blank, Refused)
+        self.assertEqual(blank.rule, "idempotency_key")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -117,6 +117,18 @@ class CheckConsumerTests(unittest.TestCase):
                 code, report = run_check({"config.yaml": f"key: {key}\n"})
                 self.assertEqual((code, report["findings"][0]["rule"]), (1, "credential"))
 
+    def test_mixed_t6_import_reports_both_rules_and_cannot_bypass_allowlist(self) -> None:
+        code, report = run_check({"a.py": "from t6 import domain, llm\n"})
+        self.assertEqual(code, 1)
+        self.assertEqual([(f["rule"], f["detail"]) for f in report["findings"]], [("adapter-import", "imports from t6"), ("t6-import", "imports t6.domain")])
+        code_ok, report_ok = run_check({"a.py": "from t6 import client, llm\n"})
+        self.assertEqual(code_ok, 1)
+        self.assertEqual([(f["rule"], f["detail"]) for f in report_ok["findings"]], [("adapter-import", "imports from t6")])
+        entry = {"name": "migration", "file": "a.py", "rule": "adapter-import", "expires": "9999-12-31"}
+        code_bypass, report_bypass = run_check({"a.py": "from t6 import domain, llm\n", ".t6-consumer-allowlist.json": json.dumps([entry])})
+        self.assertEqual(code_bypass, 1)
+        self.assertEqual([(f["rule"], f["detail"]) for f in report_bypass["findings"]], [("t6-import", "imports t6.domain")])
+
     def test_every_notion_credential_name_fails(self) -> None:
         for key in ("NOTION_API_KEY", "NOTION_TOKEN", "T6_NOTION_API_KEY", "T6_NOTION_TOKEN"):
             with self.subTest(key=key):

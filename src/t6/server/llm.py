@@ -163,7 +163,7 @@ class LLMService:
         if provider is None:
             return Refused(rule='config', reason='Decisions provider is not configured')
         if inputs.model_hint and inputs.model_hint != provider.model:
-            return Refused(rule='policy', reason='Model is not allowed', failure='policy')
+            return Refused(rule='policy', reason=f'Model is not allowed; allowed: {provider.model}', failure='policy')
         if inputs.question.count('{candidate}') != 1:
             return Refused(rule='template', reason='Question must contain exactly one {candidate} marker')
         if set(inputs.criteria) != {'match', 'maybe', 'no'}:
@@ -432,7 +432,8 @@ class LLMService:
             return Refused(rule='schema', reason='Example output does not match the schema')
         selected = next(((name, p) for name, p in self.providers.items() if p.model == inputs.model_hint), None) if inputs.model_hint else self._provider_for_task(inputs.task_name)
         if selected is None:
-            return Refused(rule='policy', reason='Model is not allowed', failure='policy')
+            allowed = ', '.join(dict.fromkeys(p.model for p in self.providers.values()))
+            return Refused(rule='policy', reason=f'Model is not allowed; allowed: {allowed}' if allowed else 'Model is not allowed', failure='policy')
         name, provider = selected
         meta['provider'] = name
         if inputs.temperature_zero and isinstance(provider, OpenAIChat):

@@ -1102,8 +1102,8 @@ an existing body in chunks of 100 and raises `NotionError` when Notion refuses.
 The API has four write verbs, role `minutes` (grant it to one service in
 `T6_API_SERVICE_PERMISSIONS`; it opens only these four): `meeting-notes create`
 (`title`, `meeting_date`, `project_ids` as T6 IDs or Notion page IDs,
-`attendee_ids` as Notion user IDs, `blocks`), `append` (`note`, `blocks`),
-`trash` (`note`) and `mark-sent` (`note`, optional `at`, default now in Manila).
+`attendee_ids` as Notion user IDs, `blocks`), `append` (`note`, `blocks`,
+optional `idempotency_key`), `trash` (`note`) and `mark-sent` (`note`, optional `at`, default now in Manila).
 Body blocks have the shape `meeting-notes list` returns (`kind`, `text`,
 `spans`, `checked`, `children`); the kinds are `paragraph`, `heading_1`,
 `heading_2`, `heading_3`, `bulleted_list_item`, `numbered_list_item`, `to_do`
@@ -1644,7 +1644,8 @@ call `jo find` with the Telegram Key, or with `chat_id` and `message_id`.
 Over the API an app sends what a message says and the API applies every rule.
 Give `message` beside `fields` (no `file`): `header_text` and `deadline_text` as
 posted (either may be empty), `posted_at` (with its time zone), `chat_id` and
-`message_id` (both required, else rule `input`), `assignees` (T6 Person IDs),
+`message_id` (both required, else rule `input`), `assignees` (T6 Person IDs or
+Contact page IDs), optional `cc` (T6 Person IDs or Contact page IDs),
 `project` (a T6 Project ID or page ID, or empty with `no_project`), and
 optionally `department_text` (used only when the header has no Department) and
 `number_text` (used only when the header does not parse). The API builds the
@@ -1659,7 +1660,8 @@ from `number_text`. An unknown Department is not a refusal either: none is
 written and the reply has a `department_findings` entry. The preview `plan` (and
 the confirm result) return `name`, `jo_number`, `department`, `deadline`,
 `deadline_source` (`stated`, `shift`, `fallback`, `blank`), `deadline_findings`
-(code and params), `department_findings`, `telegram_key` and `duplicate_key`;
+(code and params), `department_findings`, `telegram_key`, `duplicate_key` and
+`cc_ids`;
 the confirm writes exactly these. `jo_id` is `null` in the preview and set at
 confirm. `T6_DEPARTMENT_ALIASES` (a JSON object) is merged over the default
 alias map `{"TO": "TOC"}`.
