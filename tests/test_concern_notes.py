@@ -127,6 +127,22 @@ class ConcernNotesTests(unittest.TestCase):
         self.assertEqual(len(calls), 6)
         self.assertEqual(ConcernScanner(self.store).changes(self.project, '2026-01-01'), [])
 
+    def test_an_invalid_llm_reply_is_asked_three_times_not_forever(self) -> None:
+        # The reply failed the schema (not refused): it counts as a rejected answer, so the daily scan stops after MAX_ATTEMPTS (#504).
+        from types import SimpleNamespace
+        from t6.concern_task import classify
+        calls: list[int] = []
+
+        class Invalid:
+            def run(self, inputs: object, *, actor: str, registry: object) -> Done:
+                calls.append(1)
+                return Done(result=SimpleNamespace(output=None, output_valid=False))
+        line = [{'text': 'Waiting on client', 'as_of': '2026-11-01'}]
+        for _ in range(6):
+            ConcernScanner(self.store).process_notes(self.project, 'coordinator', line, lambda payload: classify(Invalid(), payload, actor='coordinator', registry=self.registry))
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(ConcernScanner(self.store).changes(self.project, '2026-01-01'), [])
+
     def test_a_line_matched_to_a_concern_with_a_person_decision_is_sent_once(self) -> None:
         self.process('Waiting on client', '2026-11-01', {'choice': 'new', 'quote': 'Waiting on client', 'waiting_on': 'client'})
         concern = ConcernScanner(self.store).changes(self.project, '2026-01-01')[0]['concern_id']
