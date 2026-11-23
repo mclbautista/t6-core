@@ -462,7 +462,7 @@ class DriveVerbs:
         if delivery is not None:
             after['delivery_id'] = delivery
         if verb == 'release':
-            assert event.party is not None and event.on is not None
+            assert event.party is not None and event.on is not None and event.project is not None
             store.release_shipment(ids, on=event.on, party=event.party, project=event.project, logged_by=event.logged_by, shipment_id=event.shipment_id,
                                    reason=event.reason, recipient=recipient)
             if delivery is not None:

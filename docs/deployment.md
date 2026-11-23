@@ -373,6 +373,21 @@ reading, and startup restores the schedule without duplicating it. A failed read
 keeps the previous load; inspect `queue failed` for the failure. The nightly job
 uses the same preview/confirm reload workflow.
 
+For the daily Drive reminder, set `T6_DRIVE_CUSTODIAN_PERSON_ID` on the main
+worker to the registered custodian Person's ID. That Person must be active and
+have a Telegram ID for direct messages. The worker uses `T6_DATABASE`,
+`T6_GATEWAY_URL` and `T6_GATEWAY_SECRET`; sheet settings are not required.
+It queues `drive.reminder` at 08:00 in `Asia/Manila`, once per date, and restores
+the schedule on startup. A late startup runs today's reminder; obsolete dates
+are skipped. Each run queues the next morning even if delivery fails.
+The gateway notification key is `drive-reminder:YYYY-MM-DD`, so delivery retries
+use the same key. With no overdue Drives it sends nothing.
+
+`drive overdue` is a reader verb returning the same oldest-first rows: Drive ID,
+label, accepted serial, person, release date and days out. Only T6-owned Drives
+whose last custody event is a dated release more than 14 Manila days ago count.
+Reads include `practice`, and reminder messages carry “Practice” while it is on.
+
 An operator runs `drive cutover`, previews the final reload, then confirms it with
 the same idempotency key. The final replacement and the switch out of practice
 are atomic. A failed final read leaves practice and the nightly job enabled.

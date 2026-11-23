@@ -333,6 +333,18 @@ def configured_handlers(
                 file=sys.stderr,
                 flush=True,
             )
+    if environ.get('T6_DATABASE') and environ.get('T6_LLM_CONFIG'):
+        import json
+        from t6.drives.capture import CaptureResolver
+        from t6.llm.config import LLMConfig
+        from t6.llm.drive_photo import PHOTO_READ
+        from t6.registry.sqlite import SqliteProjectRegistry
+
+        with open(environ['T6_LLM_CONFIG'], encoding='utf-8') as file:
+            photo_config = LLMConfig.from_mapping(json.load(file)['llm'])
+        resolver = CaptureResolver(SqliteProjectRegistry(environ['T6_DATABASE']),
+                                   photo_config.provider_for(PHOTO_READ.prompt_tag, env=environ), environ=environ)
+        handlers['drive.capture.resolve'] = resolver.handle
     return {"main": handlers} if handlers else {}
 
 
@@ -853,6 +865,19 @@ def main(
 
             linked = LinkedChats(SqliteProjectRegistry(environ["T6_DATABASE"]), GatewayClient(HttpTransport(environ["T6_GATEWAY_URL"]), environ["T6_GATEWAY_SECRET"]), operator_ids(environ))
             queue_handlers = {**queue_handlers, "abang_nudge": linked.nudge, "chat_subscriptions": linked.replace_subscriptions}
+            if environ.get('T6_DRIVE_CUSTODIAN_PERSON_ID'):
+                from t6.drives.reminder import MorningReminder
+                from t6.person import People
+                from t6.preview import PreviewTokens
+                from t6.worker.internal_queue import InternalJobQueue
+
+                reminder_registry = SqliteProjectRegistry(environ['T6_DATABASE'])
+                reminder = MorningReminder(People(reminder_registry, PreviewTokens('drive-reminder')),
+                                           InternalJobQueue(reminder_registry),
+                                           GatewayClient(HttpTransport(environ['T6_GATEWAY_URL']), environ['T6_GATEWAY_SECRET']),
+                                           environ['T6_DRIVE_CUSTODIAN_PERSON_ID'])
+                reminder.schedule()
+                queue_handlers = {**queue_handlers, 'drive.reminder': reminder.handle}
             def linked_tick() -> None:
                 try:
                     linked.tick()

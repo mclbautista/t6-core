@@ -277,7 +277,7 @@ class DriveVerbTests(unittest.TestCase):
         self.assertEqual((got['recipient'], got['releases'][0]['event']['reason'], got['facts_at_release']), (None, None, True))
 
     def test_drive_exceptions_lists_the_import_review_queue(self) -> None:
-        self.assertEqual(self.read('exceptions'), {'practice': True, 'exceptions': []})
+        self.assertEqual(self.read('exceptions'), {'practice': True, 'captures': [], 'exceptions': []})
         self.store.record_exceptions([ReviewItem(sheet='Sheet1', row=3, reason='unreadable', detail='(unreadable)', workbook='book.xlsx')])
         self.assertEqual(self.read('exceptions')['exceptions'],
                          [{'workbook': 'book.xlsx', 'sheet': 'Sheet1', 'row': 3, 'reason': 'unreadable', 'detail': '(unreadable)'}])
@@ -816,7 +816,7 @@ class DriveVerbTests(unittest.TestCase):
         from t6.cli import main
         names = {(e['noun'], e['verb']) for e in catalogue()}
         self.assertTrue({('drive', verb) for verb in ('receive', 'release', 'return', 'retire', 'assign', 'unassign')} <= names)
-        self.assertEqual({e['role'] for e in catalogue() if e['noun'] == 'drive' and not e['read_only']}, {'drives', 'operator'})
+        self.assertEqual({e['role'] for e in catalogue() if e['noun'] == 'drive' and not e['read_only']}, {'drives', 'operator', 'gateway'})
         out = io.StringIO()
         with patch.dict(os.environ, {'T6_PERSON_ID': 'keeper', 'T6_PREVIEW_SIGNING_KEY': 'test'}), patch('t6.cli._open_registry', return_value=self.registry), client_patch(lambda _: None), redirect_stdout(out):
             status = main(['drive', 'retire', self.drives[0], self.projects[0], '--reason', 'dead'])
