@@ -13,6 +13,7 @@ OpenAI-style chat completions API that DeepSeek and OpenRouter both serve;
 
 from __future__ import annotations
 
+import base64
 import copy
 import dataclasses
 import email.utils
@@ -23,15 +24,31 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
+from enum import Enum
 from typing import Any, Literal, NotRequired, Protocol, TypedDict
 
 from t6.llm.policy import RETENTIONS, Retention
 from t6.llm.result import Tokens
 
 
+class ImageType(str, Enum):
+    png = "image/png"
+    jpeg = "image/jpeg"
+    webp = "image/webp"
+
+
+@dataclasses.dataclass(frozen=True)
+class Image:
+    """In-memory photo input. Neither bytes nor their encoding belong in traces."""
+
+    data: bytes = dataclasses.field(repr=False)
+    media_type: ImageType = ImageType.png
+
+
 class Message(TypedDict):
     role: Literal["system", "user", "assistant", "tool"]
     content: str
+    image: NotRequired[Image]
     tool_call_id: NotRequired[str]
     tool_calls: NotRequired[list[dict[str, Any]]]
 
@@ -185,6 +202,8 @@ class OpenAIChat:
     For a ``zdr_enforced`` task on OpenRouter the request also carries
     ``provider.zdr: true``, which asks OpenRouter for zero data retention.
     Build providers from config with :class:`t6.llm.LLMConfig`.
+    Image input requires an explicitly declared ``supports_images=True``
+    for the configured endpoint and model; the default refuses before sending.
     """
 
     def __init__(
@@ -195,6 +214,7 @@ class OpenAIChat:
         model: str,
         retention: Retention = "unknown",
         json_mode: bool = True,
+        supports_images: bool = False,
         send: Send = _urlopen,
     ) -> None:
         if retention not in RETENTIONS:
@@ -204,6 +224,7 @@ class OpenAIChat:
         self._model = model
         self._retention: Retention = retention
         self._json_mode = json_mode
+        self._supports_images = supports_images
         self._temperature: float | None = None
         self._send = send
         self._openrouter = urllib.parse.urlparse(base_url).hostname == "openrouter.ai"
@@ -232,7 +253,22 @@ class OpenAIChat:
     ) -> Completion:
         if isinstance(request, DecisionsRequest):
             raise TypeError("OpenAIChat sends chat messages; use OpenRouterDecisions for a DecisionsRequest")
-        payload: dict[str, Any] = {"model": self._model, "messages": list(request)}
+        messages: list[dict[str, Any]] = []
+        for message in request:
+            rendered: dict[str, Any] = dict(message)
+            image = rendered.pop("image", None)
+            if image is not None:
+                if not self._supports_images:
+                    raise ProviderError("provider does not support image input")
+                encoded = base64.b64encode(image.data).decode("ascii")
+                rendered["content"] = [
+                    {"type": "text", "text": message["content"]},
+                    {"type": "image_url", "image_url": {
+                        "url": f"data:{image.media_type.value};base64,{encoded}",
+                    }},
+                ]
+            messages.append(rendered)
+        payload: dict[str, Any] = {"model": self._model, "messages": messages}
         if tools:
             payload["tools"] = [
                 {
