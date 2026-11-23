@@ -159,6 +159,9 @@ class ShareGuestNamesTest(unittest.TestCase):
         body, headers = self.posts[0]
         self.assertEqual(body["query"], COMMENTS_QUERY)
         self.assertEqual(headers["x-frameio-share-authentication"], "czE6c2VjcmV0")  # base64("s1:secret")
+        self.assertEqual(headers["apollographql-client-name"], "web-app")
+        self.assertEqual(headers["x-gql-op"], "GetShareCommentsByAsset")
+        self.assertIn("apollographql-client-version", headers)
 
     def test_a_failed_unlock_or_call_or_odd_answer_is_no_names(self) -> None:
         for answers in (

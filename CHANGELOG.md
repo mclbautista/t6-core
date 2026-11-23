@@ -6,7 +6,7 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ### Fixed
 
-- Guest names on passphrase shares: the Frame.io worker sends `x-frameio-share-authentication` as base64 of `<share id>:<passphrase>`, the way Frame.io's web app builds it, instead of the guessed unlock call, which does not exist (#602).
+- Guest names on passphrase shares: the Frame.io worker sends `x-frameio-share-authentication` as base64 of `<share id>:<passphrase>`, the way Frame.io's web app builds it, instead of the guessed unlock call, which does not exist. It also sends the web app's client headers (`apollographql-client-name`, `apollographql-client-version`, `x-gql-op`), without which Frame.io answers PERMISSION_DENIED (#602).
 
 ## [0.6.20] - 2026-11-22
 

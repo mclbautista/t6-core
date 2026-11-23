@@ -25,6 +25,10 @@ from t6.frameio.tokens import USER_AGENT
 GRAPHQL_URL = "https://api.frame.io/graphql"
 TIMEOUT_SECONDS = 5.0
 NAME_LIMIT = 80
+CLIENT_HEADERS = {  # Frame.io answers PERMISSION_DENIED without the web app's client headers (#602)
+    "apollographql-client-name": "web-app",
+    "apollographql-client-version": "@frameio/next-web-app@788.1",
+}
 
 COMMENTS_QUERY = (
     "query GetShareCommentsByAsset($shareId: ID!, $assetId: ID!) {"
@@ -70,7 +74,7 @@ def share_authentication(share_id: str, passphrase: str) -> str:
 def share_guest_names(share_id: str, file_id: str, passphrase: str | None, post: Post = post_graphql) -> dict[str, str]:
     """{comment id: name} for the file's comments as the share shows them. Empty when anything fails."""
     try:
-        headers = {"x-frameio-session-id": str(uuid.uuid4())}
+        headers = {**CLIENT_HEADERS, "x-gql-op": "GetShareCommentsByAsset", "x-frameio-session-id": str(uuid.uuid4())}
         if passphrase:
             headers["x-frameio-share-authentication"] = share_authentication(share_id, passphrase)
         answer = post({"query": COMMENTS_QUERY, "variables": {"shareId": share_id, "assetId": file_id}}, headers)
