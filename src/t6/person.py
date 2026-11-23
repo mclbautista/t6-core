@@ -72,6 +72,8 @@ class People:
             return self._authorize(db, actor, role)
 
     def _authorize(self, db: Any, actor: str, role: str) -> Refused | None:
+        if role == 'gateway':
+            return None if actor == 'gateway' else Refused(rule='service', reason='Only the gateway may capture or undo a recording post')
         if role == 'staff':
             person = None if actor in SERVICES or actor in INTERNAL_ACTORS else db.execute("SELECT kind, active FROM persons WHERE id = ?", (actor,)).fetchone()
             return None if person and person[1] and person[0] == 'staff' else Refused(rule='permission', reason='needs active staff Person')

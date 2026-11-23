@@ -49,7 +49,7 @@ def reload_drives(registry: SqliteProjectRegistry, tokens: PreviewTokens, source
         for name, _ in triggers:
             db.execute(f'DROP TRIGGER {name}')
         for table in ('drive_catalog_changes', 'drive_catalog_snapshots', 'delivery_drives', 'drive_shipment_facts',
-                      'drive_movement_events', 'drive_movements', 'drive_events', 'drive_imports', 'drive_assignments', 'drive_exceptions', 'drive_previews', 'drives'):
+                      'drive_status_resets', 'drive_captures', 'drive_movement_events', 'drive_movements', 'drive_events', 'drive_imports', 'drive_assignments', 'drive_exceptions', 'drive_previews', 'drives'):
             db.execute(f'DELETE FROM {table}')
         for _, sql in triggers:
             db.execute(sql)

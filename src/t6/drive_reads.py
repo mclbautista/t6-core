@@ -19,8 +19,8 @@ def _day(value: date | None) -> str | None:
     return value.isoformat() if value else None
 
 
-def _ref(ref: Ref) -> DriveRef:
-    return DriveRef(page_id=ref.page_id, text=ref.text)
+def _ref(ref: Ref | None) -> DriveRef:
+    return DriveRef(page_id=ref.page_id if ref else None, text=ref.text if ref else None)
 
 
 def _party(party: Party | None) -> DriveParty | None:
