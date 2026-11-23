@@ -33,7 +33,7 @@ from typing import Any, TypeVar
 from t6.llm.policy import RETENTIONS, Retention
 from t6.llm.transport import OpenAIChat, Provider, Send
 
-_PROVIDER_KEYS = frozenset({"base_url", "model", "retention", "api_key_env", "json_mode"})
+_PROVIDER_KEYS = frozenset({"base_url", "model", "retention", "api_key_env", "json_mode", "supports_images"})
 _TOP_KEYS = frozenset({"default", "providers", "tasks"})
 
 K = TypeVar("K")
@@ -53,6 +53,7 @@ class ProviderConfig:
     retention: Retention
     api_key_env: str
     json_mode: bool = True
+    supports_images: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -116,6 +117,7 @@ class LLMConfig:
             model=entry.model,
             retention=entry.retention,
             json_mode=entry.json_mode,
+            supports_images=entry.supports_images,
             **extra,
         )
 
@@ -131,6 +133,9 @@ def _provider(name: str, entry: object) -> ProviderConfig:
     json_mode = entry.get("json_mode", True)
     if not isinstance(json_mode, bool):
         raise ConfigError(f"{where}.json_mode must be true or false")
+    supports_images = entry.get("supports_images", False)
+    if not isinstance(supports_images, bool):
+        raise ConfigError(f"{where}.supports_images must be true or false")
     return ProviderConfig(
         name=name,
         base_url=_text(where, entry, "base_url"),
@@ -138,6 +143,7 @@ def _provider(name: str, entry: object) -> ProviderConfig:
         retention=retention,
         api_key_env=_text(where, entry, "api_key_env"),
         json_mode=json_mode,
+        supports_images=supports_images,
     )
 
 

@@ -8,7 +8,10 @@ from email.message import Message as Headers
 
 from t6.llm import (
     Choice,
+    ConfigError,
     DecisionsRequest,
+    Image,
+    LLMConfig,
     Message,
     OpenAIChat,
     OpenRouterDecisions,
@@ -53,6 +56,38 @@ def provider(send: Recorder, **options: object) -> OpenAIChat:
 
 
 class OpenAIChatTests(unittest.TestCase):
+    def test_image_capability_can_be_configured_and_requires_a_boolean(self) -> None:
+        entry = {"base_url": "https://llm.example/v1", "api_key_env": "TEST_KEY",
+                 "model": "test-vision", "retention": "zdr_enforced", "supports_images": True}
+        config = {"default": "vision", "providers": {"vision": entry}}
+        send = Recorder(body())
+        chat = LLMConfig.from_mapping(config).provider_for("drive-photo-read-v1", env={"TEST_KEY": "k"}, send=send)
+        chat.complete([{"role": "user", "content": "Read", "image": Image(b"synthetic")}], timeout=1)
+        self.assertEqual(len(send.requests), 1)
+        for invalid in ("yes", 1, None):
+            with self.subTest(invalid=invalid), self.assertRaises(ConfigError):
+                LLMConfig.from_mapping({"providers": {"vision": {**entry, "supports_images": invalid}}})
+
+    def test_refuses_image_before_sending_when_support_is_not_declared(self) -> None:
+        send = Recorder(body())
+        with self.assertRaisesRegex(ProviderError, "does not support image input"):
+            provider(send).complete(
+                [{"role": "user", "content": "Read", "image": Image(b"synthetic")}], timeout=1,
+            )
+        self.assertEqual(send.requests, [])
+
+    def test_sends_image_part_with_text_for_image_capable_provider(self) -> None:
+        send = Recorder(body())
+        provider(send, supports_images=True).complete(
+            [{"role": "user", "content": "Read the drive", "image": Image(b"synthetic")}], timeout=7,
+        )
+        self.assertEqual(send.requests[0][2]["messages"], [{
+            "role": "user", "content": [
+                {"type": "text", "text": "Read the drive"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,c3ludGhldGlj"}},
+            ],
+        }])
+
     def test_sends_an_openai_style_chat_request(self) -> None:
         send = Recorder(body())
         provider(send).complete([{"role": "user", "content": "[person 1]"}], timeout=7)
