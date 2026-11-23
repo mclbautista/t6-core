@@ -8,10 +8,10 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from t6.drives import Assignment, CatalogSnapshot, CustodyEvent, Drive, DriveStatus, DriveStore, Party, Ref, normalize_serial
+from t6.drives import Assignment, CatalogSnapshot, CustodyEvent, CustodyKind, Drive, DriveStatus, DriveStore, Ownership, Party, Ref, normalize_serial
 from t6.verbs import (DriveCatalogAtOutput, DriveCatalogChange, DriveCatalogDiffOutput, DriveCatalogEntryItem, DriveCatalogSnapshotItem,
                       DriveCatalogSnapshotsOutput, DriveAssignmentItem, DriveEventItem, DriveExceptionItem, DriveExceptionsOutput, DriveFindOutput, DriveGetOutput, DriveItem,
-                      DriveListItem, DriveListOutput, DriveMatch, DriveParty, DriveRef, DriveRelease, DriveShipmentItem, DriveShipmentOutput,
+                      DriveListItem, DriveListOutput, DriveMatch, DriveOverdueItem, DriveOverdueOutput, DriveParty, DriveRef, DriveRelease, DriveShipmentItem, DriveShipmentOutput,
                       DriveShipmentsOutput, DriveSourceItem)
 
 
@@ -198,3 +198,22 @@ def project_counts(store: DriveStore) -> list[dict[str, Any]]:
              'in_house': sum(statuses.get(did) is DriveStatus.IN_CUSTODY for did in ids),
              'released': sum(statuses.get(did) is DriveStatus.RELEASED for did in ids)}
             for project, ids in projects.items()]
+
+
+def overdue(store: DriveStore, today: date) -> DriveOverdueOutput:
+    rows = []
+    for drive in store.list_drives():
+        if drive.ownership is not Ownership.T6:
+            continue
+        events = store.list_events(drive.id)
+        if not events:
+            continue
+        last = events[-1]
+        if last.kind is not CustodyKind.RELEASED or last.on is None or (today - last.on).days <= 14:
+            continue
+        facts = store.shipment_facts(last.shipment_id) if last.shipment_id else None
+        person = facts[0] if facts and facts[0] else (last.party.ref.text or last.party.ref.page_id) if last.party else None
+        rows.append(DriveOverdueItem(drive_id=drive.id, label=drive.label, serial=drive.serial, person=person,
+                                    released_on=last.on.isoformat(), days_out=(today - last.on).days))
+    rows.sort(key=lambda row: (row.released_on, row.label or '', row.drive_id))
+    return DriveOverdueOutput(overdue=rows)
