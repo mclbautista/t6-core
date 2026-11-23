@@ -861,6 +861,19 @@ def main(
 
             linked = LinkedChats(SqliteProjectRegistry(environ["T6_DATABASE"]), GatewayClient(HttpTransport(environ["T6_GATEWAY_URL"]), environ["T6_GATEWAY_SECRET"]), operator_ids(environ))
             queue_handlers = {**queue_handlers, "abang_nudge": linked.nudge, "chat_subscriptions": linked.replace_subscriptions}
+            if environ.get('T6_DRIVE_CUSTODIAN_PERSON_ID'):
+                from t6.drives.reminder import MorningReminder
+                from t6.person import People
+                from t6.preview import PreviewTokens
+                from t6.worker.internal_queue import InternalJobQueue
+
+                reminder_registry = SqliteProjectRegistry(environ['T6_DATABASE'])
+                reminder = MorningReminder(People(reminder_registry, PreviewTokens('drive-reminder')),
+                                           InternalJobQueue(reminder_registry),
+                                           GatewayClient(HttpTransport(environ['T6_GATEWAY_URL']), environ['T6_GATEWAY_SECRET']),
+                                           environ['T6_DRIVE_CUSTODIAN_PERSON_ID'])
+                reminder.schedule()
+                queue_handlers = {**queue_handlers, 'drive.reminder': reminder.handle}
             def linked_tick() -> None:
                 try:
                     linked.tick()

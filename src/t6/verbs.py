@@ -2844,6 +2844,23 @@ class DriveExceptionsOutput(DrivePracticeOutput):
     exceptions: list[DriveExceptionItem]
 
 
+class DriveOverdueInput(BaseModel):
+    pass
+
+
+class DriveOverdueItem(BaseModel):
+    drive_id: str
+    label: str | None
+    serial: str | None
+    person: str | None
+    released_on: str
+    days_out: int
+
+
+class DriveOverdueOutput(DrivePracticeOutput):
+    overdue: list[DriveOverdueItem]
+
+
 def drive_read(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
     from t6 import drive_reads
     from t6.drives.sqlite import SqliteDriveStore
@@ -2851,7 +2868,11 @@ def drive_read(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
     result: BaseModel | None
     with registry._transaction() as db:  # one transaction for the whole read: the store would open one for each Drive's status and Assignments
         store = SqliteDriveStore(registry, within=db)
-        if isinstance(inputs, DriveListInput):
+        if isinstance(inputs, DriveOverdueInput):
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            result = drive_reads.overdue(store, datetime.fromtimestamp(registry._clock(), ZoneInfo('Asia/Manila')).date())
+        elif isinstance(inputs, DriveListInput):
             result = drive_reads.list_drives(store, **inputs.model_dump())
         elif isinstance(inputs, DriveGetInput):
             result = drive_reads.get(store, inputs.drive)
@@ -2979,6 +3000,7 @@ VERBS = (
     Verb('drive', 'shipments', 'List Drive shipments', (), DriveShipmentsInput, DriveShipmentsOutput, 'reader', 'One entry for each shipment, in the order first released.', drive_read, read_only=True),
     Verb('drive', 'shipment', 'Show one Drive shipment', (), DriveShipmentInput, DriveShipmentOutput, 'reader', 'The Drives of the shipment with their release events and the recipient. Facts are as they were at release; facts_at_release is false for an earlier shipment, which shows current facts.', drive_read, read_only=True),
     Verb('drive', 'exceptions', 'List the Drive import exceptions', (), DriveExceptionsInput, DriveExceptionsOutput, 'reader', 'Rows the Drive import could not read, kept for review.', drive_read, read_only=True),
+    Verb('drive', 'overdue', 'List T6 Drives OUT for more than 14 days', (), DriveOverdueInput, DriveOverdueOutput, 'reader', 'Last custody event must be a dated release more than 14 Manila days ago; oldest first.', drive_read, read_only=True),
     Verb('swing', 'assign', 'Assign a swing Drive to a Person or Project', (), SwingAssignInput, SwingWriteOutput, 'drives', 'Preview and confirm; adds a swing Assignment, with an optional return date. A Person target needs no Project; --project may be added.', swing_write),
     Verb('swing', 'unassign', 'End a swing Assignment', (), SwingUnassignInput, SwingWriteOutput, 'drives', 'Ends the open swing Assignment and keeps it, with its return date, in history. When several are open, pick by --project, --person or --assignment.', swing_write),
     Verb('swing', 'return', 'Return a swing Drive', (), SwingReturnInput, SwingWriteOutput, 'drives', 'Ends the open swing Assignment and clears its return date.', swing_write),

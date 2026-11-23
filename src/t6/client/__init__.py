@@ -19,7 +19,7 @@ from t6.verbs import (
     VersionAddInput, VersionLockInput, VersionFindInput, VersionGetInput,
     MediaLinkInput, MediaUnlinkInput, TimelineLinkInput, TimelineRestampInput, TimelineListInput, FrameioProjectInput, MediaListInput, MediaMigrateInput,
     TranscriptCreateInput, TranscriptGetInput, TranscriptSpeakersInput, TranscriptTranslateInput,
-    DriveMappingProposeInput, DriveMappingApplyInput, DriveProjectsInput, MovementListInput, MovementCorrectInput,
+    DriveMappingProposeInput, DriveMappingApplyInput, DriveProjectsInput, DriveOverdueInput, MovementListInput, MovementCorrectInput,
     DriveCutoverInput, DriveReloadInput, DriveReceiveInput, DriveReleaseInput, DriveReturnInput, DriveRetireInput, DriveAssignInput, DriveUnassignInput,
     DriveAddInput, DriveEditInput, DrivePromoteSerialInput, DriveListInput, DriveGetInput, DriveFindInput, DriveCatalogSnapshotInput, DriveCatalogSnapshotsInput, DriveCatalogDiffInput, DriveCatalogAtInput, DriveShipmentsInput, DriveShipmentInput, DriveExceptionsInput,
     MachineEditInput, MachineListInput, MachineSyncInput,
@@ -163,6 +163,9 @@ class Client:
 
     def drive_projects(self, inputs: DriveProjectsInput) -> Result:
         return self.call('drive', 'projects', inputs)
+
+    def drive_overdue(self, inputs: DriveOverdueInput) -> Result:
+        return self.call('drive', 'overdue', inputs)
 
     def movement_list(self, inputs: MovementListInput) -> Result:
         return self.call('movement', 'list', inputs)
