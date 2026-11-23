@@ -406,6 +406,11 @@ _MIGRATIONS = (
     CREATE TABLE drive_movement_events (event_id INTEGER PRIMARY KEY REFERENCES drive_events(id), movement_id TEXT NOT NULL REFERENCES drive_movements(id))"""),
     (54, False, """CREATE TABLE drive_practice (id INTEGER PRIMARY KEY CHECK (id=1), practice INTEGER NOT NULL CHECK (practice IN (0, 1)));
     INSERT INTO drive_practice VALUES (1, 1)"""),
+    # PM Notes history: every dated line each autoscan read, kept for good; `removed` is the first run the line was absent (#638).
+    # The autoscan keeps the time of its last completed run, so a missed 21:00 is caught up once at start.
+    (55, False, """CREATE TABLE pm_notes_history (project_id TEXT NOT NULL REFERENCES projects(id), as_of TEXT NOT NULL, line TEXT NOT NULL,
+        first_seen REAL NOT NULL, last_seen REAL NOT NULL, removed REAL, PRIMARY KEY (project_id, as_of, line));
+    CREATE TABLE concern_autoscan_runs (id INTEGER PRIMARY KEY CHECK (id = 1), completed_at REAL NOT NULL)"""),
 )
 
 
