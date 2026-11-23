@@ -146,14 +146,16 @@ def _scan(tree: ast.AST, file: str) -> list[Finding]:
         elif isinstance(node, ast.ImportFrom):
             module = node.module or ""
             if node.level == 0:
-                modules = [module] + [f"{module}.{alias.name}" for alias in node.names]
-                if any(m == "t6.notion" or m.startswith("t6.notion.") or m == "t6.llm" or m.startswith("t6.llm.") for m in modules):
-                    findings.append(Finding(file, node.lineno, "adapter-import", f"imports from {module}"))
-                elif module == "t6":
+                if module == "t6":
+                    if any(alias.name in {"notion", "llm"} for alias in node.names):
+                        findings.append(Finding(file, node.lineno, "adapter-import", "imports from t6"))
                     findings.extend(
                         Finding(file, node.lineno, "t6-import", "imports t6" if alias.name == "*" else f"imports t6.{alias.name}")
-                        for alias in node.names if alias.name == "*" or _t6_refused(f"t6.{alias.name}")
+                        for alias in node.names
+                        if alias.name not in {"notion", "llm"} and (alias.name == "*" or _t6_refused(f"t6.{alias.name}"))
                     )
+                elif module == "t6.notion" or module.startswith("t6.notion.") or module == "t6.llm" or module.startswith("t6.llm."):
+                    findings.append(Finding(file, node.lineno, "adapter-import", f"imports from {module}"))
                 elif _t6_refused(module):
                     findings.append(Finding(file, node.lineno, "t6-import", f"imports {module}"))
         elif isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:

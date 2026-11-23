@@ -541,8 +541,9 @@ class JoRaiseMessage(BaseModel):
     """The message a Job Order is raised from, as posted. The API applies every rule to it.
 
     The API builds the Name, JO Number, Department, Deadline, Telegram Key and
-    duplicate key. `assignees` are T6 Person IDs; "end of shift" reads their
-    End of Shift. `project` is a T6 Project ID or page ID (empty with `no_project`).
+    duplicate key. `assignees` are T6 Person IDs or Contact page IDs; "end of shift"
+    reads their End of Shift. `cc` are optional CC T6 Person IDs or Contact page IDs.
+    `project` is a T6 Project ID or page ID (empty with `no_project`).
     `department_text` is used only when the header has no Department, and
     `number_text` only when the header does not parse.
     """
@@ -554,6 +555,7 @@ class JoRaiseMessage(BaseModel):
     chat_id: str | None = None
     message_id: str | None = None
     assignees: list[str] = []
+    cc: list[str] = []
     project: str | None = None
     department_text: str | None = None
     number_text: str | None = None
@@ -585,6 +587,7 @@ class JoWriteOutput(BaseModel):
     department_findings: list[dict[str, Any]] | None = None
     telegram_key: str | None = None
     duplicate_key: str | None = None
+    cc_ids: list[str] | None = None
 
 
 class JoAssignInput(BaseModel):
@@ -1713,6 +1716,7 @@ class MeetingNotesCreateInput(BaseModel):
 class MeetingNotesAppendInput(BaseModel):
     note: str
     blocks: list[NoteBlock]
+    idempotency_key: str | None = None
 
 
 class MeetingNotesTrashInput(BaseModel):

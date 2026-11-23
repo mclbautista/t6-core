@@ -23,6 +23,10 @@ class _DryRun(Exception):
         self.result = result
 
 
+class _MaskRefused(Exception):
+    pass
+
+
 def _concern_id(db: Any, project: str, key: str, run_date: str) -> str:
     """The ID a new Concern gets: derived from what it is, so a dry run names the Concerns the real run will make."""
     for attempt in range(1000):
@@ -42,7 +46,7 @@ def _previous_start(db: Any, run_date: str) -> float:
     return math.nextafter(datetime(day.year, day.month, day.day, tzinfo=MANILA).timestamp(), 0)
 
 
-def observe(store: ConcernStore, values: Mapping[str, Any], *, actor: str, coordinators: Callable[[str], set[str]], closes: bool = False) -> Outcome:
+def observe(store: ConcernStore, values: Mapping[str, Any], *, actor: str, coordinators: Callable[[str], set[str]], closes: bool = False, mask: Callable[[dict[str, Any]], dict[str, Any]] | None = None) -> Outcome:
     registry = store.registry
     run_date, findings, unavailable = values.get('run_date'), values.get('findings'), values.get('unavailable') or []
     key, dry = values.get('idempotency_key'), bool(values.get('dry_run'))
@@ -89,21 +93,32 @@ def observe(store: ConcernStore, values: Mapping[str, Any], *, actor: str, coord
         accepted.append({**finding, 'project': project})
     missing = {(resolved[u['project']], u['source']) for u in unavailable}
 
+    def masked(payload: dict[str, Any]) -> dict[str, Any]:
+        if mask is None:
+            return payload
+        try:
+            return mask(payload)
+        except ValueError as err:
+            raise _MaskRefused() from err
+
     try:
         with registry._transaction() as db:
             previous = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key = ?', (key,)).fetchone() if not dry else None
             if previous:
-                return Done(result=json.loads(previous[1])) if previous[0] == fingerprint else Refused(rule='idempotency_key', reason='Idempotency key was used for a different request')
+                return Done(result=masked(json.loads(previous[1]))) if previous[0] == fingerprint else Refused(rule='idempotency_key', reason='Idempotency key was used for a different request')
             now = registry._clock()
             result = _apply(db, store, run_date, accepted, missing, skipped, closes, now)
+            reply = masked(result)
             if dry:
-                raise _DryRun(result)
+                raise _DryRun(reply)
             db.executemany('INSERT OR IGNORE INTO concern_listings VALUES (?, ?)', [(run_date, item['id']) for project in result['projects'] for item in project['open'] if item['opened_on'] <= run_date])
             _audit(db, 'observe:' + run_date, 'concern_observe', actor, now, None, {'run_date': run_date, 'counts': result['counts']}, summary='Concern observe run')
             db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(result)))
-            return Done(result=result)
+            return Done(result=reply)
     except _DryRun as dry_run:
         return Done(result=dry_run.result)
+    except _MaskRefused:
+        return Refused(rule='masking', reason='A client name occurs in an identifier')
 
 
 def _apply(db: Any, store: ConcernStore, run_date: str, findings: list[dict[str, Any]], unavailable: set[tuple[str | None, str]], skipped: int, closes: bool, now: float) -> dict[str, Any]:

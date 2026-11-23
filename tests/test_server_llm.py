@@ -164,6 +164,12 @@ class LLMAPITests(unittest.TestCase):
         self.assertEqual(self.call()['rule'], 'policy')
         self.assertEqual(loose.calls, [])
 
+    def test_unallowed_model_hint_lists_allowed_models(self) -> None:
+        self.body['model_hint'] = 'fake'
+        body = self.call()
+        self.assertEqual((body['outcome'], body['rule'], body['failure']), ('refused', 'policy', 'policy'))
+        self.assertIn('allowed: fake-model', body['reason'])
+
     def test_bad_retention_map_is_refused_at_construction(self) -> None:
         for bad in ({'other': 'unknown'}, {'fake': 'zdr'}):
             with self.subTest(bad=bad), self.assertRaises(ValueError):

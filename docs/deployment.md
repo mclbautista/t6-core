@@ -179,7 +179,10 @@ t6.server: request time=2026-11-16T07:03:05.123Z identity=reports verb=llm.run o
   `unknown` for a path that is no route, `tap`, `commands`, `transcribe`, `resolve` and `admin.media.migrate`
   for the routes outside the verb table.
 - `outcome`: `done`, `preview`, `refused:<rule>` (the rule name of the refusal, for example
-  `permission`, `masking`, `unauthorized`) or `error:<HTTP status>` (a bad body is `error:422`).
+  `permission`, `masking`, `unauthorized`; refused reads append a fixed reason code such as
+  `notion_timeout`, `notion_rate_limited`, `notion_network_error`, `notion_error`,
+  `missing_source`, `no_binding`, `not_found`, `invalid_input` or `io_error`, e.g.
+  `refused:read:notion_timeout`) or `error:<HTTP status>` (a bad body is `error:422`).
 - `ms`: how long the API took, in milliseconds.
 
 The line holds no input, result, secret, name or path. It answers "who calls which verb" and

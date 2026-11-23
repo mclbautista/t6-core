@@ -334,6 +334,35 @@ class ObserveApiTests(unittest.TestCase):
         assert isinstance(result, Done)
         self.assertEqual(result.result['counts']['closed'], 1)
 
+    def test_masking_refusal_without_privacy_registry_commits_nothing(self) -> None:
+        self.api.privacy_registry = None
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            refused = self.observe('secret', idempotency_key='no-registry')
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'masking')
+        self.assertEqual(err.getvalue(), '')
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM concerns').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM concern_listings').fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM audit WHERE action = 'concern_observe'").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM verb_requests WHERE idempotency_key = 'no-registry'").fetchone()[0], 0)
+
+    def test_masking_refusal_on_identifier_collision_rolls_back_and_skips_log(self) -> None:
+        self.api.privacy_registry = Registry(people=[Person(name=self.project)])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            refused = self.observe('secret', idempotency_key='id-leak')
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'masking')
+        self.assertEqual(refused.reason, 'A client name occurs in an identifier')
+        self.assertEqual(err.getvalue(), '')
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM concerns').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM concern_listings').fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM audit WHERE action = 'concern_observe'").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM verb_requests WHERE idempotency_key = 'id-leak'").fetchone()[0], 0)
+
 
 class ObserveCliTests(unittest.TestCase):
     def test_the_command_reads_the_findings_file_and_calls_the_verb(self) -> None:

@@ -79,6 +79,37 @@ class RequestLogTests(unittest.TestCase):
             line = request_line('/v1/commands', 'reports', response, 0.0123, {})
             self.assertTrue(line.endswith(f'outcome={expected} ms=12'), line)
 
+    def test_refused_reads_log_fixed_reason_codes_without_leaking_text(self) -> None:
+        from unittest.mock import patch
+        from t6.notion import NotionError
+
+        class FailingNotion:
+            def __init__(self, error: Exception) -> None:
+                self.error = error
+
+            def query_data_source(self, *_args: Any, **_kwargs: Any) -> Any:
+                raise self.error
+
+        self.api.data_sources = {'contacts': 'contacts', 'projects': 'projects'}
+        self.api.open_notion = lambda _: FailingNotion(NotionError(504, 'timeout', 'secret client name timed out'))
+        with patch.dict('os.environ', {'T6_NOTION_TOKEN': 'secret'}):
+            response = self.call('/v1/person/find', {'mention': 'secret'})
+        self.assertEqual(self.last(), ('reports', 'person.find', 'refused:read:notion_timeout'))
+        self.assertNotIn('secret', self.lines[0])
+        self.assertNotIn('failure', response.body)
+        self.assertNotIn('retry_after', response.body)
+
+        self.lines.clear()
+        self.api.open_notion = lambda _: FailingNotion(NotionError(429, 'rate_limited', 'too many requests'))
+        with patch.dict('os.environ', {'T6_NOTION_TOKEN': 'secret'}):
+            self.call('/v1/person/find', {'mention': 'someone'})
+        self.assertEqual(self.last(), ('reports', 'person.find', 'refused:read:notion_rate_limited'))
+
+        self.lines.clear()
+        with patch.dict('os.environ', {'T6_NOTION_TOKEN': 'secret'}):
+            self.call('/v1/person/get', {'person_id': self.person})
+        self.assertEqual(self.last(), ('reports', 'person.get', 'refused:person:no_binding'))
+
 
 if __name__ == '__main__':
     unittest.main()

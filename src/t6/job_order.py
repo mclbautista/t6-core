@@ -66,10 +66,12 @@ def apply_message(client: Any, data_source: str, people: Any, message: Any, give
     caller sends only what the message says. Returns `(fields, derived)`: the
     fields to write and the values the preview returns.
     """
+    from uuid import UUID
     from t6.cli_jo import check_fields
     from t6.domain import Contact
     from t6.domain.deadlines import deadline
     from t6.domain.job_order_rules import canonical_name, jo_key, normalize_department, parse_header, parse_number, telegram_key
+    from t6.notion import NotionError
     from t6.notion.departments import get_departments
     from t6.notion.reads import ContactReader
 
@@ -83,7 +85,20 @@ def apply_message(client: Any, data_source: str, people: Any, message: Any, give
     alias_map = department_aliases(aliases)
     if isinstance(alias_map, Refused):
         return alias_map
-    fields = check_fields(client, data_source, given)
+    resolved_cc: list[str] = list(given.get('cc_ids') or ())
+    for ref in message.cc:
+        person = people.get(ref)
+        if person is not None:
+            page = next((b['page_id'] for b in person['bindings'] if b['active']), None)
+            if page is None:
+                return Refused(rule='person', reason='Person not found')
+            resolved_cc.append(page)
+        elif ref.startswith('t6n_'):
+            return Refused(rule='person', reason='Person not found')
+        else:
+            resolved_cc.append(ref)
+    merged_given = {**given, 'cc_ids': resolved_cc} if message.cc else given
+    fields = check_fields(client, data_source, merged_given)
     if message.project:
         fields['project_id'] = message.project
 
@@ -96,13 +111,22 @@ def apply_message(client: Any, data_source: str, people: Any, message: Any, give
     name = canonical_name(header if chosen else None, message.header_text.strip(), chosen)
 
     contacts = []
-    for person_id in message.assignees:
+    for ref in message.assignees:
+        person_id = people.registry.bound_entity('notion', ref) or ref
         person = people.get(person_id)
-        if person is None:
+        if person is not None:
+            label = person['id']
+            page = next((b['page_id'] for b in person['bindings'] if b['active']), None)
+            # The Person ID stands for the name, so a finding never carries a person's name.
+            contacts.append(replace(ContactReader(client, '').get(page), name=label) if page else Contact(page_id=label, name=label))
+            continue
+        norm = normalize_page_id(ref)
+        if ref.startswith('t6n_') or len(norm) != 32 or not all(c in '0123456789abcdef' for c in norm):
             return Refused(rule='person', reason='Person not found')
-        page = next((b['page_id'] for b in person['bindings'] if b['active']), None)
-        # The Person ID stands for the name, so a finding never carries a person's name.
-        contacts.append(replace(ContactReader(client, '').get(page), name=person_id) if page else Contact(page_id=person_id, name=person_id))
+        try:
+            contacts.append(replace(ContactReader(client, '').get(str(UUID(norm))), name=ref))
+        except (NotionError, ValueError, KeyError):
+            return Refused(rule='person', reason='Person not found')
     result = deadline(message.deadline_text, message.posted_at, contacts)
 
     page = None if no_project or not message.project else project_page_id(people.registry, message.project)
@@ -113,6 +137,7 @@ def apply_message(client: Any, data_source: str, people: Any, message: Any, give
         'department_findings': department_findings,
         'telegram_key': telegram_key(message.chat_id, message.message_id),
         'duplicate_key': jo_key(page, int(digits)) if digits else None,
+        'cc_ids': list(fields.get('cc_ids') or ()),
         'jo_id': None,
     }
     for field, key in (('name', 'name'), ('number', 'jo_number'), ('department', 'department'), ('deadline', 'deadline'), ('telegram_key', 'telegram_key')):

@@ -151,7 +151,7 @@ class VerbAPI:
         except Exception:
             self.request_log(request_line(path, seen.get('identity'), Response(500), time.monotonic() - started, self.routes))
             raise
-        self.request_log(request_line(path, seen.get('identity'), response, time.monotonic() - started, self.routes))
+        self.request_log(request_line(path, seen.get('identity'), response, time.monotonic() - started, self.routes, reason_code=seen.get('reason_code')))
         return response
 
     def _handle(self, request: Request, seen: dict[str, str]) -> Response:
@@ -279,7 +279,7 @@ class VerbAPI:
                 data[name] = str(uploaded)
             if entry.input_model.model_config.get('extra') != 'forbid':
                 data.pop('registry_db', None)
-            response = self._dispatch(entry, data, actor)
+            response = self._dispatch(entry, data, actor, seen=seen)
             if entry.read_only and self._masked_for(actor, request.header('x-t6-mcp') == '1'):
                 return self._mask_mcp(response)
             return response
@@ -303,7 +303,7 @@ class VerbAPI:
         except ValueError:
             return self.refused('masking', 'A client name occurs in an identifier')
 
-    def _dispatch(self, entry: Any, data: dict[str, Any], actor: str) -> Response:
+    def _dispatch(self, entry: Any, data: dict[str, Any], actor: str, seen: dict[str, str] | None = None) -> Response:
         if actor == AUTO_ACTOR:
             refusal = People.auto_refusal(entry.noun)
             if refusal:
@@ -334,7 +334,7 @@ class VerbAPI:
             outcome = refusal or self._transcripts().request(entry.verb, inputs, actor, translate_enabled=self.translate_enabled)
         elif (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'notes'), ('project', 'flags'), ('project', 'resolve'), ('concern', 'list'), ('concern', 'get'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'candidates'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find'), ('version', 'get')}:
             refusal = self.people.authorize(actor, entry.role)
-            outcome = refusal or self._typed_read(entry.noun, entry.verb, inputs)
+            outcome = refusal or self._typed_read(entry.noun, entry.verb, inputs, seen=seen)
             if isinstance(outcome, Done) and entry.noun in {'project', 'concern', 'jo', 'person', 'camera', 'deliverable', 'meeting-notes', 'external-link', 'studio'} and not self._reads_unmasked(actor):
                 outcome = self._masked_outcome(outcome)
         elif entry.noun == 'approval':
@@ -453,7 +453,7 @@ class VerbAPI:
             outcome = self.people.authorize(actor, entry.role) or Refused(rule='owner', reason='Owner must be a Project coordinator')
         elif entry.handler is None:
             refusal = self.people.authorize(actor, entry.role)
-            outcome = refusal or self._legacy_read(entry.noun, entry.verb, inputs)
+            outcome = refusal or self._legacy_read(entry.noun, entry.verb, inputs, seen=seen)
         else:
             outcome = invoke(entry, inputs, actor=actor, people=self.people, open_notion=self.open_notion, frameio=self.frameio, notion_source=self.notion_source)
         if entry.noun == 'project' and entry.verb in ('link-chat', 'unlink-chat') and isinstance(outcome, Preview):
@@ -479,12 +479,17 @@ class VerbAPI:
         """Hand the findings of one run to the Concern list; the reply names Concern text, so a caller without real-name access gets it masked."""
         from t6.concern import ConcernStore
         from t6.concern_observe import observe
-        outcome = observe(ConcernStore(self.people.registry, self.people.tokens), inputs.model_dump(), actor=actor, coordinators=self._coordinators, closes=self.concern_observe_closes)
-        if isinstance(outcome, Done):
-            if not inputs.dry_run:  # counts only: no text, name or ID
-                print('t6.server: concern observe run_date=' + inputs.run_date + ' ' + ' '.join(f'{name}={count}' for name, count in outcome.result['counts'].items()), file=sys.stderr, flush=True)
-            if not self._reads_unmasked(actor):
-                return self._masked_outcome(outcome)
+        needs_mask = not self._reads_unmasked(actor)
+        if needs_mask and self.privacy_registry is None:
+            return Refused(rule='masking', reason='Read privacy registry is not configured')
+        mask: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+        if needs_mask:
+            registry = self.privacy_registry
+            assert registry is not None
+            mask = lambda result: mask_reply(Session(registry, options=MaskOptions()), json.loads(json.dumps(result)))
+        outcome = observe(ConcernStore(self.people.registry, self.people.tokens), inputs.model_dump(), actor=actor, coordinators=self._coordinators, closes=self.concern_observe_closes, mask=mask)
+        if isinstance(outcome, Done) and not inputs.dry_run:  # counts only: no text, name or ID
+            print('t6.server: concern observe run_date=' + inputs.run_date + ' ' + ' '.join(f'{name}={count}' for name, count in outcome.result['counts'].items()), file=sys.stderr, flush=True)
         return outcome
 
     def _transcripts(self) -> Any:
@@ -783,6 +788,20 @@ class VerbAPI:
                 audit('meeting_note_create', saved.page_id)
                 self._queue_mirror_refresh(saved.page_id, data_source_key='meeting_notes', data_source_id=source)
                 return done(saved)
+            key: str | None = None
+            fingerprint = ''
+            rendered: list[dict[str, Any]] = []
+            if verb == 'append':
+                key = inputs.idempotency_key
+                if key is not None and not key.strip():
+                    return Refused(rule='idempotency_key', reason='A nonblank idempotency key is required')
+                rendered = notion_blocks(inputs.blocks)
+                if key is not None:
+                    fingerprint = json.dumps({'verb': 'meeting-notes append', 'actor': actor, 'note': normalize_page_id(inputs.note), 'blocks': [b.model_dump(mode='json') for b in inputs.blocks]}, sort_keys=True, separators=(',', ':'))
+                    with registry._transaction() as db:
+                        previous = db.execute('SELECT fingerprint, result FROM verb_requests WHERE idempotency_key = ?', (key,)).fetchone()
+                    if previous:
+                        return Done(result=json.loads(previous[1])) if previous[0] == fingerprint else Refused(rule='idempotency_key', reason='Idempotency key was used for a different request')
             page = notion.retrieve_page(inputs.note, freshness='live')
             if normalize_page_id((page.get('parent') or {}).get('data_source_id') or '') != normalize_page_id(source):
                 return Refused(rule='input', reason='Not a Meeting Notes page')
@@ -810,10 +829,18 @@ class VerbAPI:
                 if page.get('in_trash') or page.get('archived'):
                     return Refused(rule='sent', reason='The note is in the trash')
                 try:
-                    notes.append(note.page_id, notion_blocks(inputs.blocks))
-                finally:
+                    notes.append(note.page_id, rendered)
+                except BaseException:
                     audit('meeting_note_append', note.page_id)  # a refused later chunk leaves the earlier ones written
                     self._queue_mirror_refresh(note.page_id, data_source_key='meeting_notes', data_source_id=source)
+                    raise
+                outcome = done(note_from_page(notion.retrieve_page(note.page_id, freshness='live')))
+                with registry._transaction() as db:
+                    _audit(db, note.page_id, 'meeting_note_append', actor, registry._clock(), None, {})
+                    if key is not None:
+                        db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(outcome.model_dump(mode='json')['result'])))
+                self._queue_mirror_refresh(note.page_id, data_source_key='meeting_notes', data_source_id=source)
+                return outcome
             return done(note_from_page(notion.retrieve_page(note.page_id, freshness='live')))
         except (ValueError, KeyError, OSError, NotionError) as error:
             return Refused(rule='input', reason=str(error))
@@ -1060,7 +1087,12 @@ class VerbAPI:
         project = read.result['project']
         return set(project.post_coordinator_ids) | {r['person_id'] for r in project.project_roles if r['role'].casefold() in ('coordinator', 'post coordinator', 'post-coordinator')}
 
-    def _typed_read(self, noun: str, verb: str, inputs: Any) -> Any:
+    def _typed_read(self, noun: str, verb: str, inputs: Any, seen: dict[str, str] | None = None) -> Any:
+        def refuse(rule: str, reason: str, code: str) -> Refused:
+            if seen is not None:
+                seen['reason_code'] = code
+            return Refused(rule=rule, reason=reason)
+
         from datetime import date, datetime
         from dataclasses import asdict, replace
         from t6.notion import NotionError, last_read_from_mirror
@@ -1237,11 +1269,11 @@ class VerbAPI:
                 person = self.people.get(identity(inputs.person_id))
                 page = next((b['page_id'] for b in person['bindings'] if b['active']), None) if person else inputs.person_id
                 if not page:
-                    return Refused(rule='person', reason='Person has no active Contact binding')
+                    return refuse('person', 'Person has no active Contact binding', 'no_binding')
                 if len(page) == 32:
                     page = str(UUID(page))
                 if (notion.retrieve_page(page).get('parent') or {}).get('data_source_id') != self.data_sources['contacts']:
-                    return Refused(rule='person', reason='Contact not found')
+                    return refuse('person', 'Contact not found', 'not_found')
                 item = contact(contact_reader.get(page))
                 if person:
                     item.update({key: person[key] for key in ('kind', 'departments', 'roles', 'project_roles', 'shift', 'permissions', 'master_brief', 'active')})
@@ -1309,7 +1341,7 @@ class VerbAPI:
                         return Done(result={'lines': dated_lines(project.pm_notes, datetime.fromtimestamp(self.people.registry._clock(), MANILA).date())})
                     if verb == 'flags' and project:
                         return Done(result=flags_of(project, inputs.stated))
-                    return Done(result={'project': read_project(project)}) if project else Refused(rule='project', reason='Project not found')
+                    return Done(result={'project': read_project(project)}) if project else refuse('project', 'Project not found', 'not_found')
                 if verb == 'resolve':
                     from t6.lookup import Index, Lookup
                     from t6.cli_studio import _resolution
@@ -1360,12 +1392,12 @@ class VerbAPI:
                         else:
                             page = inputs.ref
                     if not page:
-                        return Refused(rule='job_order', reason='Job Order has no active Notion page')
+                        return refuse('job_order', 'Job Order has no active Notion page', 'no_binding')
                     if len(page) == 32:
                         page = str(UUID(page))
                     page_json = notion.retrieve_page(page, freshness='live')
                     if (page_json.get('parent') or {}).get('data_source_id') != self.data_sources['job_orders']:
-                        return Refused(rule='job_order', reason='Job Order not found')
+                        return refuse('job_order', 'Job Order not found', 'not_found')
                     order = jo_reader.from_page(page_json)  # one retrieve, not two (#592)
                     result = order_result(order)
                     if record:
@@ -1438,10 +1470,10 @@ class VerbAPI:
                 item['body'] = blocks(note.page_id) if inputs.include_body else []
                 items.append(item)
             return Done(result={'meeting_notes': items})
-        except (KeyError, ValueError, OSError, NotionError):
-            return Refused(rule='read', reason='Read failed; check the input and server configuration')
+        except (KeyError, ValueError, OSError, NotionError) as error:
+            return refuse('read', 'Read failed; check the input and server configuration', _read_error_code(error))
 
-    def _legacy_read(self, noun: str, verb: str, inputs: Any) -> Any:
+    def _legacy_read(self, noun: str, verb: str, inputs: Any, seen: dict[str, str] | None = None) -> Any:
         # The legacy write commands do not have signed previews yet.
         if (noun, verb) in (('camera', 'enrich'), ('person', 'create')):
             return Refused(rule='verb', reason='This legacy write does not support preview and confirm')
@@ -1475,6 +1507,8 @@ class VerbAPI:
                 return Refused(rule='verb', reason='Verb has no registered handler')
             return Done(result=result)
         except (OSError, ValueError, KeyError, ImportError) as error:
+            if seen is not None:
+                seen['reason_code'] = _read_error_code(error)
             return Refused(rule='read', reason=str(error))
 
     @staticmethod
@@ -1623,10 +1657,30 @@ class VerbAPI:
 _FIXED_PATHS = {'/tap': 'tap', '/v1/commands': 'commands', '/v1/admin/media/migrate': 'admin.media.migrate'}
 
 
-def request_line(path: str, identity: str | None, response: Response, seconds: float, routes: Mapping[str, Any]) -> str:
+def _read_error_code(error: BaseException) -> str:
+    """Map a read failure to a short, fixed, data-free token for the request log."""
+    from t6.notion import NotionError
+    if isinstance(error, NotionError):
+        if error.code == 'timeout':
+            return 'notion_timeout'
+        if error.status == 429 or error.code == 'rate_limited':
+            return 'notion_rate_limited'
+        if error.code == 'network_error':
+            return 'notion_network_error'
+        return 'notion_error'
+    if isinstance(error, KeyError):
+        return 'missing_source'
+    if isinstance(error, ValueError):
+        return 'invalid_input'
+    if isinstance(error, OSError):
+        return 'io_error'
+    return 'read_error'
+
+
+def request_line(path: str, identity: str | None, response: Response, seconds: float, routes: Mapping[str, Any], *, reason_code: str | None = None) -> str:
     """The request log line: `t6.server: request time=<UTC> identity=<service or T6 Person ID> verb=<noun.verb> outcome=<kind> ms=<n>`.
 
-    `outcome` is `done`, `preview`, `refused:<rule>` or `error:<HTTP status>`. The line holds no input,
+    `outcome` is `done`, `preview`, `refused:<rule>` (or `refused:<rule>:<reason_code>` for fixed read codes) or `error:<HTTP status>`. The line holds no input,
     result, secret, name or path: the verb comes from the route table, never from the request text.
     """
     entry = routes.get(path)
@@ -1639,7 +1693,9 @@ def request_line(path: str, identity: str | None, response: Response, seconds: f
     elif response.status == 200 and kind in {None, 'done', 'preview'}:
         outcome = str(kind or 'done')
     elif response.status == 200 and kind == 'refused':
-        outcome = 'refused:' + (re.fullmatch(r'[a-z0-9_-]{1,40}', str(body.get('rule'))) or ['other'])[0]
+        rule = (re.fullmatch(r'[a-z0-9_-]{1,40}', str(body.get('rule'))) or ['other'])[0]
+        code = re.fullmatch(r'[a-z0-9_]{1,40}', reason_code) if reason_code else None
+        outcome = f'refused:{rule}:{code[0]}' if code else f'refused:{rule}'
     else:
         outcome = f'error:{response.status}'
     stamp = datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
