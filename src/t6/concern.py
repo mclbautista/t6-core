@@ -306,14 +306,16 @@ class ConcernStore:
                 db.execute("UPDATE concerns SET evidence_at = ?, state = CASE WHEN state = 'quiet' THEN 'open' ELSE state END, revision = revision + 1 WHERE id = ?", (now, concern))
             elif verb == 'resolve':
                 # A person's close is a pending close: the next PSR decides it (#639). The Concern stays open until the Monday run.
-                db.execute('UPDATE concerns SET settles_id = COALESCE(?, settles_id), revision = revision + 1 WHERE id = ?', (settles, concern))
-                db.execute("INSERT INTO concern_pending_closes (concern_id, actor, source, created_at) VALUES (?, ?, 'close', ?)", (concern, actor, now))
+                db.execute('UPDATE concerns SET revision = revision + 1 WHERE id = ?', (concern,))
+                db.execute("INSERT INTO concern_pending_closes (concern_id, actor, source, created_at, settles_id) VALUES (?, ?, 'close', ?, ?)", (concern, actor, now, settles))
             elif state == 'closed':
                 db.execute("UPDATE concerns SET state = 'open', closed_at = NULL, manual_override = 1, revision = revision + 1 WHERE id = ?", (concern,))
-            else:
+            elif pending:
                 # Undo: reopening an open Concern cancels its pending close and leaves it as it was.
                 db.execute('UPDATE concerns SET revision = revision + 1 WHERE id = ?', (concern,))
                 db.execute('DELETE FROM concern_pending_closes WHERE concern_id = ?', (concern,))
+            else:
+                db.execute("UPDATE concerns SET state = 'open', manual_override = 1, revision = revision + 1 WHERE id = ?", (concern,))
             assert isinstance(concern, str)
             self._log(db, project, concern, actor, 'concern_' + verb, now, state, values, f'Concern {verb}' + (f": {values['text']}" if verb == 'note' else ''))
             result = {**plan, 'concern_id': concern}

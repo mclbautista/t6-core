@@ -342,7 +342,7 @@ class ReadTests(unittest.TestCase):
         project = self.seed_concerns()
         closer = self.bound_person(self.person, 7)
         with self.registry._transaction() as db:
-            db.execute("INSERT INTO concern_pending_closes VALUES ('t6c_new', ?, 'close', NULL, NULL, 500.0)", (closer,))
+            db.execute("INSERT INTO concern_pending_closes VALUES ('t6c_new', ?, 'close', NULL, NULL, 500.0, NULL)", (closer,))
         for inputs in (ConcernListInput(open=True, project=project), ConcernListInput(raise_at_psr=True, project=project)):
             listed = Client(self.client.base_url, 'unmasked-secret').concern_list(inputs)
             assert isinstance(listed, Done)
@@ -983,6 +983,17 @@ class ReadTests(unittest.TestCase):
         self.assertEqual(names(registered=True), {'Registered One', 'Registered Two'})
         self.assertEqual(names(registered=False), {'Unregistered Three'})
         self.assertEqual(names(), {'Registered One', 'Registered Two', 'Unregistered Three'})
+
+    def test_person_list_returns_master_brief_for_every_item(self) -> None:
+        from t6.verbs import PersonListInput
+        ids = self.add_contacts(('Briefed One', None), ('Plain Two', None), ('Unregistered Three', None))
+        for n, name in enumerate(('Briefed One0', 'Plain Two1'), start=1):
+            person_id = self.bound_person({'id': ids[name]}, n)
+            with self.registry._transaction() as db:
+                db.execute('UPDATE persons SET master_brief = ? WHERE id = ?', (int(n == 1), person_id))
+        result = self.client.person_list(PersonListInput())
+        assert isinstance(result, Done)
+        self.assertEqual({p['name']: p['master_brief'] for p in result.result['people'] if p['name'] != 'Ana Cruz'}, {'Briefed One': True, 'Plain Two': False, 'Unregistered Three': False})
 
     def test_person_list_kind_filters_on_the_registered_kind(self) -> None:
         from t6.verbs import PersonListInput

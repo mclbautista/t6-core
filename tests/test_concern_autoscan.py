@@ -30,7 +30,7 @@ class ScheduleTests(unittest.TestCase):
         self.addCleanup(self.registry.db.close)
         self.runs: list[float] = []
 
-    def run_loop(self, start: str, wakes: int, completed: str | None = None, succeed: bool = True) -> list[float]:
+    def run_loop(self, start: str, wakes: int, completed: str | None = None, succeed: bool = True, minutes: float = 10) -> list[float]:
         """Run the schedule from `start` until it has slept `wakes` times; returns the slots it ran for."""
         from t6.server.autoscan import record_completed, run_forever
         if completed is not None:
@@ -46,7 +46,7 @@ class ScheduleTests(unittest.TestCase):
 
         def run(slot: float) -> bool:
             self.runs.append(slot)
-            clock[0] += 600  # a run takes ten minutes
+            clock[0] += minutes * 60
             return succeed
         with self.assertRaises(Stop):
             run_forever(run, self.registry, time(21, 0), clock=lambda: clock[0], sleep=sleep)
@@ -75,6 +75,14 @@ class ScheduleTests(unittest.TestCase):
         self.run_loop('2026-11-25T08:00', wakes=0, completed='2026-11-23T21:10')
         self.runs.clear()
         self.assertEqual(self.run_loop('2026-11-25T09:00', wakes=0), [])
+
+    def test_a_catch_up_that_ends_after_the_next_21_00_still_runs_that_21_00(self) -> None:
+        runs = self.run_loop('2026-11-23T20:30', wakes=1, completed='2026-11-21T21:10', minutes=60)
+        self.assertEqual(runs, [manila('2026-11-22T21:00'), manila('2026-11-23T21:00'), manila('2026-11-24T21:00')])
+
+    def test_the_first_start_after_the_upgrade_runs_nothing_and_waits_for_21_00(self) -> None:
+        runs = self.run_loop('2026-11-25T10:00', wakes=1)
+        self.assertEqual(runs, [manila('2026-11-25T21:00')])
 
     def test_a_failed_run_is_not_retried_until_the_next_slot(self) -> None:
         runs = self.run_loop('2026-11-25T08:00', wakes=1, completed='2026-11-23T21:10', succeed=False)

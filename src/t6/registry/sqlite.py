@@ -419,6 +419,8 @@ _MIGRATIONS = (
         as_of TEXT, quote TEXT, created_at REAL NOT NULL);
     INSERT INTO concern_pending_closes SELECT concern_id, NULL, 'done_line', as_of, quote, due - 604800 FROM concern_pm_pending;
     DELETE FROM concern_pm_pending"""),
+    # A pending close keeps the settlement its Closer gave; the Concern takes it only when the close is applied.
+    (58, False, "ALTER TABLE concern_pending_closes ADD COLUMN settles_id TEXT"),
 )
 
 

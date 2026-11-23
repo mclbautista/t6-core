@@ -139,7 +139,7 @@ that the edge route file and the API need.
 | `T6_REGISTRY_DB` | Project registry database path, default `t6-registry.sqlite` |
 | `T6_CONCERN_AUTOSCAN` | Set to `1` to run the autoscan in the API server: it archives every Project's dated PM Notes lines in the PM Notes history, then scans them for Concerns. Off by default; needs the LLM service. |
 | `T6_CONCERN_OBSERVE_CLOSES` | Set to `1` to let `concern observe` close a Concern its run did not find. Off by default: a run closes nothing. |
-| `T6_CONCERN_AUTOSCAN_AT` | Manila time of the daily autoscan as `HH:MM`, default `21:00`. It never runs at start, except one catch-up when the most recent run time has no completed run (the time of the last completed run is kept in the registry). A run stops at the first `llm run` refusal and logs its rule; a stopped or failed run is not retried until the next day. Each run logs counts only: `archived`, `projects`, `skipped`, `raised`, `continued`, `announced`, `applied` (pending closes it closed) |
+| `T6_CONCERN_AUTOSCAN_AT` | Manila time of the daily autoscan as `HH:MM`, default `21:00`. It never runs at start, except one catch-up when a run completed before the most recent run time and none since (the last slot served is kept in the registry); the first start after the upgrade has no stored run, so it only records that slot and waits for the next one. A run time that passes while a run is still going is served right after it. A run stops at the first `llm run` refusal and logs its rule; a stopped or failed run is not retried until the next day. Each run logs counts only: `archived`, `projects`, `skipped`, `raised`, `continued`, `announced`, `applied` (pending closes it closed) |
 | `T6_CLOSER_TELEGRAM_IDS` | The Closer setting: Telegram user IDs allowed to Close a Concern (`concern resolve`; anyone else is refused with rule `closer`), comma separated. Closers and a Project's coordinators may read `project notes-history`. Private config only; unset means no Closers |
 | `T6_OPERATOR_IDS` | Telegram user IDs allowed to tap operator cards and send `/project`, comma separated; the first receives the cards core starts, and a `/project` card goes to whoever sent it. Unset turns operator actions off |
 | `T6_STANDING_CC` | A Contact page ID, added to the cc of every Job Order (`t6.domain.studio_people.standing_cc`). Unset means none |
@@ -2322,10 +2322,14 @@ not close the Concern: it records a pending close with who and when. A Done line
 (the PM Notes scan's `settles`) records one too. The Monday 21:00 autoscan
 applies, at the end of its run, every pending close made before that Monday
 08:30 Manila, so a close made on Monday after 08:30 waits for the following
-Monday. A failed run applies nothing; the next run that completes applies what
-it left. Before that, a dated line the scan reads as continuing the Concern is a
-veto: it deletes the pending close. `concern reopen` on a Concern with a pending
-close is Undo: it cancels the close and leaves the Concern open. An applied
+Monday. A run applies a pending close only for a Project whose notes it read and whose
+lines it all settled; a failed run applies nothing; the next run that completes
+applies what it left. Before that, a dated line the scan reads as continuing the Concern is a
+veto: it deletes the pending close, and it must be dated after the Concern's
+as-of date. `concern reopen` on a Concern with a pending close is Undo: only a
+Closer may make it (anyone else is refused with rule `closer`); it cancels the
+close and leaves the Concern open. The `settles_id` of a Close is set on the
+Concern only when the close is applied. An applied
 Close sets `manual_override`, so later lines no longer change that Concern.
 A second Close on a Concern that already has one is refused with rule `state`;
 a date-sanity Concern still refuses `resolve` with rule `rule_made`. Data closes

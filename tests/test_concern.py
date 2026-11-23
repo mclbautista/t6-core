@@ -314,7 +314,7 @@ class ConcernTests(unittest.TestCase):
         self.assertIsNone(self._get(ids['submission_before_playdate'])['closed_at'])
         pending = self.raise_flag('Line to close')
         with self.registry._transaction() as db:
-            db.execute("INSERT INTO concern_pending_closes VALUES (?, NULL, 'done_line', '2026-11-17', 'quote', ?)", (pending, self.now))
+            db.execute("INSERT INTO concern_pending_closes VALUES (?, NULL, 'done_line', '2026-11-17', 'quote', ?, NULL)", (pending, self.now))
         self.now += 10
         ConcernScanner(self.store).apply_pending(self.now)
         self.assertEqual((self._get(pending)['state'], self._get(pending)['closed_at']), ('closed', self.now))

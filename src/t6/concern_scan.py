@@ -1,7 +1,7 @@
 """LLM scanning of PM Notes lines into Concerns; ConcernStore stays deterministic."""
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import date, datetime
 import re
 from typing import Any
@@ -33,18 +33,25 @@ class ConcernScanner:
         ConcernStore._log(db, project, concern, AUTO_ACTOR, action, now, before, {'quote': quote}, quote)
         db.execute('INSERT INTO concern_pm_changes (project_id, concern_id, action, quote, at) VALUES (?, ?, ?, ?, ?)', (project, concern, action, quote, now))
 
-    def apply_pending(self, before: float) -> int:
+    def apply_pending(self, before: float, projects: Collection[str] | None = None) -> int:
         """Close every Concern whose pending close was made before `before` (a Monday 08:30 Manila, the start of that PSR); returns how many closed.
+
+        Only the Concerns of `projects` (the Projects whose lines were all read in this run) are decided; None means every Project.
+        The rest stay pending for the next run.
 
         A veto has already deleted its row, and a data close deletes the row of the Concern it closes. A person's close sets
         `manual_override`; a Done line closes like the scan does."""
         now = self.registry._clock()
         applied = 0
         with self.registry._transaction() as db:
-            rows = db.execute('SELECT p.concern_id, p.actor, p.source, p.quote, c.project_id, c.state FROM concern_pending_closes p JOIN concerns c ON c.id = p.concern_id WHERE p.created_at < ? ORDER BY p.created_at, p.concern_id', (before,)).fetchall()
-            for concern, actor, source, quote, project, state in rows:
+            rows = db.execute('SELECT p.concern_id, p.actor, p.source, p.quote, c.project_id, c.state, p.settles_id FROM concern_pending_closes p JOIN concerns c ON c.id = p.concern_id WHERE p.created_at < ? ORDER BY p.created_at, p.concern_id', (before,)).fetchall()
+            for concern, actor, source, quote, project, state, settles in rows:
+                if projects is not None and project not in projects:
+                    continue
                 if state != 'closed':
                     _close(db, concern, now)
+                    if settles:
+                        db.execute('UPDATE concerns SET settles_id = ? WHERE id = ?', (settles, concern))
                     if source == 'close':
                         db.execute('UPDATE concerns SET manual_override = 1 WHERE id = ?', (concern,))
                         ConcernStore._log(db, project, concern, AUTO_ACTOR, 'concern_auto_resolve', now, state, {'closed_by': actor}, 'Concern closed after PSR')
@@ -65,8 +72,8 @@ class ConcernScanner:
             db.execute('INSERT OR IGNORE INTO concern_pm_lines VALUES (?, ?, ?)', (project, as_of, text))
 
     def process_notes(self, project: str, owner: str, lines: list[dict[str, str]], classify: Callable[[dict[str, Any]], Any]) -> dict[str, int]:
-        """Match the dated lines to Concerns; returns how many Concerns were raised, continued and announced."""
-        done = {'raised': 0, 'continued': 0, 'announced': 0}
+        """Match the dated lines to Concerns; returns how many Concerns were raised, continued and announced, and how many lines are left for the next scan."""
+        done = {'raised': 0, 'continued': 0, 'announced': 0, 'unread': 0}
         for line in sorted(lines, key=lambda item: item['as_of']):
             text, as_of = line['text'], line['as_of']
             try:
@@ -87,11 +94,13 @@ class ConcernScanner:
             offered = {r[0]: r for r in rows if as_of > r[2]}
             answer = classify({'line': text, 'as_of': as_of, 'concerns': [{'id': r[0], 'anchor': r[1], 'state': r[3], 'human_decision': bool(r[5])} for r in offered.values()]})
             if not isinstance(answer, dict):
+                done['unread'] += 1
                 continue  # No usable answer (the LLM was unavailable): the line is tried again on the next scan.
             choice, quote, concern = answer.get('choice'), answer.get('quote'), answer.get('concern_id')
             waiting = answer.get('waiting_on')
             if choice not in ('new', 'nothing', 'continues', 'settles') or not isinstance(quote, str) or not quote or quote not in text:
                 self._rejected(project, as_of, text)
+                done['unread'] += 1
                 continue
             repeated = next((r[0] for r in offered.values() if r[1] == text), None)
             if choice == 'new' and repeated is not None:
@@ -99,9 +108,11 @@ class ConcernScanner:
                 choice, concern = 'continues', repeated
             if choice in ('continues', 'settles') and concern not in offered:
                 self._rejected(project, as_of, text)
+                done['unread'] += 1
                 continue
             if choice == 'new' and (not isinstance(waiting, str) or not waiting.strip() or waiting not in quote or not _WAITING.search(quote)):
                 self._rejected(project, as_of, text)
+                done['unread'] += 1
                 continue
             now = self.registry._clock()
             with self.registry._transaction() as db:
@@ -116,11 +127,13 @@ class ConcernScanner:
                         continue
                     if not row or row[1] != original[4] or as_of <= row[3]:
                         self._rejected(project, as_of, text, db)
+                        done['unread'] += 1
                         continue
                 if choice == 'new':
                     concern = str(T6Id.mint(EntityKind.CONCERN))
                     if _open_duplicate(db, project, quote):
                         self._rejected(project, as_of, text, db)
+                        done['unread'] += 1
                         continue
                     _insert(db, concern, project, owner, waiting, quote, as_of, min(now, datetime.fromisoformat(as_of).replace(tzinfo=MANILA).timestamp()), now, 'pm_notes_scan')
                     assert isinstance(concern, str)

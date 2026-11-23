@@ -179,6 +179,9 @@ what the referenced drafts actually called, including their local wrappers.
 
 `person list` and `person get` return the Person's kind, one of `staff`, `freelancer`,
 `client` or `vendor`. A freelancer does not have the staff role.
+Every `person list` item also has `master_brief` (boolean): true when the
+registered Person gets the master brief, false otherwise, including a Contact
+with no T6 ID.
 
 `project resolve` takes `text`, and an optional `in_text` (default `false`).
 With `in_text` true, `text` is longer text (for example `AB-101 pilot cut`) and

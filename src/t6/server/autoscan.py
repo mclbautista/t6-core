@@ -40,13 +40,16 @@ def run_forever(run: Callable[[float], bool], registry: Any, at: time, *,
                 clock: Callable[[], float] = clocks.time, sleep: Callable[[float], None] = clocks.sleep) -> None:
     """Call `run(slot)` once for each daily slot that has no completed run; `run` returns True when the run completed.
 
-    At start the most recent slot runs only when no run completed since it: the one catch-up. A failed run is not retried
-    until the next slot, and only a completed run is stored."""
+    The slot a completed run served is stored. At start the most recent slot runs only when a run completed before it: the one
+    catch-up. With no run stored (the first start) that slot counts as done, so a deploy never starts a scan. A failed run is
+    not retried until the next slot; a slot that passed during a run is served before the loop sleeps."""
+    if last_completed(registry) is None:
+        record_completed(registry, latest_slot(clock(), at))
     attempted: float | None = None
     while True:
         slot = latest_slot(clock(), at)
         done = last_completed(registry)
-        if slot != attempted and (done is None or done < slot):
+        if slot != attempted and done is not None and done < slot:
             attempted = slot
             try:
                 completed = run(slot)
@@ -54,5 +57,6 @@ def run_forever(run: Callable[[float], bool], registry: Any, at: time, *,
                 print(f't6.server: concern scan failed: {type(error).__name__}', file=sys.stderr, flush=True)
                 completed = False
             if completed:
-                record_completed(registry, clock())
-        sleep(max(1.0, latest_slot(clock(), at) + 86400 - clock()))
+                record_completed(registry, slot)
+        if latest_slot(clock(), at) == slot:
+            sleep(max(1.0, slot + 86400 - clock()))

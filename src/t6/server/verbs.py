@@ -452,8 +452,8 @@ class VerbAPI:
         elif (entry.noun, entry.verb) == ('concern', 'observe'):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._concern_observe(inputs, actor)
-        elif (entry.noun, entry.verb) == ('concern', 'resolve') and not self.is_closer(actor):
-            outcome = self.people.authorize(actor, entry.role) or Refused(rule='closer', reason='Only Closers may close a Concern')
+        elif (entry.noun, entry.verb) == ('concern', 'resolve') and not self.is_closer(actor) or (entry.noun, entry.verb) == ('concern', 'reopen') and not self.is_closer(actor) and self._pending_close(inputs.concern):
+            outcome = self.people.authorize(actor, entry.role) or Refused(rule='closer', reason='Only Closers may close a Concern or cancel its pending close')
         elif (entry.noun, entry.verb) == ('concern', 'raise') and inputs.owner is not None and inputs.owner not in self._coordinators(inputs.project):
             outcome = self.people.authorize(actor, entry.role) or Refused(rule='owner', reason='Owner must be a Project coordinator')
         elif entry.handler is None:
@@ -1054,6 +1054,10 @@ class VerbAPI:
         person = self.people.registry.bound_entity('notion', normalize_page_id(found.entity.page_id))
         return person if isinstance(person, str) else None
 
+    def _pending_close(self, concern: str) -> bool:
+        with self.people.registry._transaction() as db:
+            return db.execute('SELECT 1 FROM concern_pending_closes WHERE concern_id = ?', (concern,)).fetchone() is not None
+
     def is_closer(self, actor: str) -> bool:
         """Whether `actor` is an active Person whose Telegram user id is on the Closer setting."""
         person = self.people.get(actor)
@@ -1081,6 +1085,7 @@ class VerbAPI:
                     archive(db, project.id, notes[project.id], self.people.registry._clock())
         counts = f'archived={len(notes)}'
         scanned, skipped, changes = 0, 0, {'raised': 0, 'continued': 0, 'announced': 0}
+        read_all: set[str] = set()  # the Projects whose every line was read in this run
         for project in projects:
             owners = sorted(self._coordinators(project.id)) if project.id in notes else []
             if not owners:
@@ -1090,13 +1095,15 @@ class VerbAPI:
             try:
                 done = ConcernScanner(ConcernStore(self.people.registry, self.people.tokens)).process_notes(project.id, owner, notes[project.id], lambda payload: classify(self.llm_service, payload, actor=owner, registry=self.people.registry))
                 scanned += 1
+                if not done['unread']:
+                    read_all.add(project.id)
                 changes = {name: count + done[name] for name, count in changes.items()}
             except ValueError:
                 continue
             except ClassifyRefused as refused:
                 print(f't6.server: concern scan stopped: llm run refused rule={refused.rule} {counts} projects={scanned}', file=sys.stderr, flush=True)  # rule only: no text
                 return False
-        # Pending closes are applied at the end of the run, after every new line was read (#639): every close made before the latest
+        # Pending closes are applied at the end of the run, after every new line was read (#639), and only for the Projects whose lines were all read: every close made before the latest
         # Monday 08:30 Manila, the start of that PSR, on or before the slot. The Monday 21:00 run applies them; a failed run applies
         # nothing, and the next run that completes applies what it left.
         from datetime import timedelta
@@ -1105,7 +1112,7 @@ class VerbAPI:
         psr = (day - timedelta(days=day.weekday())).replace(hour=8, minute=30, second=0, microsecond=0)
         if psr.timestamp() > slot:
             psr -= timedelta(days=7)
-        applied = ConcernScanner(ConcernStore(self.people.registry, self.people.tokens)).apply_pending(psr.timestamp())
+        applied = ConcernScanner(ConcernStore(self.people.registry, self.people.tokens)).apply_pending(psr.timestamp(), read_all)
         print(f't6.server: concern scan {counts} projects={scanned} skipped={skipped} ' + ' '.join(f'{name}={count}' for name, count in changes.items()) + f' applied={applied}', file=sys.stderr, flush=True)  # counts only: no text
         return True
 
@@ -1282,6 +1289,7 @@ class VerbAPI:
                             if inputs.kind
                             else {}
                         )
+                        master_briefs = {str(r[0]) for r in db.execute('SELECT id FROM persons WHERE master_brief = 1').fetchall()}
                     people = []
                     for c in raw_contacts:
                         key = normalize_page_id(c.page_id)
@@ -1289,6 +1297,7 @@ class VerbAPI:
                             raise RegistryError('notion_page_id must not be blank')
                         item = asdict(c)
                         item['t6_id'] = contact_bindings.get(key)
+                        item['master_brief'] = item['t6_id'] in master_briefs
                         if (inputs.registered is None or (item['t6_id'] is not None) == inputs.registered) and (
                             inputs.kind is None or kinds.get(item['t6_id'] or '') == inputs.kind
                         ):

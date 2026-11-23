@@ -564,8 +564,8 @@ a term describes behaviour that is decided but not yet built, it says so.
   one under an "As of <date>" header; only dated lines are read.
 - **Autoscan**: the run that reads new dated lines, archives them in the PM
   Notes history and matches them to Concerns. It runs daily at 21:00 Manila
-  and not at API start; one catch-up runs at start when the most recent 21:00
-  has no completed run. The Monday 21:00 run, after the PSR, is the one that
+  and not at API start; one catch-up runs at start when a run completed before the most recent 21:00
+  and none since; the first start after the upgrade runs none. The Monday 21:00 run, after the PSR, is the one that
   settles pending closes.
 - **PM Notes history**: every dated line the autoscan has read, one row per
   Project, date and line text, with first seen, last seen and removed (the
@@ -575,18 +575,20 @@ a term describes behaviour that is decided but not yet built, it says so.
 - **Close**: a person's close of a Concern through Sixto (verb `resolve`). Only
   a **Closer** may Close: a Telegram user id on the Closer setting
   (`T6_CLOSER_TELEGRAM_IDS`); anyone else is refused with `closer`. It becomes
-  a pending close. Undo (verb `reopen`) cancels it.
+  a pending close. Undo (verb `reopen`) cancels it; only a Closer may Undo.
 - **Done line**: a dated line that says a Concern is finished (the scan's
   `settles`). It becomes a pending close. It replaces "announce".
 - **Pending close**: a Close or Done line waiting for the next Monday 21:00
   autoscan. That run applies it at its end unless a veto came first. A close
   made after Monday 08:30 Manila waits for the following Monday. A failed run
-  applies nothing; the next run that completes applies what it left. A
+  applies nothing; the next run that completes applies what it left. A run
+  decides only the Projects whose lines it all read. A
   Concern with a pending close is still open, but `concern list` shows it only
   in its `pending` list.
 - **Veto**: a dated line, dated between the pending close and that Monday's
   autoscan, that the scan reads as continuing the Concern. It cancels the
-  pending close. The MOM does not count.
+  pending close, and dated after the Concern's as-of date. The MOM does not
+  count.
 - **Data close**: an immediate close from data (a Job Order done, an approval
   granted, a milestone met, a Project date filled in). It replaces "settle".
 - **Snooze**, **quiet** and **expired** are not used. Snooze is removed and

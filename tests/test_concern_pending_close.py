@@ -193,6 +193,63 @@ class PendingCloseTests(unittest.TestCase):
         nothing = self.confirmed('reopen', concern)
         self.assertEqual((nothing['outcome'], nothing['rule']), ('refused', 'state'))
 
+    def autoscan_with(self, at: str, read: object, answer: dict[str, Any] | None = None) -> None:
+        self.now = manila(at)
+        with patch.object(self.api, '_coordinators', return_value={'t6n_coordinator'}), patch.object(self.api, '_typed_read', return_value=read), \
+                patch('t6.concern_task.classify', return_value=answer), contextlib.redirect_stderr(io.StringIO()):
+            self.assertTrue(self.api.autoscan(self.now))
+
+    def test_a_close_stays_pending_while_its_projects_notes_were_not_read_in_the_run(self) -> None:
+        from t6.verbs import Refused
+        concern = self.raise_concern()
+        self.confirmed('resolve', concern)
+        self.autoscan_with('2026-11-30T21:00', Refused(rule='notion', reason='read failed'))
+        self.assertEqual(self.concern(concern), ('open', 0))
+        self.assertEqual(len(self.listed()['pending']), 1)
+        self.autoscan('2026-12-01T21:00')  # the next run that reads the notes applies it
+        self.assertEqual(self.concern(concern), ('closed', 1))
+
+    def test_a_close_stays_pending_while_a_line_of_its_project_was_left_unread(self) -> None:
+        concern = self.raise_concern()
+        self.confirmed('resolve', concern)
+        line = Done(result={'lines': [{'as_of': '2026-11-30', 'text': 'Lab says still waiting'}]})
+        self.autoscan_with('2026-11-30T21:00', line, None)  # no usable answer: the line is tried again next run
+        self.assertEqual(self.concern(concern), ('open', 0))
+        self.autoscan('2026-12-01T21:00', [{'as_of': '2026-11-30', 'text': 'Lab says still waiting'}], {'choice': 'nothing', 'quote': 'Lab says still waiting'})
+        self.assertEqual(self.concern(concern), ('closed', 1))
+
+    def test_reopening_a_quiet_concern_with_no_pending_close_opens_it_with_the_override(self) -> None:
+        concern = self.raise_concern()
+        with self.registry._transaction() as db:
+            db.execute("UPDATE concerns SET state = 'quiet' WHERE id = ?", (concern,))
+        self.assertEqual(self.confirmed('reopen', concern)['outcome'], 'done')
+        self.assertEqual(self.concern(concern), ('open', 1))
+
+    def settles(self, concern: str) -> str | None:
+        with self.registry._transaction() as db:
+            return db.execute('SELECT settles_id FROM concerns WHERE id = ?', (concern,)).fetchone()[0]  # type: ignore[no-any-return]
+
+    def test_the_settlement_of_a_close_is_set_only_when_it_is_applied(self) -> None:
+        job = str(T6Id.mint(EntityKind.JOB_ORDER))
+        applied, undone = self.raise_concern(), self.raise_concern('Waiting on lab for the DCP', 'lab')
+        for concern in (applied, undone):
+            self.keys += 1
+            body = {'concern': concern, 'settles_id': job, 'idempotency_key': f'r{self.keys}'}
+            self.call('/v1/concern/resolve', {**body, 'confirm': self.call('/v1/concern/resolve', body)['token']})
+        self.assertEqual((self.settles(applied), self.settles(undone)), (None, None))
+        self.confirmed('reopen', undone)
+        self.autoscan('2026-11-30T21:00')
+        self.assertEqual((self.settles(applied), self.settles(undone)), (job, None))
+
+    def test_only_a_closer_may_undo_a_pending_close(self) -> None:
+        concern = self.raise_concern()
+        self.confirmed('resolve', concern)
+        refused = self.confirmed('reopen', concern, telegram_id=COORDINATOR)
+        self.assertEqual((refused['outcome'], refused['rule']), ('refused', 'closer'))
+        self.assertEqual(len(self.listed()['pending']), 1)
+        self.autoscan('2026-11-30T21:00')
+        self.assertEqual(self.confirmed('reopen', concern, telegram_id=COORDINATOR)['outcome'], 'done')  # a plain reopen keeps the role rules
+
     def test_a_data_close_stays_immediate_and_a_date_rule_concern_refuses_resolve(self) -> None:
         from t6.concern import ConcernStore
         store = ConcernStore(self.registry, PreviewTokens('secret'))
