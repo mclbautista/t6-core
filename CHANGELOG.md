@@ -4,6 +4,19 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.22] - 2026-11-23
+
+The Concern scan stops re-sending lines whose reply is invalid, and drive reads and privacy masking are faster. The schema moves from 49 to 50 (index-only migration, not forward-only: 0.6.21 still opens it).
+
+### Fixed
+
+- Concern scan: a PM Notes line whose LLM reply fails the output schema now counts as a rejected answer, and the line is held after 3 attempts instead of being re-sent on every daily scan (#610, part of #504).
+
+### Changed
+
+- Drive reads: indexes on the Drive child tables (migration 50) and a paginated drive list, so inventory, shipment and drive-get reads avoid full table scans (#609).
+- Privacy masking: a faster matcher for registered names (#609).
+
 ## [0.6.21] - 2026-11-23
 
 Guest reviewers' names on passphrase shares. No migration: the schema stays at 49.
