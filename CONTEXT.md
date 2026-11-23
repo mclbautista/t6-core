@@ -414,8 +414,10 @@ ADMIN, then any other Department A to Z, then none) and the alias `TO` for
 
 - **Manila**: Asia/Manila is the one studio zone (`MANILA`), a fixed UTC+8
   because it has no daylight saving. Every date shown or compared uses it.
-- **Shift calendar**: three shift reports a day, at 05:00, 11:30 and 19:00
+- **Shift calendar**: three **turnover reports** a day, at 05:00, 11:30 and 19:00
   (`SHIFT_REPORT_SLOTS`). Each covers the time since the previous one went out.
+  "Turnover report" is the one name for all three ("shift report" and
+  "end-of-shift report" are not used); the slot titles stay.
 - **Deadline**: `deadline(phrase, posted_at, assignees)`. A stated time is used
   as is; a date with no time means 23:59. "End of shift", "within shift" and
   "asap" use the latest assignee end of shift at or after posting; a morning
@@ -454,10 +456,18 @@ ADMIN, then any other Department A to Z, then none) and the alias `TO` for
   at 0.9 for `no`, otherwise `unsure`). The `job_order` rule asks whether a message
   is a request for work: chatter, questions and replies that ask for no work are
   not Job Orders. The texts sit in `t6.domain.job_order_rules`.
-- **Status groups**: not started (Needs Intake Review, Pending), started (In
+- **Status groups**: not started (On Hold, Needs Intake Review, Pending), started (In
   progress, Needs Completion Review, Done), cancelled. Active means not Done
   and not Cancelled.
-- **Health flags** that show: Blocked, Delayed, Urgent.
+- **Health**: the Notion Health formula, read by its words, ignoring emoji.
+  Closed (Done or Cancelled), Blocked (Blocker has text, or Status is On
+  Hold), Delayed (past the Deadline), Urgent (0 to 5 hours to the Deadline),
+  Advanced (2 days or more to the Deadline), On Track (anything else). Every
+  turnover report line starts with its Health icon: ✅ Closed, 🔴 Blocked,
+  ⚠️ Delayed, 🔥 Urgent, ⚡️ Advanced, 🔵 On Track. Being built: today only
+  the **Health flags** Blocked, Delayed and Urgent show.
+- **On Hold**: a not-started Status (Notion To-do group). Its Health is
+  Blocked. Being built: the code does not know this Status yet.
 
 ## Project status rules
 
@@ -529,6 +539,48 @@ close. An app keeps no Concern list of its own. Each Concern has a source:
 `person`, `pm_notes_scan`, `date_rule`, `flag_rule`, `pm_notes_read` or
 `leave`. A Concern may have no owner and may wait on nobody. None of these
 sources is chat text (ADR 0007).
+
+Terms fixed by the owner on 2026-11-23 (Concerns and JO turnover grill). Where
+a term describes behaviour that is decided but not yet built, it says so.
+
+- **PSR**: the Monday production status review meeting, and only that.
+- **MOM**: the minutes of the PSR (the Notion minutes page and its send). Not
+  "minutes draft". Paused from 2026-11-23 until the owner turns it back on.
+- **Wednesday brief**: the whole weekly send at Wednesday 10:00 Manila. It
+  replaces the Saturday 12:00 send ("PSR brief", "Saturday briefing"). Being
+  built. It has two parts:
+  - **Master brief**: a DM to each Person with `master_brief` on. It holds
+    every Project, every Open Concern and every pending close. It replaces the
+    "PSR digest".
+  - **Coordinator brief**: the coordinators' Projects, posted to Sixto's
+    channel topic. It replaces the per-coordinator "PSR briefing" DM. It holds
+    no Concerns until the Concern DM setting says `coordinators` (it says
+    `master` at rollout).
+- **Open Concerns**: the brief section that lists every open Concern. It
+  replaces "Raise at PSR".
+- **Closing after PSR**: the brief section that lists the pending closes.
+- **Concern line**: one bullet in either section: `Project: text · last
+  evidence <date> · owner <name> · waiting on <party> · open N days`.
+- **PM Notes**: the Projects text the coordinators write. A **dated line** is
+  one under an "As of <date>" header; only dated lines are read.
+- **Autoscan**: the run that reads new dated lines, archives them in the PM
+  Notes history and matches them to Concerns. It runs daily at 21:00 Manila
+  and not at API start (being built; today it runs every 24 h from start).
+  The Monday 21:00 run, after the PSR, is the one that settles pending closes.
+- **Close**: a person's close of a Concern through Sixto (verb `resolve`). Only
+  a **Closer** may Close: a Telegram user id on the Closer setting. It becomes
+  a pending close (being built; today it closes at once).
+- **Done line**: a dated line that says a Concern is finished (the scan's
+  `settles`). It becomes a pending close. It replaces "announce".
+- **Pending close**: a Close or Done line waiting for the next Monday 21:00
+  autoscan. That run applies it at its end unless a veto came first.
+- **Veto**: a dated line, dated between the pending close and that Monday's
+  autoscan, that the scan reads as continuing the Concern. It cancels the
+  pending close. The MOM does not count.
+- **Data close**: an immediate close from data (a Job Order done, an approval
+  granted, a milestone met, a Project date filled in). It replaces "settle".
+- **Snooze**, **quiet** and **expired** are not used. Snooze is being removed;
+  quiet and expired are legacy states that do nothing.
 
 ## Consumer contract
 
