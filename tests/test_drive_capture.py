@@ -19,7 +19,8 @@ from t6.worker.internal_queue import InternalJobQueue
 class CaptureTests(DriveReloadFixture):
     def setUp(self) -> None:
         super().setUp()
-        self.enterContext(patch.dict(os.environ, {'T6_DRIVE_RECORDING_CHAT_ID': '-900001'}))
+        self.enterContext(patch.dict(os.environ, {'T6_DRIVE_RECORDING_CHAT_ID': '-900001',
+                                                'T6_DRIVE_RECORDING_TOPIC_ID': ''}))
         self.workbook({'SYNTHETIC PROJECT': [HEADER, ['Synthetic first', 'SAMPLE-FIRST'],
                                             ['Synthetic second', 'SAMPLE-SECOND']]})
         self.reload()
@@ -210,6 +211,19 @@ class CaptureTests(DriveReloadFixture):
         self.assertEqual(self.queue.find('drive.capture.resolve'), [])
         self.assertEqual(self.fake.calls, [])
 
+    def test_other_or_missing_topic_is_refused_before_storage_or_photo_read(self) -> None:
+        with patch.dict(os.environ, {'T6_DRIVE_RECORDING_TOPIC_ID': '4801'}):
+            for values in (self.post, {**self.post, 'topic_id': 4802},
+                           {**self.post, 'chat_id': -900002, 'topic_id': 4801}):
+                with self.subTest(chat=values['chat_id'], topic=values.get('topic_id')):
+                    result = self.api('capture', **values)
+                    self.assertEqual((result['outcome'], result.get('rule')), ('refused', 'recording_channel'))
+        self.assertEqual(self.queue.find('drive.capture.resolve'), [])
+        self.assertEqual(self.call('exceptions').result['captures'], [])
+        self.assertEqual(self.fake.calls, [])
+        # A refused delivery must leave its Telegram key available for a valid post.
+        self.assertEqual(self.api('capture', **self.post)['outcome'], 'done')
+
     def test_no_open_assignment_lands_on_needs_project_list(self) -> None:
         from t6.verbs import VERBS, invoke
         drive = self.drives()[0]['id']
@@ -339,6 +353,54 @@ class CaptureTests(DriveReloadFixture):
             self.resolve([])
         self.assertEqual(self.fake.calls, [])
         self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'pending')
+
+    def test_resolution_rechecks_stored_topic_before_sending_photo(self) -> None:
+        with patch.dict(os.environ, {'T6_DRIVE_RECORDING_TOPIC_ID': '4801'}):
+            capture = self.api('capture', **{**self.post, 'topic_id': 4801})['result']['capture']
+        with patch.dict(os.environ, {'T6_DRIVE_RECORDING_TOPIC_ID': '4802'}):
+            self.resolve([])
+        self.assertEqual(self.fake.calls, [])
+        self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'pending')
+
+    def test_follow_up_rechecks_stored_topic(self) -> None:
+        with patch.dict(os.environ, {'T6_DRIVE_RECORDING_TOPIC_ID': '4801'}):
+            capture = self.api('capture', **{**self.post, 'topic_id': 4801})['result']['capture']
+        with patch.dict(os.environ, {'T6_DRIVE_RECORDING_TOPIC_ID': '4802'}):
+            result = self.api('capture', capture=capture, text='Synthetic first', topic_id=4802)
+        self.assertEqual((result['outcome'], result.get('rule')), ('refused', 'recording_channel'))
+        self.assertEqual(len(self.queue.find('drive.capture.resolve')), 1)
+
+    def test_matching_topic_is_kept_for_resolution_through_client_and_cli(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from t6.cli import main
+        from t6.client import Client
+        from t6.verbs import Done, DriveCaptureInput
+        env = {'T6_API_URL': f'http://127.0.0.1:{self.server.server_port}',
+               'T6_API_SECRET': 'synthetic-gateway', 'T6_DRIVE_RECORDING_TOPIC_ID': '4801'}
+        with patch.dict(os.environ, env):
+            first = Client().drive_capture(DriveCaptureInput.model_validate({**self.post, 'topic_id': 4801}))
+            self.assertIsInstance(first, Done)
+            args = ['drive', 'capture']
+            for key, value in {**self.post, 'topic_id': 4801, 'message_id': 2}.items():
+                args.append('--' + key.replace('_', '-') + '=' + str(value))
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(main(args), 0)
+            second = json.loads(output.getvalue())
+            self.resolve([])
+            self.resolve([])
+        assert isinstance(first, Done)
+        for capture in (first.result['capture'], second['result']['capture']):
+            self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'exception')
+        self.assertEqual(len(self.fake.calls), 4)
+
+    def test_no_configured_topic_admits_posts_with_or_without_a_topic(self) -> None:
+        for message, topic in enumerate((None, 4801, 4802), 1):
+            with self.subTest(topic=topic):
+                result = self.api('capture', **{**self.post, 'message_id': message, 'topic_id': topic})
+                self.assertEqual(result['outcome'], 'done', result)
+        self.assertEqual(len(self.queue.find('drive.capture.resolve')), 3)
 
     def test_undo_restores_unknown_when_drive_had_no_previous_events(self) -> None:
         values = dict(label='Synthetic new', serial='SAMPLE-NEW', idempotency_key='synthetic-new')

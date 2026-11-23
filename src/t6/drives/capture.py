@@ -31,6 +31,11 @@ def recording_chat(environ: Mapping[str, str] | None = None) -> int | None:
     return int(value) if value else None
 
 
+def recording_topic(environ: Mapping[str, str] | None = None) -> int | None:
+    value = (os.environ if environ is None else environ).get('T6_DRIVE_RECORDING_TOPIC_ID')
+    return int(value) if value else None
+
+
 def capture_post(registry: SqliteProjectRegistry, inputs: DriveCaptureInput) -> Outcome:
     if inputs.capture:
         queue = InternalJobQueue(registry)
@@ -39,7 +44,8 @@ def capture_post(registry: SqliteProjectRegistry, inputs: DriveCaptureInput) -> 
             if row is None:
                 return Refused(rule='capture', reason='Capture not found')
             data = json.loads(row[0])
-            if data['chat_id'] != recording_chat():
+            if recording_input(data['chat_id'], '', b'', recording_chat_id=recording_chat(),
+                               topic_id=data.get('topic_id'), recording_topic_id=recording_topic()) is None:
                 return Refused(rule='recording_channel', reason='Only the configured recording channel is accepted')
             if not inputs.text.strip():
                 return Refused(rule='input', reason='Give a label or serial')
@@ -55,10 +61,12 @@ def capture_post(registry: SqliteProjectRegistry, inputs: DriveCaptureInput) -> 
     assert inputs.chat_id is not None and inputs.photo is not None
     try:
         configured = recording_chat()
+        topic = recording_topic()
         photo = base64.b64decode(inputs.photo, validate=True)
     except (ValueError, binascii.Error):
-        return Refused(rule='input', reason='Invalid recording chat configuration or base64 photo')
-    admitted = recording_input(inputs.chat_id, inputs.text, photo, recording_chat_id=configured)
+        return Refused(rule='input', reason='Invalid recording channel configuration or base64 photo')
+    admitted = recording_input(inputs.chat_id, inputs.text, photo, recording_chat_id=configured,
+                               topic_id=inputs.topic_id, recording_topic_id=topic)
     if admitted is None:
         return Refused(rule='recording_channel', reason='Only the configured recording channel is accepted')
     key = f'{inputs.chat_id}:{inputs.message_id}'
@@ -100,7 +108,8 @@ class CaptureResolver:
             data = json.loads(row[0])
             if data['state'] != 'pending' or data.get('revision', 0) != job.payload.get('revision', 0):
                 return _result(data)
-            admitted = recording_input(data['chat_id'], data['text'], row[1], recording_chat_id=recording_chat(self.environ))
+            admitted = recording_input(data['chat_id'], data['text'], row[1], recording_chat_id=recording_chat(self.environ),
+                                       topic_id=data.get('topic_id'), recording_topic_id=recording_topic(self.environ))
             if admitted is None:
                 raise ValueError('Capture no longer belongs to the configured recording channel')
         reading = read_drive_photo(Image(admitted.photo, ImageType(data['media_type'])), provider=self.provider)

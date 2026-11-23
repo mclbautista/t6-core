@@ -20,9 +20,10 @@ reading or matching. The photo may go to the LLM only to read Drive labels
 and serials; this does not authorize sending the surrounding conversation.
 Photo retention follows the provider retention policy modelled in `t6.llm`.
 
-The recording channel's chat ID is explicitly configured, never guessed from
+The recording channel is chat ID plus topic ID (the whole chat when no topic is configured).
+Both are explicitly configured, never guessed from
 a chat title, Project link, membership or message content. Without that
-configuration no chat qualifies. Only that exact chat ID admits text for
+chat configuration no chat qualifies. Only that exact chat and configured topic admit text for
 capture or a photo for the label read. Both capture admission and photo
 resolution must enforce this boundary.
 
@@ -34,7 +35,7 @@ chatter. QR labels and QR scanning are not used for recording.
 ## Consequences
 
 - The recording-input guard is exercised in `tests/test_drive_recording.py`:
-  only an exact configured chat ID admits text and photo, and missing
+  only an exact configured chat ID and topic ID admit text and photo, and missing chat
   configuration admits neither. Capture persistence and LLM resolution are
   built by the subsequent tickets in #615 and must use this boundary.
 - The existing ADR 0007 guard tests in `tests/test_linked_chats.py` and

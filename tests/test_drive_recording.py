@@ -24,3 +24,17 @@ class RecordingChannelTests(unittest.TestCase):
                             self.assertEqual(admitted.photo, b'synthetic drive photo')
                         else:
                             self.assertIsNone(admitted)
+
+    def test_only_the_configured_topic_admits_text_and_photo(self) -> None:
+        for topic in (4801, 4802, None):
+            with self.subTest(topic=topic):
+                admitted = recording_input(
+                    -900001, 'IN SHELF', b'synthetic drive photo', topic_id=topic,
+                    recording_chat_id=-900001, recording_topic_id=4801,
+                )
+                if topic == 4801:
+                    assert admitted is not None
+                    self.assertEqual(admitted.text, 'IN SHELF')
+                    self.assertEqual(admitted.photo, b'synthetic drive photo')
+                else:
+                    self.assertIsNone(admitted)
