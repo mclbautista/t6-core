@@ -26,6 +26,27 @@ All notable changes to this project are documented here, following [Keep a Chang
 - Concern autoscan: runs once a day at `T6_CONCERN_AUTOSCAN_AT` (default 21:00 Manila) instead of on an interval, with one catch-up at start when the last slot was missed; `T6_CONCERN_AUTOSCAN_SECONDS` is gone. Each run archives PM Notes before scanning (#638).
 - Closes wait for the next PSR: `concern resolve` and a Done line (the scan's `settles`) record a pending close instead of closing, and no longer schedule a `concern_pm_close` timer (a queued one is acknowledged and does nothing). The Monday 21:00 autoscan applies, at the end of its run, every pending close made before that Monday 08:30 Manila; a failed run applies nothing and the next completed run applies what it left. A continuing line before then is a veto; `concern reopen` on a pending close is Undo. `manual_override` is set only when a Close is applied. Data closes stay immediate. The run log adds `applied=N`. Migration 58 adds `concern_pending_closes` and moves the open week-timer rows into it; `concern_pm_pending` stays, empty, so the previous release still opens the file. Not forward-only (#639).
 
+## [0.6.23] - 2026-11-24
+
+Drives are loaded from the custodian's sheets, and drive movements are recorded from the TRANSMITTAL chat. The schema moves from 50 to 55 (additive migrations, not forward-only: 0.6.22 still opens it). Nothing is deployed by this release; the gateway and the web app follow in their own repositories.
+
+### Added
+
+- ADR 0009: TRANSMITTAL is a configured recording channel that amends ADR 0007 for one chat, plus the drive glossary terms (#628, part of #615).
+- `drive reload`: replaces all Drive data from the per-project sheet in one transaction, keeps each accepted serial's Drive ID across reloads, and writes a reload report (#629).
+- `t6.llm` image input and a drive photo-read task that returns labels and maker serials (#630).
+- `drive mapping propose` and `drive mapping apply`: a checked mapping from sheet Project names to registered Projects, with unmapped names listed in the report (#631).
+- Movement records, tracker loading, `movement list`, `movement correct` and Project counts (#633).
+- A Google Sheets source (read-only), a nightly reload at midnight Manila time, practice mode and `drive cutover` (#634).
+- `drive overdue` and a daily 08:00 Manila reminder to the configured custodian for T6 Drives out more than 14 days (#641).
+- `drive capture`, its resolution job, follow-up labels, `drive capture undo` and the capture result read (#642).
+- A Jev filter that ignores TRANSMITTAL posts that are not drive transmittals and keeps nothing from them (#643).
+
+### Fixed
+
+- Frame.io: a share scan stops after a time budget so it cannot hold the worker for minutes (#627).
+- Small gaps left after 0.6.8 (#614).
+
 ## [0.6.22] - 2026-11-23
 
 The Concern scan stops re-sending lines whose reply is invalid, and drive reads and privacy masking are faster. The schema moves from 49 to 50 (index-only migration, not forward-only: 0.6.21 still opens it).

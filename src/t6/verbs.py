@@ -2243,10 +2243,10 @@ class DriveCaptureLine(BaseModel):
 
 class DriveCaptureOutput(BaseModel):
     capture: str
-    state: Literal['pending', 'resolved', 'exception', 'undone']
+    state: Literal['pending', 'resolved', 'exception', 'undone', 'ignored']
     lines: list[DriveCaptureLine]
     differences: list[str]
-    photo_reference: str
+    photo_reference: str | None
     message: str | None = None
     practice: bool = True
 
