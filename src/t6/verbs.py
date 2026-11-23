@@ -2377,6 +2377,8 @@ class DriveListInput(BaseModel):
     project: str | None = None
     status: Literal['in custody', 'released', 'retired', 'unknown'] | None = None
     office_location: str | None = None  # a Drive whose location contains this text, in any case
+    limit: int | None = Field(default=None, ge=1)
+    offset: int = Field(default=0, ge=0)
 
 
 class DriveGetInput(BaseModel):
@@ -2476,6 +2478,7 @@ class DriveListItem(DriveItem):
 
 class DriveListOutput(BaseModel):
     drives: list[DriveListItem]
+    total: int
 
 
 class DriveGetOutput(BaseModel):
@@ -2735,7 +2738,7 @@ VERBS = (
     Verb('drive', 'catalog-snapshots', 'List the scans of a Drive', (), DriveCatalogSnapshotsInput, DriveCatalogSnapshotsOutput, 'reader', 'Oldest first, each with its date, entry count and total bytes.', drive_read, read_only=True),
     Verb('drive', 'catalog-diff', 'Show what one scan of a Drive changed', (), DriveCatalogDiffInput, DriveCatalogDiffOutput, 'reader', 'The paths added, modified or removed by the snapshot, in path order.', drive_read, read_only=True),
     Verb('drive', 'catalog-at', 'Show what a Drive held on a day', (), DriveCatalogAtInput, DriveCatalogAtOutput, 'reader', 'The whole tree as of the latest scan dated on or before the day, in path order; prefix limits it to one folder. Refused when the Drive had no scan by then.', drive_read, read_only=True),
-    Verb('drive', 'list', 'List Drives with their custody status', (), DriveListInput, DriveListOutput, 'reader', 'Filters (q, serial, needs_review, project, status, office_location) combine with AND. project is a T6 Project ID with an open Assignment. Each Drive carries its version and open Assignments.', drive_read, read_only=True),
+    Verb('drive', 'list', 'List Drives with their custody status', (), DriveListInput, DriveListOutput, 'reader', 'Filters (q, serial, needs_review, project, status, office_location) combine with AND; optional limit and offset page the result and total gives the count before paging. project is a T6 Project ID with an open Assignment. Each Drive carries its version and open Assignments.', drive_read, read_only=True),
     Verb('drive', 'get', 'Show one Drive', (), DriveGetInput, DriveGetOutput, 'reader', 'Facts, status, custody events in append order, numbered Assignments, source rows and linked Deliveries.', drive_read, read_only=True),
     Verb('drive', 'find', 'Find Drives by serial', (), DriveFindInput, DriveFindOutput, 'reader', 'Give a serial or a qr_code. A serial matches an accepted or a suspected one, in any spelling; a QR code matches in any case.', drive_read, read_only=True),
     Verb('drive', 'shipments', 'List Drive shipments', (), DriveShipmentsInput, DriveShipmentsOutput, 'reader', 'One entry for each shipment, in the order first released.', drive_read, read_only=True),

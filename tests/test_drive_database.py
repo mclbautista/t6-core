@@ -278,3 +278,89 @@ class DriveDatabaseTests(unittest.TestCase):
                 db.execute("DELETE FROM bindings WHERE page_id='project-paper-moon'")
             import_per_project_workbook(path, store, lookup=make_lookup(), logged_by=LOGGED_BY)
             self.assertEqual(store.exceptions(), before)
+
+    def test_bulk_statuses_and_open_assignments_match_across_sqlite_and_memory(self) -> None:
+        from datetime import date
+        from t6.drives import Assignment, CustodyEvent, CustodyKind, DriveStatus, DriveStore, Ref, Role
+        from t6.drives.testing import InMemoryDriveStore
+        from t6.registry import Registered
+
+        registry = MemoryRegistry()
+        self.addCleanup(registry.db.close)
+        registry._new_id = lambda: 't6p_0123456789abcdef01234567'
+        project = registry.register(actor='test', idempotency_key='bulk-proj')
+        assert isinstance(project, Registered)
+        proj_ref = Ref(page_id=project.project.id)
+        stores: list[DriveStore] = [SqliteDriveStore(registry), InMemoryDriveStore()]
+
+        for store in stores:
+            with self.subTest(store=type(store).__name__):
+                a = store.add_drive(Drive(serial='BULK-A')).id
+                b = store.add_drive(Drive(serial='BULK-B')).id
+                c = store.add_drive(Drive(serial='BULK-C')).id
+                ev_in = CustodyEvent(kind=CustodyKind.RECEIVED, on=date(2026, 1, 1), party=None, project=proj_ref, logged_by=Ref(text='k'))
+                ev_out = CustodyEvent(kind=CustodyKind.RELEASED, on=date(2026, 1, 2), party=None, project=proj_ref, logged_by=Ref(text='k'))
+                store.append_event(a, ev_in)
+                store.append_event(b, ev_in)
+                store.append_event(b, ev_out)
+                store.add_assignment(a, Assignment(label='A1', project=proj_ref, role=Role.MASTER, start=date(2026, 1, 1)))
+                store.add_assignment(a, Assignment(label='A2', project=proj_ref, role=Role.BACKUP, start=date(2026, 1, 2)))
+                store.end_assignment(a, 1, date(2026, 1, 3))
+                store.add_assignment(b, Assignment(label='B1', project=proj_ref, role=Role.MASTER, start=date(2026, 1, 1), end=date(2026, 1, 2)))
+
+                self.assertEqual(store.status(a), DriveStatus.IN_CUSTODY)
+                self.assertEqual(store.status(b), DriveStatus.RELEASED)
+                self.assertIsNone(store.status(c))
+                self.assertEqual(
+                    store.statuses(),
+                    {a: DriveStatus.IN_CUSTODY, b: DriveStatus.RELEASED, c: None},
+                )
+                self.assertEqual(
+                    store.statuses([b, c, b, 't6d_' + '0' * 32]),
+                    {b: DriveStatus.RELEASED, c: None},
+                )
+                self.assertEqual(store.statuses([]), {})
+
+                opened_all = store.open_assignments_by_drive()
+                self.assertEqual(list(opened_all.keys()), [a])
+                self.assertEqual([(n, x.label) for n, x in opened_all[a]], [(2, 'A2')])
+                opened_sub = store.open_assignments_by_drive([a, a, b, 't6d_' + '0' * 32])
+                self.assertEqual(list(opened_sub.keys()), [a])
+                self.assertEqual([(n, x.label) for n, x in opened_sub[a]], [(2, 'A2')])
+                self.assertEqual(store.open_assignments_by_drive([]), {})
+
+    def test_sqlite_bulk_reads_handle_more_than_500_drive_ids_and_migration_50_indexes_exist(self) -> None:
+        from datetime import date
+        from t6.drives import Assignment, CustodyEvent, CustodyKind, DriveStatus, Ref, Role
+        from t6.registry import Registered
+
+        registry = MemoryRegistry()
+        self.addCleanup(registry.db.close)
+        with registry._transaction() as db:
+            indexes = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+        self.assertTrue({
+            'drive_events_by_drive',
+            'drive_events_by_shipment',
+            'drive_assignments_by_drive',
+            'drive_imports_by_drive',
+            'delivery_drives_by_drive',
+        } <= indexes)
+
+        registry._new_id = lambda: 't6p_0123456789abcdef01234567'
+        project = registry.register(actor='test', idempotency_key='chunk-proj')
+        assert isinstance(project, Registered)
+        proj_ref = Ref(page_id=project.project.id)
+        with registry._transaction() as db:
+            store = SqliteDriveStore(registry, within=db)
+            ids = [store.add_drive(Drive(serial=f'CHK-{i:04d}')).id for i in range(520)]
+            store.append_event(ids[0], CustodyEvent(kind=CustodyKind.RECEIVED, on=date(2026, 1, 1), party=None, project=proj_ref, logged_by=Ref(text='k')))
+            store.append_event(ids[-1], CustodyEvent(kind=CustodyKind.RETIRED, on=date(2026, 1, 2), party=None, project=proj_ref, logged_by=Ref(text='k'), reason='worn'))
+            store.add_assignment(ids[-1], Assignment(label='LAST', project=proj_ref, role=Role.MASTER, start=date(2026, 1, 1)))
+            statuses = store.statuses(ids)
+            opened = store.open_assignments_by_drive(ids)
+        self.assertEqual(len(statuses), 520)
+        self.assertEqual(statuses[ids[0]], DriveStatus.IN_CUSTODY)
+        self.assertIsNone(statuses[ids[1]])
+        self.assertEqual(statuses[ids[-1]], DriveStatus.RETIRED)
+        self.assertEqual(list(opened.keys()), [ids[-1]])
+        self.assertEqual([(n, a.label) for n, a in opened[ids[-1]]], [(1, 'LAST')])

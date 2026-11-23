@@ -6,8 +6,9 @@ way the Drive web app's inventory screen does, and its filters combine with AND.
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 
-from t6.drives import Assignment, CatalogSnapshot, CustodyEvent, Drive, DriveStore, Party, Ref, normalize_serial
+from t6.drives import Assignment, CatalogSnapshot, CustodyEvent, Drive, DriveStatus, DriveStore, Party, Ref, normalize_serial
 from t6.verbs import (DriveCatalogAtOutput, DriveCatalogChange, DriveCatalogDiffOutput, DriveCatalogEntryItem, DriveCatalogSnapshotItem,
                       DriveCatalogSnapshotsOutput, DriveAssignmentItem, DriveEventItem, DriveExceptionItem, DriveExceptionsOutput, DriveFindOutput, DriveGetOutput, DriveItem,
                       DriveListItem, DriveListOutput, DriveMatch, DriveParty, DriveRef, DriveRelease, DriveShipmentItem, DriveShipmentOutput,
@@ -26,13 +27,24 @@ def _party(party: Party | None) -> DriveParty | None:
     return DriveParty(kind=party.kind.value, ref=_ref(party.ref)) if party else None
 
 
+def _status_value(status: DriveStatus | None) -> str:
+    return status.value if status is not None else 'unknown'
+
+
+def _drive_fields(drive: Drive, status: DriveStatus | None) -> dict[str, Any]:
+    return {
+        'id': drive.id, 'label': drive.label, 'description': drive.description, 'serial': drive.serial,
+        'suspected_serial': drive.suspected_serial, 'needs_review': drive.needs_review, 'review_note': drive.review_note,
+        'brand': drive.brand, 'model': drive.model, 'capacity_tb': drive.capacity_tb, 'format': drive.format,
+        'form_factor': drive.form_factor.value if drive.form_factor else None, 'ownership': drive.ownership.value,
+        'owner_studio_id': drive.owner_studio_id, 'purchase_date': _day(drive.purchase_date), 'warranty': drive.warranty,
+        'remarks': drive.remarks, 'office_location': drive.office_location, 'qr_code': drive.qr_code,
+        'version': drive.version, 'status': _status_value(status),
+    }
+
+
 def _item(store: DriveStore, drive: Drive) -> DriveItem:
-    status = store.status(drive.id)
-    return DriveItem(id=drive.id, label=drive.label, description=drive.description, serial=drive.serial, suspected_serial=drive.suspected_serial,
-                     needs_review=drive.needs_review, review_note=drive.review_note, brand=drive.brand, model=drive.model, capacity_tb=drive.capacity_tb,
-                     format=drive.format, form_factor=drive.form_factor.value if drive.form_factor else None, ownership=drive.ownership.value,
-                     owner_studio_id=drive.owner_studio_id, purchase_date=_day(drive.purchase_date), warranty=drive.warranty, remarks=drive.remarks,
-                     office_location=drive.office_location, qr_code=drive.qr_code, version=drive.version, status=status.value if status else 'unknown')
+    return DriveItem(**_drive_fields(drive, store.status(drive.id)))
 
 
 def _event(event: CustodyEvent) -> DriveEventItem:
@@ -46,24 +58,49 @@ def _assignment(number: int, assignment: Assignment) -> DriveAssignmentItem:
                                remarks=assignment.remarks, return_date=_day(assignment.return_date), holder=assignment.holder, open=assignment.is_open)
 
 
+def _slice(items: list[Drive], offset: int, limit: int | None) -> list[Drive]:
+    return items[offset : offset + limit] if limit is not None else items[offset:]
+
+
 def list_drives(store: DriveStore, *, q: str | None = None, serial: str | None = None, needs_review: bool | None = None,
                 project: str | None = None, status: str | None = None,
-                office_location: str | None = None) -> DriveListOutput:
+                office_location: str | None = None, limit: int | None = None, offset: int = 0) -> DriveListOutput:
     serial, project = (serial or '').strip(), (project or '').strip()
     place = (office_location or '').strip().casefold()
-    drives: tuple[Drive, ...] = store.list_drives()
     if serial:
         held = store.find_by_serial(serial)
-        drives = (held,) if held else ()
+        drives: tuple[Drive, ...] = (held,) if held else ()
+    else:
+        drives = store.list_drives()
     needle = (q or '').strip().casefold()
     out = {drive.id for drive, _ in store.open_assignments(Ref(page_id=project))} if project else None
     kept = [d for d in drives
             if (not needle or any(needle in (value or '').casefold() for value in (d.id, d.serial, d.suspected_serial, d.label, d.description, d.qr_code, d.office_location)))
             and (not place or place in (d.office_location or '').casefold())
             and (needs_review is None or d.needs_review == needs_review) and (out is None or d.id in out)]
-    items = [(_item(store, d), d) for d in kept]
-    return DriveListOutput(drives=[DriveListItem(**item.model_dump(), open_assignments=[_assignment(n, a) for n, a in enumerate(store.list_assignments(d.id), 1) if a.is_open])
-                                   for item, d in items if not status or item.status == status])
+    if status:
+        status_ids: list[str] | None = None if not serial and len(kept) == len(drives) else [d.id for d in kept]
+        status_by_id = store.statuses(status_ids) if kept else {}
+        matched = [d for d in kept if _status_value(status_by_id.get(d.id)) == status]
+        total = len(matched)
+        page = _slice(matched, offset, limit)
+    else:
+        total = len(kept)
+        page = _slice(kept, offset, limit)
+        page_ids: list[str] | None = None if not serial and len(page) == len(drives) else [d.id for d in page]
+        status_by_id = store.statuses(page_ids) if page else {}
+    assign_ids: list[str] | None = None if not serial and len(page) == len(drives) else [d.id for d in page]
+    open_by_drive = store.open_assignments_by_drive(assign_ids) if page else {}
+    return DriveListOutput(
+        drives=[
+            DriveListItem(
+                **_drive_fields(d, status_by_id.get(d.id)),
+                open_assignments=[_assignment(n, a) for n, a in open_by_drive.get(d.id, ())],
+            )
+            for d in page
+        ],
+        total=total,
+    )
 
 
 def get(store: DriveStore, drive_id: str) -> DriveGetOutput | None:

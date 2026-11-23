@@ -732,6 +732,23 @@ class DriveStore(Protocol):
         """
         ...
 
+    def statuses(self, drive_ids: Sequence[str] | None = None) -> dict[str, DriveStatus | None]:
+        """Current derived status for each requested Drive ID (or every recorded Drive when None).
+
+        Drives with no custody events map to None. Unknown IDs in `drive_ids` are omitted.
+        """
+        ...
+
+    def open_assignments_by_drive(
+        self, drive_ids: Sequence[str] | None = None
+    ) -> dict[str, tuple[tuple[int, Assignment], ...]]:
+        """Open Assignments keyed by Drive ID, omitting Drives with none.
+
+        Each entry holds `(number, assignment)` pairs where `number` is the 1-based position
+        in the Drive's full Assignment list (matching `list_assignments`).
+        """
+        ...
+
     def release_shipment(
         self, drive_ids: Iterable[str], *, on: date, party: Party, project: Ref, logged_by: Ref,
         shipment_id: str | None = None, reason: str | None = None, recipient: str | None = None

@@ -392,6 +392,12 @@ _MIGRATIONS = (
     # The latest bay scan report of each Bay: what its local Resolve disk library held when the Mac mini last scanned it (#376).
     (49, False, """CREATE TABLE bay_scan_reports (bay_id TEXT PRIMARY KEY REFERENCES bays(id), serial TEXT NOT NULL, scanned_at REAL NOT NULL,
         received_at REAL NOT NULL, report TEXT NOT NULL)"""),
+    # Index Drive child tables so inventory, shipment and drive-get reads avoid full table scans (t6-drives#19).
+    (50, False, """CREATE INDEX IF NOT EXISTS drive_events_by_drive ON drive_events (drive_id, id);
+    CREATE INDEX IF NOT EXISTS drive_events_by_shipment ON drive_events (shipment_id, id) WHERE shipment_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS drive_assignments_by_drive ON drive_assignments (drive_id, id);
+    CREATE INDEX IF NOT EXISTS drive_imports_by_drive ON drive_imports (drive_id);
+    CREATE INDEX IF NOT EXISTS delivery_drives_by_drive ON delivery_drives (drive_id)"""),
 )
 
 
