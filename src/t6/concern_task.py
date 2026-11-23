@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from t6.verbs import LLMRunInput, Done, Refused
+from t6.verbs import LLMRunInput, Refused
 
 PROMPT = '''Classify the single PM Notes line. A Concern is a delay or risk waiting on a person or party, not a general observation. Choose continues or settles only for a matching offered Concern ID, new only for a line waiting on someone, otherwise nothing. Rewording of an existing Concern continues it. Respect human_decision: match it to the existing ID rather than creating a duplicate. Return a verbatim quote from the line. For new, waiting_on must be the exact words in the line naming the party. Input: {input}'''
 SCHEMA: dict[str, Any] = {
@@ -30,4 +30,5 @@ def classify(service: Any, payload: dict[str, Any], *, actor: str, registry: Any
     result = service.run(inputs, actor=actor, registry=registry)
     if isinstance(result, Refused):
         raise ClassifyRefused(result.rule)
-    return result.result.output if isinstance(result, Done) and result.result.output_valid else None
+    # An invalid reply is an answer the scanner counts and gives up on after MAX_ATTEMPTS (#504); None would mean "try again forever".
+    return result.result.output if result.result.output_valid else {}
