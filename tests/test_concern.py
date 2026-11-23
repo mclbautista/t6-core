@@ -78,7 +78,7 @@ class ConcernTests(unittest.TestCase):
     def test_snooze_is_gone(self) -> None:
         concern = self.raise_concern()
         refused = self.store.write('snooze', {'concern': concern}, actor='coordinator', idempotency_key='snooze')
-        self.assertIsInstance(refused, Refused)
+        assert isinstance(refused, Refused)
         self.assertEqual(refused.rule, 'input')
         self.assertEqual(self._get(concern)['state'], 'open')
 
