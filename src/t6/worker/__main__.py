@@ -336,14 +336,17 @@ def configured_handlers(
     if environ.get('T6_DATABASE') and environ.get('T6_LLM_CONFIG'):
         import json
         from t6.drives.capture import CaptureResolver
-        from t6.llm.config import LLMConfig
+        from t6.llm.config import LLMConfig, decisions_from
         from t6.llm.drive_photo import PHOTO_READ
         from t6.registry.sqlite import SqliteProjectRegistry
 
         with open(environ['T6_LLM_CONFIG'], encoding='utf-8') as file:
-            photo_config = LLMConfig.from_mapping(json.load(file)['llm'])
+            capture_config = json.load(file)
+            photo_config = LLMConfig.from_mapping(capture_config['llm'])
         resolver = CaptureResolver(SqliteProjectRegistry(environ['T6_DATABASE']),
-                                   photo_config.provider_for(PHOTO_READ.prompt_tag, env=environ), environ=environ)
+                                   photo_config.provider_for(PHOTO_READ.prompt_tag, env=environ),
+                                   decisions=decisions_from(capture_config['decisions'], environ) if 'decisions' in capture_config else None,
+                                   environ=environ)
         handlers['drive.capture.resolve'] = resolver.handle
     return {"main": handlers} if handlers else {}
 
