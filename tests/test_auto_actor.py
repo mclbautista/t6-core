@@ -68,19 +68,9 @@ class AutoActorTests(unittest.TestCase):
         self.assertNotEqual(response.body.get('rule'), 'service')
         self.assertNotEqual(response.body.get('rule'), 'permission')
 
-    def test_concern_snooze_refuses_the_auto_actor_and_a_coordinator_without_operator(self) -> None:
-        api = self.api()
-        refused = self.call(api, '/v1/concern/snooze', {'concern': 't6c_x', 'idempotency_key': 'snooze'})
-        self.assertEqual((refused.body['outcome'], refused.body['rule']), ('refused', 'permission'))
-        with self.registry._transaction() as db:
-            db.execute("INSERT INTO persons VALUES ('plain', 'staff', '[]', '[]', NULL, 0, 1)")
-            db.execute("INSERT INTO person_permissions VALUES ('plain', 'coordinator')")
-        self.assertIsNotNone(self.people.authorize('plain', 'operator'))
-        db_op = 'operator-person'  # a human with operator
-        with self.registry._transaction() as db:
-            db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', NULL, 0, 1)", (db_op,))
-            db.execute("INSERT INTO person_permissions VALUES (?, 'operator')", (db_op,))
-        self.assertIsNone(self.people.authorize(db_op, 'operator'))
+    def test_the_old_concern_snooze_route_is_gone(self) -> None:
+        response = self.call(self.api(), '/v1/concern/snooze', {'concern': 't6c_x', 'idempotency_key': 'snooze'})
+        self.assertEqual(response.status, 404)
 
     def test_the_actor_cannot_be_written_for_anything_but_a_concern_change(self) -> None:
         with self.registry._transaction() as db:

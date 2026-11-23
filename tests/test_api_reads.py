@@ -292,7 +292,7 @@ class ReadTests(unittest.TestCase):
         assert isinstance(project, Registered)
         owner = 't6n_' + '1' * 32
         with self.registry._transaction() as db:
-            for concern, state, opened in (('t6c_old_open', 'open', 0.0), ('t6c_snoozed', 'snoozed', 0.0), ('t6c_closed', 'closed', 0.0)):
+            for concern, state, opened in (('t6c_old_open', 'open', 0.0), ('t6c_closed', 'closed', 0.0)):
                 db.execute("INSERT INTO concerns (id, project_id, owner_id, waiting_on, anchor, as_of, opened_at, evidence_at, state) VALUES (?, ?, ?, 'Client Corp', 'Waiting on Client Corp', '2026-11-01', ?, 0, ?)", (concern, project.project.id, owner, opened, state))
         listed = self.client.concern_list(ConcernListInput(raise_at_psr=True, project=project.project.id))
         assert isinstance(listed, Done)

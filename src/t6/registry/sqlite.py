@@ -406,6 +406,8 @@ _MIGRATIONS = (
     CREATE TABLE drive_movement_events (event_id INTEGER PRIMARY KEY REFERENCES drive_events(id), movement_id TEXT NOT NULL REFERENCES drive_movements(id))"""),
     (54, False, """CREATE TABLE drive_practice (id INTEGER PRIMARY KEY CHECK (id=1), practice INTEGER NOT NULL CHECK (practice IN (0, 1)));
     INSERT INTO drive_practice VALUES (1, 1)"""),
+    # Snooze is gone (#636): every snoozed Concern is reopened with no override. Rows are reopened, never deleted.
+    (55, False, "UPDATE concerns SET state = 'open', manual_override = 0, revision = revision + 1 WHERE state = 'snoozed'"),
 )
 
 

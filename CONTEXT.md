@@ -579,8 +579,9 @@ a term describes behaviour that is decided but not yet built, it says so.
   pending close. The MOM does not count.
 - **Data close**: an immediate close from data (a Job Order done, an approval
   granted, a milestone met, a Project date filled in). It replaces "settle".
-- **Snooze**, **quiet** and **expired** are not used. Snooze is being removed;
-  quiet and expired are legacy states that do nothing.
+- **Snooze**, **quiet** and **expired** are not used. Snooze is removed and
+  every snoozed Concern was reopened; quiet and expired are legacy states that
+  do nothing.
 
 ## Consumer contract
 

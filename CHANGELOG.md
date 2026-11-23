@@ -4,6 +4,14 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Removed
+
+- Concern snooze: the `concern snooze` verb and the `snoozed` state are gone; `/v1/concern/snooze` answers 404. Migration 55 reopens every snoozed Concern and clears its `manual_override`; no row is deleted. Not forward-only (#636).
+
+### Changed
+
+- `concern list --raise-at-psr` lists every Concern that is not closed; it no longer filters on snoozed (#636).
+
 ## [0.6.22] - 2026-11-23
 
 The Concern scan stops re-sending lines whose reply is invalid, and drive reads and privacy masking are faster. The schema moves from 49 to 50 (index-only migration, not forward-only: 0.6.21 still opens it).

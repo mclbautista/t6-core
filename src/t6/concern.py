@@ -10,7 +10,7 @@ import statistics
 from typing import Any
 
 from t6.ids import EntityKind, T6Id
-from t6.person import AUTO_ACTOR, INTERNAL_ACTORS, SERVICES, People
+from t6.person import AUTO_ACTOR, People
 from t6.preview import PreviewTokens
 from t6.registry.sqlite import SqliteProjectRegistry, concern_key
 from t6.verbs import Done, Outcome, Refused
@@ -92,10 +92,10 @@ class ConcernStore:
         return records
 
     def raise_at_psr(self, project: str | None = None) -> list[dict[str, Any]]:
-        """Every Concern that is neither closed nor snoozed, oldest evidence first. Age is shown and never decides inclusion."""
+        """Every Concern that is not closed, oldest evidence first. Age is shown and never decides inclusion."""
         now = self.registry._clock()
         with self.registry._transaction() as db:
-            rows = db.execute("SELECT id, project_id, owner_id, waiting_on, opened_at, evidence_at FROM concerns WHERE state NOT IN ('closed', 'snoozed') AND (? IS NULL OR project_id = ?) ORDER BY evidence_at, id", (project, project)).fetchall()
+            rows = db.execute("SELECT id, project_id, owner_id, waiting_on, opened_at, evidence_at FROM concerns WHERE state != 'closed' AND (? IS NULL OR project_id = ?) ORDER BY evidence_at, id", (project, project)).fetchall()
         return [{'id': row[0], 'project_id': row[1], 'owner_id': row[2], 'waiting_on': row[3], 'age_seconds': max(0, now - row[4]), 'evidence_at': row[5]} for row in rows]
 
     def counts(self, since: str | None = None, until: str | None = None, project: str | None = None) -> Outcome:
@@ -178,10 +178,8 @@ class ConcernStore:
             return {r[0]: r[1] for r in db.execute('SELECT rule, concern_id FROM concern_date_rules WHERE project_id = ?', (project,))}
 
     def write(self, verb: str, values: dict[str, Any], *, actor: str, idempotency_key: str | None = None, confirm: str | None = None) -> Outcome:
-        if verb not in ('raise', 'note', 'resolve', 'reopen', 'record-message', 'snooze') or not actor.strip():
+        if verb not in ('raise', 'note', 'resolve', 'reopen', 'record-message') or not actor.strip():
             return Refused(rule='input', reason='A valid verb and actor are required')
-        if verb == 'snooze' and (actor in SERVICES or actor in INTERNAL_ACTORS):
-            return Refused(rule='human_only', reason='Only a human operator snoozes a Concern')
         if (idempotency_key is not None and not idempotency_key.strip()) or (confirm and not idempotency_key):
             return Refused(rule='idempotency_key', reason='A nonblank idempotency key is required')
         key = idempotency_key or secrets.token_hex(16)
@@ -250,8 +248,6 @@ class ConcernStore:
                     return Refused(rule='note', reason='A note is required')
                 if verb == 'reopen' and state == 'closed' and db.execute("SELECT 1 FROM concerns c JOIN concerns o ON o.project_id = c.project_id AND o.text_key = c.text_key AND o.state != 'closed' WHERE c.id = ?", (concern,)).fetchone():
                     return Refused(rule='duplicate', reason='A Concern with this text is already open in the Project')
-                if verb == 'snooze' and state not in ('open', 'quiet', 'expired'):
-                    return Refused(rule='state', reason='Only an open Concern can be snoozed')
                 if verb == 'resolve' and state == 'closed' or verb == 'reopen' and state == 'open' and not db.execute('SELECT 1 FROM concern_pm_pending WHERE concern_id = ?', (concern,)).fetchone():
                     return Refused(rule='state', reason='Concern cannot make that transition')
             settles = values.get('settles_id')
@@ -298,8 +294,6 @@ class ConcernStore:
                 assert isinstance(concern, str) and revision is not None
                 db.execute('INSERT INTO concern_notes (concern_id, text, actor, at, message_id) VALUES (?, ?, ?, ?, ?)', (concern, values['text'], actor, now, values.get('message_id')))
                 db.execute("UPDATE concerns SET evidence_at = ?, state = CASE WHEN state = 'quiet' THEN 'open' ELSE state END, revision = revision + 1 WHERE id = ?", (now, concern))
-            elif verb == 'snooze':
-                db.execute("UPDATE concerns SET state = 'snoozed', manual_override = 1, revision = revision + 1 WHERE id = ?", (concern,))
             else:
                 db.execute('UPDATE concerns SET state = ?, closed_at = ?, manual_override = 1, settles_id = COALESCE(?, settles_id), revision = revision + 1 WHERE id = ?', ('closed' if verb == 'resolve' else 'open', now if verb == 'resolve' else None, settles, concern))
                 db.execute('DELETE FROM concern_pm_pending WHERE concern_id = ?', (concern,))
