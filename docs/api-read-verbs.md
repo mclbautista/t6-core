@@ -111,8 +111,9 @@ order; empty unless the Status is In-Progress, In-Progress TVC or Airing),
 At Risk 1, On Track 2, Incoming 3, any other value 4, blank 5). `project list` also filters on
 `status_group`. `jo list`, `jo get` and `jo find` add `status_group`
 (`not_started`, `started`, `cancelled` or `null`), `active`, `done` (true when the status is
-Done; `active` is false for Done and Cancelled, so `done` tells them apart) and `health_flags`
-(Blocked, Delayed, Urgent, ignoring emoji). `project flags` also takes `as_of`
+Done; `active` is false for Done and Cancelled, so `done` tells them apart), `health_flags`
+(Blocked, Delayed, Urgent, ignoring emoji) and `health_name` (Closed, Blocked, Delayed, Urgent,
+Advanced or On Track, read by its words, ignoring emoji; `null` when blank). `project flags` also takes `as_of`
 (an ISO date, default today in Manila), `lead_warning_days` (default 30) and
 `stated`, a map of `playdate`, `submission_deadline` or `archival_deadline` to
 an ISO date the caller read from the PM Notes for a blank property, or `null`

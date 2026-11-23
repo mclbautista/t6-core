@@ -219,6 +219,7 @@ class JobOrderStatus(StrEnum):
     name, a `str`.
     """
 
+    ON_HOLD = "On Hold"
     NEEDS_INTAKE_REVIEW = "Needs Intake Review"
     PENDING = "Pending"
     IN_PROGRESS = "In progress"

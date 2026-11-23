@@ -464,10 +464,9 @@ ADMIN, then any other Department A to Z, then none) and the alias `TO` for
   Hold), Delayed (past the Deadline), Urgent (0 to 5 hours to the Deadline),
   Advanced (2 days or more to the Deadline), On Track (anything else). Every
   turnover report line starts with its Health icon: ✅ Closed, 🔴 Blocked,
-  ⚠️ Delayed, 🔥 Urgent, ⚡️ Advanced, 🔵 On Track. Being built: today only
-  the **Health flags** Blocked, Delayed and Urgent show.
+  ⚠️ Delayed, 🔥 Urgent, ⚡️ Advanced, 🔵 On Track.
 - **On Hold**: a not-started Status (Notion To-do group). Its Health is
-  Blocked. Being built: the code does not know this Status yet.
+  Blocked.
 
 ## Project status rules
 

@@ -9,6 +9,7 @@ from t6.domain.job_order_rules import (
     JobOrderStatusGroup,
     canonical_name,
     health_flags,
+    health_name,
     is_active,
     is_deliverable_code,
     is_done,
@@ -119,6 +120,7 @@ class FormatterRuleTests(unittest.TestCase):
 class StatusTests(unittest.TestCase):
     def test_status_groups(self) -> None:
         table = {
+            "On Hold": JobOrderStatusGroup.NOT_STARTED,
             "Needs Intake Review": JobOrderStatusGroup.NOT_STARTED,
             "Pending": JobOrderStatusGroup.NOT_STARTED,
             "In progress": JobOrderStatusGroup.STARTED,
@@ -152,6 +154,34 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(health_flags("🔴 Blocked ⚠️ Delayed"), ("Blocked", "Delayed"))
         self.assertEqual(health_flags("✅ OK"), ())
         self.assertEqual(health_flags(None), ())
+
+    def test_on_hold_is_a_known_status_not_started_and_active(self) -> None:
+        self.assertIs(JobOrderStatus("On Hold"), JobOrderStatus.ON_HOLD)
+        self.assertEqual(status_group("On Hold"), JobOrderStatusGroup.NOT_STARTED)
+        self.assertTrue(is_active("On Hold"))
+        self.assertFalse(is_done("On Hold"))
+
+    def test_health_name_reads_the_six_formula_outputs_by_their_words(self) -> None:
+        table = {
+            "✅ Closed": "Closed",
+            "🔴 Blocked": "Blocked",
+            "⚠️ Delayed": "Delayed",
+            "⚠ Delayed": "Delayed",
+            "🔥 Urgent": "Urgent",
+            "⚡ Advanced": "Advanced",
+            "⚡️ Advanced": "Advanced",
+            "🔵 On Track": "On Track",
+            "on track": "On Track",
+            " ADVANCED ": "Advanced",
+        }
+        for health, name in table.items():
+            with self.subTest(health=health):
+                self.assertEqual(health_name(health), name)
+
+    def test_health_name_is_none_when_blank_or_unknown(self) -> None:
+        for health in (None, "", "   ", "⚡️", "Something new"):
+            with self.subTest(health=health):
+                self.assertIsNone(health_name(health))
 
 
 if __name__ == "__main__":
