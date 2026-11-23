@@ -9,7 +9,7 @@ from t6.frameio.api import FrameioApi
 from t6.frameio.model import GUEST_ID, GUEST_NAME, ResolvedComment
 from t6.frameio.reads import FrameioReads
 from t6.frameio.requests import ResolveComment
-from t6.frameio.share_comments import COMMENTS_QUERY, UNLOCK_QUERY, share_guest_names
+from t6.frameio.share_comments import COMMENTS_QUERY, share_guest_names
 from t6.frameio.share_page import fetch_share_page, guest_name
 from t6.frameio.testing import FakeFrameio, StaticTokens
 from t6.frameio.tokens import USER_AGENT
@@ -128,7 +128,7 @@ class GuestCommentTest(unittest.TestCase):
 
 
 class ShareGuestNamesTest(unittest.TestCase):
-    """The guest's name from Frame.io's GraphQL share comments (#545); the unlock call is a best guess (#602)."""
+    """The guest's name from Frame.io's GraphQL share comments (#545); a passphrase share needs only a built header (#602)."""
 
     def setUp(self) -> None:
         self.posts: list[tuple[dict[str, object], dict[str, str]]] = []
@@ -152,11 +152,16 @@ class ShareGuestNamesTest(unittest.TestCase):
         self.assertEqual((body["query"], body["variables"]), (COMMENTS_QUERY, {"shareId": "s1", "assetId": "f1"}))
         self.assertNotIn("x-frameio-share-authentication", headers)
 
-    def test_a_passphrase_share_is_unlocked_and_the_token_sent(self) -> None:
-        self.answers = [{"data": {"authenticateShare": {"token": "tok"}}}, self.comments({"id": "c1", "owner": {"name": "Ana"}})]
+    def test_a_passphrase_share_sends_base64_of_share_id_and_passphrase_in_one_call(self) -> None:
+        self.answers = [self.comments({"id": "c1", "owner": {"name": "Ana"}})]
         self.assertEqual(share_guest_names("s1", "f1", "secret", self.post), {"c1": "Ana"})
-        self.assertEqual(self.posts[0][0], {"query": UNLOCK_QUERY, "variables": {"shareId": "s1", "passphrase": "secret"}})
-        self.assertEqual(self.posts[1][1]["x-frameio-share-authentication"], "tok")
+        self.assertEqual(len(self.posts), 1)
+        body, headers = self.posts[0]
+        self.assertEqual(body["query"], COMMENTS_QUERY)
+        self.assertEqual(headers["x-frameio-share-authentication"], "czE6c2VjcmV0")  # base64("s1:secret")
+        self.assertEqual(headers["apollographql-client-name"], "web-app")
+        self.assertEqual(headers["x-gql-op"], "GetShareCommentsByAsset")
+        self.assertIn("apollographql-client-version", headers)
 
     def test_a_failed_unlock_or_call_or_odd_answer_is_no_names(self) -> None:
         for answers in (

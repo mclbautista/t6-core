@@ -2,15 +2,17 @@
 
 A comment a guest left through a share link has no `owner` in the public v4 API. The share page loads its comments,
 with each guest's name, from `POST https://api.frame.io/graphql` (operation `GetShareCommentsByAsset`) at
-`data.share.asset.comments.result[].owner.name`. On a passphrase share that call needs the share token the page gets
-when the passphrase is accepted, sent as `x-frameio-share-authentication`.
+`data.share.asset.comments.result[].owner.name`. On a passphrase share that call needs the header
+`x-frameio-share-authentication`.
 
-The unlock call (`share_token`) is a best guess: the real call is not captured yet (#602). This API is undocumented, so
-every failure (no token, refused call, a changed answer) answers no names and the caller keeps its guest fallback.
+There is no unlock call (#602): Frame.io's web app builds that header itself as base64 of "<share id>:<passphrase>" on
+every call, and the server checks it there. This API is undocumented, so every failure (refused call, a changed
+answer) answers no names and the caller keeps its guest fallback.
 """
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Callable, Mapping
 import json
 from typing import Any
@@ -23,15 +25,15 @@ from t6.frameio.tokens import USER_AGENT
 GRAPHQL_URL = "https://api.frame.io/graphql"
 TIMEOUT_SECONDS = 5.0
 NAME_LIMIT = 80
+CLIENT_HEADERS = {  # Frame.io answers PERMISSION_DENIED without the web app's client headers (#602)
+    "apollographql-client-name": "web-app",
+    "apollographql-client-version": "@frameio/next-web-app@788.1",
+}
 
 COMMENTS_QUERY = (
     "query GetShareCommentsByAsset($shareId: ID!, $assetId: ID!) {"
     " share(shareId: $shareId) { asset(assetId: $assetId) { comments {"
     " result { id owner { ... on IdentifiedUser { name } } } } } } }"
-)
-UNLOCK_QUERY = (  # best guess, see #602
-    "mutation AuthenticateShare($shareId: ID!, $passphrase: String!) {"
-    " authenticateShare(shareId: $shareId, passphrase: $passphrase) { token } }"
 )
 
 Post = Callable[[Mapping[str, Any], Mapping[str, str]], Any]
@@ -64,22 +66,17 @@ def _dig(value: Any, *keys: str) -> Any:
     return value
 
 
-def share_token(share_id: str, passphrase: str, post: Post = post_graphql) -> str | None:
-    """The share token that unlocks a passphrase share, or None. Best guess at Frame.io's unlock call (#602)."""
-    answer = post({"query": UNLOCK_QUERY, "variables": {"shareId": share_id, "passphrase": passphrase}}, {})
-    token = _dig(answer, "data", "authenticateShare", "token")
-    return token if isinstance(token, str) and token else None
+def share_authentication(share_id: str, passphrase: str) -> str:
+    """The `x-frameio-share-authentication` value for a passphrase share, built as Frame.io's web app builds it (#602)."""
+    return base64.b64encode(f"{share_id}:{passphrase}".encode()).decode()
 
 
 def share_guest_names(share_id: str, file_id: str, passphrase: str | None, post: Post = post_graphql) -> dict[str, str]:
     """{comment id: name} for the file's comments as the share shows them. Empty when anything fails."""
     try:
-        headers = {"x-frameio-session-id": str(uuid.uuid4())}
+        headers = {**CLIENT_HEADERS, "x-gql-op": "GetShareCommentsByAsset", "x-frameio-session-id": str(uuid.uuid4())}
         if passphrase:
-            token = share_token(share_id, passphrase, post)
-            if token is None:
-                return {}
-            headers["x-frameio-share-authentication"] = token
+            headers["x-frameio-share-authentication"] = share_authentication(share_id, passphrase)
         answer = post({"query": COMMENTS_QUERY, "variables": {"shareId": share_id, "assetId": file_id}}, headers)
     except (urllib.error.URLError, OSError, ValueError):
         return {}
