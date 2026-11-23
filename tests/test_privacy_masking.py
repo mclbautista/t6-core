@@ -191,5 +191,86 @@ class LeakTests(unittest.TestCase):
         self.assertEqual(session.leaks("Own Show is on track"), [])
 
 
+class TrieMatcherEquivalenceTests(unittest.TestCase):
+    def test_trie_matcher_matches_naive_alternation_across_presets_and_edge_cases(self) -> None:
+        import re
+        from t6.privacy.masking import (
+            FIXED_TEXT,
+            NAMES,
+            STRICT,
+            MaskOptions,
+            _DETECTED_IDS,
+            _Matcher,
+            _source,
+            _terms,
+            _key,
+        )
+
+        reg = Registry(
+            people=(
+                Person("Will Smith", aliases=("Will", "W. Smith"), handles=("@wsmith",)),
+                Person("Marco Rossi", aliases=("Marco",), handles=("@mrossi",)),
+                Person("Acme", aliases=("Acme Studios", "Acme Studios Asia")),
+            ),
+            projects=(
+                Project("Alpha", code="TWO"),
+                Project("Alpha Beta", code="AB"),
+                Project("Home", code="HM"),
+                Project("Café Noir", code="CN"),
+            ),
+            ids=("1234567", "1234567-99", "PROJ-42"),
+        )
+        samples = (
+            "Will met Will Smith and will call @wsmith (not foo@wsmith) about Alpha Beta and Alpha.",
+            "Acme Studios Asia delivered to Acme Studios and Acme with code TWO vs two.",
+            "Ping @mrossi or mrossi on CAFÉ   NOIR, Home, PROJ-42, 1234567, 1234567.89, and 1234567-99.",
+            "https://notion.so/1234567890abcdef1234567890abcdef and @unknown_handle",
+        )
+        for options in (MaskOptions(), NAMES, STRICT, FIXED_TEXT):
+            terms = tuple(_terms(reg, options))
+            ordered = sorted(terms, key=lambda t: len(_key(t.name)), reverse=True)
+            naive_sources = [_source(t, options) for t in ordered]
+            if options.ids:
+                naive_sources.insert(0, f"(?P<detected>(?i:{_DETECTED_IDS}))")
+            naive_pat = re.compile("|".join(naive_sources))
+            trie_matcher = _Matcher(terms, options, detect_ids=options.ids)
+            assert trie_matcher.pattern is not None
+            for sample in samples:
+                with self.subTest(options=options, sample=sample):
+                    naive_spans = [(m.start(), m.end(), m.group(0)) for m in naive_pat.finditer(sample)]
+                    trie_spans = [(m.start(), m.end(), m.group(0)) for m in trie_matcher.finditer(sample)]
+                    self.assertEqual(trie_spans, naive_spans)
+
+    def test_mask_reply_scales_for_large_project_list_and_reuses_compiled_matcher(self) -> None:
+        import time
+        from t6.privacy.masking import MaskOptions, mask_reply
+
+        reg = Registry(
+            people=[Person(f"Producer {i:03d}") for i in range(150)],
+            projects=[Project(f"Feature Film {i:03d}", f"P{i:04d}") for i in range(250)],
+        )
+        payload = {
+            "projects": [
+                {
+                    "t6_id": f"t6p_{i:032x}",
+                    "page_id": f"00000000-0000-0000-0000-{i:012x}",
+                    "name": f"Feature Film {i:03d}",
+                    "project_code": f"P{i:04d}",
+                    "pm_notes": f"Waiting on Producer {i % 150:03d} for Feature Film {i:03d}.",
+                }
+                for i in range(392)
+            ]
+        }
+        first = Session(reg, options=MaskOptions())
+        started = time.perf_counter()
+        second = Session(reg, options=MaskOptions())
+        masked = mask_reply(second, payload)
+        elapsed = time.perf_counter() - started
+        self.assertIs(first._matcher, second._matcher)
+        self.assertIs(second._matcher, second._finder)
+        self.assertEqual(masked["projects"][0]["name"], "[project 1]")
+        self.assertLess(elapsed, 0.5)
+
+
 if __name__ == "__main__":
     unittest.main()

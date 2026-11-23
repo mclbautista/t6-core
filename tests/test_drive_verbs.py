@@ -157,6 +157,46 @@ class DriveVerbTests(unittest.TestCase):
         self.write('unassign', {'drive': a, 'project': one, 'end': '2026-11-10'})
         self.assertEqual(ids(project=one), [])  # an ended Assignment is not open use
 
+    def test_drive_list_pages_with_limit_offset_and_total(self) -> None:
+        from pydantic import ValidationError
+        from t6.verbs import DriveListInput
+
+        self.seed_inventory()
+        a, b, c = self.drives
+        full = self.read('list')
+        self.assertEqual(full['total'], 3)
+        self.assertEqual([d['id'] for d in full['drives']], [a, b, c])
+
+        page1 = self.read('list', {'limit': 2, 'offset': 0})
+        self.assertEqual(page1['total'], 3)
+        self.assertEqual([d['id'] for d in page1['drives']], [a, b])
+
+        page2 = self.read('list', {'limit': 2, 'offset': 2})
+        self.assertEqual(page2['total'], 3)
+        self.assertEqual([d['id'] for d in page2['drives']], [c])
+
+        past = self.read('list', {'limit': 2, 'offset': 10})
+        self.assertEqual(past['total'], 3)
+        self.assertEqual(past['drives'], [])
+
+        filtered = self.read('list', {'status': 'released', 'limit': 1, 'offset': 0})
+        self.assertEqual(filtered['total'], 1)
+        self.assertEqual([d['id'] for d in filtered['drives']], [b])
+
+        with self.assertRaises(ValidationError):
+            DriveListInput(limit=0)
+        with self.assertRaises(ValidationError):
+            DriveListInput(offset=-1)
+
+    def test_drive_list_serial_filter_does_not_scan_all_drives(self) -> None:
+        from t6 import drive_reads
+
+        self.seed_inventory()
+        with patch.object(self.store, 'list_drives', side_effect=AssertionError('should not scan all drives')):
+            out = drive_reads.list_drives(self.store, serial='SYNTH-1')
+        self.assertEqual(out.total, 1)
+        self.assertEqual([d.id for d in out.drives], [self.drives[1]])
+
     def test_drive_get_shows_the_facts_status_events_numbered_assignments_sources_and_deliveries(self) -> None:
         drive, one, two = self.drives[0], *self.projects
         self.write('receive', {'drive': drive, 'project': one, 'party': CONTACT, 'party_kind': 'contact', 'on': '2026-11-01'})

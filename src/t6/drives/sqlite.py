@@ -281,8 +281,66 @@ class SqliteDriveStore:
             self._get(db, drive_id)
             return tuple(_event(row[0]) for row in db.execute('SELECT data FROM drive_events WHERE drive_id=? ORDER BY id', (drive_id,)))
 
+    @staticmethod
+    def _chunks(ids: Sequence[str], size: int = 500) -> Iterator[list[str]]:
+        unique = list(dict.fromkeys(ids))
+        for start in range(0, len(unique), size):
+            yield unique[start : start + size]
+
     def status(self, drive_id: str) -> DriveStatus | None:
-        return derive_status(self.list_events(drive_id))
+        with self._tx() as db:
+            self._get(db, drive_id)
+            row = db.execute('SELECT data FROM drive_events WHERE drive_id=? ORDER BY id DESC LIMIT 1', (drive_id,)).fetchone()
+            return derive_status((_event(row[0]),)) if row else None
+
+    def statuses(self, drive_ids: Sequence[str] | None = None) -> dict[str, DriveStatus | None]:
+        with self._tx() as db:
+            result: dict[str, DriveStatus | None] = {}
+            if drive_ids is None:
+                for (did,) in db.execute('SELECT id FROM drives'):
+                    result[str(did)] = None
+                rows = db.execute(
+                    'SELECT e.drive_id, e.data FROM drive_events e '
+                    'JOIN (SELECT drive_id, MAX(id) AS max_id FROM drive_events GROUP BY drive_id) m ON e.id = m.max_id'
+                )
+                for did, raw in rows:
+                    result[str(did)] = derive_status((_event(raw),))
+                return result
+            for chunk in self._chunks(drive_ids):
+                marks = ','.join('?' * len(chunk))
+                for (did,) in db.execute(f'SELECT id FROM drives WHERE id IN ({marks})', chunk):
+                    result[str(did)] = None
+                rows = db.execute(
+                    f'SELECT e.drive_id, e.data FROM drive_events e '
+                    f'JOIN (SELECT drive_id, MAX(id) AS max_id FROM drive_events WHERE drive_id IN ({marks}) GROUP BY drive_id) m '
+                    f'ON e.id = m.max_id',
+                    chunk,
+                )
+                for did, raw in rows:
+                    result[str(did)] = derive_status((_event(raw),))
+            return result
+
+    def open_assignments_by_drive(self, drive_ids: Sequence[str] | None = None) -> dict[str, tuple[tuple[int, Assignment], ...]]:
+        with self._tx() as db:
+            counts: dict[str, int] = {}
+            opened: dict[str, list[tuple[int, Assignment]]] = {}
+
+            def consume(rows: Iterable[Any]) -> None:
+                for did, raw in rows:
+                    key = str(did)
+                    number = counts.get(key, 0) + 1
+                    counts[key] = number
+                    assignment = _assignment(raw)
+                    if assignment.is_open:
+                        opened.setdefault(key, []).append((number, assignment))
+
+            if drive_ids is None:
+                consume(db.execute('SELECT drive_id, data FROM drive_assignments ORDER BY drive_id, id'))
+            else:
+                for chunk in self._chunks(drive_ids):
+                    marks = ','.join('?' * len(chunk))
+                    consume(db.execute(f'SELECT drive_id, data FROM drive_assignments WHERE drive_id IN ({marks}) ORDER BY drive_id, id', chunk))
+            return {did: tuple(items) for did, items in opened.items()}
 
     def release_shipment(self, drive_ids: Iterable[str], *, on: date, party: Party, project: Ref, logged_by: Ref, shipment_id: str | None = None,
                          reason: str | None = None, recipient: str | None = None) -> str:

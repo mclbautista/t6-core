@@ -279,6 +279,24 @@ class InMemoryDriveStore:
     def status(self, drive_id: str) -> DriveStatus | None:
         return derive_status(self._log(drive_id))
 
+    def statuses(self, drive_ids: Sequence[str] | None = None) -> dict[str, DriveStatus | None]:
+        keys = self._drives.keys() if drive_ids is None else dict.fromkeys(drive_ids)
+        return {drive_id: derive_status(self._events[drive_id]) for drive_id in keys if drive_id in self._drives}
+
+    def open_assignments_by_drive(
+        self, drive_ids: Sequence[str] | None = None
+    ) -> dict[str, tuple[tuple[int, Assignment], ...]]:
+        keys = self._assignments.keys() if drive_ids is None else dict.fromkeys(drive_ids)
+        result: dict[str, tuple[tuple[int, Assignment], ...]] = {}
+        for drive_id in keys:
+            items = self._assignments.get(drive_id)
+            if not items:
+                continue
+            opened = tuple((number, a) for number, a in enumerate(items, 1) if a.is_open)
+            if opened:
+                result[drive_id] = opened
+        return result
+
     @staticmethod
     def _check_project(project: Ref | None) -> None:
         if project is not None and project.page_id is not None:

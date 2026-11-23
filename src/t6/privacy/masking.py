@@ -25,6 +25,7 @@ in the text, and hides ordinary words only when capitalised.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import re
 from collections.abc import Callable, Iterable, Sequence
 from enum import Enum
@@ -230,6 +231,10 @@ def _terms(registry: Registry, options: MaskOptions) -> list[_Term]:
     return list(found.values())
 
 
+def _needs_decimal_guard(term: _Term, options: MaskOptions) -> bool:
+    return options.ids and term.kind == "id" and term.name.lstrip("-").isdigit()
+
+
 def _source(term: _Term, options: MaskOptions) -> str:
     """The pattern for one name: whole word, with the case rule and, for a number, no decimal reading."""
     if term.loose:
@@ -239,20 +244,88 @@ def _source(term: _Term, options: MaskOptions) -> str:
         forms = dict.fromkeys(re.escape(f) for f in (term.name, term.name.capitalize(), term.name.upper()))
         body = "(?:" + "|".join(forms) + ")"
     guard_start = guard_end = ""
-    if options.ids and term.kind == "id" and term.name.lstrip("-").isdigit():
+    if _needs_decimal_guard(term, options):
         guard_start, guard_end = r"(?<!\d[.,])", r"(?![.,]\d)"
     return rf"(?<!\w){guard_start}{'@?' if term.is_handle else ''}{body}(?!\w){guard_end}"
+
+
+def _term_tokens(term: _Term) -> list[list[str]]:
+    words = _key(term.name).split()
+    tokens: list[str] = []
+    for index, word in enumerate(words):
+        if index:
+            tokens.append(r"\s+")
+        tokens.extend(re.escape(ch) for ch in word)
+    return [["@", *tokens], tokens] if term.is_handle else [tokens]
+
+
+def _trie_source(terms: Sequence[_Term]) -> str:
+    root: dict[str, Any] = {}
+    for term in terms:
+        for seq in _term_tokens(term):
+            node = root
+            for token in seq:
+                node = node.setdefault(token, {})
+            node[""] = True
+
+    def emit(node: dict[str, Any]) -> str:
+        prefix: list[str] = []
+        end = "" in node
+        children = [(k, v) for k, v in node.items() if k != ""]
+        while not end and len(children) == 1:
+            token, nxt = children[0]
+            prefix.append(token)
+            end = "" in nxt
+            children = [(k, v) for k, v in nxt.items() if k != ""]
+        head = "".join(prefix)
+        if not children:
+            return head
+        alts = [token + emit(child) for token, child in children]
+        tail = alts[0] if len(alts) == 1 else "(?:" + "|".join(alts) + ")"
+        if end:
+            tail = f"(?:{tail})?" if len(alts) == 1 else f"{tail}?"
+        return head + tail
+
+    return rf"(?<!\w)(?i:{emit(root)})(?!\w)"
 
 
 class _Matcher:
     """One leftmost, longest-first pattern over the names to hide, and over detected IDs when asked."""
 
     def __init__(self, terms: Iterable[_Term], options: MaskOptions, *, detect_ids: bool = False) -> None:
-        self.kinds: dict[str, Kind] = {_key(t.name): t.kind for t in terms}
         ordered = sorted(terms, key=lambda t: len(_key(t.name)), reverse=True)
-        sources = [_source(t, options) for t in ordered]
+        self.kinds: dict[str, Kind] = {_key(t.name): t.kind for t in ordered}
+        loose: list[_Term] = []
+        special: list[_Term] = []
+        for term in ordered:
+            if term.loose and not _needs_decimal_guard(term, options):
+                loose.append(term)
+            else:
+                special.append(term)
+        # Keep any special term that extends a shorter loose term (and any loose term extending it)
+        # ahead of the trie in longest-first order so leftmost-longest semantics never shift.
+        loose_keys = [_key(t.name) for t in loose]
+        colliding_special = [
+            t for t in special if any(len(_key(t.name)) > len(lk) and _key(t.name).startswith(lk) for lk in loose_keys)
+        ]
+        before_trie: list[_Term] = []
+        if colliding_special:
+            colliding_keys = {_key(t.name) for t in colliding_special}
+            before_trie.extend(colliding_special)
+            special = [t for t in special if _key(t.name) not in colliding_keys]
+            moved_loose = [t for t in loose if any(_key(t.name).startswith(sk) for sk in colliding_keys)]
+            if moved_loose:
+                moved_keys = {_key(t.name) for t in moved_loose}
+                before_trie.extend(moved_loose)
+                loose = [t for t in loose if _key(t.name) not in moved_keys]
+            before_trie.sort(key=lambda t: len(_key(t.name)), reverse=True)
+        sources: list[str] = []
         if detect_ids:
-            sources.insert(0, f"(?P<detected>(?i:{_DETECTED_IDS}))")
+            sources.append(f"(?P<detected>(?i:{_DETECTED_IDS}))")
+        sources.extend(_source(t, options) for t in before_trie)
+        if loose:
+            sources.append(_trie_source(loose))
+        sources.extend(_source(t, options) for t in special)
         self.pattern = re.compile("|".join(sources)) if sources else None
 
     def kind_of(self, match: re.Match[str]) -> Kind:
@@ -268,6 +341,11 @@ class _Matcher:
         return self.pattern.sub(replace, text) if self.pattern else text
 
 
+@functools.lru_cache(maxsize=32)
+def _compile_matcher(terms: tuple[_Term, ...], options: MaskOptions, detect_ids: bool) -> _Matcher:
+    return _Matcher(terms, options, detect_ids=detect_ids)
+
+
 class Session:
     """The local placeholder map for one masked payload. Never send it to a provider."""
 
@@ -278,10 +356,10 @@ class Session:
         allowed = {_key(name) for name in allow}
         self._allowed = allowed
         # Allowed names stay in the pattern so that a shorter name inside one is not masked.
-        terms = _terms(registry, self._options)
-        self._matcher = _Matcher(terms, self._options, detect_ids=self._options.ids)
+        terms = tuple(_terms(registry, self._options))
+        self._matcher = _compile_matcher(terms, self._options, self._options.ids)
         # Leaks look for names and registered IDs only, not for anything shaped like an ID.
-        self._finder = _Matcher(terms, self._options)
+        self._finder = self._matcher if not self._options.ids else _compile_matcher(terms, self._options, False)
         self._originals: dict[str, str] = {}
         self._by_value: dict[tuple[Kind, str], str] = {}
         self._counts: dict[Kind, int] = {"person": 0, "project": 0, "id": 0}
