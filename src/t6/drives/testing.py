@@ -195,7 +195,7 @@ class InMemoryDriveStore:
 
     def import_row(
         self, row_key: str, drive: Drive, assignment: Assignment | None, events: Sequence[CustodyEvent],
-        *, source: SourceRow | None = None
+        *, source: SourceRow | None = None, deduplicate_assignment: bool = True
     ) -> None:
         if row_key in self._imports:
             return
@@ -214,7 +214,7 @@ class InMemoryDriveStore:
         # Consume the complete source and stage every collection before publishing.
         incoming_events = list(events)
         assignments = list(self._assignments.get(held.id, ()))
-        if assignment is not None and assignment not in assignments:
+        if assignment is not None and (not deduplicate_assignment or assignment not in assignments):
             assignments.append(assignment)
         history = [*self._events.get(held.id, ()), *incoming_events]
         shipped = self._shipped + [

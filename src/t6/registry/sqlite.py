@@ -398,6 +398,8 @@ _MIGRATIONS = (
     CREATE INDEX IF NOT EXISTS drive_assignments_by_drive ON drive_assignments (drive_id, id);
     CREATE INDEX IF NOT EXISTS drive_imports_by_drive ON drive_imports (drive_id);
     CREATE INDEX IF NOT EXISTS delivery_drives_by_drive ON delivery_drives (drive_id)"""),
+    (51, False, """CREATE TABLE drive_serial_ids (serial TEXT PRIMARY KEY, drive_id TEXT NOT NULL);
+    CREATE TABLE drive_reload_reports (id INTEGER PRIMARY KEY, at REAL NOT NULL, actor TEXT NOT NULL, data TEXT NOT NULL)"""),
 )
 
 

@@ -679,13 +679,13 @@ class DriveStore(Protocol):
 
     def import_row(
         self, row_key: str, drive: Drive, assignment: Assignment | None, events: Sequence[CustodyEvent],
-        *, source: SourceRow | None = None
+        *, source: SourceRow | None = None, deduplicate_assignment: bool = True
     ) -> None:
         """Atomically import a row and its receipt, or do nothing if already recorded.
 
         Match only an accepted serial, otherwise add the new permanent ID.
         Preserve existing physical facts, combine review notes, add an Assignment
-        unless equal to one already held (None adds none), and append every supplied
+        unless equal to one already held (reload disables deduplication; None adds none), and append every supplied
         event in order.
         Distinct row keys preserve repeated events, even with identical facts.
         Persist all changes and the receipt in one transaction; failure writes nothing.
