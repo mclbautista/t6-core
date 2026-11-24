@@ -2388,6 +2388,7 @@ class DriveProjectCount(BaseModel):
     total: int
     in_house: int
     released: int
+    latest_movement: str | None = None  # the newest movement on any Drive of the Project; none when it has none
 
 
 class DriveProjectsOutput(DrivePracticeOutput):
@@ -2398,8 +2399,9 @@ def drive_projects(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcom
     from t6.drive_reads import project_counts
     from t6.drives.sqlite import SqliteDriveStore
     registry = _people().registry
+    from t6.drives.movements import latest_movement_by_project
     with registry._transaction() as db:
-        return Done(result={'projects': project_counts(SqliteDriveStore(registry, within=db))})
+        return Done(result={'projects': project_counts(SqliteDriveStore(registry, within=db), latest_movement_by_project(db))})
 
 
 class MovementCorrectInput(BaseModel):

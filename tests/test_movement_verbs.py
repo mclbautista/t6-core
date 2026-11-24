@@ -118,6 +118,19 @@ class MovementTests(reload_tests.DriveReloadFixture):
         done = self.call('reload', **again, confirm=self.call('reload', **again).token)
         self.assertEqual(done.result['exceptions'], 1)
 
+    def test_projects_read_returns_the_latest_movement_time_of_each_project(self) -> None:
+        self.workbook({'SYNTHETIC ALPHA': [HEADER, ['Synthetic a', 'SAMPLE-A']],
+                       'SYNTHETIC BETA': [HEADER, ['Synthetic b', 'SAMPLE-B']],
+                       'SYNTHETIC GAMMA': [HEADER, ['Synthetic g', 'SAMPLE-G']]})
+        self.load_tracker([
+            [date(2026, 3, 2), 'SYNTHETIC ALPHA', 'Synthetic a', None, 'OUT', 'Synthetic borrower'],
+            [date(2026, 4, 1), 'SYNTHETIC ALPHA', 'Synthetic a', None, 'IN', 'Synthetic keeper'],
+            [date(2026, 3, 15), 'SYNTHETIC BETA', 'Synthetic b', None, 'OUT', 'Synthetic borrower']])
+        latest = {p['project']['text']: p['latest_movement'] for p in self.call('projects').result['projects']}
+        self.assertTrue(latest['SYNTHETIC ALPHA'].startswith('2026-04-01'))
+        self.assertTrue(latest['SYNTHETIC BETA'].startswith('2026-03-15'))
+        self.assertIsNone(latest['SYNTHETIC GAMMA'])
+
     def test_project_counts_distinct_drives_and_unknown_party(self) -> None:
         self.workbook({'SYNTHETIC PROJECT': [HEADER, ['Synthetic first', 'SAMPLE-FIRST'],
                                             ['Synthetic second', 'SAMPLE-SECOND'], ['Synthetic second', 'SAMPLE-SECOND'],
@@ -127,8 +140,10 @@ class MovementTests(reload_tests.DriveReloadFixture):
                            [date(2026, 4, 2), 'SYNTHETIC PROJECT', 'Synthetic third', None, 'OUT', None]])
         counts = self.call('projects').result['projects']
         self.assertEqual(counts, [
-            {'project': {'page_id': None, 'text': 'SYNTHETIC PROJECT'}, 'total': 3, 'in_house': 1, 'released': 2},
-            {'project': {'page_id': None, 'text': 'SYNTHETIC OTHER'}, 'total': 1, 'in_house': 0, 'released': 1},
+            {'project': {'page_id': None, 'text': 'SYNTHETIC PROJECT'}, 'total': 3, 'in_house': 1, 'released': 2,
+             'latest_movement': '2026-04-02'},
+            {'project': {'page_id': None, 'text': 'SYNTHETIC OTHER'}, 'total': 1, 'in_house': 0, 'released': 1,
+             'latest_movement': None},
         ])
         for drive in self.drives():
             if drive['status'] == 'released':
