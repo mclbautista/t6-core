@@ -30,7 +30,7 @@ from t6.server.verbs import (
     service_permissions_from_env,
 )
 from t6.cli import DataSourceConfig, _open_notion
-from t6.server.http import CATALOG_BODY_BYTES, CATALOG_SNAPSHOT_PATH, make_server
+from t6.server.http import TAILNET_BODY_LIMITS, make_server
 import threading
 
 
@@ -130,7 +130,7 @@ def main() -> int:
             if request.path.split("?", 1)[0].startswith("/v1/") or request.path.split("?", 1)[0] in {"/health", "/tap"}:
                 return api(request)
             return app.tailnet(request)
-        server = make_server(_address(environ.get("T6_TAILNET_BIND", "127.0.0.1:8081")), tailnet, body_limits={CATALOG_SNAPSHOT_PATH: CATALOG_BODY_BYTES})
+        server = make_server(_address(environ.get("T6_TAILNET_BIND", "127.0.0.1:8081")), tailnet, body_limits=TAILNET_BODY_LIMITS)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         make_server(_address(environ.get("T6_PUBLIC_BIND", "127.0.0.1:8080")), app.public).serve_forever()
         return 0
