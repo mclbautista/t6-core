@@ -155,7 +155,7 @@ class ProjectProjection:
             prop_id = ProjectsRow.notion_id(field)
             prop: JSON = next((p for p in properties.values() if unquote(str(p.get('id', ''))) == unquote(str(prop_id))), {})
             if outcome != 'unbound' and isinstance(updated, list) and updated and any(unquote(str(item)) == unquote(str(prop_id)) for item in updated) and prop:
-                self._registry.observe_project_status(page_id, codec.select(prop), editor, str(job.payload.get('event_id') or job.dedupe_key), editor_id, field)
+                self._registry.observe_project_status(page_id, codec.select(prop), editor, str(job.payload.get('event_id') or job.dedupe_key), editor_id, field, (prop.get('select') or {}).get('id'))
         if outcome == "unbound" and self._offer is not None:
             heading = next((p for p in properties.values() if p.get("type") == "title"), None)
             self._offer(page_id, codec.title(heading) or "")

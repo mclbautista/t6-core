@@ -896,14 +896,14 @@ class WebhookApp:
                 return Response(405)
             notion_body = _json_object(request.body) or {}
             status, editor, event, editor_id = notion_body.get("status"), notion_body.get("editor"), notion_body.get("event"), notion_body.get("editor_id")
-            field = notion_body.get("field", "status")
-            if field not in ("status", "health") or not (status is None or isinstance(status, str)) or not isinstance(editor, str) or not isinstance(event, str) or not (editor_id is None or isinstance(editor_id, str)):
+            field, option_id = notion_body.get("field", "status"), notion_body.get("option_id")
+            if field not in ("status", "health") or not (option_id is None or isinstance(option_id, str)) or not (status is None or isinstance(status, str)) or not isinstance(editor, str) or not isinstance(event, str) or not (editor_id is None or isinstance(editor_id, str)):
                 return Response(400, {"error": "invalid Notion observation"})
             from t6.notion_edits import NotionEdits
             from t6.registry.sqlite import SqliteProjectRegistry
             if not isinstance(registry, SqliteProjectRegistry):
                 return Response(503, {"error": "Notion edits unavailable"})
-            return Response(200, NotionEdits(registry).project_status(steps[1], status, editor, event, editor_id, field))
+            return Response(200, NotionEdits(registry).project_status(steps[1], status, editor, event, editor_id, field, option_id))
         if len(steps) == 2 and steps[0] == "notion-projection":
             if not any(g.registry_sync for g in grants):
                 return Response(403, {"error": "registry sync not allowed"})
