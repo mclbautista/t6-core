@@ -78,7 +78,7 @@ class CaptureTests(DriveReloadFixture):
             self.fake.decisions({'model': 'synthetic-jev', 'answers': {'c0': {
                 'type': 'choice', 'choice': choice,
                 'probabilities': {'match': 1 if choice == 'match' else 0, 'maybe': 0, 'no': 1 if choice == 'no' else 0}}}})
-        resolver = CaptureResolver(self.registry, self.fake, decisions=self.fake)
+        resolver = CaptureResolver(self.registry, self.fake, decisions=self.fake, source=self.notion_source)
         worker = Worker(InternalQueueClient(self.queue), 'main', {'drive.capture.resolve': resolver.handle})
         self.assertTrue(worker.run_once())
 
@@ -233,7 +233,7 @@ class CaptureTests(DriveReloadFixture):
         capture = self.api('capture', **{**self.post, 'text': 'Synthetic lunch photo'})['result']['capture']
         self.fake.decisions({'model': 'synthetic-jev', 'answers': {'c0': {
             'type': 'choice', 'choice': 'no', 'probabilities': {'match': 0, 'maybe': 0, 'no': 1}}}})
-        resolver = CaptureResolver(self.registry, self.fake, decisions=self.fake)
+        resolver = CaptureResolver(self.registry, self.fake, decisions=self.fake, source=self.notion_source)
         self.assertTrue(Worker(InternalQueueClient(self.queue), 'main', {'drive.capture.resolve': resolver.handle}).run_once())
         (call,) = self.fake.calls  # only Jev was called; the image model never was
         assert isinstance(call.request, DecisionsRequest)
@@ -478,7 +478,7 @@ class CaptureTests(DriveReloadFixture):
         self.workbook({'SYNTHETIC ALPHA': [HEADER, ['Synthetic first', 'SAMPLE-FIRST']],
                        'SYNTHETIC BETA': [HEADER, ['Synthetic first', 'SAMPLE-FIRST']]})
         self.reload('synthetic-multiple')
-        capture = self.settle()
+        capture = self.settle(photo='')
         from t6.verbs import VERBS, invoke
         entry = next(v for v in VERBS if (v.noun, v.verb) == ('movement', 'list'))
         rows = invoke(entry, entry.input_model(needs_project=True), actor='synthetic-keeper',
@@ -714,14 +714,14 @@ class CaptureTests(DriveReloadFixture):
     def ids(self) -> dict[str, str]:
         return {str(d['label']): str(d['id']) for d in self.drives()}
 
-    def test_a_two_item_capture_shows_two_inbox_items_and_makes_no_movement_until_approved(self) -> None:
-        capture = self.kept()
+    def test_a_text_only_two_item_capture_waits_in_the_inbox_until_approved(self) -> None:
+        capture = self.kept(photo='')
         self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'resolved')
         items = self.inbox()
         self.assertEqual([(i['capture'], i['item'], i['text'], i['direction'], i['recipient'], i['guesses']) for i in items],
                          [(capture, 0, 'Synthetic first', 'OUT', 'Marco', []), (capture, 1, 'Synthetic second', 'OUT', 'Marco', [])])
         self.assertEqual((items[0]['caption'], items[0]['photo_reference'], items[0]['chat_id'], items[0]['message_id']),
-                         (self.two_items, capture, -900001, 1))
+                         (self.two_items, None, -900001, 1))
         self.assertEqual(self.moved(), [])
         self.assertEqual([d['status'] for d in self.drives()], ['in custody', 'in custody'])
         self.assertEqual(self.call('exceptions').result['captures'], [])
@@ -764,7 +764,7 @@ class CaptureTests(DriveReloadFixture):
                          ('IN', 'synthetic-keeper', 'synthetic-keeper', 900010))
 
     def test_none_keeps_the_item_waiting_and_not_a_drive_closes_it_without_a_movement(self) -> None:
-        capture = self.kept()
+        capture = self.kept(photo='')
         for _ in range(2):
             none = self.approve(capture, 0, 'none')
             self.assertEqual((none['outcome'], none['result']['state']), ('done', 'open'))
@@ -791,7 +791,7 @@ class CaptureTests(DriveReloadFixture):
         self.assertEqual(self.approve(again, 0, 'new', label='Synthetic named', serial='SAMPLE-NEW')['rule'], 'serial')
 
     def test_repeated_approvals_are_idempotent_and_a_settled_item_is_not_changed(self) -> None:
-        capture = self.kept()
+        capture = self.kept(photo='')
         drives = self.ids()
         first = self.approve(capture, 0, 'drive', drive=drives['Synthetic first'])
         self.assertEqual(self.approve(capture, 0, 'drive', drive=drives['Synthetic first'])['result'], first['result'])
@@ -827,7 +827,7 @@ class CaptureTests(DriveReloadFixture):
         self.assertEqual([(i['capture'], i['text']) for i in self.inbox()], [(newer, 'SYN7 D22'), (older, 'SYN7 D21')])
         counted = self.api('capture result', capture=older)['result']
         self.assertEqual(counted['counts'], [{'count': 48, 'kind': 'FD'}])
-        self.assertEqual(counted['items'], [{'text': 'SYN7 D21', 'state': 'open'}])
+        self.assertEqual(counted['items'], [{'text': 'SYN7 D21', 'state': 'open', 'guesses': []}])
         photo_only = self.kept('IN', 3)
         self.assertEqual(self.api('capture result', capture=photo_only)['result']['state'], 'resolved')
         self.assertNotIn(photo_only, [i['capture'] for i in self.inbox()])
@@ -867,7 +867,7 @@ class CaptureTests(DriveReloadFixture):
         self.assertEqual([d['status'] for d in self.drives()], ['in custody', 'in custody'])
         self.assertEqual(self.approve(capture, 1, 'drive', drive=drives['Synthetic second'])['rule'], 'item_settled')
         self.assertEqual(self.approve(capture, 1, 'none')['rule'], 'item_settled')
-        self.assertEqual(len([m for m in self.moved() if m['capture'] == capture and m['corrects'] is None]), 1)
+        self.assertEqual(len([m for m in self.moved() if m['capture'] == capture and m['corrects'] is None]), 2)
 
     def coordinated_drive(self) -> tuple[str, str, str, str]:
         """A mapped Project whose Notion page names `contact` as T6 Post Coordinator, and a Drive on it."""
@@ -891,7 +891,7 @@ class CaptureTests(DriveReloadFixture):
         from t6.notion.generated import ProjectsRow
         from t6.notion.testing import relation
         page, other, person, _ = self.coordinated_drive()
-        capture = self.kept('OUT\nSynthetic first\nSynthetic second\nR: Marco')
+        capture = self.kept('OUT\nSynthetic first\nSynthetic second\nR: Marco', photo='')
         drives = self.ids()
         self.approve(capture, 0, 'drive', drive=drives['Synthetic first'])
         self.notion.update_page(page, {ProjectsRow.notion_name('t6_post_coordinator'): relation(other)})
