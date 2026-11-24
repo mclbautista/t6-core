@@ -54,7 +54,8 @@ Date: 2026-11-24. Source: [spec #659](https://github.com/mclbautista/t6-core/iss
   custodian-picked Drives and caption edits skip Jev. With no Jev provider
   configured the post is kept.
 - A **text-only** post (no photo) in the configured chat and topic is a
-  Capture. If Jev keeps it, it is an exception with reason `no_photo`. It is
+  Capture. If Jev keeps it, its Items wait in the Inbox for the custodian
+  (#724). It is
   never sent to the image model. Recording a movement from a text-only post
   without the custodian is out of scope.
 - The gateway's **debug topic** copies withheld captions to a Telegram topic.
