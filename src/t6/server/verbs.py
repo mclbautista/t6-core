@@ -43,7 +43,8 @@ class VerbAPI:
                  frameio_queue: Any = None, concern_observe_closes: bool = False,
                  request_log: Callable[[str], None] | None = None, privacy_list: PrivacyList | None = None,
                  notion_source: NotionSource | None = None, mirror: MirrorReader | None = None,
-                 server_projects: Callable[[], Sequence[Any]] | None = None, closers: frozenset[int] = frozenset()) -> None:
+                 server_projects: Callable[[], Sequence[Any]] | None = None,
+                 concerns_export: Callable[[str], None] | None = None) -> None:
         import math
         if not math.isfinite(transcribe_rate) or transcribe_rate < 0:
             raise ValueError('Transcription rate must be finite and non-negative')
@@ -62,7 +63,7 @@ class VerbAPI:
         self.transcribe_rate = transcribe_rate
         self.translate_enabled = translate_enabled
         self.concern_observe_closes = concern_observe_closes
-        self.closers = closers  # the Closer setting: Telegram user ids (#638, #639)
+        self.concerns_export = concerns_export  # pushes the Concerns sheet export to the VPS after each autoscan; None is off (#734)
         self.request_log = request_log
         self.frameio = QueueFrameioWriter(frameio_queue or LocalFrameioQueue(queue), timeout=frameio_timeout)  # asks the Frame.io worker; holds no token
         self.routes = {f'/v1/{v.noun}' + ('/' + v.verb.replace(' ', '/') if v.verb else ''): v for v in VERBS}
@@ -335,8 +336,8 @@ class VerbAPI:
             outcome = refusal or self._transcripts().request(entry.verb, inputs, actor, translate_enabled=self.translate_enabled)
         elif (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'notes'), ('project', 'notes-history'), ('project', 'flags'), ('project', 'resolve'), ('lead', 'list'), ('concern', 'list'), ('concern', 'get'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'candidates'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find'), ('version', 'get')}:
             refusal = self.people.authorize(actor, entry.role)
-            if not refusal and (entry.noun, entry.verb) == ('project', 'notes-history') and not self.is_closer(actor) and actor not in self._coordinators(inputs.project):
-                refusal = Refused(rule='coordinator', reason="Only Closers and the Project's coordinators may read its PM Notes history")
+            if not refusal and (entry.noun, entry.verb) == ('project', 'notes-history') and not self._master_brief(actor) and actor not in self._coordinators(inputs.project):
+                refusal = Refused(rule='coordinator', reason="Only Persons with the master brief and the Project's coordinators may read its PM Notes history")
             outcome = refusal or self._typed_read(entry.noun, entry.verb, inputs, seen=seen)
             if isinstance(outcome, Done) and entry.noun in {'project', 'lead', 'concern', 'jo', 'person', 'camera', 'deliverable', 'meeting-notes', 'external-link', 'studio'} and not self._reads_unmasked(actor):
                 outcome = self._masked_outcome(outcome)
@@ -462,8 +463,6 @@ class VerbAPI:
         elif (entry.noun, entry.verb) == ('concern', 'observe'):
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._concern_observe(inputs, actor)
-        elif (entry.noun, entry.verb) == ('concern', 'resolve') and not self.is_closer(actor) or (entry.noun, entry.verb) == ('concern', 'reopen') and not self.is_closer(actor) and self._pending_close(inputs.concern):
-            outcome = self.people.authorize(actor, entry.role) or Refused(rule='closer', reason='Only Closers may close a Concern or cancel its pending close')
         elif (entry.noun, entry.verb) == ('concern', 'raise') and inputs.owner is not None and inputs.owner not in self._coordinators(inputs.project):
             outcome = self.people.authorize(actor, entry.role) or Refused(rule='owner', reason='Owner must be a Project coordinator')
         elif entry.handler is None:
@@ -1125,14 +1124,10 @@ class VerbAPI:
         person = self.people.registry.bound_entity('notion', normalize_page_id(found.entity.page_id))
         return person if isinstance(person, str) else None
 
-    def _pending_close(self, concern: str) -> bool:
-        with self.people.registry._transaction() as db:
-            return db.execute('SELECT 1 FROM concern_pending_closes WHERE concern_id = ?', (concern,)).fetchone() is not None
-
-    def is_closer(self, actor: str) -> bool:
-        """Whether `actor` is an active Person whose Telegram user id is on the Closer setting."""
+    def _master_brief(self, actor: str) -> bool:
+        """Whether `actor` is an active Person with `master_brief` on."""
         person = self.people.get(actor)
-        return bool(person and person['active'] and person['telegram_id'] in self.closers)
+        return bool(person and person['active'] and person['master_brief'])
 
     def autoscan(self, slot: float) -> bool:
         """One autoscan run for the daily `slot` (#638): archive every Project's PM Notes, then scan them for Concerns.
@@ -1185,7 +1180,24 @@ class VerbAPI:
             psr -= timedelta(days=7)
         applied = ConcernScanner(ConcernStore(self.people.registry, self.people.tokens)).apply_pending(psr.timestamp(), read_all)
         print(f't6.server: concern scan {counts} projects={scanned} skipped={skipped} ' + ' '.join(f'{name}={count}' for name, count in changes.items()) + f' applied={applied}', file=sys.stderr, flush=True)  # counts only: no text
+        self._push_concerns_export()
         return True
+
+    def _push_concerns_export(self) -> None:
+        """Build the Concerns sheet export and push it to the VPS (#734). A failure is logged by its type only; it never fails the run."""
+        if self.concerns_export is None:
+            return
+        from t6.concern_export import concerns_export_csv
+        from t6.verbs import PersonListInput, ProjectListInput
+        try:
+            projects, people = self._typed_read('project', 'list', ProjectListInput()), self._typed_read('person', 'list', PersonListInput())
+            if not isinstance(projects, Done) or not isinstance(people, Done):
+                raise LookupError('names unavailable')
+            self.concerns_export(concerns_export_csv(
+                self.people.registry, {p.t6_id: (p.project_code or '', p.name) for p in projects.result['projects'] if p.t6_id},
+                {p['t6_id']: p['name'] for p in people.result['people'] if p['t6_id']}))
+        except Exception as error:
+            print(f't6.server: concerns export push failed: {type(error).__name__}', file=sys.stderr, flush=True)  # the type only: no text
 
     def _coordinators(self, project_id: str) -> set[str]:
         """The Persons who coordinate a Project: its Notion post coordinators and its t6 coordinator roles."""
@@ -1224,7 +1236,7 @@ class VerbAPI:
                 people = self._typed_read('person', 'list', PersonListInput())
                 names = {p['t6_id']: p['name'] for p in people.result['people'] if p['t6_id']} if isinstance(people, Done) else {}
                 for item in pending:
-                    item['close_by_name'] = names.get(item['close_by'])
+                    item['close_by_name'] = names.get(item['close_by']) or (item['close_by'].removeprefix('sheet:') if item['close_by'].startswith('sheet:') else None)  # a sheet close shows the email (#735)
             return Done(result={'concerns': concerns.open_concerns(inputs.project) if inputs.open else concerns.raise_at_psr(inputs.project), 'pending': pending})
         if (noun, verb) == ('project', 'notes-history'):
             from t6.pm_notes import history
@@ -1864,11 +1876,6 @@ def secrets_from_env(environ: Mapping[str, str]) -> dict[str, str]:
     if not isinstance(value, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in value.items()):
         raise ValueError('T6_API_SECRETS must be a JSON object mapping secrets to identities')
     return value
-
-
-def closer_telegram_ids(environ: Mapping[str, str]) -> frozenset[int]:
-    """The Closer setting: the Telegram user ids allowed to Close, comma-separated in `T6_CLOSER_TELEGRAM_IDS` (private config only)."""
-    return frozenset(int(value) for value in environ.get('T6_CLOSER_TELEGRAM_IDS', '').split(',') if value.strip())
 
 
 def service_permissions_from_env(environ: Mapping[str, str]) -> dict[str, frozenset[str]]:

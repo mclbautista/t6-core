@@ -10,3 +10,4 @@ dist
 tests
 docs
 .env
+apps-script

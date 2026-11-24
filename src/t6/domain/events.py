@@ -142,6 +142,8 @@ class JobKind(str, Enum):
     """A Frame.io file event (file.versioned or an upload) as the edge received it. The main worker records a Version."""
     FRAMEIO_SIGN_IN = "frameio.sign_in"
     """A person signed in to Adobe. Carries the authorization code and state for the Frame.io worker to exchange."""
+    SHEETS_CONCERNS_SUBMIT = "sheets.concerns_submit"
+    """A Closer pressed Submit in the Concerns sheet. The main worker applies each row with the Concern verbs (#735)."""
     CHAT_REPLY = "chat.reply"
     """A pushed chat command was refused. A worker sends the reason to the same chat and topic."""
     TAP = "tap"

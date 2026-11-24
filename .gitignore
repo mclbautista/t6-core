@@ -23,3 +23,6 @@ tokens.json
 *-token.json
 *-tokens.json
 *.token
+
+# Apps Script: the bound script id for clasp stays on the Mac mini
+.clasp.json

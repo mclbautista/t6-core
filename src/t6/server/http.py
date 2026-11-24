@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import threading
 
-from t6.server.app import Request, Response, WebhookApp
+from t6.server.app import CONCERNS_EXPORT_PUSH_PATH, Request, Response, WebhookApp
 
 MAX_BODY_BYTES = 1_000_000
 CATALOG_SNAPSHOT_PATH = "/v1/drive/catalog-snapshot"
@@ -23,7 +23,10 @@ Only the tailnet listener raises the limit for that one path (#549); every other
 PHOTO_ADD_PATH = "/v1/movement/photo-add"
 PHOTO_BODY_BYTES = 14_500_000
 """A movement photo may be 10 MB (t6-core #669), about 14 MB once base64-encoded in the request."""
-TAILNET_BODY_LIMITS = {CATALOG_SNAPSHOT_PATH: CATALOG_BODY_BYTES, PHOTO_ADD_PATH: PHOTO_BODY_BYTES}
+CONCERNS_EXPORT_PATH = CONCERNS_EXPORT_PUSH_PATH
+CONCERNS_EXPORT_BODY_BYTES = 8_000_000
+"""The Concerns sheet export (#732) is one CSV of every open Concern, pushed whole with `PUT`."""
+TAILNET_BODY_LIMITS = {CATALOG_SNAPSHOT_PATH: CATALOG_BODY_BYTES, PHOTO_ADD_PATH: PHOTO_BODY_BYTES, CONCERNS_EXPORT_PATH: CONCERNS_EXPORT_BODY_BYTES}
 """The only paths the tailnet listener lets past `MAX_BODY_BYTES`."""
 
 __all__ = ["make_server"]
@@ -48,9 +51,9 @@ def make_server(
             else:
                 body = self.rfile.read(length) if length else b""
                 answer = handle(Request(self.command, self.path, dict(self.headers.items()), body))
-            payload = json.dumps(answer.body).encode()
+            payload = answer.raw if answer.raw is not None else json.dumps(answer.body).encode()
             self.send_response(answer.status)
-            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Type", answer.content_type)
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
