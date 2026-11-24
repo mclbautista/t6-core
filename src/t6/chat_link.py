@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import secrets
+from collections.abc import Callable
 from typing import Any
 
 from t6.ids import EntityKind, T6Id
@@ -13,8 +14,27 @@ from t6.verbs import Done, Outcome, Refused
 
 
 class ChatLinks:
-    def __init__(self, registry: SqliteProjectRegistry, tokens: PreviewTokens) -> None:
-        self.registry, self.tokens = registry, tokens
+    def __init__(self, registry: SqliteProjectRegistry, tokens: PreviewTokens,
+                 project_name: Callable[[str], str | None] | None = None) -> None:
+        """`project_name` reads a Project's name from its Notion page id; without it the Approval names only the code."""
+        self.registry, self.tokens, self.project_name = registry, tokens, project_name
+
+    def _label(self, project: str) -> str:
+        """`Name [CODE]` for the Approval's target; empty when the Project has neither."""
+        with self.registry._transaction() as db:
+            row = db.execute('SELECT id, code FROM projects WHERE id = ?', (project,)).fetchone()
+            if not row:
+                _, form = normalize_code(project)
+                row = db.execute("SELECT id, code FROM projects WHERE code_form = ? AND rotation = 'in'", (form,)).fetchone()
+            binding = row and db.execute("SELECT page_id FROM bindings WHERE system = 'notion' AND project_id = ? AND active = 1", (row[0],)).fetchone()
+        name = None
+        if binding and self.project_name:
+            try:
+                name = (self.project_name(binding[0]) or '').strip()
+            except Exception:  # the name is a courtesy; the Approval still carries the ids
+                name = None
+        code = row[1] if row and row[1] else None
+        return ' '.join(part for part in (name, f'[{code}]' if code else None) if part)
 
     def write(self, verb: str, values: dict[str, Any], *, actor: str,
               idempotency_key: str | None = None, confirm: str | None = None) -> Outcome:
@@ -24,6 +44,7 @@ class ChatLinks:
         if (confirm and not idempotency_key) or (idempotency_key is not None and not idempotency_key.strip()):
             return Refused(rule='idempotency_key', reason='A nonblank idempotency key is required')
         key = idempotency_key or secrets.token_hex(16)
+        label = '' if confirm else self._label(project)
         inputs = {'project': project, 'chat': chat, 'topic': topic, 'idempotency_key': key}
         fingerprint = json.dumps({'verb': verb, 'actor': actor, **inputs}, sort_keys=True, separators=(',', ':'))
         nonce = self.tokens.verify(confirm, 'project ' + verb, actor, inputs) if confirm else None
@@ -67,7 +88,7 @@ class ChatLinks:
                     return Preview(plan=plan, token=request['confirm'])
                 if (link and link[1] == desired) or (not link and desired == 'inactive'):
                     return Done(result=plan)
-                target = f"{project_id}: chat {chat}, topic {topic if topic is not None else 'none'}" + (f" ({named[0]})" if named else '')
+                target = (f"{label} " if label else '') + f"{project_id}: chat {chat}, topic {topic if topic is not None else 'none'}" + (f" ({named[0]})" if named else '')
                 # One open Approval for one request: a new preview of the same write, by the same caller, for the same link state, reuses it.
                 open_one = db.execute("SELECT a.id FROM approvals a JOIN chat_link_previews p ON p.approval_id = a.id WHERE a.gate = 'chat link' AND a.state = 'requested' "
                                       "AND a.requester = ? AND a.target = ? AND p.snapshot = ? AND json_extract(p.request, '$.verb') = ? ORDER BY a.rowid LIMIT 1",

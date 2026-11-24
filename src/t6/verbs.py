@@ -297,23 +297,28 @@ class ProjectChatOutput(BaseModel):
     approval_id: str | None = None
 
 
-def _project_chat(inputs: ProjectChatInput, verb: str) -> Outcome:
+def _project_chat(inputs: ProjectChatInput, verb: str, open_notion: Callable[..., Any]) -> Outcome:
     from t6.chat_link import ChatLinks
     from t6.preview import PreviewTokens
     key = os.environ.get('T6_PREVIEW_SIGNING_KEY', '')
     if not key:
         return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
-    return ChatLinks(_people().registry, PreviewTokens(key)).write(
+    def project_name(page: str) -> str | None:
+        from t6.notion.generated import ProjectsRow
+        token = os.environ.get('T6_NOTION_TOKEN')
+        return ProjectsRow.from_page(_verb_notion_source(open_notion, token).retrieve_page(page)).name if token else None
+
+    return ChatLinks(_people().registry, PreviewTokens(key), project_name).write(
         verb, inputs.model_dump(exclude={'confirm', 'idempotency_key'}), actor=_actor.get(),
         idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
 
 
 def project_link_chat(inputs: ProjectChatInput, open_notion: Callable[..., Any]) -> Outcome:
-    return _project_chat(inputs, 'link-chat')
+    return _project_chat(inputs, 'link-chat', open_notion)
 
 
 def project_unlink_chat(inputs: ProjectChatInput, open_notion: Callable[..., Any]) -> Outcome:
-    return _project_chat(inputs, 'unlink-chat')
+    return _project_chat(inputs, 'unlink-chat', open_notion)
 
 class PersonAddInput(BaseModel):
     page_id: str

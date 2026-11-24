@@ -171,6 +171,29 @@ class ChatLinkTests(unittest.TestCase):
             target = db.execute('SELECT target FROM approvals WHERE id = ?', (preview.plan['approval_id'],)).fetchone()[0]
         self.assertEqual(target, f'{self.project}: chat -100, topic 12 (ABC123 - Edit)')
 
+    def test_approval_names_project_by_name_and_code(self) -> None:
+        with self.registry._transaction() as db:
+            db.execute("UPDATE projects SET code = 'ABC123', code_form = 'abc123', rotation = 'in' WHERE id = ?", (self.project,))
+            db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, 'now', 1)", ('a' * 32, self.project))
+            db.execute("INSERT INTO linked_chat_topics VALUES (-100, 12, 'Edit')")
+        links = ChatLinks(self.registry, self.tokens, lambda page: ' Big Show ' if page == 'a' * 32 else None)
+        preview = links.write('link-chat', {'project': self.project, 'chat': -100, 'topic': 12}, actor=self.actor, idempotency_key='labelled')
+        assert isinstance(preview, Preview)
+        with self.registry._transaction() as db:
+            target = db.execute('SELECT target FROM approvals WHERE id = ?', (preview.plan['approval_id'],)).fetchone()[0]
+        self.assertEqual(target, f'Big Show [ABC123] {self.project}: chat -100, topic 12 (Edit)')
+
+    def test_approval_still_made_when_the_name_cannot_be_read(self) -> None:
+        def broken(page: str) -> str | None:
+            raise OSError('Notion is down')
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, 'now', 1)", ('a' * 32, self.project))
+        preview = ChatLinks(self.registry, self.tokens, broken).write('link-chat', {'project': self.project, 'chat': -100, 'topic': None}, actor=self.actor, idempotency_key='broken')
+        assert isinstance(preview, Preview)
+        with self.registry._transaction() as db:
+            target = db.execute('SELECT target FROM approvals WHERE id = ?', (preview.plan['approval_id'],)).fetchone()[0]
+        self.assertEqual(target, f'{self.project}: chat -100, topic none')
+
     def test_topic_name_prefills_link_command(self) -> None:
         import tempfile
         from t6.server import Request, ServerConfig, WebhookApp
