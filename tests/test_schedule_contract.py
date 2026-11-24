@@ -34,6 +34,18 @@ class FixtureTests(unittest.TestCase):
         self.assertIsInstance(result, UnsupportedLayout)
         self.assertEqual(dump_response(result), load("response.unsupported.v1.json"))
 
+    def test_moved_cell_fixtures_keep_the_id_and_take_the_new_anchor(self) -> None:
+        results = {}
+        for tag in ("before", "after"):
+            result = extract_schedule(parse_request(load(f"request.moved-{tag}.v1.json")))
+            self.assertEqual(dump_response(result), load(f"response.moved-{tag}.v1.json"))
+            assert isinstance(result, ScheduleSnapshot)
+            results[tag] = result
+        before, after = results["before"].candidates[0], results["after"].candidates[0]
+        self.assertEqual((before.source_id, after.source_id), ("src-synthetic-1", "src-synthetic-1"))
+        self.assertNotEqual(before.provenance.anchor, after.provenance.anchor)
+        self.assertIsNone(results["after"].candidates[1].source_id)
+
     def test_response_fixtures_round_trip(self) -> None:
         for name in ("response.v1.json", "response.unsupported.v1.json"):
             parsed = parse_response(load(name))

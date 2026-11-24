@@ -188,19 +188,18 @@ class AbsenceTests(unittest.TestCase):
         self.assertEqual(standing(b, mix.group_key, mix.start), "held")
         self.assertEqual(standing(b, "m01-nov"), "read")
 
-    def test_candidate_next_to_an_unread_span_is_incomplete_not_missing(self) -> None:
+    def test_candidate_in_a_group_held_by_an_ambiguous_span_is_held_not_missing(self) -> None:
         a = self.revision_a()
         grade = next(c for c in a.candidates if c.title == "Grade review")
 
         tab = TabBuilder()
-        tab.add_month(2026, 11, {}, wide={3: (5, "Shoot block")})
+        tab.add_month(2026, 11, {}, wide={29: (32, "Runs off the month")})
         tab.add_month(2026, 12, {1: ["Mix"]})
         b = snapshot_of(tab.request(year=2026))
 
         self.assertNotIn("Grade review", [c.title for c in b.candidates])
-        self.assertEqual(standing(b, grade.group_key), "incomplete")
-        self.assertEqual(standing(b, grade.group_key, "2026-11-03"), "incomplete")  # under the unread span
-        self.assertEqual(standing(b, grade.group_key, "2026-11-10"), "read")  # a day the span does not touch
+        self.assertEqual(standing(b, grade.group_key), "held")
+        self.assertEqual(standing(b, grade.group_key, "2026-11-03"), "held")
 
     def test_omitted_cell_in_a_complete_group_is_no_task_only_when_the_day_was_read(self) -> None:
         a = self.revision_a()
@@ -264,12 +263,12 @@ class DayStateTests(unittest.TestCase):
         self.assertEqual({d.state for d in group.days}, {"unread", "blank"})
         self.assertTrue(all(d.date is None for d in group.days))
 
-    def test_days_under_an_unread_span_are_unread(self) -> None:
+    def test_days_under_an_ambiguous_span_are_unread(self) -> None:
         tab = TabBuilder()
-        tab.add_month(2026, 11, {}, wide={3: (5, "Shoot block")})
+        tab.add_month(2026, 11, {}, wide={29: (32, "Runs off the month")})
         [group] = snapshot_of(tab.request(year=2026)).groups
         unread = sorted(d.date for d in group.days if d.state == "unread")  # type: ignore[type-var]
-        self.assertEqual(unread, ["2026-11-03", "2026-11-04", "2026-11-05"])
+        self.assertEqual(unread, ["2026-11-29", "2026-11-30"])
 
 
 if __name__ == "__main__":

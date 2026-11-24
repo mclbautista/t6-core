@@ -62,6 +62,34 @@
       "title": "Merge",
       "type": "object"
     },
+    "SourceId": {
+      "additionalProperties": false,
+      "description": "A durable ID the client supplied for the entry in a cell. The cell is only where it was read.",
+      "properties": {
+        "row": {
+          "minimum": 0,
+          "title": "Row",
+          "type": "integer"
+        },
+        "col": {
+          "minimum": 0,
+          "title": "Col",
+          "type": "integer"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "row",
+        "col",
+        "id"
+      ],
+      "title": "SourceId",
+      "type": "object"
+    },
     "SourceScope": {
       "additionalProperties": false,
       "description": "Document and tab identity. Opaque strings the caller chose; the extractor never opens them.",
@@ -164,6 +192,13 @@
         "$ref": "#/$defs/CellFill"
       },
       "title": "Fills",
+      "type": "array"
+    },
+    "source_ids": {
+      "items": {
+        "$ref": "#/$defs/SourceId"
+      },
+      "title": "Source Ids",
       "type": "array"
     },
     "rows_total": {

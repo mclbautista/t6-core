@@ -1,4 +1,4 @@
-"""Month names, weekday alignment and the year. #718 extends this with ambiguous-year holds."""
+"""Month names, weekday alignment, the year and the end date of a multi-day span."""
 
 from __future__ import annotations
 
@@ -79,3 +79,33 @@ def fitting_start_years(months: list[int], cells_by_block: list[list[DayCell]]) 
         if all(aligns(y, cells) for y, cells in zip(years, cells_by_block, strict=True)):
             fits.append(start)
     return fits
+
+
+@dataclass(frozen=True, slots=True)
+class SpanDates:
+    """The inclusive ends of a span, or why they cannot be placed. Exactly one side is set."""
+
+    start: date | None = None
+    due: date | None = None
+    problem: str | None = None
+
+
+def span_dates(year: int, month: int, band_days: dict[int, int], pairs: range) -> SpanDates:
+    """Inclusive dates of the day pairs `pairs` (pair 0 is Sunday) in one week band.
+
+    `band_days` maps a pair's left column to its day number. Both ends need a day number, the
+    numbers between must run one day at a time, and the end must fall on its column's weekday
+    (this also checks that the end does not run past the month end).
+    """
+    first, last = pairs[0], pairs[-1]
+    start_day, end_day = band_days.get(first * 2), band_days.get(last * 2)
+    if start_day is None or end_day is None:
+        return SpanDates(problem=f"the span's {'start' if start_day is None else 'end'} day has no day number")
+    if end_day - start_day != last - first:
+        return SpanDates(problem=f"day numbers {start_day} to {end_day} do not match {len(pairs)} day columns")
+    start, due = make_date(year, month, start_day), make_date(year, month, end_day)
+    if start is None or due is None:
+        return SpanDates(problem=f"day {end_day if due is None else start_day} does not exist in month {month} of {year}")
+    if due.weekday() != column_weekday(last * 2):
+        return SpanDates(problem=f"{due.isoformat()} does not fall on {WEEKDAYS[last]}")
+    return SpanDates(start=start, due=due)

@@ -77,6 +77,14 @@ class CellFill(_Model):
     color: str = Field(min_length=1)
 
 
+class SourceId(_Model):
+    """A durable ID the client supplied for the entry in a cell. The cell is only where it was read."""
+
+    row: int = Field(ge=0)
+    col: int = Field(ge=0)
+    id: str = Field(min_length=1)
+
+
 class ScheduleRequest(_Model):
     """One tab read in full. `rows_total` and `columns_total` are the tab's own size, when known."""
 
@@ -86,6 +94,7 @@ class ScheduleRequest(_Model):
     cells: list[list[CellValue]]
     merges: list[Merge] | None = None  # None: no merge list was read. An empty list: the tab has no merges.
     fills: list[CellFill] = Field(default_factory=list)
+    source_ids: list[SourceId] = Field(default_factory=list)
     rows_total: int | None = Field(default=None, ge=0)
     columns_total: int | None = Field(default=None, ge=0)
     year: int | None = Field(default=None, ge=1900, le=2200)

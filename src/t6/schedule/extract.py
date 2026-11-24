@@ -20,10 +20,11 @@ from t6.schedule.contract import (
     YearEvidence,
 )
 from t6.schedule.coverage import group_status, read_coverage, unread_days, with_source_uncertainty
-from t6.schedule.dates import DayCell, aligns, block_years, fitting_start_years, make_date, weekday_name
+from t6.schedule.dates import DayCell, aligns, block_years, fitting_start_years, make_date, span_dates, weekday_name
 from t6.schedule.grid import Grid, a1, merge_range
-from t6.schedule.layout import DAY_COLUMNS, LEFT_COLUMNS, MonthBlock, find_month_blocks
-from t6.schedule.text import clean_text, is_availability
+from t6.schedule.layout import DAY_COLUMNS, LEFT_COLUMNS, MonthBlock, day_pairs, find_month_blocks
+from t6.schedule.revision import source_ids, source_revision
+from t6.schedule.text import clean_text, is_availability, is_break, tentative_marker
 
 
 Method = Literal["supplied", "inferred_weekday_alignment"]
@@ -62,10 +63,12 @@ def extract_schedule(request: ScheduleRequest) -> ScheduleSnapshot | Unsupported
         if year is not None and not exceptions:
             evidence.append(Evidence(kind="year", detail=f"{year} {method}", anchor=block.header_range))
             read = _read_entries(grid, request, block, key, YearEvidence(year=year, method=method), year)
-            candidates.extend(read.candidates)
             non_tasks.extend(read.non_tasks)
             exceptions.extend(read.exceptions)
             days = _mark_unread(days, read.unread)
+            if group_status(exceptions) != "held":  # a held group carries no candidates
+                candidates.extend(read.candidates)
+        non_tasks.extend(_month_notes(grid, block, key))
         exceptions = with_source_uncertainty(exceptions, coverage)
         groups.append(
             Group(
@@ -82,7 +85,7 @@ def extract_schedule(request: ScheduleRequest) -> ScheduleSnapshot | Unsupported
     numbered = [c.model_copy(update={"candidate_key": f"c{n}"}) for n, c in enumerate(candidates, 1)]
     return ScheduleSnapshot(
         source_scope=scope,
-        source_revision=request.source_revision,
+        source_revision=source_revision(request),
         coverage=coverage,
         groups=groups,
         candidates=numbered,
@@ -94,7 +97,7 @@ def _unsupported(request: ScheduleRequest, code: str, message: str) -> Unsupport
     return UnsupportedLayout.model_validate(
         {
             "source_scope": request.source_scope,
-            "source_revision": request.source_revision,
+            "source_revision": source_revision(request),
             "diagnostic": {"code": code, "message": message},
         }
     )
@@ -192,6 +195,7 @@ def _read_entries(
     grid: Grid, request: ScheduleRequest, block: MonthBlock, key: str, year_evidence: YearEvidence, year: int
 ) -> _Read:
     read = _Read()
+    ids = source_ids(request)
     for band in block.bands:
         for row in range(band.number_row + 1, band.end_row):
             for col in range(DAY_COLUMNS):
@@ -199,15 +203,15 @@ def _read_entries(
                 if not text or grid.covered(row, col):
                     continue
                 merge = grid.merge_at(row, col)
-                last_col = merge.end_col - 1 if merge else col
                 anchor = a1(row, col)
-                if col // 2 != last_col // 2:
-                    read.exceptions.append(
-                        GroupException(code="span_not_read", detail="entry spans several days", anchor=anchor)
-                    )
-                    read.unread.update(a1(band.number_row, pair * 2) for pair in range(col // 2, last_col // 2 + 1))
-                    continue
-                day = band.days.get(col // 2 * 2)
+                number_col = col // 2 * 2
+                last_col = merge.end_col - 1 if merge else col
+                if col // 2 == last_col // 2:
+                    pairs: range | None = range(col // 2, col // 2 + 1)
+                else:
+                    assert merge is not None
+                    pairs = day_pairs(merge.start_col, merge.end_col)
+                day = band.days.get(number_col)
                 if day is None:
                     read.exceptions.append(
                         GroupException(code="undated_entry", detail="entry sits under a blank day", anchor=anchor)
@@ -216,15 +220,33 @@ def _read_entries(
                 if is_availability(text):
                     read.non_tasks.append(NonTask(kind="availability", text=text, group_key=key, anchor=anchor))
                     continue
-                iso = f"{year:04d}-{block.month:02d}-{day:02d}"
-                number_col = col // 2 * 2
+                if is_break(text):
+                    read.non_tasks.append(NonTask(kind="break", text=text, group_key=key, anchor=anchor))
+                    continue
+                problem = "its ends are not on day boundaries" if pairs is None else None
+                dates = span_dates(year, block.month, band.days, pairs) if pairs is not None else None
+                if dates is not None and dates.problem:
+                    problem = dates.problem
+                if pairs is None or dates is None or dates.start is None or dates.due is None:
+                    assert merge is not None
+                    read.exceptions.append(
+                        GroupException(
+                            code="ambiguous_span",
+                            detail=f"{text!r} merged over {merge_range(merge)}: {problem}",
+                            anchor=merge_range(merge),
+                        )
+                    )
+                    read.unread.update(a1(band.number_row, pair * 2) for pair in range(merge.start_col // 2, (merge.end_col - 1) // 2 + 1))
+                    continue
                 read.candidates.append(
                     Candidate(
                         candidate_key="pending",
                         group_key=key,
                         title=text,
-                        start=iso,
-                        due=iso,
+                        start=dates.start.isoformat(),
+                        due=dates.due.isoformat(),
+                        tentative=tentative_marker(text),
+                        source_id=ids.get((row, col)),
                         provenance=Provenance(
                             tab_id=request.source_scope.tab_id,
                             tab_title=request.source_scope.tab_title,
@@ -244,3 +266,16 @@ def _read_entries(
                     )
                 )
     return read
+
+
+def _month_notes(grid: Grid, block: MonthBlock, key: str) -> list[NonTask]:
+    """Column O text below the NOTES label, down to the next month block. Kept as text, never read as tasks."""
+    first = grid.merge_at(block.header_row, 0)
+    top = first.end_row if first else block.header_row + 1
+    last = block.bands[-1].end_row if block.bands else top
+    notes = []
+    for row in range(top, last):
+        text = clean_text(grid.value(row, DAY_COLUMNS))
+        if text and not grid.covered(row, DAY_COLUMNS):
+            notes.append(NonTask(kind="note", text=text, group_key=key, anchor=a1(row, DAY_COLUMNS)))
+    return notes

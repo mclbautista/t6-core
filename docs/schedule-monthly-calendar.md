@@ -12,7 +12,8 @@ LLM call, writes nothing and uses no dataframe. Reading the sheet is another tic
 
 - Request: `ScheduleSnapshotRequest/v1`. `cells` is a list of rows (strings, numbers or null; day numbers may be floats such
   as `1.0`). `merges` use 0-based, end-exclusive bounds. `fills` is sparse. `rows_total` and `columns_total` say how big the
-  tab is, so a short read shows as incomplete. `year` is optional.
+  tab is, so a short read shows as incomplete. `year` is optional. `source_revision` is the Google revision, when the caller has
+  one. `source_ids` is optional: durable IDs the client supplied, each `{row, col, id}` for the entry in that cell.
 - Response: `result` is `snapshot` or `unsupported_layout`. Both carry `schema_version: "ScheduleSnapshot/v1"`.
 - Fixtures: `tests/fixtures/schedule/` holds versioned request and response fixtures and the JSON Schemas. A test fails when
   the committed schemas drift from the models. The planner (#695) reuses `t6.schedule.parse_response` and
@@ -43,23 +44,36 @@ LLM call, writes nothing and uses no dataframe. Reading the sheet is another tic
 ## How #717 reads it
 
 - Each month block is a **group** (`group_key` like `m01-nov`). Groups are read independently.
-- Single-day entries become **candidates**: `start` and `due` are the same ISO date. Provenance records the tab, the cell
+- Single-day entries become **candidates**: `start` and `due` are the same ISO date. A multi-day merge is one candidate
+  whose inclusive `start` and `due` come from its horizontal extent only: the day pairs between its left and right
+  edges, read against the day numbers of its week band. Merge height is ignored. Provenance records the tab, the cell
   anchor and merge range, the raw fill, the year evidence and the date evidence (month header, day-number cell, weekday).
   `candidate_key` (`c1`, `c2`, ...) is local to the snapshot and says nothing about identity across revisions. Repeated
   titles stay separate candidates.
-- "NA:" cells are listed in `non_tasks` as `availability` and are never candidates. Column O is not read.
+- "NA:" cells are listed in `non_tasks` as `availability` and are never candidates. A cell that is only "BREAK" (optional colon) is a `break` non-task. Column O text below "NOTES" is a `note` non-task per month block (#720).
+- A tentative marker ("(TBC)", "[Tentative]" anywhere, "Tentative:" at the start, any case) is kept as written in `tentative`; the title keeps its text. Any other text, including instruction-like text, is only text: a title, or a note.
 - **Year.** The caller may pass `year`, the year of the first month block; the year rolls over when a later month number is
   lower. Without it, the extractor tries years 2020 to 2035 and uses one only when exactly one year puts every day number on
   its column's weekday. With a supplied year, a block whose weekdays do not fit is held (`weekday_mismatch`).
 - **Holds.** More than one fitting year holds every readable group (`ambiguous_year`); no fitting year holds them with
   `weekday_mismatch`. A block with a bad weekday header or an unusable day number is held (`invalid_header`,
   `invalid_day_number`) and the other groups still read. A held group carries no candidates.
-- **Incomplete.** Multi-day merges and entries under a blank day are not turned into candidates (#718 reads spans). They are
-  reported as exceptions (`span_not_read`, `undated_entry`) and the group is `incomplete`, so a missing candidate is never
+- **Span holds.** A merge whose ends are not on day boundaries or that leaves A:N, whose end day has no day number, or
+  whose day numbers do not run one day at a time, holds its group (`ambiguous_span`, with the title, merge range and
+  reason). A held group carries no candidates.
+- **Incomplete.** An entry under a blank day is not turned into a candidate. It is reported as an exception
+  (`undated_entry`) and the group is `incomplete`, so a missing candidate is never
   evidence that a task is absent. A read with fewer rows or columns than `rows_total` and `columns_total` makes the whole
   snapshot `coverage.status: incomplete`.
 - **Unsupported layout.** A tab with no month header merged across A:N returns `result: unsupported_layout` with a
   `diagnostic` (`empty_tab` or `no_month_header`) and no candidates.
+- **Revision and identity.** `source_revision` is the request's Google revision when given. Otherwise it is
+  `sha256:` plus a hash of the normalized values (text stripped, blanks dropped, whole floats as integers) and the merge
+  geometry, so identical input gives the same value and any changed value or merge gives a new one. Fills and supplied IDs
+  are not part of it. A cell address is provenance only. A candidate carries `source_id` only when the client supplied an ID
+  for that cell; a moved entry then keeps its ID and gets its new anchor and date. Without an ID the snapshot makes no link
+  between candidates of two revisions: that association belongs to the planner (#695). Fixtures:
+  `request.moved-before.v1.json` and `request.moved-after.v1.json` with their responses.
 
 ## Coverage (#719)
 
@@ -81,6 +95,5 @@ LLM call, writes nothing and uses no dataframe. Reading the sheet is another tic
 
 ## Not yet read
 
-Multi-day spans and date holds (#718), tentative markers, notes and breaks (#720), the revision
-fingerprint and moved cells (#721), and the Google read and API verb (#722). The contract already has fields for them
+The Google read and API verb (#722). The contract already has fields for them
 (`tentative`, `source_id`, `source_revision`, `non_tasks`, the exception codes).
