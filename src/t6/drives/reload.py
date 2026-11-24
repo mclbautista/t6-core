@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from collections import defaultdict
 from datetime import date
 from typing import Any
@@ -17,6 +18,11 @@ from t6.lookup import Index, Lookup
 from t6.preview import PreviewTokens
 from t6.registry.sqlite import SqliteProjectRegistry
 from t6.verbs import Outcome, Refused
+
+
+def last_reload_report(db: sqlite3.Connection) -> tuple[float, dict[str, Any]] | None:
+    row = db.execute('SELECT at, data FROM drive_reload_reports ORDER BY id DESC LIMIT 1').fetchone()
+    return (row[0], json.loads(row[1])) if row else None
 
 
 def reload_drives(registry: SqliteProjectRegistry, tokens: PreviewTokens, source: SheetSource, *,

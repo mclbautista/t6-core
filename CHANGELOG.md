@@ -4,6 +4,14 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- `drive list` takes the text of a text-only Project in `project`, and lists the Drives with an open Assignment to that text, as it does for a registered Project ID (#649).
+- `drive capture list` (Drive callers only): captures by state (`exception` by default, or `pending`, `resolved`, `ignored`, `undone`), newest first, each with its text, sender and photo size and type. An ignored capture has no text and no photo. `drive capture photo` (Drive callers only, not an MCP tool) returns the kept photo; no photo goes to any other service (#649).
+- `drive capture` with a `capture` takes a `drive` ID (Drive callers only): the custodian gives an unresolved capture a Drive, and it resolves as a normal Movement without a new photo read (#649).
+- `movement correct` takes a `project`, a registered Project ID or the text of a text-only Project. The correction takes the movement off the needs-a-Project list and the original entry stays (#649).
+- `drive reload report`: the last stored reload report, with its counts, `unmapped_projects`, the rows that could not load (`exception_rows`) and the reload time (`at`). `report` is null before any reload (#649).
+
 ## [0.6.24] - 2026-11-24
 
 The Drive web app can search by Project code and show who has each Drive and where it is (#646), and the API gains the Concerns rollout and JO Health (spec #635). The schema moves from 55 to 59 (additive migrations, none forward-only: 0.6.23 still opens it). Breaking: `concern snooze` is gone (see Removed). Nothing is deployed by this release.

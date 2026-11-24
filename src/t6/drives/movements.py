@@ -137,6 +137,10 @@ def correct_movement(registry: SqliteProjectRegistry, tokens: PreviewTokens, mov
         if changes.get('drive') and store.get_drive(changes['drive']) is None:
             return Refused(rule='drive', reason='Drive not found')
         original = _movement(json.loads(row[0]))
+        if changes.get('project'):
+            project = changes['project'].strip()
+            registered = db.execute('SELECT 1 FROM projects WHERE id=?', (project,)).fetchone()
+            changes = {**changes, 'project': Ref(page_id=project) if registered else Ref(text=project)}
         corrected = replace(original, **changes, id='t6m_' + hashlib.sha256(request.print_.encode()).hexdigest()[:32], corrects=original.id, recorder=actor)
         result = {'movement': json.loads(json.dumps(asdict(corrected), default=str))}
         if not request.nonce:

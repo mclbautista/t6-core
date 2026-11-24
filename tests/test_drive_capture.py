@@ -24,9 +24,12 @@ class CaptureTests(DriveReloadFixture):
         self.workbook({'SYNTHETIC PROJECT': [HEADER, ['Synthetic first', 'SAMPLE-FIRST'],
                                             ['Synthetic second', 'SAMPLE-SECOND']]})
         self.reload()
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES ('t6n_synthetickeeper', 'staff', '[]', '[]', NULL, 0, 1)")
+            db.execute("INSERT INTO person_permissions VALUES ('t6n_synthetickeeper', 'drives')")
         self.queue = InternalJobQueue(self.registry)
         self.fake = FakeProvider()
-        api = VerbAPI(self.people, self.queue, {'synthetic-gateway': 'gateway', 'synthetic-other': 'worker'}, lambda _: None)
+        api = VerbAPI(self.people, self.queue, {'synthetic-gateway': 'gateway', 'synthetic-other': 'worker', 'synthetic-keeper-secret': 't6n_synthetickeeper'}, lambda _: None)
         self.server = make_server(('127.0.0.1', 0), api)
         thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         thread.start()
@@ -202,6 +205,68 @@ class CaptureTests(DriveReloadFixture):
         self.assertEqual(resolved['lines'], [dict(label='Synthetic first', direction='OUT', person='Synthetic borrower')])
         self.assertEqual(self.api('capture', capture=capture, text='SAMPLE-FIRST')['result'], resolved)
 
+    def test_capture_list_shows_unresolved_captures_with_text_and_photo_access(self) -> None:
+        keeper = 'synthetic-keeper-secret'
+        photo_bytes = base64.b64decode(self.post['photo'])
+        pending = self.api('capture', **self.post)['result']['capture']
+        self.assertEqual(self.api('capture list', keeper)['result']['captures'], [])
+        self.resolve([])
+        second = self.api('capture', **{**self.post, 'message_id': 2, 'posted_at': '2026-11-24T11:30:00+08:00'})['result']['capture']
+        self.assertEqual([c['capture'] for c in self.api('capture list', keeper, state='pending')['result']['captures']], [second])
+        self.resolve([])
+        listed = self.api('capture list', keeper)['result']['captures']
+        self.assertEqual([c['capture'] for c in listed], [second, pending])  # newest first
+        self.assertEqual({k: listed[1][k] for k in ('state', 'text', 'posted_at', 'sender_telegram_id', 'photo')},
+                         {'state': 'exception', 'text': 'OUT Synthetic borrower', 'posted_at': '2026-11-24T10:30:00+08:00',
+                          'sender_telegram_id': 900010, 'photo': {'size': len(photo_bytes), 'media_type': 'image/png'}})
+        photo = self.api('capture photo', keeper, capture=pending)
+        self.assertEqual(photo['outcome'], 'done', photo)
+        self.assertEqual((base64.b64decode(photo['result']['photo']), photo['result']['media_type']), (photo_bytes, 'image/png'))
+        self.assertEqual(self.api('capture list', keeper, state='resolved')['result']['captures'], [])
+        self.assertEqual(self.api('capture photo', keeper, capture='capture_missing')['rule'], 'capture')
+
+    def test_only_a_drive_caller_reads_the_capture_list_or_photo(self) -> None:
+        capture = self.api('capture', **self.post)['result']['capture']
+        self.resolve([])
+        for secret in ('synthetic-gateway', 'synthetic-other'):
+            for result in (self.api('capture list', secret), self.api('capture photo', secret, capture=capture)):
+                self.assertEqual((result['outcome'], result['rule']), ('refused', 'permission'), (secret, result))
+        self.assertEqual(self.api('capture list', 'synthetic-keeper-secret')['outcome'], 'done')
+
+    def test_an_ignored_capture_lists_with_no_text_and_no_photo(self) -> None:
+        capture = self.api('capture', **{**self.post, 'text': 'Synthetic lunch photo'})['result']['capture']
+        self.resolve([{'label': 'Synthetic first', 'serial': 'SAMPLE-FIRST', 'confidence': 0.9}], 'no')
+        (row,) = self.api('capture list', 'synthetic-keeper-secret', state='ignored')['result']['captures']
+        self.assertEqual((row['capture'], row['state'], row['text'], row['photo']), (capture, 'ignored', None, None))
+        self.assertEqual(self.api('capture list', 'synthetic-keeper-secret')['result']['captures'], [])
+        photo = self.api('capture photo', 'synthetic-keeper-secret', capture=capture)
+        self.assertEqual((photo['outcome'], photo['rule']), ('refused', 'capture'))
+
+    def test_giving_an_unresolved_capture_a_drive_resolves_it_without_reading_the_photo(self) -> None:
+        keeper = 'synthetic-keeper-secret'
+        capture = self.api('capture', **self.post)['result']['capture']
+        self.resolve([])
+        drive = self.drives()[1]['id']
+        self.assertEqual([c['capture'] for c in self.call('exceptions').result['captures']], [capture])
+        refused = self.api('capture', 'synthetic-gateway', capture=capture, drive=drive)
+        self.assertEqual((refused['outcome'], refused['rule']), ('refused', 'permission'))
+        self.assertEqual(self.api('capture', keeper, capture=capture, drive='t6d_missing')['rule'], 'drive')
+        calls = len(self.fake.calls)
+        follow = self.api('capture', keeper, capture=capture, drive=drive)
+        self.assertEqual((follow['outcome'], follow['result']['state']), ('done', 'pending'), follow)
+        self.assertEqual(self.api('capture', keeper, capture=capture, drive=drive)['result'], follow['result'])
+        self.resolve([])
+        self.assertEqual(len(self.fake.calls), calls)
+        resolved = self.api('capture result', capture=capture)['result']
+        self.assertEqual((resolved['state'], resolved['lines']),
+                         ('resolved', [dict(label='Synthetic second', direction='OUT', person='Synthetic borrower')]))
+        self.assertEqual({d['id']: d['status'] for d in self.drives()}[drive], 'released')
+        self.assertEqual(self.call('exceptions').result['captures'], [])
+        self.assertEqual(self.api('capture list', keeper)['result']['captures'], [])
+        (row,) = self.api('capture list', keeper, state='resolved')['result']['captures']
+        self.assertEqual(row['capture'], capture)
+        self.assertEqual(self.api('capture', keeper, capture=capture, drive=drive)['result']['state'], 'resolved')
+
     def test_undo_appends_reversals_and_restores_previous_status_once(self) -> None:
         capture = self.api('capture', **self.post)['result']['capture']
         self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
@@ -254,6 +319,45 @@ class CaptureTests(DriveReloadFixture):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]['drive'], drive)
         self.assertIsNone(rows[0]['project'])
+
+    def movements(self, verb: str, **values: Any) -> Any:
+        from t6.verbs import VERBS, invoke
+        entry = next(v for v in VERBS if (v.noun, v.verb) == ('movement', verb))
+        return invoke(entry, entry.input_model.model_validate(values), actor='synthetic-keeper', people=self.people,
+                      open_notion=lambda _: None)
+
+    def correct_project(self, movement: str, project: str, key: str) -> dict[str, Any]:
+        from t6.verbs import Done
+        values = dict(movement=movement, project=project, idempotency_key=key)
+        done = self.movements('correct', **values, confirm=self.movements('correct', **values).token)
+        self.assertIsInstance(done, Done)
+        return dict(done.result['movement'])
+
+    def needs_project_movement(self) -> dict[str, Any]:
+        drive = self.drives()[0]['id']
+        values = dict(drive=drive, assignment=1, end='2026-11-23', idempotency_key='synthetic-unassign')
+        self.call('unassign', **values, confirm=self.call('unassign', **values).token)
+        self.api('capture', **self.post)
+        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
+        (original,) = self.movements('list', needs_project=True).result['movements']
+        return dict(original)
+
+    def test_correcting_the_project_takes_a_movement_off_the_needs_project_list(self) -> None:
+        original = self.needs_project_movement()
+        registered = self.registry.register(actor='setup', idempotency_key='synthetic-project').project.id  # type: ignore[union-attr]
+        corrected = self.correct_project(original['id'], registered, 'synthetic-registered')
+        self.assertEqual((corrected['project'], corrected['corrects']), ({'page_id': registered, 'text': None}, original['id']))
+        self.assertEqual(self.movements('list', needs_project=True).result['movements'], [])
+        self.assertEqual(self.movements('list', project=registered).result['movements'], [corrected])
+        self.assertEqual(self.movements('list', drive=original['drive']).result['movements'], [original, corrected])
+
+    def test_correcting_to_a_text_project_keeps_the_text_and_the_original_entry(self) -> None:
+        original = self.needs_project_movement()
+        corrected = self.correct_project(original['id'], 'SYNTHETIC TEXT PROJECT', 'synthetic-text')
+        self.assertEqual(corrected['project'], {'page_id': None, 'text': 'SYNTHETIC TEXT PROJECT'})
+        self.assertEqual(self.movements('list', needs_project=True).result['movements'], [])
+        self.assertEqual(self.movements('list', drive=original['drive']).result['movements'], [original, corrected])
+        self.assertIsNone(self.movements('list', drive=original['drive']).result['movements'][0]['project'])
 
     def test_in_uses_sender_as_receiver_and_recorder_and_keeps_place(self) -> None:
         with self.registry._transaction() as db:
