@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.25] - 2026-11-24
+
+Reads and edits for the Drive web app's Projects and Exceptions pages (#649): the Drives of a text-only Project, the list of unresolved captures with their photo, giving a capture a Drive, a Project on a movement correction, and the last reload report. No schema change. Nothing is deployed by this release.
+
 ### Added
 
 - `drive list` takes the text of a text-only Project in `project`, and lists the Drives with an open Assignment to that text, as it does for a registered Project ID (#649).
