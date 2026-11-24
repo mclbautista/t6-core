@@ -1,0 +1,606 @@
+{
+  "$defs": {
+    "Candidate": {
+      "additionalProperties": false,
+      "description": "A task the sheet shows. `candidate_key` is local to this snapshot, never an identity across revisions.",
+      "properties": {
+        "candidate_key": {
+          "minLength": 1,
+          "title": "Candidate Key",
+          "type": "string"
+        },
+        "group_key": {
+          "minLength": 1,
+          "title": "Group Key",
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "start": {
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "title": "Start",
+          "type": "string"
+        },
+        "due": {
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "title": "Due",
+          "type": "string"
+        },
+        "tentative": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tentative"
+        },
+        "source_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Id"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        }
+      },
+      "required": [
+        "candidate_key",
+        "group_key",
+        "title",
+        "start",
+        "due",
+        "provenance"
+      ],
+      "title": "Candidate",
+      "type": "object"
+    },
+    "Coverage": {
+      "additionalProperties": false,
+      "description": "How much of the tab was read. Incomplete is never evidence of absence.",
+      "properties": {
+        "status": {
+          "enum": [
+            "complete",
+            "incomplete"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "rows_read": {
+          "minimum": 0,
+          "title": "Rows Read",
+          "type": "integer"
+        },
+        "columns_read": {
+          "minimum": 0,
+          "title": "Columns Read",
+          "type": "integer"
+        },
+        "rows_total": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rows Total"
+        },
+        "columns_total": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Columns Total"
+        }
+      },
+      "required": [
+        "status",
+        "rows_read",
+        "columns_read"
+      ],
+      "title": "Coverage",
+      "type": "object"
+    },
+    "DateEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "month": {
+          "maximum": 12,
+          "minimum": 1,
+          "title": "Month",
+          "type": "integer"
+        },
+        "day": {
+          "maximum": 31,
+          "minimum": 1,
+          "title": "Day",
+          "type": "integer"
+        },
+        "weekday": {
+          "title": "Weekday",
+          "type": "string"
+        },
+        "month_header_anchor": {
+          "title": "Month Header Anchor",
+          "type": "string"
+        },
+        "day_number_anchor": {
+          "title": "Day Number Anchor",
+          "type": "string"
+        }
+      },
+      "required": [
+        "month",
+        "day",
+        "weekday",
+        "month_header_anchor",
+        "day_number_anchor"
+      ],
+      "title": "DateEvidence",
+      "type": "object"
+    },
+    "Diagnostic": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "enum": [
+            "empty_tab",
+            "no_month_header"
+          ],
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "Diagnostic",
+      "type": "object"
+    },
+    "Evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "year",
+            "weekday_alignment",
+            "header"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "detail": {
+          "title": "Detail",
+          "type": "string"
+        },
+        "anchor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Anchor"
+        }
+      },
+      "required": [
+        "kind",
+        "detail"
+      ],
+      "title": "Evidence",
+      "type": "object"
+    },
+    "Group": {
+      "additionalProperties": false,
+      "description": "A larger part of the tab, processed on its own: one month block.",
+      "properties": {
+        "group_key": {
+          "minLength": 1,
+          "title": "Group Key",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "complete",
+            "held",
+            "incomplete"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "anchor": {
+          "title": "Anchor",
+          "type": "string"
+        },
+        "year": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Year"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "exceptions": {
+          "items": {
+            "$ref": "#/$defs/GroupException"
+          },
+          "title": "Exceptions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "group_key",
+        "label",
+        "status",
+        "anchor"
+      ],
+      "title": "Group",
+      "type": "object"
+    },
+    "GroupException": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "enum": [
+            "invalid_header",
+            "invalid_day_number",
+            "ambiguous_year",
+            "weekday_mismatch",
+            "ambiguous_span",
+            "span_not_read",
+            "undated_entry",
+            "unread_region"
+          ],
+          "title": "Code",
+          "type": "string"
+        },
+        "detail": {
+          "title": "Detail",
+          "type": "string"
+        },
+        "anchor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Anchor"
+        }
+      },
+      "required": [
+        "code",
+        "detail"
+      ],
+      "title": "GroupException",
+      "type": "object"
+    },
+    "NonTask": {
+      "additionalProperties": false,
+      "description": "Text that is not a task: availability, a note or a break. Never executed, never a candidate.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "availability",
+            "note",
+            "break"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "group_key": {
+          "title": "Group Key",
+          "type": "string"
+        },
+        "anchor": {
+          "title": "Anchor",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text",
+        "group_key",
+        "anchor"
+      ],
+      "title": "NonTask",
+      "type": "object"
+    },
+    "Provenance": {
+      "additionalProperties": false,
+      "properties": {
+        "tab_id": {
+          "title": "Tab Id",
+          "type": "string"
+        },
+        "tab_title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tab Title"
+        },
+        "anchor": {
+          "title": "Anchor",
+          "type": "string"
+        },
+        "range": {
+          "title": "Range",
+          "type": "string"
+        },
+        "merged": {
+          "title": "Merged",
+          "type": "boolean"
+        },
+        "fill": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fill"
+        },
+        "year_evidence": {
+          "$ref": "#/$defs/YearEvidence"
+        },
+        "date_evidence": {
+          "$ref": "#/$defs/DateEvidence"
+        }
+      },
+      "required": [
+        "tab_id",
+        "anchor",
+        "range",
+        "merged",
+        "year_evidence",
+        "date_evidence"
+      ],
+      "title": "Provenance",
+      "type": "object"
+    },
+    "ScheduleSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "ScheduleSnapshot/v1",
+          "default": "ScheduleSnapshot/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "result": {
+          "const": "snapshot",
+          "default": "snapshot",
+          "title": "Result",
+          "type": "string"
+        },
+        "source_scope": {
+          "$ref": "#/$defs/SourceScope"
+        },
+        "source_revision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Revision"
+        },
+        "layout_version": {
+          "const": "monthly-calendar/v1",
+          "default": "monthly-calendar/v1",
+          "title": "Layout Version",
+          "type": "string"
+        },
+        "coverage": {
+          "$ref": "#/$defs/Coverage"
+        },
+        "groups": {
+          "items": {
+            "$ref": "#/$defs/Group"
+          },
+          "title": "Groups",
+          "type": "array"
+        },
+        "candidates": {
+          "items": {
+            "$ref": "#/$defs/Candidate"
+          },
+          "title": "Candidates",
+          "type": "array"
+        },
+        "non_tasks": {
+          "items": {
+            "$ref": "#/$defs/NonTask"
+          },
+          "title": "Non Tasks",
+          "type": "array"
+        }
+      },
+      "required": [
+        "source_scope",
+        "coverage",
+        "groups"
+      ],
+      "title": "ScheduleSnapshot",
+      "type": "object"
+    },
+    "SourceScope": {
+      "additionalProperties": false,
+      "description": "Document and tab identity. Opaque strings the caller chose; the extractor never opens them.",
+      "properties": {
+        "document_id": {
+          "minLength": 1,
+          "title": "Document Id",
+          "type": "string"
+        },
+        "tab_id": {
+          "minLength": 1,
+          "title": "Tab Id",
+          "type": "string"
+        },
+        "tab_title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tab Title"
+        }
+      },
+      "required": [
+        "document_id",
+        "tab_id"
+      ],
+      "title": "SourceScope",
+      "type": "object"
+    },
+    "UnsupportedLayout": {
+      "additionalProperties": false,
+      "description": "The tab is not the supported layout. No candidates, and no guess.",
+      "properties": {
+        "schema_version": {
+          "const": "ScheduleSnapshot/v1",
+          "default": "ScheduleSnapshot/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "result": {
+          "const": "unsupported_layout",
+          "default": "unsupported_layout",
+          "title": "Result",
+          "type": "string"
+        },
+        "source_scope": {
+          "$ref": "#/$defs/SourceScope"
+        },
+        "source_revision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Revision"
+        },
+        "diagnostic": {
+          "$ref": "#/$defs/Diagnostic"
+        }
+      },
+      "required": [
+        "source_scope",
+        "diagnostic"
+      ],
+      "title": "UnsupportedLayout",
+      "type": "object"
+    },
+    "YearEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "year": {
+          "title": "Year",
+          "type": "integer"
+        },
+        "method": {
+          "enum": [
+            "supplied",
+            "inferred_weekday_alignment"
+          ],
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "required": [
+        "year",
+        "method"
+      ],
+      "title": "YearEvidence",
+      "type": "object"
+    }
+  },
+  "discriminator": {
+    "mapping": {
+      "snapshot": "#/$defs/ScheduleSnapshot",
+      "unsupported_layout": "#/$defs/UnsupportedLayout"
+    },
+    "propertyName": "result"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/ScheduleSnapshot"
+    },
+    {
+      "$ref": "#/$defs/UnsupportedLayout"
+    }
+  ]
+}

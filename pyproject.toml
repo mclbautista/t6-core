@@ -79,3 +79,12 @@ name = "t6.llm, t6.lookup and t6.privacy stay clear of Notion, Frame.io and the 
 type = "forbidden"
 source_modules = ["t6.llm", "t6.lookup", "t6.privacy"]
 forbidden_modules = ["t6.notion", "t6.frameio", "t6.server", "t6.worker", "t6.registry"]
+
+[[tool.importlinter.contracts]]
+name = "t6.schedule is pure: no adapters, server or worker"
+type = "forbidden"
+source_modules = ["t6.schedule"]
+forbidden_modules = [
+    "t6.google", "t6.notion", "t6.frameio", "t6.instagantt", "t6.llm", "t6.server", "t6.worker", "t6.client",
+    "t6.registry", "t6.operator", "t6.resolve",
+]
