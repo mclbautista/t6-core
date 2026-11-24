@@ -138,6 +138,86 @@ class LoopTests(ServerTestCase):
         self.assertEqual(code, 0)
         self.assertIsNone(submitter.result("main", job_id))
 
+    def test_the_main_worker_registers_chat_link_reminder_unavailable_without_gateway(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from t6.registry.sqlite import SqliteProjectRegistry
+        from t6.worker.internal_queue import InternalJobQueue
+
+        with tempfile.TemporaryDirectory() as folder:
+            db_path = Path(folder) / "t6.sqlite"
+            registry = SqliteProjectRegistry(db_path)
+            with registry._transaction() as db:
+                db.execute("INSERT INTO approvals VALUES ('t6a_1', 'chat link', 'Show [S1] t6p_1: chat -100, topic 12', 't6n_1', '\"permission:operator\"', 'requested', NULL, NULL, NULL)")
+            queue = InternalJobQueue(registry, clock=lambda: 100.0)
+            submitted = queue.submit("main", "chat_link_reminder", "t6a_1", {"approval": "t6a_1"}, run_at=0.0)
+            code, _ = run_main(
+                {**ENVIRON, "T6_API_URL": "http://api.invalid", "T6_DATABASE": str(db_path)},
+                None,  # type: ignore[arg-type]
+                transport=InProcess(self.app),
+                stop=RecordingStop(),
+            )
+            self.assertEqual(code, 0)
+            job = queue.get(submitted.job_id)
+            assert job is not None
+            self.assertEqual(job.attempts, 1)
+            self.assertEqual(job.state, "queued")
+
+    def test_the_main_worker_with_gateway_wires_chat_link_reminder(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from t6.registry.sqlite import SqliteProjectRegistry
+        from t6.worker.internal_queue import InternalJobQueue
+
+        sent: list[dict[str, object]] = []
+
+        class GatewayTransport:
+            def send(self, method: str, path: str, headers: Mapping[str, str], body: bytes) -> tuple[int, dict[str, object]]:
+                if path == "/notify":
+                    sent.append(json.loads(body))
+                    return 202, {"message_ref": 1}
+                if path == "/subscriptions":
+                    return 200, {}
+                if path.startswith("/updates"):
+                    return 200, {"items": []}
+                return 404, {}
+
+        with tempfile.TemporaryDirectory() as folder:
+            db_path = Path(folder) / "t6.sqlite"
+            registry = SqliteProjectRegistry(db_path)
+            with registry._transaction() as db:
+                db.execute("INSERT INTO approvals VALUES ('t6a_1', 'chat link', 'Show [S1] t6p_1: chat -100, topic 12', 't6n_1', '\"permission:operator\"', 'requested', NULL, NULL, NULL)")
+                db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, 't6n_1', 1.0, 1)", ("c" * 32,))
+            queue = InternalJobQueue(registry, clock=lambda: 100.0)
+            submitted = queue.submit("main", "chat_link_reminder", "t6a_1", {"approval": "t6a_1"}, run_at=0.0)
+            with patch("t6.worker.__main__.HttpTransport", return_value=GatewayTransport()), patch(
+                "t6.notion.reads.ContactReader.get",
+                return_value=type("Contact", (), {"name": "Jane Doe"})(),
+            ):
+                code, _ = run_main(
+                    {
+                        **ENVIRON,
+                        "T6_API_URL": "http://api.invalid",
+                        "T6_DATABASE": str(db_path),
+                        "T6_GATEWAY_URL": "http://gateway.invalid",
+                        "T6_GATEWAY_SECRET": "gw-secret",
+                        "T6_REVIEW_CHAT": "-999",
+                        "T6_OPERATOR_IDS": "900",
+                        "T6_NOTION_TOKEN": "notion-token",
+                    },
+                    None,  # type: ignore[arg-type]
+                    transport=InProcess(self.app),
+                    stop=RecordingStop(),
+                )
+            from t6.server.queue import JobResult
+            self.assertEqual(code, 0)
+            self.assertEqual(queue.result(submitted.job_id, "main"), JobResult("ok", True))
+            self.assertEqual(len(sent), 1)
+            self.assertEqual(sent[0]["to"], 900)
+            self.assertIn("Jane Doe (t6n_1)", str(sent[0]["text"]))
+
 
 if __name__ == "__main__":
     unittest.main()

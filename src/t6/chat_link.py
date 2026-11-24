@@ -12,6 +12,8 @@ from t6.registry import normalize_code
 from t6.registry.sqlite import SqliteProjectRegistry
 from t6.verbs import Done, Outcome, Refused
 
+CHAT_LINK_REMINDER_SECONDS = 86400
+
 
 class ChatLinks:
     def __init__(self, registry: SqliteProjectRegistry, tokens: PreviewTokens,
@@ -103,6 +105,8 @@ class ChatLinks:
                     return preview
                 db.execute('INSERT INTO approvals VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL)', (approval_id, 'chat link', target, actor, json.dumps('permission:operator'), 'requested'))
                 now = self.registry._clock()
+                from t6.worker.internal_queue import InternalJobQueue
+                InternalJobQueue(self.registry, clock=lambda: now).submit('main', 'chat_link_reminder', approval_id, {'approval': approval_id}, run_at=now + CHAT_LINK_REMINDER_SECONDS, db=db)
                 cursor = db.execute('INSERT INTO audit (project_id, action, actor, at, before, after) VALUES (?, ?, ?, ?, NULL, ?)', (approval_id, 'approval_request', actor, now, json.dumps({'gate': 'chat link', 'target': target})))
                 db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (project_id, approval_id, now, actor, 'approval_request', 'Approval requested for ' + target, cursor.lastrowid))
                 db.execute('INSERT INTO chat_link_previews VALUES (?, ?, ?, ?)', (preview_nonce, approval_id, snapshot, json.dumps({'verb': verb, 'values': values, 'actor': actor, 'idempotency_key': key, 'confirm': preview.token})))

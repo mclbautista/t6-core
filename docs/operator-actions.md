@@ -213,3 +213,7 @@ from the card; `approval deny` accepts a free-text `--reason` instead. CLI
 and card decisions apply the same allowed-tapper rule. A decision through the
 CLI also closes the card. The database keeps the decision and its audit and
 Activity entries even if card delivery fails.
+
+A `chat link` Approval that is still `requested` after 24 hours sends one
+reminder in the operator chat naming the Project, chat and topic, requester, and
+Approval ID; it never expires and no second reminder is sent (#688).

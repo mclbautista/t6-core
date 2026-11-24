@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- Chat link Approvals (`project link-chat` and `project unlink-chat`) still `requested` 24 hours after they were made now send one reminder in the operator chat (`T6_OPERATOR_IDS`), naming the Project, chat and topic, requester, and Approval ID. The Approval never expires and no second reminder is sent; requests granted or denied within 24 hours send none. Migration 61 (`forward_only=False`) queues reminders for any `requested` `chat link` Approvals already in the database (#688).
+
 ### Changed
 
 - The Approval for `project link-chat` and `project unlink-chat` (the Telegram card "Approval: chat link") now names the Project by its Notion name and code before the Project id, for example `Big Show [ABC123] t6p_...: chat -100, topic 12 (Edit)`. The ids stay in the target. The name is read from the Project's Notion page when the preview is made; if it cannot be read, the code (and, without one, only the id) is shown as before. The topic name was already shown when known.
