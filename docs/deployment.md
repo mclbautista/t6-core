@@ -432,3 +432,10 @@ or after a Notion edit of a Project's title or Status. Changes within five
 minutes share one job; the job rebuilds the column from Notion, writing the new
 lines before clearing the rows below, so a failed write leaves the old list and
 is retried (see `queue failed`).
+
+The API also reads the Sheet (`spreadsheets.readonly` scope) when
+`T6_CRM_SHEET_ID` is set. `project crm-links PROJECT` (operator) reads the `Log`
+tab and returns the Project's links grouped by kind: `quote`, `billing` and
+`gmail_thread`. Log rows map to a Project only by the `t6p_` ID in the Project
+column; a row with no ID, an unknown ID or no date is reported by the reader and
+never guessed. t6 does not read Notion page bodies.

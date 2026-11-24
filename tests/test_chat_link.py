@@ -769,6 +769,47 @@ class ProjectLinksVerbTests(unittest.TestCase):
         finally:
             self.api.notion_source = old_source
 
+    def test_crm_links_by_kind_from_the_crm_log(self) -> None:
+        from t6.client import Client
+        from t6.verbs import ProjectCrmLinksInput
+
+        class Sheet:
+            workbook = 'synthetic-crm'
+
+            def tabs(self) -> dict[str, tuple[tuple[Any, ...], ...]]:
+                header = ('Date', 'Project', 'Kind', 'Note', 'Link', 'By', 'Remind on', 'Done')
+                return {'Log': (header,
+                                (46000, f'Big Show \u00b7 {self_id}', 'quote', None, 'https://example.invalid/q', None, None, None),
+                                (46001, f'Big Show \u00b7 {self_id}', 'billing', None, 'https://example.invalid/b', None, None, None),
+                                (46002, 'Someone Else \u00b7 t6p_' + 'e' * 24, 'quote', None, 'https://example.invalid/x', None, None, None))}
+
+        self_id = self.project_id
+        client = Client(self.base_url, 'operator-secret')
+        with patch('t6.crm.config.crm_source', lambda environ: Sheet()):
+            by_code = client.project_crm_links(ProjectCrmLinksInput(project='abc 123'))
+            missing = client.project_crm_links(ProjectCrmLinksInput(project='NOPE'))
+        assert isinstance(by_code, Done)
+        self.assertEqual(by_code.result, {'project_id': self.project_id, 'links': {
+            'quote': ['https://example.invalid/q'], 'billing': ['https://example.invalid/b'], 'gmail_thread': []}})
+        assert isinstance(missing, Refused)
+        self.assertEqual(missing.rule, 'project')
+        with patch.dict('os.environ', {}, clear=False), patch('t6.crm.config.crm_source', lambda environ: None):
+            off = client.project_crm_links(ProjectCrmLinksInput(project='abc 123'))
+        assert isinstance(off, Refused)
+        self.assertEqual((off.rule, off.reason), ('config', 'Set T6_CRM_SHEET_ID'))
+
+    def test_crm_links_reports_a_sheet_read_failure(self) -> None:
+        from t6.client import Client
+        from t6.verbs import ProjectCrmLinksInput
+
+        def broken(environ: Any) -> Any:
+            raise ValueError('Google Sheets read failed (503)')
+
+        with patch('t6.crm.config.crm_source', broken):
+            res = Client(self.base_url, 'operator-secret').project_crm_links(ProjectCrmLinksInput(project='abc 123'))
+        assert isinstance(res, Refused)
+        self.assertEqual((res.rule, res.reason), ('crm_sheet', 'Google Sheets read failed (503)'))
+
     def test_operator_only_authorization(self) -> None:
         from t6.client import Client
         from t6.verbs import ProjectLinksInput

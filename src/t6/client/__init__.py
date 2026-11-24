@@ -34,7 +34,7 @@ from t6.verbs import (
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
     LLMDecideInput, LLMFilterInput, LLMRunInput, PersonAddInput, PersonCreateInput, PersonFindInput,
     PersonGetInput, PersonProjectRoleInput, PersonPermissionInput, PersonRebindInput, PersonShiftInput, PersonClassifyInput,
-    PersonTelegramInput, ProjectChatInput, ProjectHoldInput, ProjectLinksInput, ProjectResolveInput, ProjectResumeInput, ProjectStartInput,
+    PersonTelegramInput, ProjectChatInput, ProjectCrmLinksInput, ProjectHoldInput, ProjectLinksInput, ProjectResolveInput, ProjectResumeInput, ProjectStartInput,
 )
 
 
@@ -530,6 +530,9 @@ class Client:
 
     def project_links(self, inputs: ProjectLinksInput) -> Result:
         return self.call('project', 'links', inputs)
+
+    def project_crm_links(self, inputs: ProjectCrmLinksInput) -> Result:
+        return self.call('project', 'crm-links', inputs)
 
     def project_link_chat(self, inputs: ProjectChatInput) -> Result:
         return self.call('project', 'link-chat', inputs)
