@@ -76,7 +76,7 @@ class EdgeTests(ServerTestCase):
         self.assertEqual(self.pending(), 0)
 
     def test_example_routes_deliver_worker_payloads(self) -> None:
-        routes = load_routes("docs/edge-routes.example.yaml", {"FRAMEIO_WEBHOOK_SECRET": "frameio-secret", "NOTION_WEBHOOK_TOKEN": "notion-token", "T6_GOOGLE_CHANNEL_TOKEN": "google-token"})
+        routes = load_routes("docs/edge-routes.example.yaml", {"FRAMEIO_WEBHOOK_SECRET": "frameio-secret", "NOTION_WEBHOOK_TOKEN": "notion-token", "T6_GOOGLE_CHANNEL_TOKEN": "google-token", "T6_SHEET_SUBMIT_SECRET": "sheet-secret"})
         app = WebhookApp(self.queue, replace(self.app._config, edge_routes=routes), self.clock, self.tokens.append)
         frame = replace(frameio_request(self.clock, comment("c1")), path="/events/frameio/comments")
         notion = replace(notion_request(self.clock, notion_event(self.clock)), path="/events/notion/pages")
@@ -89,7 +89,7 @@ class EdgeTests(ServerTestCase):
         self.assertEqual((n.kind, n.payload["page_id"]), ("notion.page_changed", "page-1"))
 
     def test_example_google_route_queues_the_notification_the_inbound_job_reads(self) -> None:
-        routes = load_routes("docs/edge-routes.example.yaml", {"FRAMEIO_WEBHOOK_SECRET": "frameio-secret", "NOTION_WEBHOOK_TOKEN": "notion-token", "T6_GOOGLE_CHANNEL_TOKEN": "google-token"})
+        routes = load_routes("docs/edge-routes.example.yaml", {"FRAMEIO_WEBHOOK_SECRET": "frameio-secret", "NOTION_WEBHOOK_TOKEN": "notion-token", "T6_GOOGLE_CHANNEL_TOKEN": "google-token", "T6_SHEET_SUBMIT_SECRET": "sheet-secret"})
         app = WebhookApp(self.queue, replace(self.app._config, edge_routes=routes), self.clock, self.tokens.append)
         headers = {"X-Goog-Channel-Token": "google-token", "X-Goog-Channel-Id": "chan-1", "X-Goog-Message-Number": "4", "X-Goog-Resource-Id": "res-1", "X-Goog-Resource-State": "exists"}
         self.assertEqual(app.public(Request("POST", "/events/google/calendar", headers)).status, 200)
@@ -102,7 +102,7 @@ class EdgeTests(ServerTestCase):
     def test_dedicated_routes_reject_bad_signatures_with_401(self) -> None:
         # The Frame.io comment and Notion page routes have their own handlers. A bad or
         # missing signature must still answer 401, not drop the connection.
-        routes = load_routes("docs/edge-routes.example.yaml", {"FRAMEIO_WEBHOOK_SECRET": "frameio-secret", "NOTION_WEBHOOK_TOKEN": "notion-token", "T6_GOOGLE_CHANNEL_TOKEN": "google-token"})
+        routes = load_routes("docs/edge-routes.example.yaml", {"FRAMEIO_WEBHOOK_SECRET": "frameio-secret", "NOTION_WEBHOOK_TOKEN": "notion-token", "T6_GOOGLE_CHANNEL_TOKEN": "google-token", "T6_SHEET_SUBMIT_SECRET": "sheet-secret"})
         app = WebhookApp(self.queue, replace(self.app._config, edge_routes=routes), self.clock, self.tokens.append)
         for path in ("/events/frameio/comments", "/events/notion/pages"):
             for headers in ({}, {"X-Frameio-Signature": "bad", "X-Notion-Signature": "bad"}):

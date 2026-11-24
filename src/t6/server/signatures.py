@@ -3,7 +3,8 @@
 Frame.io signs `v0:{timestamp}:{body}` and sends the timestamp in a header.
 Notion signs the raw body only; its timestamp is in the event, and a retry can
 legitimately arrive up to about a day late, so its age limit is much longer.
-Both compare in constant time and sign the exact bytes received.
+The Concerns sheet (#735) signs `{timestamp}:{body}` and sends the timestamp in a header, with Frame.io's five minutes.
+All compare in constant time and sign the exact bytes received.
 """
 
 from __future__ import annotations
@@ -16,6 +17,13 @@ import json
 
 FRAMEIO_TOLERANCE_SECONDS = 300.0
 """Frame.io recommends five minutes. Applied to past and future timestamps."""
+
+SHEET_TOLERANCE_SECONDS = 300.0
+"""Five minutes, as for Frame.io, applied to past and future timestamps."""
+
+SHEET_TIMESTAMP_HEADER = "x-t6-sheet-timestamp"
+SHEET_SIGNATURE_HEADER = "x-t6-sheet-signature"
+'''The request headers of the sheet route (read here in lower case; the Apps Script sends `X-T6-Sheet-Timestamp` and `X-T6-Sheet-Signature`).'''
 
 NOTION_MAX_AGE_SECONDS = 25 * 3600.0
 """Notion retries for about 24 hours after the trigger. One hour of margin."""
@@ -56,6 +64,36 @@ def verify_frameio(
         raise WebhookRejected("bad signature")
     # Checked after the signature so an unsigned caller learns nothing about timing rules.
     if abs(now - timestamp) > FRAMEIO_TOLERANCE_SECONDS:
+        raise WebhookRejected("stale timestamp")
+
+
+def sheet_signature(secret: str, timestamp: str, body: bytes) -> str:
+    """The signature the Concerns sheet sends in `X-T6-Sheet-Signature`.
+
+    The lower-case hex of HMAC-SHA256, keyed with the submit secret (UTF-8), over the bytes
+    `{timestamp}:{body}`: the timestamp text exactly as sent in `X-T6-Sheet-Timestamp` (whole Unix
+    seconds, such as `1764000000`), a colon, then the request body exactly as sent. No prefix.
+    """
+    return hmac.new(secret.encode(), timestamp.encode() + b":" + body, hashlib.sha256).hexdigest()
+
+
+def verify_sheet(secret: str, headers: Mapping[str, str], body: bytes, now: float) -> None:
+    """Raise WebhookRejected unless the Concerns sheet signature is valid and fresh.
+
+    `headers` keys are lower case.
+    """
+    timestamp_text = headers.get(SHEET_TIMESTAMP_HEADER, "")
+    signature = headers.get(SHEET_SIGNATURE_HEADER, "")
+    if not timestamp_text or not signature:
+        raise WebhookRejected("missing signature headers")
+    try:
+        timestamp = int(timestamp_text)
+    except ValueError:
+        raise WebhookRejected("bad timestamp") from None
+    if not _signature_matches(sheet_signature(secret, timestamp_text, body), signature):
+        raise WebhookRejected("bad signature")
+    # Checked after the signature so an unsigned caller learns nothing about timing rules.
+    if abs(now - timestamp) > SHEET_TOLERANCE_SECONDS:
         raise WebhookRejected("stale timestamp")
 
 

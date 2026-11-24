@@ -323,6 +323,14 @@ def configured_handlers(
                 file=sys.stderr,
                 flush=True,
             )
+        if environ.get("T6_PREVIEW_SIGNING_KEY"):
+            handlers.update(concerns_sheet_handlers(environ))
+        else:
+            print(
+                "t6.worker: the Concerns sheet's Submit is off: set T6_PREVIEW_SIGNING_KEY (the API's preview signing key) to turn it on",
+                file=sys.stderr,
+                flush=True,
+            )
         read_url, read_secret = (environ.get("T6_FRAMEIO_READ_URL") or "").strip(), environ.get("T6_FRAMEIO_READ_SECRET") or ""
         if read_url and read_secret:
             handlers[JobKind.FRAMEIO_FILE_VERSIONED.value] = file_versions_handler(environ)
@@ -443,6 +451,23 @@ def project_start_apply_handler(environ: Mapping[str, str], frameio: FrameioProj
 
     store = ProjectStartStore(SqliteProjectRegistry(environ["T6_DATABASE"]), PreviewTokens(environ["T6_PREVIEW_SIGNING_KEY"]))
     return lambda job: store.run_apply(job.payload, frameio)
+
+
+def concerns_sheet_handlers(environ: Mapping[str, str]) -> dict[str, Handler]:
+    """`sheets.concerns_submit` (the edge's signed Submit from the Concerns sheet, #735).
+
+    After the rows it pushes a fresh export when `T6_CONCERNS_EXPORT_URL` and `T6_CONCERNS_EXPORT_PUSH_SECRET` are set. Project and Person names
+    in the export come from Notion with `T6_NOTION_TOKEN`; without it they are blank.
+    """
+    from t6.concern_export import concerns_export_from_env
+    from t6.concern_sheet import ConcernsSheetSubmit
+    from t6.google.names import notion_names
+    from t6.preview import PreviewTokens
+    from t6.registry.sqlite import SqliteProjectRegistry
+
+    registry = SqliteProjectRegistry(environ["T6_DATABASE"])
+    names = notion_names(environ, registry, "the export carries Project and Person names") if environ.get("T6_NOTION_TOKEN") else None
+    return ConcernsSheetSubmit(registry, PreviewTokens(environ["T6_PREVIEW_SIGNING_KEY"]), concerns_export_from_env(environ), names).handlers()
 
 
 def booking_calendar_handler(environ: Mapping[str, str]) -> Handler:

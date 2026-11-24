@@ -20,8 +20,8 @@ COLUMNS = ('Concern id', 'revision', 'Project code', 'Project name', 'Concern te
 ACTION_SEPARATOR = ', '
 """Between the actions in the `allowed actions` cell."""
 _ROWS = """SELECT c.id, c.revision, c.project_id, COALESCE(NULLIF(c.text, ''), c.anchor), c.owner_id, c.waiting_on, c.source, c.anchor, c.as_of, c.evidence_at, c.opened_at,
-           p.actor, p.created_at, p.concern_id IS NOT NULL
-    FROM concerns c LEFT JOIN concern_pending_closes p ON p.concern_id = c.id
+           p.actor, p.created_at, p.concern_id IS NOT NULL, COALESCE(r.result, '')
+    FROM concerns c LEFT JOIN concern_pending_closes p ON p.concern_id = c.id LEFT JOIN concern_sheet_results r ON r.concern_id = c.id
     WHERE c.state != 'closed' ORDER BY c.opened_at, c.id"""
 
 
@@ -40,18 +40,18 @@ def concerns_export_csv(registry: SqliteProjectRegistry, projects: Mapping[str, 
     """The export as CSV text with a header row, oldest Concern first, with Manila dates.
 
     `projects` maps a t6 Project id to its (code, name) and `people` a t6 Person id to a name; an id that is not there shows as it is
-    (a close from the sheet is recorded as `sheet:<email>`). `last result` is empty here; the sheet submit job fills it."""
+    (a close from the sheet is recorded as `sheet:<email>`). `last result` is what the latest sheet Submit for that Concern answered (`concern_sheet_results`), empty until there is one."""
     now = registry._clock()
     with registry._transaction() as db:
         rows = db.execute(_ROWS).fetchall()
     out = io.StringIO(newline='')
     writer = csv.writer(out)
     writer.writerow(COLUMNS)
-    for (concern, revision, project, text, owner, waiting, source, anchor, as_of, evidence_at, opened_at, closer, closed_at, pending) in rows:
+    for (concern, revision, project, text, owner, waiting, source, anchor, as_of, evidence_at, opened_at, closer, closed_at, pending, last_result) in rows:
         code, name = projects.get(project, ('', ''))
         writer.writerow([concern, revision, code, name, text, people.get(owner, owner or ''), waiting, 'Closing after PSR' if pending else 'Open',
                          people.get(closer, closer or ''), _day(closed_at) if pending else '', source, anchor, as_of, _day(evidence_at), _day(opened_at),
-                         int(max(0, now - opened_at) // DAY), ACTION_SEPARATOR.join(allowed_actions(source, bool(pending))), ''])
+                         int(max(0, now - opened_at) // DAY), ACTION_SEPARATOR.join(allowed_actions(source, bool(pending))), last_result])
     return out.getvalue()
 
 

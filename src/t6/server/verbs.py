@@ -1243,7 +1243,7 @@ class VerbAPI:
                 people = self._typed_read('person', 'list', PersonListInput())
                 names = {p['t6_id']: p['name'] for p in people.result['people'] if p['t6_id']} if isinstance(people, Done) else {}
                 for item in pending:
-                    item['close_by_name'] = names.get(item['close_by'])
+                    item['close_by_name'] = names.get(item['close_by']) or (item['close_by'].removeprefix('sheet:') if item['close_by'].startswith('sheet:') else None)  # a sheet close shows the email (#735)
             return Done(result={'concerns': concerns.open_concerns(inputs.project) if inputs.open else concerns.raise_at_psr(inputs.project), 'pending': pending})
         if (noun, verb) == ('project', 'notes-history'):
             from t6.pm_notes import history

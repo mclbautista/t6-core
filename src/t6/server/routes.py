@@ -35,7 +35,7 @@ def load_routes(filename: str, environ: Mapping[str, str]) -> tuple[Route, ...]:
         path, verifier, secret_env = entry["path"], entry["verifier"], entry["secret_env"]
         if not path.startswith("/") or "?" in path or "#" in path or path in paths or path in {"/health", "/frameio/callback", "/tap"} or path.startswith(("/queue/", "/registry/", "/operator/", "/review/")):
             raise ValueError(f"invalid or duplicate route path: {path}")
-        if verifier not in {"frameio_v0", "notion", "google_channel"}:
+        if verifier not in {"frameio_v0", "notion", "google_channel", "sheets_hmac"}:
             raise ValueError(f"unknown verifier: {verifier}")
         if entry["queue"] not in {"main", "frameio", "diagnostic"}:
             raise ValueError(f"route {path}: unknown queue {entry['queue']}")

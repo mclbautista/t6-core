@@ -70,7 +70,7 @@ from t6.registry import (
 from t6.registry.sqlite import SqliteProjectRegistry
 from t6.server.routes import Route
 from t6.server.queue import DIAGNOSTIC_QUEUE, FRAMEIO_QUEUE, MAIN_QUEUE, JobQueue, Submitted
-from t6.server.signatures import WebhookRejected, verify_frameio, verify_notion
+from t6.server.signatures import WebhookRejected, verify_frameio, verify_notion, verify_sheet
 from t6.verbs import VERBS, Done, Outcome, Refused
 
 LOG = logging.getLogger(__name__)
@@ -318,6 +318,8 @@ class WebhookApp:
                 return self._notion(request, route.secret, handshake=False)
             if route.verifier == "frameio_v0":
                 verify_frameio(route.secret, headers, request.body, self._clock())
+            elif route.verifier == "sheets_hmac":
+                verify_sheet(route.secret, headers, request.body, self._clock())
             elif route.verifier == "notion":
                 if not route.secret:
                     return Response(503, {"error": "notion webhook token not configured"})

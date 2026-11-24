@@ -589,6 +589,11 @@ a term describes behaviour that is decided but not yet built, it says so.
   for it. The API pushes it to the VPS server after each completed 21:00
   autoscan, and the server serves the latest file only to the read token.
   Spec #732.
+- **Sheet Submit**: the Concerns sheet's button. The VPS verifies its signed
+  POST and queues one job; the main worker applies each changed row with the
+  Concern verbs as actor `sheet:<email>`, keeps a result per row (shown as
+  `last result` until the next Submit for that Concern) and pushes a fresh
+  export. Spec #732.
 - **Done line**: a dated line that says a Concern is finished (the scan's
   `settles`). It becomes a pending close. It replaces "announce".
 - **Pending close**: a Close or Done line waiting for the next Monday 21:00

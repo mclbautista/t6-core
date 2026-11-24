@@ -121,6 +121,13 @@ class PendingCloseTests(unittest.TestCase):
         self.assertEqual(self.listed()['pending'], [])
         self.assertEqual([c['id'] for c in self.listed()['concerns']], [concern])
 
+    def test_a_close_from_the_sheet_lists_the_email_as_the_close_by_name(self) -> None:
+        concern = self.raise_concern()
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO concern_pending_closes (concern_id, actor, source, created_at) VALUES (?, 'sheet:cyril@example.com', 'close', ?)", (concern, self.now))
+        [pending] = self.listed()['pending']
+        self.assertEqual((pending['close_by'], pending['close_by_name']), ('sheet:cyril@example.com', 'cyril@example.com'))
+
     def test_a_veto_still_works_on_a_concern_a_person_reopened(self) -> None:
         concern = self.raise_concern()
         self.confirmed('resolve', concern)

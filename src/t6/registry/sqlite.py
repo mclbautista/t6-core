@@ -437,6 +437,8 @@ _MIGRATIONS = (
     JOIN audit au ON au.project_id = a.id AND au.action = 'approval_request'
     WHERE a.gate = 'chat link' AND a.state = 'requested'
     GROUP BY a.id"""),
+    # What the Concerns sheet last showed for a Concern: the result of its latest Submit, and the job that wrote it (t6-core #735).
+    (65, False, """CREATE TABLE concern_sheet_results (concern_id TEXT PRIMARY KEY REFERENCES concerns(id), result TEXT NOT NULL, job_id INTEGER NOT NULL, at REAL NOT NULL)"""),
 )
 
 
