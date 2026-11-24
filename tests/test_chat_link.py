@@ -212,3 +212,205 @@ class ChatLinkTests(unittest.TestCase):
             with self.registry._transaction() as db:
                 request = json.loads(db.execute('SELECT request FROM chat_link_previews').fetchone()[0])
                 self.assertEqual(request['values']['project'], 'ABC123')
+
+
+class ProjectLinksVerbTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import os
+        import tempfile
+        import threading
+        from t6.notion.testing import FakeNotion, project_properties
+        from t6.privacy import Registry as PrivacyRegistry
+        from t6.registry import Rotation
+        from t6.registry.sqlite import SqliteProjectRegistry
+        from t6.server.http import make_server
+        from t6.server.queue import JobQueue
+        from t6.server.verbs import VerbAPI
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.registry = SqliteProjectRegistry(self.tmp.name + '/registry')
+        self.queue = JobQueue(self.tmp.name + '/queue')
+        self.tokens = PreviewTokens('test')
+        self.operator = 't6n_' + '1' * 32
+        self.admin = 't6n_' + '2' * 32
+        self.staff = 't6n_' + '3' * 32
+        self.coordinator = 't6n_' + '4' * 32
+        self.inactive_op = 't6n_' + '5' * 32
+        with self.registry._transaction() as db:
+            for pid, active in ((self.operator, 1), (self.admin, 1), (self.staff, 1), (self.coordinator, 1), (self.inactive_op, 0)):
+                db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', NULL, 0, ?)", (pid, active))
+            db.execute("INSERT INTO person_permissions VALUES (?, 'operator')", (self.operator,))
+            db.execute("INSERT INTO person_permissions VALUES (?, 'admin')", (self.admin,))
+            db.execute("INSERT INTO person_permissions VALUES (?, 'coordinator')", (self.coordinator,))
+            db.execute("INSERT INTO person_permissions VALUES (?, 'operator')", (self.inactive_op,))
+
+        self.fake = FakeNotion()
+        self.fake.add_snapshot_data_source('projects', 'projects')
+        self.page_id = str(self.fake.add_page('projects', project_properties(name='  Big Show  ', project_type='Feature Film'))['id'])
+
+        self.registry._new_id = lambda: 't6p_' + 'a' * 24
+        reg = self.registry.register(actor=self.operator, idempotency_key='p1', notion_page_id=self.page_id, code='ABC-123', rotation=Rotation.IN)
+        assert isinstance(reg, Registered)
+        self.project_id = reg.project.id
+
+        self.api = VerbAPI(
+            People(self.registry, self.tokens),
+            self.queue,
+            {
+                'operator-secret': self.operator,
+                'admin-secret': self.admin,
+                'staff-secret': self.staff,
+                'coord-secret': self.coordinator,
+                'inactive-secret': self.inactive_op,
+                'mcp-secret': 'mcp',
+                'gateway-secret': 'gateway',
+            },
+            lambda _: self.fake.client(),
+            privacy_registry=PrivacyRegistry(),
+        )
+        self.server = make_server(('127.0.0.1', 0), self.api)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.thread.join)
+        self.addCleanup(self.server.shutdown)
+        self.base_url = f'http://127.0.0.1:{self.server.server_port}'
+        self.env = patch.dict(os.environ, {'T6_NOTION_TOKEN': 'fake'})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def test_full_links_card_by_normalized_code_and_id(self) -> None:
+        from t6.client import Client
+        from t6.verbs import ProjectLinksInput, ProjectLinksOutput
+
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO media_locations VALUES ('t6m_1', ?, ?, 'frameio-project', 'fp-uuid-1', 'frameio-project', 1, NULL)", (self.project_id, self.project_id))
+            db.execute("INSERT INTO chat_links VALUES ('t6h_1', ?, -1001, 12, 'active')", (self.project_id,))
+            db.execute("INSERT INTO chat_links VALUES ('t6h_2', ?, -1001, NULL, 'active')", (self.project_id,))
+            db.execute("INSERT INTO chat_links VALUES ('t6h_3', ?, -1002, 7, 'inactive')", (self.project_id,))
+            db.execute("INSERT INTO chat_links VALUES ('t6h_4', ?, -1001, 99, 'active')", (self.project_id,))
+            db.execute("INSERT INTO linked_chat_topics VALUES (-1001, 12, 'ABC-123 - Edit')")
+
+        client = Client(self.base_url, 'operator-secret')
+        by_code = client.project_links(ProjectLinksInput(project=' abc 123 '))
+        assert isinstance(by_code, Done)
+        parsed = ProjectLinksOutput.model_validate(by_code.result)
+        self.assertEqual(parsed.project_id, self.project_id)
+        self.assertEqual(parsed.name, 'Big Show')
+        self.assertEqual(parsed.code, 'ABC-123')
+        self.assertEqual(parsed.notion_url, f"https://www.notion.so/{self.page_id.replace('-', '')}")
+        self.assertEqual(parsed.frameio_url, 'https://next.frame.io/project/fp-uuid-1')
+        self.assertEqual(
+            [item.model_dump() for item in parsed.chat_links],
+            [
+                {'id': 't6h_2', 'chat': -1001, 'topic': None, 'topic_name': None, 'state': 'active'},
+                {'id': 't6h_1', 'chat': -1001, 'topic': 12, 'topic_name': 'ABC-123 - Edit', 'state': 'active'},
+                {'id': 't6h_4', 'chat': -1001, 'topic': 99, 'topic_name': None, 'state': 'active'},
+                {'id': 't6h_3', 'chat': -1002, 'topic': 7, 'topic_name': None, 'state': 'inactive'},
+            ],
+        )
+
+        by_id = client.project_links(ProjectLinksInput(project=self.project_id))
+        self.assertEqual(by_id, by_code)
+
+    def test_out_of_rotation_and_unknown_projects(self) -> None:
+        from t6.client import Client
+        from t6.registry import Rotation
+        from t6.verbs import ProjectLinksInput
+
+        self.registry._new_id = lambda: 't6p_' + 'b' * 24
+        out_reg = self.registry.register(actor=self.operator, idempotency_key='p2', code='OLD99', rotation=Rotation.OUT)
+        assert isinstance(out_reg, Registered)
+
+        client = Client(self.base_url, 'operator-secret')
+        by_id = client.project_links(ProjectLinksInput(project=out_reg.project.id))
+        assert isinstance(by_id, Done)
+        self.assertEqual(by_id.result['project_id'], out_reg.project.id)
+        self.assertEqual(by_id.result['code'], 'OLD99')
+        self.assertIsNone(by_id.result['notion_url'])
+        self.assertIsNone(by_id.result['frameio_url'])
+        self.assertEqual(by_id.result['chat_links'], [])
+
+        for bad in ('OLD99', 'NOPE', 't6p_' + 'f' * 24, '', '   ', '---'):
+            with self.subTest(bad=bad):
+                res = client.project_links(ProjectLinksInput(project=bad))
+                assert isinstance(res, Refused)
+                self.assertEqual(res.rule, 'project')
+
+    def test_missing_links_and_broken_notion_degrade_cleanly(self) -> None:
+        from t6.client import Client
+        from t6.notion import NotionError
+        from t6.notion.source import NotionSource
+        from t6.registry import Rotation
+        from t6.verbs import ProjectLinksInput
+
+        self.registry._new_id = lambda: 't6p_' + 'c' * 24
+        bare = self.registry.register(actor=self.operator, idempotency_key='p3', code='BARE1', rotation=Rotation.IN)
+        assert isinstance(bare, Registered)
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', 'deadbeef', ?, 1, 0)", (bare.project.id,))
+            db.execute("INSERT INTO media_locations VALUES ('t6m_off', ?, ?, 'frameio-project', 'fp-off', 'frameio-project', 0, NULL)", (bare.project.id, bare.project.id))
+
+        client = Client(self.base_url, 'operator-secret')
+        bare_res = client.project_links(ProjectLinksInput(project='BARE1'))
+        assert isinstance(bare_res, Done)
+        self.assertEqual(
+            bare_res.result,
+            {'project_id': bare.project.id, 'name': None, 'code': 'BARE1', 'notion_url': None, 'frameio_url': None, 'chat_links': []},
+        )
+
+        class BrokenNotion:
+            def retrieve_page(self, page_id: str) -> dict[str, Any]:
+                raise NotionError(503, 'service_unavailable', 'Notion is down')
+
+        old_source = self.api.notion_source
+        self.api.notion_source = NotionSource(lambda: BrokenNotion())  # type: ignore[arg-type, return-value]
+        try:
+            broken_res = client.project_links(ProjectLinksInput(project=self.project_id))
+            assert isinstance(broken_res, Done)
+            self.assertIsNone(broken_res.result['name'])
+            self.assertEqual(broken_res.result['notion_url'], f"https://www.notion.so/{self.page_id.replace('-', '')}")
+        finally:
+            self.api.notion_source = old_source
+
+    def test_operator_only_authorization(self) -> None:
+        from t6.client import Client
+        from t6.verbs import ProjectLinksInput
+
+        for secret in ('staff-secret', 'coord-secret', 'inactive-secret', 'mcp-secret', 'gateway-secret'):
+            with self.subTest(secret=secret):
+                res = Client(self.base_url, secret).project_links(ProjectLinksInput(project=self.project_id))
+                assert isinstance(res, Refused)
+                self.assertEqual(res.rule, 'permission')
+
+        for secret in ('operator-secret', 'admin-secret'):
+            with self.subTest(secret=secret):
+                res = Client(self.base_url, secret).project_links(ProjectLinksInput(project=self.project_id))
+                self.assertIsInstance(res, Done)
+
+    def test_cli_and_catalogue(self) -> None:
+        import contextlib
+        import io
+        from t6.cli import main
+
+        entry = next(v for v in catalogue() if v['noun'] == 'project' and v['verb'] == 'links')
+        self.assertEqual(entry['role'], 'operator')
+        self.assertTrue(entry['read_only'])
+
+        with patch.dict('os.environ', {'T6_API_URL': self.base_url, 'T6_API_SECRET': 'operator-secret'}):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = main(['project', 'links', 'ABC-123'])
+            self.assertEqual(code, 0)
+            payload = json.loads(out.getvalue())
+            self.assertEqual(payload['outcome'], 'done')
+            self.assertEqual(payload['result']['project_id'], self.project_id)
+            self.assertEqual(payload['result']['name'], 'Big Show')
+
+            err_out = io.StringIO()
+            with contextlib.redirect_stdout(err_out):
+                bad_code = main(['project', 'links', 'UNKNOWN'])
+            self.assertEqual(bad_code, 2)
+            self.assertEqual(json.loads(err_out.getvalue())['rule'], 'project')
+

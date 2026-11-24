@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- `project links` (CLI `t6 project links CODE`, `POST /v1/project/links`, `Client.project_links`): operator-only read returning a Project's links card — name, code, Notion page URL, Frame.io project URL (from its active `frameio-project` Media location), and every chat link with its chat, topic, topic name (when known), and active/inactive state (`#686`).
+
 ### Changed
 
 - The Approval for `project link-chat` and `project unlink-chat` (the Telegram card "Approval: chat link") now names the Project by its Notion name and code before the Project id, for example `Big Show [ABC123] t6p_...: chat -100, topic 12 (Edit)`. The ids stay in the target. The name is read from the Project's Notion page when the preview is made; if it cannot be read, the code (and, without one, only the id) is shown as before. The topic name was already shown when known.

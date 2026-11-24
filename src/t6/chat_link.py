@@ -8,7 +8,7 @@ from typing import Any
 
 from t6.ids import EntityKind, T6Id
 from t6.preview import PreviewTokens
-from t6.registry import normalize_code
+from t6.registry import RegistryError, normalize_code
 from t6.registry.sqlite import SqliteProjectRegistry
 from t6.verbs import Done, Outcome, Refused
 
@@ -19,13 +19,28 @@ class ChatLinks:
         """`project_name` reads a Project's name from its Notion page id; without it the Approval names only the code."""
         self.registry, self.tokens, self.project_name = registry, tokens, project_name
 
+    @staticmethod
+    def _resolve_project(db: Any, project: str) -> tuple[str, str | None] | None:
+        if not isinstance(project, str) or not project.strip():
+            return None
+        candidate = project.strip()
+        row = db.execute('SELECT id, code FROM projects WHERE id = ?', (candidate,)).fetchone()
+        if not row:
+            try:
+                _, form = normalize_code(candidate)
+            except RegistryError:
+                return None
+            if form is None:
+                return None
+            row = db.execute("SELECT id, code FROM projects WHERE code_form = ? AND rotation = 'in'", (form,)).fetchone()
+        if not row:
+            return None
+        return str(row[0]), (str(row[1]) if row[1] else None)
+
     def _label(self, project: str) -> str:
         """`Name [CODE]` for the Approval's target; empty when the Project has neither."""
         with self.registry._transaction() as db:
-            row = db.execute('SELECT id, code FROM projects WHERE id = ?', (project,)).fetchone()
-            if not row:
-                _, form = normalize_code(project)
-                row = db.execute("SELECT id, code FROM projects WHERE code_form = ? AND rotation = 'in'", (form,)).fetchone()
+            row = self._resolve_project(db, project)
             binding = row and db.execute("SELECT page_id FROM bindings WHERE system = 'notion' AND project_id = ? AND active = 1", (row[0],)).fetchone()
         name = None
         if binding and self.project_name:
@@ -35,6 +50,44 @@ class ChatLinks:
                 name = None
         code = row[1] if row and row[1] else None
         return ' '.join(part for part in (name, f'[{code}]' if code else None) if part)
+
+    def links(self, project: str) -> Outcome:
+        with self.registry._transaction() as db:
+            row = self._resolve_project(db, project)
+            if not row:
+                return Refused(rule='project', reason='Project not found')
+            project_id, code = row
+            binding = db.execute("SELECT page_id FROM bindings WHERE system = 'notion' AND project_id = ? AND active = 1", (project_id,)).fetchone()
+            frameio = db.execute("SELECT ref FROM media_locations WHERE project_id = ? AND kind = 'frameio-project' AND active = 1 ORDER BY id LIMIT 1", (project_id,)).fetchone()
+            link_rows = db.execute(
+                "SELECT c.id, c.chat_id, c.topic_id, t.name, c.state "
+                "FROM chat_links c "
+                "LEFT JOIN linked_chat_topics t ON t.chat_id = c.chat_id AND t.topic_id = c.topic_id "
+                "WHERE c.project_id = ? "
+                "ORDER BY CASE c.state WHEN 'active' THEN 0 ELSE 1 END, c.chat_id, COALESCE(c.topic_id, 0), c.id",
+                (project_id,),
+            ).fetchall()
+        page_id = str(binding[0]) if binding else None
+        notion_url = f"https://www.notion.so/{page_id.replace('-', '')}" if page_id else None
+        frameio_url = f"https://next.frame.io/project/{frameio[0]}" if frameio else None
+        name: str | None = None
+        if page_id and self.project_name:
+            try:
+                name = (self.project_name(page_id) or '').strip() or None
+            except Exception:
+                name = None
+        chat_links = [
+            {'id': r[0], 'chat': r[1], 'topic': r[2], 'topic_name': r[3], 'state': r[4]}
+            for r in link_rows
+        ]
+        return Done(result={
+            'project_id': project_id,
+            'name': name,
+            'code': code,
+            'notion_url': notion_url,
+            'frameio_url': frameio_url,
+            'chat_links': chat_links,
+        })
 
     def write(self, verb: str, values: dict[str, Any], *, actor: str,
               idempotency_key: str | None = None, confirm: str | None = None) -> Outcome:
@@ -61,10 +114,7 @@ class ChatLinks:
                     db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
                     return Done(result=json.loads(previous[1]))
                 return self.tokens.create('project ' + verb, actor, inputs, json.loads(previous[1]))
-            row = db.execute('SELECT id FROM projects WHERE id = ?', (project,)).fetchone()
-            if not row:
-                _, form = normalize_code(project)
-                row = db.execute("SELECT id FROM projects WHERE code_form = ? AND rotation = 'in'", (form,)).fetchone()
+            row = self._resolve_project(db, project)
             if not row:
                 return Refused(rule='project', reason='Project not found')
             project_id = row[0]

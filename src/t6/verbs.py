@@ -297,18 +297,25 @@ class ProjectChatOutput(BaseModel):
     approval_id: str | None = None
 
 
+def _project_name_reader(open_notion: Callable[..., Any]) -> Callable[[str], str | None]:
+    def project_name(page: str) -> str | None:
+        from t6.notion.generated import ProjectsRow
+
+        token = os.environ.get('T6_NOTION_TOKEN')
+        if _notion_source.get() is None and not token:
+            return None
+        return ProjectsRow.from_page(_verb_notion_source(open_notion, token or '').retrieve_page(page)).name
+
+    return project_name
+
+
 def _project_chat(inputs: ProjectChatInput, verb: str, open_notion: Callable[..., Any]) -> Outcome:
     from t6.chat_link import ChatLinks
     from t6.preview import PreviewTokens
     key = os.environ.get('T6_PREVIEW_SIGNING_KEY', '')
     if not key:
         return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
-    def project_name(page: str) -> str | None:
-        from t6.notion.generated import ProjectsRow
-        token = os.environ.get('T6_NOTION_TOKEN')
-        return ProjectsRow.from_page(_verb_notion_source(open_notion, token).retrieve_page(page)).name if token else None
-
-    return ChatLinks(_people().registry, PreviewTokens(key), project_name).write(
+    return ChatLinks(_people().registry, PreviewTokens(key), _project_name_reader(open_notion)).write(
         verb, inputs.model_dump(exclude={'confirm', 'idempotency_key'}), actor=_actor.get(),
         idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
 
@@ -319,6 +326,35 @@ def project_link_chat(inputs: ProjectChatInput, open_notion: Callable[..., Any])
 
 def project_unlink_chat(inputs: ProjectChatInput, open_notion: Callable[..., Any]) -> Outcome:
     return _project_chat(inputs, 'unlink-chat', open_notion)
+
+
+class ProjectLinksInput(BaseModel):
+    project: str
+
+
+class ProjectChatLink(BaseModel):
+    id: str | None = None
+    chat: int
+    topic: int | None = None
+    topic_name: str | None = None
+    state: str
+
+
+class ProjectLinksOutput(BaseModel):
+    project_id: str
+    name: str | None = None
+    code: str | None = None
+    notion_url: str | None = None
+    frameio_url: str | None = None
+    chat_links: list[ProjectChatLink]
+
+
+def project_links(inputs: ProjectLinksInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.chat_link import ChatLinks
+
+    people = _people()
+    return ChatLinks(people.registry, people.tokens, _project_name_reader(open_notion)).links(inputs.project)
+
 
 class PersonAddInput(BaseModel):
     page_id: str
@@ -3335,6 +3371,7 @@ VERBS = (
     Verb("person", "assign", "Assign a Project role", (), PersonProjectRoleInput, PersonWriteOutput, "coordinator", "Assign a Person to a Project role.", person_assign),
     Verb("person", "unassign", "Remove a Project role", (), PersonProjectRoleInput, PersonWriteOutput, "coordinator", "Remove a Person from a Project role.", person_unassign),
     Verb("person", "get", "Get a Person", (), PersonGetInput, PersonGetOutput, "reader", "Read a Person.", person_get, read_only=True),
+    Verb("project", "links", "Read a Project's links card", (), ProjectLinksInput, ProjectLinksOutput, "operator", "Read a Project's links card.", project_links, read_only=True),
     Verb("project", "link-chat", "Link a Telegram chat to a Project", (), ProjectChatInput, ProjectChatOutput, "coordinator", "Approval is required.", project_link_chat),
     Verb("project", "unlink-chat", "Unlink a Telegram chat from a Project", (), ProjectChatInput, ProjectChatOutput, "coordinator", "Approval is required.", project_unlink_chat),
     Verb("project", "start", "Start a Project: a previewed plan, then its t6 steps", (), ProjectStartInput, ProjectStartOutput, "operator", "A preview by job; confirm requests the Approval and the Start waits. When the Approval is granted the Frame.io step, Deliverables, Media locations and Bookings are applied once, as the Person who confirmed; a denied Approval applies nothing. The manual steps are listed and recorded then.", project_start),
@@ -3825,6 +3862,10 @@ def add_parsers(commands: Any) -> None:
             for name, field in entry.input_model.model_fields.items():
                 parser.add_argument("--" + name.replace("_", "-"), type=json.loads if name == "output_schema" else str,
                                     required=field.is_required(), default=field.get_default())
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.handler is project_links:
+            parser.add_argument('project')
             parser.set_defaults(registered_verb=entry)
             continue
         if entry.handler in (project_link_chat, project_unlink_chat):
