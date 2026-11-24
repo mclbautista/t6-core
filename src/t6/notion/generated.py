@@ -29,7 +29,6 @@ class ProjectsRow(NotionModel):
     created_time: dt.datetime | None = notion("Created time", "created_time", id="%3EYfT")
     da_vinci_resolve_version: str | None = notion("DaVinci Resolve Version", "select", id="%7B%7BTv")
     date: dt.date | dt.datetime | None = notion("Date", "date", id="gztA")
-    deadline_display: dict[str, Any] | None = notion("Deadline Display", "formula", id="KsX%60")
     delegate_producer: tuple[str, ...] = notion("Delegate Producer", "relation", id="eANv", default=())
     deletion_date: dt.date | dt.datetime | None = notion("Deletion Date", "date", id="nT%7Dh")
     delivery_format: tuple[str, ...] = notion("Delivery Format", "multi_select", id="U%5Ct%3A", default=())
@@ -41,12 +40,7 @@ class ProjectsRow(NotionModel):
     has_post_supe: str | None = notion("Has Post Supe?", "select", id="Qoay")
     health: str | None = notion("Health", "select", id="KRb%3F")
     inclusions: tuple[str, ...] = notion("Inclusions", "multi_select", id="%3D%3Dyq", default=())
-    label_ae_1: dict[str, Any] | None = notion("Label AE (1)", "formula", id="nWNj")
-    label_editor: dict[str, Any] | None = notion("Label Editor", "formula", id="SJ%7Bo")
-    label_oe: dict[str, Any] | None = notion("Label OE", "formula", id="%5DSB%40")
-    label_pm_notes: dict[str, Any] | None = notion("Label PM Notes", "formula", id="IJgM")
     label_sound: dict[str, Any] | None = notion("Label Sound", "formula", id="jf_Y")
-    label_supe: dict[str, Any] | None = notion("Label Supe", "formula", id="wFOS")
     live_sound_recordist: tuple[str, ...] = notion("Live Sound Recordist", "relation", id="U%7B%5DH", default=())
     main_t6_services: tuple[str, ...] = notion("Main T6 Services ", "multi_select", id="LFMd", default=())
     musical_scorer: tuple[str, ...] = notion("Musical Scorer", "relation", id="qV%7Ct", default=())
@@ -61,8 +55,6 @@ class ProjectsRow(NotionModel):
     project_type: str | None = notion("Project Type", "select", id="seqq")
     promo_inclusions: tuple[str, ...] = notion("Promo Inclusions", "multi_select", id="SfSI", default=())
     related_to_meeting_notes_project: tuple[str, ...] = notion("Related to Meeting Notes (Project)", "relation", id="IN%3Ag", default=())
-    separator_1: dict[str, Any] | None = notion("Separator 1", "formula", id="%3D%5CNp")
-    separator_2: dict[str, Any] | None = notion("Separator 2", "formula", id="E%3B%7Bm")
     sound_mixer: tuple[str, ...] = notion("Sound Mixer", "relation", id="alOI", default=())
     sound_tech: tuple[str, ...] = notion("Sound Tech", "relation", id="BdAq", default=())
     stage: str | None = notion("Stage", "select", id="%3B%60%60B")
@@ -78,6 +70,14 @@ class ProjectsRow(NotionModel):
     glowing_star_rocket: bool | None = notion("\U0001f31f\U0001f680", "checkbox", id="V%5DWb")
     wiki: tuple[str, ...] = notion("\U0001f4d4 Wiki", "relation", id="hdu%5C", default=())
     deliverables: tuple[str, ...] = notion("\U0001f4e6 Deliverables", "relation", id="%7CV_h", default=())
+    hide_playdate: bool | None = notion("Hide Playdate", "checkbox", id="ET%7D_")
+    t6_id: str | None = notion("T6 ID", "rich_text", id="Nn%3Ff")
+    rotation: str | None = notion("Rotation", "select", id="QyzT")
+    hide_archival: bool | None = notion("Hide Archival", "checkbox", id="U%40Vw")
+    line_producer: tuple[str, ...] = notion("Line Producer", "relation", id="%5DVxR", default=())
+    hide_submission: bool | None = notion("Hide Submission", "checkbox", id="bHD~")
+    lead_owner: tuple[str, ...] = notion("Lead Owner", "relation", id="dzRn", default=())
+    card: dict[str, Any] | None = notion("Card", "formula", id="%7Clcn")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -112,6 +112,8 @@ class ContactsRow(NotionModel):
     coordinator_deliverables: tuple[str, ...] = notion("\U0001f4e6 Coordinator Deliverables", "relation", id="gGT%3F", default=())
     editor_deliverables: tuple[str, ...] = notion("\U0001f4e6 Editor Deliverables", "relation", id="%7DFjE", default=())
     projects: tuple[str, ...] = notion("\U0001f5fa\U0000fe0f Projects", "relation", id="SLP%60", default=())
+    line_producer_projects: tuple[str, ...] = notion("Line Producer Projects", "relation", id="BXSe", default=())
+    projects_crm: tuple[str, ...] = notion("Projects CRM", "relation", id="Mef%3B", default=())
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -128,6 +130,9 @@ class StudiosRow(NotionModel):
     rolling_average_on_time_rate_of_24_months: str | None = notion("Rolling Average On Time Rate of 24 months", "rich_text", id="JeCR")
     rolling_average_redelivery_rate_of_24_months: tuple[str, ...] = notion("Rolling Average Redelivery Rate of 24 months", "multi_select", id="FipL", default=())
     projects: tuple[str, ...] = notion("\U0001f5fa\U0000fe0f Projects", "relation", id="%60njG", default=())
+    os_format: str | None = notion("OS Format", "select", id="de3bcd00-c34b-4057-bc0f-75518cca5cea")
+    note_to_driver: str | None = notion("Note to Driver", "rich_text", id="e19238a8-10a1-43a7-98f8-e3ff3c0c911d")
+    contact_number: str | None = notion("Contact Number", "phone_number", id="eb2dd217-09f7-47db-8bed-d20fec695ade")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

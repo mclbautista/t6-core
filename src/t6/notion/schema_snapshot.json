@@ -1,6 +1,6 @@
 {
   "snapshot_version": 1,
-  "captured": "2026-11-15",
+  "captured": "2026-11-25",
   "notion_version": "2026-03-11",
   "databases": {
     "projects": {
@@ -78,11 +78,6 @@
           "name": "Date",
           "type": "date",
           "id": "gztA"
-        },
-        {
-          "name": "Deadline Display",
-          "type": "formula",
-          "id": "KsX%60"
         },
         {
           "name": "Delegate Producer",
@@ -200,34 +195,9 @@
           ]
         },
         {
-          "name": "Label AE (1)",
-          "type": "formula",
-          "id": "nWNj"
-        },
-        {
-          "name": "Label Editor",
-          "type": "formula",
-          "id": "SJ%7Bo"
-        },
-        {
-          "name": "Label OE",
-          "type": "formula",
-          "id": "%5DSB%40"
-        },
-        {
-          "name": "Label PM Notes",
-          "type": "formula",
-          "id": "IJgM"
-        },
-        {
           "name": "Label Sound",
           "type": "formula",
           "id": "jf_Y"
-        },
-        {
-          "name": "Label Supe",
-          "type": "formula",
-          "id": "wFOS"
         },
         {
           "name": "Live Sound Recordist",
@@ -483,7 +453,11 @@
             "16022e43-7381-4268-a20a-fc69f8b4379a",
             "67ba7c13-628a-48a5-b20d-78418816908c",
             "5e6a2082-f909-447b-a2fb-0f91504eba72",
-            "cc2b3caa-122d-4bc0-842b-c56e38efc278"
+            "cc2b3caa-122d-4bc0-842b-c56e38efc278",
+            "419965d9-7c0c-46a5-a27a-24125a18cac8",
+            "454c5a09-fef3-499b-bcb6-cfbe354ba844",
+            "7f362dbd-4df7-40ee-884b-75cd79bb94b7",
+            "c9f7003b-df26-4483-a2e1-06d264a439df"
           ]
         },
         {
@@ -545,16 +519,6 @@
           "id": "IN%3Ag"
         },
         {
-          "name": "Separator 1",
-          "type": "formula",
-          "id": "%3D%5CNp"
-        },
-        {
-          "name": "Separator 2",
-          "type": "formula",
-          "id": "E%3B%7Bm"
-        },
-        {
           "name": "Sound Mixer",
           "type": "relation",
           "id": "alOI"
@@ -595,10 +559,11 @@
           "options": [
             "aaa56a90-52ad-4d74-bd69-fa55b53fe1eb",
             "50c950ad-60da-49d9-833c-630cf26f648e",
+            "32dd97d7-e50f-4c01-b273-262f9bd56b40",
             "50476dac-ab0b-4543-8fae-859cd49f40dd",
             "d4eddd31-a547-4259-9c95-307394093966",
-            "3011aafa-82ff-441b-ba11-09e641ba4088",
             "4b9ac9de-d2eb-4d2c-8740-ef207cbdf605",
+            "3011aafa-82ff-441b-ba11-09e641ba4088",
             "35f33d58-e647-4695-8fc4-00603be5fa40",
             "ab4ddac5-85f2-4935-9687-cd48e37977da",
             "55dd2d2b-ba28-42c9-97de-0262bc3830d5",
@@ -682,6 +647,51 @@
           "name": "📦 Deliverables",
           "type": "relation",
           "id": "%7CV_h"
+        },
+        {
+          "name": "Hide Playdate",
+          "type": "checkbox",
+          "id": "ET%7D_"
+        },
+        {
+          "name": "T6 ID",
+          "type": "rich_text",
+          "id": "Nn%3Ff"
+        },
+        {
+          "name": "Rotation",
+          "type": "select",
+          "id": "QyzT",
+          "options": [
+            "73b1921b-8ac4-4ef4-a41e-363c54ea759f",
+            "15ab4422-4fc8-4ca4-80de-1a0d3c3fa8ec",
+            "e1e0e98d-c6cb-4ec5-b8a4-c5e867c27d98"
+          ]
+        },
+        {
+          "name": "Hide Archival",
+          "type": "checkbox",
+          "id": "U%40Vw"
+        },
+        {
+          "name": "Line Producer",
+          "type": "relation",
+          "id": "%5DVxR"
+        },
+        {
+          "name": "Hide Submission",
+          "type": "checkbox",
+          "id": "bHD~"
+        },
+        {
+          "name": "Lead Owner",
+          "type": "relation",
+          "id": "dzRn"
+        },
+        {
+          "name": "Card",
+          "type": "formula",
+          "id": "%7Clcn"
         }
       ]
     },
@@ -888,6 +898,16 @@
           "name": "🗺️ Projects",
           "type": "relation",
           "id": "SLP%60"
+        },
+        {
+          "name": "Line Producer Projects",
+          "type": "relation",
+          "id": "BXSe"
+        },
+        {
+          "name": "Projects CRM",
+          "type": "relation",
+          "id": "Mef%3B"
         }
       ]
     },
@@ -940,6 +960,27 @@
           "name": "🗺️ Projects",
           "type": "relation",
           "id": "%60njG"
+        },
+        {
+          "name": "OS Format",
+          "type": "select",
+          "id": "de3bcd00-c34b-4057-bc0f-75518cca5cea",
+          "options": [
+            "43fb6253-82b1-4317-aafc-11e94bbcdbfe",
+            "51c0fdff-8ae6-4ff8-a389-8338b33c2480",
+            "005f02d4-6073-4de5-99a7-aa49f6f6e7a3",
+            "7945bbf6-93ff-4308-8b82-a0ce2249ec30"
+          ]
+        },
+        {
+          "name": "Note to Driver",
+          "type": "rich_text",
+          "id": "e19238a8-10a1-43a7-98f8-e3ff3c0c911d"
+        },
+        {
+          "name": "Contact Number",
+          "type": "phone_number",
+          "id": "eb2dd217-09f7-47db-8bed-d20fec695ade"
         }
       ]
     },
@@ -1051,6 +1092,7 @@
           "type": "status",
           "id": "v%3Fln",
           "options": [
+            "byZT",
             "WTKa",
             "7b481e97-5113-4876-9da3-49959cf6dae8",
             "786d848b-3646-482e-abbb-7b358e73024f",
@@ -1119,7 +1161,8 @@
             "IN_PROGRESS": "786d848b-3646-482e-abbb-7b358e73024f",
             "NEEDS_COMPLETION_REVIEW": "gsUi",
             "DONE": "94b6d658-2efb-4ef7-8518-f3532203e5c1",
-            "CANCELLED": "QazO"
+            "CANCELLED": "QazO",
+            "ON_HOLD": "byZT"
           }
         },
         "department": {
@@ -1218,6 +1261,7 @@
             "e56fe53b-3f73-4a60-ab4d-93e12eb817f3",
             "66f009cc-b88a-4ba4-90a4-e93ab1506bef",
             "fdd078a8-4f6b-4e95-9702-5f4f85324d51",
+            "d9986d44-8b08-4cf7-bd55-d6e8157f4506",
             "14b3d3a0-9434-4507-bc5a-49c5fc46e1ea"
           ]
         },
@@ -1376,7 +1420,17 @@
           "type": "rich_text",
           "id": "~%3DYa"
         }
-      ]
+      ],
+      "named_options": {
+        "ring": {
+          "property": "dYyG",
+          "values": {
+            "TESTING": "d9cdfccd-3bc4-427f-ab5b-54d4118864c6",
+            "PILOT": "6b0e8186-0d69-4d78-800f-93815fa286db",
+            "PRODUCTION": "c7753882-fe55-417e-a44d-c7e9a95c61da"
+          }
+        }
+      }
     },
     "cameras": {
       "title": "Cameras",
