@@ -87,12 +87,26 @@ def guesses(db: sqlite3.Connection, store: SqliteDriveStore, text: str, directio
                        {'drive': drive.id, 'confidence': min(score, 0.9), 'reason': reason, 'exact': False}))
     ranked.sort(key=lambda g: (-g[0], -g[1], -g[2], -g[3]))
     shortlist = ranked[:6]
-    shared = [g for g in shortlist if (drive := store.get_drive(g[4]['drive'])) is not None
-              and (text == drive.label or any(text == name for name, _ in short_names.get(drive.id, [])))]
-    if len(shared) == 1:
-        guess = shared[0][4]
-        if any(name == text and count >= 3 for name, count in short_names.get(guess['drive'], [])) and db.execute(
-                'SELECT 1 FROM drive_reference_photos WHERE drive_id=?', (guess['drive'],)).fetchone():
+    candidates = [g[4] for g in shortlist]
+    mark_exact(db, store, candidates, text)
+    candidates.sort(key=lambda g: not g['exact'])
+    return candidates
+
+
+def mark_exact(db: sqlite3.Connection, store: SqliteDriveStore, shortlist: list[dict[str, Any]], text: str) -> list[dict[str, Any]]:
+    """Apply the confirmed, unique, direction-filtered Reference-photo rule."""
+    names: dict[str, list[tuple[str, int]]] = {}
+    for name, drive, count in db.execute('SELECT text, drive_id, confirmations FROM drive_short_names'):
+        names.setdefault(drive, []).append((name, count))
+    shared = [g for g in shortlist if (drive := store.get_drive(g['drive'])) is not None
+              and (text == drive.label or any(text == name for name, _ in names.get(drive.id, [])))]
+    checks = []
+    for guess in shortlist:
+        count = max((count for name, count in names.get(guess['drive'], []) if name == text), default=0)
+        reference = db.execute('SELECT 1 FROM drive_reference_photos WHERE drive_id=?', (guess['drive'],)).fetchone() is not None
+        eligible = guess in shared and len(shared) == 1 and count >= 3 and reference
+        checks.append({'drive': guess['drive'], 'text_matches': guess in shared, 'confirmations': count,
+                       'unique': len(shared) == 1, 'direction_fits': True, 'reference_photo': reference, 'eligible': eligible})
+        if eligible:
             guess.update(confidence=0.95, exact=True, reason='Confirmed exact match; unique in shortlist; direction fits; Reference photo')
-    shortlist.sort(key=lambda g: not g[4]['exact'])
-    return [g[4] for g in shortlist[:3]]
+    return checks

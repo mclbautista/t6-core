@@ -6,7 +6,7 @@ import binascii
 import json
 import os
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -18,9 +18,15 @@ from t6.drives.inbox import _move
 from t6.drives.movements import active_movements, append, custody_event, latest_custody, _append_event
 from t6.drives.debug import DebugNotifier
 from t6.drives.sqlite import SqliteDriveStore
-from t6.drives.shortlist import guesses
+from t6.drives.shortlist import guesses, mark_exact
+from t6.drives.learning import reference_photo
+from t6.drives.photos import PhotoError
 from t6.llm.drive_transmittal import judge_transmittal
 from t6.llm.transport import Provider
+from t6.llm.drive_photo_match import PHOTO_MATCH, MatchInput, shrink_photo
+from t6.llm.task import run
+from t6.llm.result import Ok
+from t6.privacy import withhold
 from t6.notion.source import NotionSource
 from t6.worker import WorkerJob
 
@@ -162,7 +168,7 @@ def capture_result(registry: SqliteProjectRegistry, capture: str) -> Outcome:
 
 
 class CaptureResolver:
-    def __init__(self, registry: SqliteProjectRegistry, provider: Provider, *, decisions: Provider | None = None, environ: Mapping[str, str] | None = None,
+    def __init__(self, registry: SqliteProjectRegistry, provider: Provider | None, *, decisions: Provider | None = None, environ: Mapping[str, str] | None = None,
                  debug: DebugNotifier | None = None, source: NotionSource | None = None) -> None:
         self.registry, self.provider, self.environ = registry, provider, environ
         self.decisions = decisions
@@ -224,20 +230,87 @@ class CaptureResolver:
                 data.pop('follow_up', None)
                 db.execute('UPDATE drive_captures SET data=?, photo=? WHERE id=?', (json.dumps(data), b'', capture))
                 return _result(data)
-            caption = parse_caption(data['text'])
+        caption = parse_caption(data['text'])
+        items: list[dict[str, Any]] = [{'text': text, 'state': 'open', 'guesses': []} for text in caption.items]
+        matches = []
+        for item in items:
+            if admitted.photo and not caption.problem and caption.direction:
+                item['guesses'], match = self._match_item(data, item['text'], admitted.photo)
+                matches.append(match)
+        with self.registry._transaction() as db:
+            row = db.execute('SELECT data FROM drive_captures WHERE id=?', (capture,)).fetchone()
+            if row is None:
+                return {'skipped': 'capture removed by reload'}
+            data = json.loads(row[0])
+            if data['state'] != 'pending' or data.get('revision', 0) != job.payload.get('revision', 0):
+                return _result(data)
+            data.update(state='resolved', resolved_at=self.registry._clock(), reason=None, items=items)
             store = SqliteDriveStore(self.registry, within=db)
-            data.update(state='resolved', resolved_at=self.registry._clock(), reason=None,
-                        items=[{'text': text, 'state': 'open',
-                                'guesses': guesses(db, store, text, caption.direction, caption.tags, self.source, data['sender_telegram_id']) if admitted.photo and not caption.problem and caption.direction else []}
-                               for text in caption.items])
-            for item in data['items']:
+            for item in items:
                 if item['guesses']:
                     drive = store.get_drive(item['guesses'][0]['drive'])
                     assert drive is not None
                     item.update(drive=drive.id, movement=_move(db, store, data, drive, self.source, to_review=True))
-            data['grade'] = 'thin' if not caption.problem and any(not item['guesses'] for item in data['items']) else caption.grade
+            if self.debug is not None:
+                data.setdefault('debug', {})['matches'] = matches
+            data['grade'] = 'thin' if not caption.problem and any(not item['guesses'] for item in items) else caption.grade
             db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), capture))
             return _result(data)
+
+    def _match_item(self, data: dict[str, Any], text: str, photo: bytes) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        caption = parse_caption(data['text'])
+        assert caption.direction is not None
+        with self.registry._transaction() as db:
+            store = SqliteDriveStore(self.registry, within=db)
+            shortlist = guesses(db, store, text, caption.direction, caption.tags, self.source, data['sender_telegram_id'])
+            entries = [{'letter': chr(65 + n), **guess} for n, guess in enumerate(shortlist)]
+            match: dict[str, Any] = {'item': text, 'shortlist': entries, 'thumbnails': [], 'guesses': [],
+                                     'exact_checks': [], 'model': None, 'ms': None, 'cost': None,
+                                     'failed': 'empty_shortlist' if not shortlist else 'no_provider'}
+            if not shortlist or self.provider is None:
+                return [], match
+            try:
+                image = shrink_photo(photo)
+            except (OSError, ValueError):
+                match['failed'] = 'invalid_photo'
+                return [], match
+            thumbnails, letters = [], []
+            for entry in entries:
+                drive = store.get_drive(entry['drive'])
+                assert drive is not None
+                entry.update(label=drive.label, projects=[asdict(a.project) for a in store.list_assignments(drive.id) if a.end is None and a.project])
+                try:
+                    reference = reference_photo(self.registry, drive.id, within=db)
+                    thumbnail = shrink_photo(base64.b64decode(reference['photo']), 320)
+                except (PhotoError, OSError, ValueError):
+                    entry['thumbnail'] = False
+                else:
+                    entry['thumbnail'] = True
+                    thumbnails.append(thumbnail)
+                    letters.append(withhold(entry['letter']))
+        request = MatchInput(withhold(json.dumps({'item': text, 'caption': data['text'], 'shortlist': entries})),
+                             image, tuple(thumbnails), tuple(letters))
+        matched = run(PHOTO_MATCH, request, provider=self.provider)
+        match.update(thumbnails=[letter.text for letter in letters], model=matched.trace.model,
+                     ms=matched.trace.latency_ms, cost=matched.trace.cost, tokens=asdict(matched.trace.tokens), failed=getattr(matched, 'reason', None))
+        if not isinstance(matched, Ok):
+            return [], match
+        if any(ord(g.letter) - 65 >= len(shortlist) for g in matched.value.guesses):
+            match['failed'] = 'letter_outside_shortlist'
+            return [], match
+        ranked = [{'drive': shortlist[ord(g.letter) - 65]['drive'], 'confidence': g.confidence,
+                   'reason': g.reason, 'exact': False} for g in matched.value.guesses]
+        with self.registry._transaction() as db:
+            store = SqliteDriveStore(self.registry, within=db)
+            match['exact_checks'] = [{'text': text, 'candidates': mark_exact(db, store, shortlist, text)}]
+            if matched.value.label_text:
+                match['exact_checks'].append({'text': matched.value.label_text,
+                                              'candidates': mark_exact(db, store, shortlist, matched.value.label_text)})
+        exact = [g for g in shortlist if g['exact']]
+        exact_ids = {g['drive'] for g in exact}
+        ranked = (exact + sorted((g for g in ranked if g['drive'] not in exact_ids), key=lambda g: -g['confidence']))[:3]
+        match['guesses'] = ranked
+        return ranked, match
 
 
 def undo_capture(registry: SqliteProjectRegistry, capture: str) -> Outcome:

@@ -341,19 +341,26 @@ def configured_handlers(
                 file=sys.stderr,
                 flush=True,
             )
-    if environ.get('T6_DATABASE') and environ.get('T6_LLM_CONFIG'):
+    if environ.get('T6_DATABASE') and (environ.get('T6_LLM_CONFIG') or environ.get('T6_DRIVE_RECORDING_CHAT_ID')):
         import json
         from t6.drives.capture import CaptureResolver
-        from t6.llm.config import LLMConfig, decisions_from
-        from t6.llm.drive_photo import PHOTO_READ
+        from t6.llm.config import ConfigError, LLMConfig, decisions_from
+        from t6.llm.drive_photo_match import PHOTO_MATCH
         from t6.registry.sqlite import SqliteProjectRegistry
 
-        with open(environ['T6_LLM_CONFIG'], encoding='utf-8') as file:
-            capture_config = json.load(file)
+        capture_config: dict[str, Any] = {}
+        photo_provider = None
+        if environ.get('T6_LLM_CONFIG'):
+            with open(environ['T6_LLM_CONFIG'], encoding='utf-8') as file:
+                capture_config = json.load(file)
             photo_config = LLMConfig.from_mapping(capture_config['llm'])
+            try:
+                photo_provider = photo_config.provider_for(PHOTO_MATCH.prompt_tag, env=environ)
+            except ConfigError:
+                pass  # Captures still reach the Inbox when vision is not configured.
         capture_registry = SqliteProjectRegistry(environ['T6_DATABASE'])
         resolver = CaptureResolver(capture_registry,
-                                   photo_config.provider_for(PHOTO_READ.prompt_tag, env=environ),
+                                   photo_provider,
                                    decisions=decisions_from(capture_config['decisions'], environ) if 'decisions' in capture_config else None,
                                    environ=environ, debug=debug_notifier(environ, capture_registry))
         handlers['drive.capture.resolve'] = resolver.handle

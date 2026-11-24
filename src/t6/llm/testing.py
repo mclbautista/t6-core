@@ -92,9 +92,10 @@ class FakeProvider:
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
         model: str | None = None,
+        cost: float | None = None,
     ) -> FakeProvider:
         """Queue a reply. ``content`` may be malformed JSON, empty, ``None`` or placeholder-mangled."""
-        self._script.append(Completion(content, model or self._model, Tokens(prompt_tokens, completion_tokens)))
+        self._script.append(Completion(content, model or self._model, Tokens(prompt_tokens, completion_tokens), cost=cost))
         return self
 
     def tool_call(

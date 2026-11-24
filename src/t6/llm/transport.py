@@ -107,6 +107,7 @@ class Completion:
     model: str
     tokens: Tokens = Tokens()
     tool_calls: tuple[ToolCall, ...] = ()
+    cost: float | None = None  # USD when reported by the provider
 
 
 class ProviderTimeout(Exception):
@@ -342,4 +343,5 @@ def _completion(raw: bytes, requested_model: str) -> Completion:
         raise ProviderError("unreadable provider response") from None
     if content is not None and not isinstance(content, str):
         raise ProviderError("unreadable provider response")
-    return Completion(content=content, model=str(model), tokens=tokens, tool_calls=tool_calls)
+    return Completion(content=content, model=str(model), tokens=tokens, tool_calls=tool_calls,
+                      cost=float(usage['cost']) if isinstance(usage.get('cost'), (int, float)) else None)

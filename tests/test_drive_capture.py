@@ -11,6 +11,7 @@ from urllib.request import Request, urlopen
 from test_drive_reload import DriveReloadFixture, HEADER
 from test_llm_drive_photo import photo
 from t6.llm.testing import FakeProvider
+from test_drive_guesses import OrderedShortlistProvider
 from t6.server.http import make_server
 from t6.server.verbs import VerbAPI
 from t6.worker.internal_queue import InternalJobQueue
@@ -28,7 +29,7 @@ class CaptureTests(DriveReloadFixture):
             db.execute("INSERT INTO persons VALUES ('t6n_synthetickeeper', 'staff', '[]', '[]', NULL, 0, 1)")
             db.execute("INSERT INTO person_permissions VALUES ('t6n_synthetickeeper', 'drives')")
         self.queue = InternalJobQueue(self.registry)
-        self.fake = FakeProvider()
+        self.fake = OrderedShortlistProvider()
         api = VerbAPI(self.people, self.queue, {'synthetic-gateway': 'gateway', 'synthetic-other': 'worker', 'synthetic-keeper-secret': 't6n_synthetickeeper'}, lambda _: None,
                       notion_source=self.notion_source)
         self.server = make_server(('127.0.0.1', 0), api)
