@@ -1424,8 +1424,15 @@ class VerbAPI:
                 now = self.people.registry._clock()
                 with self.people.registry._transaction() as db:
                     current = latest_stages(db)
+                from t6.notion.reads import ContactReader, StudioReader
+                from t6.registry.core import normalize_page_id
+                raw = ProjectReader(notion, self.data_sources['projects']).list()
+                contact_names = {normalize_page_id(c.page_id): c.name for c in ContactReader(notion, self.data_sources['contacts']).list()} if raw and 'contacts' in self.data_sources else {}
+                studio_names = {normalize_page_id(page): name for page, name in StudioReader(notion, self.data_sources['studios']).titles().items()} if raw and 'studios' in self.data_sources else {}
+                def people(pages: tuple[str, ...]) -> list[str]:
+                    return [contact_names[key] for key in map(normalize_page_id, pages) if contact_names.get(key)]
                 leads: list[LeadRead] = []
-                for project in batch_project_results(ProjectReader(notion, self.data_sources['projects']).list()):
+                for original, project in zip(raw, batch_project_results(raw)):
                     recorded, at = current.get(project.t6_id or '', (None, None))
                     stage = project_rules.crm_stage(recorded, project.status)
                     if stage is None or not project_rules.is_lead(stage):
@@ -1433,7 +1440,11 @@ class VerbAPI:
                     leads.append(LeadRead(project_id=project.t6_id or project.page_id, page_id=project.page_id, name=project.name, stage=stage.value,
                                           lead_owner_ids=list(project.lead_owner_ids), studio_id=project.studio_id,
                                           delegate_producer_ids=list(project.delegate_producer_ids), line_producer_ids=list(project.line_producer_ids),
-                                          prod_coor_supe_ids=list(project.prod_coor_supe_ids), days_in_stage=None if at is None else int((now - at) // 86400)))
+                                          prod_coor_supe_ids=list(project.prod_coor_supe_ids),
+                                          lead_owners=people(original.lead_owner_ids), delegate_producers=people(original.delegate_producer_ids),
+                                          line_producers=people(original.line_producer_ids), prod_coor_supes=people(original.prod_coor_supe_ids),
+                                          studio=studio_names.get(normalize_page_id(original.studio_id or '')) or None,
+                                          days_in_stage=None if at is None else int((now - at) // 86400)))
                 return Done(result=LeadListOutput(leads=leads).model_dump(mode='json'))
             if noun == 'project':
                 project_reader = ProjectReader(notion, self.data_sources['projects'])

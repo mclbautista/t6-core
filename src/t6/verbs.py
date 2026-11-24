@@ -1408,6 +1408,11 @@ class LeadRead(BaseModel):
     delegate_producer_ids: list[str]
     line_producer_ids: list[str]
     prod_coor_supe_ids: list[str]
+    lead_owners: list[str] = []
+    studio: str | None = None
+    delegate_producers: list[str] = []
+    line_producers: list[str] = []
+    prod_coor_supes: list[str] = []
     days_in_stage: int | None
 
 
