@@ -6,6 +6,7 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ### Added
 
+- `drive recycle`: gives a Drive a new label and Project in one step (preview, then confirm; needs the `drives` permission). It ends the Drive's open Project uses, starts one for the chosen Project with the new label (role master unless given), and keeps the old label in the Drive's remarks. A retired Drive, an unknown Project, a blank label and an unchanged label and Project are refused (#670).
 - `contact find`: a short type-ahead list of Contacts (name, Telegram handle) over the Notion mirror, for the Drive web app person picker; needs the `drives` permission, and masks names for a caller that cannot read real names (#668).
 - `contact create`: adds a Contact (name, optional Telegram handle and phone) marked "Added from Drives", preview then confirm; a blank name or an existing name is refused (#668).
 
