@@ -5,22 +5,20 @@ import base64
 import binascii
 import json
 import os
-import time
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any
 from uuid import uuid4
 
 from t6.domain.events import JsonValue
 from t6.drives import Ref
-from t6.drives.caption import DIRECTION, parse_caption
-from t6.drives.movements import Movement, active_movements, append, custody_event, latest_custody, _append_event
+from t6.drives.caption import parse_caption
+from t6.drives.movements import active_movements, append, custody_event, latest_custody, _append_event
 from t6.drives.debug import DebugNotifier
 from t6.drives.sqlite import SqliteDriveStore
-from t6.llm.drive_photo import read_drive_photo
 from t6.llm.drive_transmittal import judge_transmittal
-from t6.llm.transport import Image, ImageType, Provider
+from t6.llm.transport import Provider
 from t6.worker import WorkerJob
 
 from t6.drives.recording import recording_input
@@ -40,25 +38,6 @@ def recording_topic(environ: Mapping[str, str] | None = None) -> int | None:
 
 
 UNDO_WINDOW_SECONDS = 3600
-_PLACES = ('TABLE', 'CABINET', 'SHELF', 'BOX')
-
-
-def _parse_text(text: str) -> tuple[Literal['IN', 'OUT'] | None, str, Literal['TABLE', 'CABINET', 'SHELF', 'BOX'] | None, str]:
-    """Read a caption or follow-up answer as (direction, person, place, typed label); direction is None without a leading IN/OUT."""
-    command, _, typed = text.strip().replace('|', '\n', 1).partition('\n')
-    typed = typed.strip()
-    start = DIRECTION.match(command.strip())
-    if start is None:
-        return None, '', None, typed or command.strip()
-    direction: Literal['IN', 'OUT'] = 'IN' if start[1].upper() == 'IN' else 'OUT'
-    tail = command.strip()[start.end():].strip()
-    if direction == 'OUT':
-        return direction, tail, None, typed
-    first, _, rest = tail.partition(' ')
-    if first.upper() in _PLACES:
-        return direction, '', first.upper(), typed or rest.strip()  # type: ignore[return-value]
-    return direction, '', None, typed or tail
-
 
 def capture_post(registry: SqliteProjectRegistry, inputs: DriveCaptureInput) -> Outcome:
     if inputs.capture:
@@ -78,9 +57,9 @@ def capture_post(registry: SqliteProjectRegistry, inputs: DriveCaptureInput) -> 
             if inputs.edit and inputs.drive:
                 return Refused(rule='input', reason='An edit replaces the caption text, not the Drive')
             if inputs.edit:  # replaces the caption only: any follow-up already given and the one-question allowance stay as they are
-                if data['state'] not in ('pending', 'exception') or data.get('text') == inputs.text:
+                if not (data['state'] in ('pending', 'exception') or data['state'] == 'resolved' and parse_caption(data['text']).problem) or data.get('text') == inputs.text:
                     return Done(result=_result(data))
-                data.update(text=inputs.text, revision=data.get('revision', 0) + 1, state='pending', reason=None, differences=[], edited=True)
+                data.update(text=inputs.text, revision=data.get('revision', 0) + 1, state='pending', reason=None, differences=[], edited=True, items=[])
                 db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), inputs.capture))
                 queue.submit('main', 'drive.capture.resolve', f"{inputs.capture}:{data['revision']}",
                              {'capture': inputs.capture, 'revision': data['revision']}, db=db)
@@ -132,7 +111,7 @@ def _undo_until(data: dict[str, Any]) -> str | None:
 def _result(data: dict[str, Any]) -> dict[str, Any]:
     caption = parse_caption(data['text']) if data['state'] != 'ignored' and 'text' in data else None  # an ignored capture keeps no caption
     return {key: data[key] for key in ('capture', 'state', 'lines', 'differences')} | {
-            'items': [{'text': text, 'state': 'open'} for text in caption.items] if caption else [], 'counts': caption.counts if caption else [],
+            'items': data.get('items') or [{'text': text, 'state': 'open'} for text in caption.items] if caption else [], 'counts': caption.counts if caption else [],
             'recipient': caption.recipient if caption else None, 'tags': caption.tags if caption else [],
             'grade': caption.grade if caption else None, 'problem': caption.problem if caption else None,'photo_reference': None if data['state'] == 'ignored' else data['capture'], 'message': 'ask for the label' if data['state'] == 'exception' else None,
             'reason': data.get('reason') if data['state'] == 'exception' else None,
@@ -218,14 +197,6 @@ class CaptureResolver:
         if judged:
             self._note(capture, admitted.text, {'jev': {'choice': judged.choice, 'probabilities': judged.probabilities, 'model': judged.model,
                                                         'ms': judged.latency_ms, 'failed': judged.failed}}, f'Jev failed: {judged.failed}' if judged.failed else None)
-        readings: list[Any] = []
-        if not (picked or verdict == 'not_transmittal' or not admitted.photo):
-            started = time.monotonic()
-            read = read_drive_photo(Image(admitted.photo, ImageType(data['media_type'])), provider=self.provider)
-            readings = read.drives
-            self._note(capture, admitted.text, {'photo': {'readings': [{'label': r.label, 'serial': r.serial, 'confidence': r.confidence} for r in readings],
-                                                         'model': read.trace.model, 'ms': read.trace.latency_ms or round((time.monotonic() - started) * 1000)}},
-                       f'Photo read failed: {read.reason}' if read.reason not in ('', 'unreadable') else None)
         with self.registry._transaction() as db:
             row = db.execute('SELECT data FROM drive_captures WHERE id=?', (capture,)).fetchone()
             if row is None:
@@ -239,67 +210,8 @@ class CaptureResolver:
                 data.pop('follow_up', None)
                 db.execute('UPDATE drive_captures SET data=?, photo=? WHERE id=?', (json.dumps(data), b'', capture))
                 return _result(data)
-            store = SqliteDriveStore(self.registry, within=db)
-            drives = store.list_drives()
-            found = {}
-            direction, person, place, typed = _parse_text(data['text'])
-            follow_up = data.get('follow_up') or ''
-            if (answer := _parse_text(follow_up))[0] is not None and not picked:  # an IN/OUT answer replaces the caption's direction
-                direction, person, place, typed = answer[0], answer[1], answer[2], answer[3] or typed
-                follow_up = answer[3]
-            if direction == 'OUT' and (recipient := parse_caption(data['text']).recipient) and not answer[0]:  # an `R:` line names the recipient
-                person = recipient
-            if self.debug is not None:
-                data.setdefault('debug', {})['parsed'] = {'direction': direction, 'person': person or None, 'place': place}
-            if not admitted.photo and not picked and not data.get('follow_up'):  # any answer lets a text-only Capture go on
-                data['state'], data['reason'] = 'exception', 'no_photo'
-                db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), capture))
-                return _result(data)
-            if direction is None or direction == 'OUT' and not person:
-                data['state'], data['reason'] = 'exception', 'missing_direction' if direction == 'OUT' or readings or typed or follow_up else 'unreadable_label'
-                db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), capture))
-                return _result(data)
-            for item in readings:
-                candidates = [d for d in drives if item.label and d.label == item.label]
-                drive = candidates[0] if len(candidates) == 1 else store.find_by_serial(item.serial) if item.serial else None
-                if drive:
-                    found[drive.id] = drive
-                    typed_drive = store.find_by_serial(typed) if typed else None
-                    if typed and item.label and typed != item.label and (typed_drive is None or typed_drive.id != drive.id):
-                        data['differences'].append(f'Photo label {item.label} differs from typed {typed}')
-            if picked and (chosen := store.get_drive(picked)) is not None:
-                found[chosen.id] = chosen
-            elif not found and (not readings or follow_up):
-                identifier = follow_up or typed
-                candidates = [d for d in drives if identifier and d.label == identifier]
-                drive = candidates[0] if len(candidates) == 1 else store.find_by_serial(identifier) if identifier else None
-                if drive:
-                    found[drive.id] = drive
-            recorder = db.execute('SELECT id FROM persons WHERE telegram_id=?', (data['sender_telegram_id'],)).fetchone()
-            logged_by = Ref(page_id=recorder[0]) if recorder else Ref(text=f"telegram:{data['sender_telegram_id']}")
-            if direction == 'IN':
-                person = recorder[0] if recorder else f"telegram:{data['sender_telegram_id']}"
-            for drive in found.values():
-                assignments = [a for a in store.list_assignments(drive.id) if a.end is None]
-                project = assignments[0].project if len(assignments) == 1 and assignments[0].project else None
-                movement = Movement(id='t6m_' + uuid4().hex, drive=drive.id, label=drive.label,
-                                    on=datetime.fromisoformat(data['posted_at']).date(), direction=direction, person=person,
-                                    recorder=recorder[0] if recorder else None, recorder_telegram_id=data['sender_telegram_id'],
-                                    place=place, project=project, capture=capture, posted_at=data['posted_at'],
-                                    shipment_id='shipment-' + capture if direction == 'OUT' else None)
-                append(db, movement)
-                event = custody_event(movement, logged_by)
-                _append_event(db, store, drive.id, event, movement.id)
-                if direction == 'OUT' or place is not None:
-                    store.set_facts(drive.id, {'office_location': place if direction == 'IN' else None})
-                latest = latest_custody(db, drive.id)
-                if latest and latest != event:
-                    _append_event(db, store, drive.id, latest, movement.id)
-                data['lines'].append({'label': drive.label, 'direction': direction, 'person': person})
-            data['state'] = 'resolved' if found else 'exception'
-            if found:
-                data['resolved_at'] = self.registry._clock()
-            data['reason'] = None if found else 'no_drive_match' if readings or follow_up or typed else 'unreadable_label'
+            data.update(state='resolved', resolved_at=self.registry._clock(), reason=None,
+                        items=[{'text': text, 'state': 'open'} for text in parse_caption(data['text']).items])  # every Item waits in the Inbox
             db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), capture))
             return _result(data)
 
@@ -331,6 +243,9 @@ def undo_capture(registry: SqliteProjectRegistry, capture: str) -> Outcome:
                 # A reversal to no earlier custody must restore unknown, not IN.
                 db.execute('INSERT INTO drive_status_resets VALUES (last_insert_rowid())')
         data['state'] = 'undone'
+        for item in data.get('items', []):
+            if item['state'] == 'open':
+                item['state'] = 'closed'
         db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), capture))
         if data.get('debug', {}).get('message_ref') is not None:  # the worker keeps the debug message current
             InternalJobQueue(registry).submit('main', 'drive.capture.debug', f'{capture}:undone', {'capture': capture}, db=db)

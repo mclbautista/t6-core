@@ -2321,7 +2321,7 @@ class DriveCaptureLine(BaseModel):
 
 class DriveCaptureItem(BaseModel):
     text: str
-    state: Literal['open']
+    state: Literal['open', 'approved', 'not_a_drive', 'closed']  # open waits in the Inbox; closed is an open Item whose Capture was undone
 
 
 class DriveCaptureCount(BaseModel):
@@ -2358,6 +2358,66 @@ def drive_capture_undo(inputs: BaseModel, open_notion: Callable[..., Any]) -> Ou
     from t6.drives.capture import undo_capture
     assert isinstance(inputs, DriveCaptureReadInput)
     return undo_capture(_registry.get(), inputs.capture)
+
+
+class DriveInboxInput(BaseModel):
+    pass
+
+
+class DriveGuess(BaseModel):
+    drive: str
+    confidence: float
+    reason: str
+
+
+class DriveInboxItem(BaseModel):
+    capture: str
+    item: int  # the Item's place in the Capture, counted from 0; with `capture` it names the Item for `drive approve`
+    text: str
+    caption: str
+    direction: Literal['IN', 'OUT']
+    recipient: str | None
+    photo_reference: str | None  # the Capture ID when it kept a photo; read the bytes with `drive capture photo`
+    guesses: list[DriveGuess]  # ranked, best first; none until guessing exists
+    chat_id: int  # with the topic and message, the link to the post
+    topic_id: int | None
+    message_id: int
+    posted_at: str
+
+
+class DriveInboxOutput(DrivePracticeOutput):
+    items: list[DriveInboxItem]
+
+
+class DriveApproveInput(BaseModel):
+    capture: str
+    item: int
+    choice: Literal['drive', 'new', 'not_a_drive', 'none']  # drive: the Drive given by `drive` or `typed`; new: create the Drive; not_a_drive: close the Item; none: leave it waiting
+    drive: str | None = None  # a Drive ID the custodian picked
+    typed: str | None = None  # a label or serial the custodian typed
+    label: str | None = None  # for `new`: the Drive's label; the Item's text when not given
+    serial: str | None = None  # for `new`
+
+
+class DriveApproveOutput(DrivePracticeOutput):
+    capture: str
+    item: int
+    state: Literal['open', 'approved', 'not_a_drive', 'closed']
+    drive: str | None
+    movement: str | None
+
+
+def drive_inbox(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.drives.inbox import inbox
+    return inbox(_registry.get())
+
+
+def drive_approve(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.drives.inbox import approve
+    assert isinstance(inputs, DriveApproveInput)
+    token = os.environ.get('T6_NOTION_TOKEN')
+    source = _verb_notion_source(open_notion, token or '') if _notion_source.get() is not None or token else None
+    return approve(_registry.get(), inputs, source, _actor.get())
 
 
 class DriveCaptureListInput(BaseModel):
@@ -3278,6 +3338,8 @@ VERBS = (
     Verb('drive', 'capture list', 'List captures by state', (), DriveCaptureListInput, DriveCaptureListOutput, 'drives', 'Newest first; default state exception. Each has its text, sender and photo size and type; an ignored capture has no text and no photo. Drive callers only.', drive_capture_list, read_only=True),
     Verb('drive', 'capture photo', 'Read the photo of a capture', (), DriveCaptureReadInput, DriveCapturePhotoOutput, 'drives', 'Returns the kept photo bytes, base64-encoded, to a Drive caller only. Not an MCP tool; never sent to another service.', drive_capture_photo),
     Verb('drive', 'capture result', 'Read a capture outcome', (), DriveCaptureReadInput, DriveCaptureOutput, 'reader', 'Includes Practice and ask-for-label state.', drive_capture_result, read_only=True),
+    Verb('drive', 'inbox', 'List the Items waiting on approval', (), DriveInboxInput, DriveInboxOutput, 'drives', 'Newest Capture first, each Item in caption order, with its caption, direction, recipient, photo reference and guesses (none yet). Count lines never appear. A Capture whose caption needs IN or OUT, or R: on an OUT, waits for its poster and is left out.', drive_inbox, read_only=True),
+    Verb('drive', 'approve', 'Settle one Inbox Item', (), DriveApproveInput, DriveApproveOutput, 'drives', 'Give the Item (capture and item number) and one choice. drive appends the Movement for the Drive given or typed; new creates the Drive and its Movement; not_a_drive closes the Item with no Movement; none leaves it waiting. A repeat of the settling call returns the same result; another choice for a settled Item is refused.', drive_approve),
     Verb('movement', 'correct', 'Append a Movement correction', (), MovementCorrectInput, MovementCorrectOutput, 'drives', 'Preview and confirm a correction; the original Movement and custody events remain.', movement_correct),
     Verb('movement', 'list', 'Search the Movement log', (), MovementListInput, MovementListOutput, 'reader', 'Filters combine with AND; includes unresolved rows and corrections.', movement_list, read_only=True),
     Verb('movement', 'photo-add', 'Add or replace the photo of a movement', (), MovementPhotoAddInput, MovementPhotoOutput, 'drives', 'One photo per movement: JPEG, PNG or WebP, at most 10 MB, stored in its own folder, never sent to an LLM. Replaces an earlier photo.', movement_photo_add),
