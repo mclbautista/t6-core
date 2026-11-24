@@ -213,6 +213,401 @@ class ChatLinkTests(unittest.TestCase):
                 request = json.loads(db.execute('SELECT request FROM chat_link_previews').fetchone()[0])
                 self.assertEqual(request['values']['project'], 'ABC123')
 
+    def test_project_label_from_target_and_format_decision_notice(self) -> None:
+        from t6.chat_link import format_decision_notice, project_label_from_target
+
+        pid = 't6p_' + '1' * 24
+        self.assertEqual(project_label_from_target(f'Big Show [ABC123] {pid}: chat -100, topic 12 (Edit)'), 'Big Show [ABC123]')
+        self.assertEqual(project_label_from_target(f'Big Show {pid}: chat -100, topic none'), 'Big Show')
+        self.assertEqual(project_label_from_target(f'[ABC123] {pid}: chat -100, topic 12'), '[ABC123]')
+        self.assertEqual(project_label_from_target(f'{pid}: chat -100, topic 12'), pid)
+
+        self.assertEqual(format_decision_notice('link-chat', 'grant', 'Big Show [ABC123]'), 'Linked to Big Show [ABC123]')
+        self.assertEqual(format_decision_notice('unlink-chat', 'grant', 'Big Show [ABC123]'), 'Unlinked from Big Show [ABC123]')
+        self.assertEqual(
+            format_decision_notice('link-chat', 'deny', 'Big Show [ABC123]', denier='Ada', reason='Wrong topic'),
+            'Link to Big Show [ABC123] was not approved by Ada: Wrong topic',
+        )
+        self.assertEqual(
+            format_decision_notice('unlink-chat', 'deny', 'Big Show [ABC123]', denier='Ada', reason=None),
+            'Unlink from Big Show [ABC123] was not approved by Ada',
+        )
+        self.assertEqual(
+            format_decision_notice('link-chat', 'deny', pid, denier=self.actor, reason='  '),
+            f'Link to {pid} was not approved by {self.actor}',
+        )
+        self.assertEqual(
+            format_decision_notice('link-chat', 'deny', 'A & <B> [X]', denier='Ada <Admin>', reason='a < b & c > d'),
+            'Link to A &amp; &lt;B&gt; [X] was not approved by Ada &lt;Admin&gt;: a &lt; b &amp; c &gt; d',
+        )
+
+    def test_grant_link_and_unlink_send_decision_notices_and_track_topic(self) -> None:
+        from test_abang import Gateway
+        from t6.worker import Worker
+        from t6.worker.gateway import GatewayClient
+        from t6.worker.internal_queue import InternalJobQueue, InternalQueueClient
+        from t6.worker.linked_chats import LinkedChats
+
+        with self.registry._transaction() as db:
+            db.execute("UPDATE projects SET code = 'ABC123', code_form = 'abc123', rotation = 'in' WHERE id = ?", (self.project,))
+            db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, 'now', 1)", ('a' * 32, self.project))
+        self.links = ChatLinks(self.registry, self.tokens, lambda page: 'Big Show' if page == 'a' * 32 else None)
+        gateway = Gateway()
+        worker = LinkedChats(self.registry, GatewayClient(gateway, 'secret'))
+        runner = Worker(InternalQueueClient(InternalJobQueue(self.registry)), 'main', {'chat_link_notice': worker.chat_link_notice})
+
+        values = {'project': self.project, 'chat': -100, 'topic': 12}
+        linked = self.approved('link-chat', values, 'grant-link')
+        link_approval = linked.result['approval_id']
+        with self.registry._transaction() as db:
+            jobs = db.execute("SELECT kind, dedupe_key FROM internal_jobs WHERE kind = 'chat_link_notice'").fetchall()
+        self.assertEqual(jobs, [('chat_link_notice', f'chat_link_notice:{link_approval}')])
+        while runner.run_once():
+            pass
+        notifies = [call[2] for call in gateway.calls if call[1] == '/notify']
+        self.assertEqual(len(notifies), 1)
+        self.assertEqual(
+            notifies[0],
+            {
+                'to': -100,
+                'topic': 12,
+                'text': 'Linked to Big Show [ABC123]',
+                'format': 'html',
+                'buttons': [],
+                'idempotency_key': f'chat-link-decision:{link_approval}',
+            },
+        )
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM linked_chat_sends WHERE chat_id = -100 AND topic_id = 12').fetchone()[0], 1)
+
+        unlinked = self.approved('unlink-chat', values, 'grant-unlink')
+        unlink_approval = unlinked.result['approval_id']
+        while runner.run_once():
+            pass
+        notifies = [call[2] for call in gateway.calls if call[1] == '/notify']
+        self.assertEqual(len(notifies), 2)
+        self.assertEqual(
+            notifies[1],
+            {
+                'to': -100,
+                'topic': 12,
+                'text': 'Unlinked from Big Show [ABC123]',
+                'format': 'html',
+                'buttons': [],
+                'idempotency_key': f'chat-link-decision:{unlink_approval}',
+            },
+        )
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM linked_chat_sends WHERE chat_id = -100 AND topic_id = 12').fetchone()[0], 1)
+
+        none_topic = self.approved('link-chat', {'project': self.project, 'chat': -200, 'topic': None}, 'grant-none')
+        while runner.run_once():
+            pass
+        notifies = [call[2] for call in gateway.calls if call[1] == '/notify']
+        self.assertEqual(len(notifies), 3)
+        self.assertNotIn('topic', notifies[2])
+        self.assertEqual(notifies[2]['to'], -200)
+        self.assertEqual(notifies[2]['idempotency_key'], f'chat-link-decision:{none_topic.result["approval_id"]}')
+
+    def test_deny_link_and_unlink_send_notice_with_person_name_and_fallbacks(self) -> None:
+        from test_abang import Gateway
+        from t6.worker import Worker
+        from t6.worker.client import WorkerJob
+        from t6.worker.gateway import GatewayClient
+        from t6.worker.internal_queue import InternalJobQueue, InternalQueueClient
+        from t6.worker.linked_chats import LinkedChats
+
+        with self.registry._transaction() as db:
+            db.execute("UPDATE projects SET code = 'ABC123', code_form = 'abc123', rotation = 'in' WHERE id = ?", (self.project,))
+            db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, 'now', 1)", ('a' * 32, self.project))
+            db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, 'now', 1)", ('b' * 32, self.actor))
+        self.links = ChatLinks(self.registry, self.tokens, lambda page: 'Big Show' if page == 'a' * 32 else None)
+
+        values = {'project': self.project, 'chat': -100, 'topic': 12}
+        preview = self.links.write('link-chat', values, actor=self.actor, idempotency_key='deny-link')
+        assert isinstance(preview, Preview)
+        deny = {'approval': preview.plan['approval_id'], 'reason': 'Wrong room'}
+        d_prev = self.approvals.write('deny', deny, actor=self.actor, idempotency_key='d1')
+        assert isinstance(d_prev, Preview)
+        self.assertIsInstance(self.approvals.write('deny', deny, actor=self.actor, idempotency_key='d1', confirm=d_prev.token), Done)
+
+        gateway = Gateway()
+        worker = LinkedChats(self.registry, GatewayClient(gateway, 'secret'), person_name=lambda page: ' Ada Lovelace ' if page == 'b' * 32 else None)
+        runner = Worker(InternalQueueClient(InternalJobQueue(self.registry)), 'main', {'chat_link_notice': worker.chat_link_notice})
+        while runner.run_once():
+            pass
+        notifies = [call[2] for call in gateway.calls if call[1] == '/notify']
+        self.assertEqual(notifies[0]['text'], 'Link to Big Show [ABC123] was not approved by Ada Lovelace: Wrong room')
+        self.assertEqual(notifies[0]['topic'], 12)
+
+        again = self.links.write('link-chat', values, actor=self.actor, idempotency_key='retry-after-deny')
+        assert isinstance(again, Preview)
+        self.assertNotEqual(again.plan['approval_id'], preview.plan['approval_id'])
+
+        with self.registry._transaction() as db:
+            db.execute("UPDATE projects SET code = NULL, code_form = NULL, rotation = 'out' WHERE id = ?", (self.project,))
+            db.execute("DELETE FROM bindings WHERE project_id = ?", (self.project,))
+            db.execute("INSERT INTO chat_links VALUES ('t6h_1', ?, -300, 7, 'active')", (self.project,))
+        plain_links = ChatLinks(self.registry, self.tokens)
+        unlink_prev = plain_links.write('unlink-chat', {'project': self.project, 'chat': -300, 'topic': 7}, actor=self.actor, idempotency_key='deny-unlink')
+        assert isinstance(unlink_prev, Preview)
+        deny_u = {'approval': unlink_prev.plan['approval_id'], 'reason': 'Keep linked'}
+        du_prev = self.approvals.write('deny', deny_u, actor=self.actor, idempotency_key='d2')
+        assert isinstance(du_prev, Preview)
+        self.assertIsInstance(self.approvals.write('deny', deny_u, actor=self.actor, idempotency_key='d2', confirm=du_prev.token), Done)
+
+        def broken_person(page: str) -> str | None:
+            raise OSError('Notion down')
+
+        fallback_worker = LinkedChats(self.registry, GatewayClient(gateway, 'secret'), person_name=broken_person)
+        fallback_runner = Worker(InternalQueueClient(InternalJobQueue(self.registry)), 'main', {'chat_link_notice': fallback_worker.chat_link_notice})
+        while fallback_runner.run_once():
+            pass
+        notifies = [call[2] for call in gateway.calls if call[1] == '/notify']
+        self.assertEqual(notifies[1]['text'], f'Unlink from {self.project} was not approved by {self.actor}: Keep linked')
+
+        self.assertTrue(
+            fallback_worker.chat_link_notice(
+                WorkerJob(
+                    99,
+                    'main',
+                    'chat_link_notice',
+                    'chat_link_notice:t6a_noreason',
+                    {
+                        'approval_id': 't6a_noreason',
+                        'action': 'unlink-chat',
+                        'decision': 'deny',
+                        'chat': -300,
+                        'topic': None,
+                        'label': self.project,
+                        'decided_by': self.actor,
+                        'reason': None,
+                    },
+                    'tok',
+                    1,
+                )
+            )
+        )
+        notifies = [call[2] for call in gateway.calls if call[1] == '/notify']
+        self.assertEqual(notifies[2]['text'], f'Unlink from {self.project} was not approved by {self.actor}')
+
+    def test_decision_notice_is_idempotent_across_retries(self) -> None:
+        from test_abang import Gateway
+        from t6.chat_link import decided
+        from t6.worker.client import WorkerJob
+        from t6.worker.gateway import GatewayClient
+        from t6.worker.linked_chats import LinkedChats
+
+        values = {'project': self.project, 'chat': -100, 'topic': 12}
+        done = self.approved('link-chat', values, 'idem')
+        approval_id = done.result['approval_id']
+        with self.registry._transaction() as db:
+            decided(self.registry, db, approval_id, 'grant', self.actor, None, 123.0)
+            rows = db.execute("SELECT id, payload FROM internal_jobs WHERE kind = 'chat_link_notice'").fetchall()
+        self.assertEqual(len(rows), 1)
+        job_id, raw_payload = rows[0]
+        gateway = Gateway()
+        worker = LinkedChats(self.registry, GatewayClient(gateway, 'secret'))
+        job = WorkerJob(job_id, 'main', 'chat_link_notice', f'chat_link_notice:{approval_id}', json.loads(raw_payload), 'tok', 1)
+        self.assertTrue(worker.chat_link_notice(job))
+        self.assertTrue(worker.chat_link_notice(job))
+        self.assertEqual(len(gateway.keys), 1)
+        self.assertIn(f'chat-link-decision:{approval_id}', gateway.keys)
+
+
+class ChatLinkReminderTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.now = [1_700_000_000.0]
+        self.registry = MemoryRegistry()
+        self.addCleanup(self.registry.db.close)
+        self.registry._clock = lambda: self.now[0]
+        self.actor = 't6n_' + '1' * 32
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', 42, 0, 1)", (self.actor,))
+            db.execute("INSERT INTO person_permissions VALUES (?, 'operator')", (self.actor,))
+            db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, 1.0, 1)", ('b' * 32, self.actor))
+        self.registry._new_id = lambda: 't6p_' + '1' * 24
+        project = self.registry.register(actor=self.actor, idempotency_key='register')
+        assert isinstance(project, Registered)
+        self.project = project.project.id
+        with self.registry._transaction() as db:
+            db.execute("UPDATE projects SET code = 'ABC123', code_form = 'abc123', rotation = 'in' WHERE id = ?", (self.project,))
+            db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, 1.0, 1)", ('a' * 32, self.project))
+            db.execute("INSERT INTO linked_chat_topics VALUES (-100, 12, 'Edit')")
+        self.tokens = PreviewTokens('test')
+        self.approvals = Approvals(self.registry, self.tokens)
+        self.links = ChatLinks(self.registry, self.tokens, lambda page: 'Big Show' if page == 'a' * 32 else None)
+
+    def _runner(self, person_name: Any = None, operators: tuple[int, ...] = (900,)) -> tuple[Any, Any, Any]:
+        from test_abang import Gateway
+        from t6.worker.gateway import GatewayClient
+        from t6.worker.internal_queue import InternalJobQueue, InternalQueueClient
+        from t6.worker.linked_chats import LinkedChats
+        from t6.worker.runner import Worker
+
+        gateway = Gateway()
+        linked = LinkedChats(self.registry, GatewayClient(gateway, 'secret'), operators, person_name=person_name)
+        queue = InternalJobQueue(self.registry, clock=lambda: self.now[0])
+        worker = Worker(InternalQueueClient(queue), 'main', {'chat_link_reminder': linked.remind_chat_link})
+        return gateway, queue, worker
+
+    def test_reminder_sent_once_after_24h_and_approval_stays_requested(self) -> None:
+        from t6.chat_link import CHAT_LINK_REMINDER_SECONDS
+
+        preview = self.links.write('link-chat', {'project': self.project, 'chat': -100, 'topic': 12}, actor=self.actor, idempotency_key='ask')
+        assert isinstance(preview, Preview)
+        approval_id = preview.plan['approval_id']
+        gateway, _, worker = self._runner(person_name=lambda page: 'Jane Doe' if page == 'b' * 32 else None)
+
+        self.now[0] += CHAT_LINK_REMINDER_SECONDS - 1
+        self.assertFalse(worker.run_once())
+        self.assertEqual(gateway.calls, [])
+
+        self.now[0] += 1
+        self.assertTrue(worker.run_once())
+        self.assertFalse(worker.run_once())
+        notifies = [call for call in gateway.calls if call[1] == '/notify']
+        self.assertEqual(len(notifies), 1)
+        sent = notifies[0][2]
+        self.assertEqual(sent['to'], 900)
+        self.assertEqual(sent['buttons'], [])
+        self.assertEqual(sent['idempotency_key'], f'chat-link:reminder:{approval_id}:900')
+        self.assertEqual(
+            sent['text'],
+            f'<b>Reminder: chat link approval waiting 24h</b>\n'
+            f'Big Show [ABC123] {self.project}: chat -100, topic 12 (Edit)\n'
+            f'Requested by: Jane Doe ({self.actor})\n'
+            f'Approval: {approval_id}',
+        )
+
+        self.now[0] += CHAT_LINK_REMINDER_SECONDS * 8
+        self.assertFalse(worker.run_once())
+        self.assertEqual(len([call for call in gateway.calls if call[1] == '/notify']), 1)
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute('SELECT state FROM approvals WHERE id = ?', (approval_id,)).fetchone(), ('requested',))
+        grant = self.approvals.write('grant', {'approval': approval_id}, actor=self.actor, idempotency_key='grant-late')
+        assert isinstance(grant, Preview)
+        self.assertIsInstance(self.approvals.write('grant', {'approval': approval_id}, actor=self.actor, idempotency_key='grant-late', confirm=grant.token), Done)
+
+    def test_no_reminder_when_granted_before_24h(self) -> None:
+        from t6.chat_link import CHAT_LINK_REMINDER_SECONDS
+
+        preview = self.links.write('link-chat', {'project': self.project, 'chat': -100, 'topic': 12}, actor=self.actor, idempotency_key='ask')
+        assert isinstance(preview, Preview)
+        approval_id = preview.plan['approval_id']
+        self.now[0] += 3600
+        grant = self.approvals.write('grant', {'approval': approval_id}, actor=self.actor, idempotency_key='grant')
+        assert isinstance(grant, Preview)
+        self.assertIsInstance(self.approvals.write('grant', {'approval': approval_id}, actor=self.actor, idempotency_key='grant', confirm=grant.token), Done)
+
+        gateway, queue, worker = self._runner()
+        self.now[0] += CHAT_LINK_REMINDER_SECONDS
+        self.assertTrue(worker.run_once())
+        self.assertEqual(gateway.calls, [])
+        jobs = queue.find('chat_link_reminder')
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].state, 'done')
+
+    def test_no_reminder_when_denied_before_24h(self) -> None:
+        from t6.chat_link import CHAT_LINK_REMINDER_SECONDS
+
+        preview = self.links.write('link-chat', {'project': self.project, 'chat': -100, 'topic': 12}, actor=self.actor, idempotency_key='ask')
+        assert isinstance(preview, Preview)
+        approval_id = preview.plan['approval_id']
+        self.now[0] += 3600
+        deny = self.approvals.write('deny', {'approval': approval_id, 'reason': 'not now'}, actor=self.actor, idempotency_key='deny')
+        assert isinstance(deny, Preview)
+        self.assertIsInstance(self.approvals.write('deny', {'approval': approval_id, 'reason': 'not now'}, actor=self.actor, idempotency_key='deny', confirm=deny.token), Done)
+
+        gateway, queue, worker = self._runner()
+        self.now[0] += CHAT_LINK_REMINDER_SECONDS
+        self.assertTrue(worker.run_once())
+        self.assertEqual(gateway.calls, [])
+        jobs = queue.find('chat_link_reminder')
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].state, 'done')
+
+    def test_reused_open_approval_does_not_queue_second_reminder(self) -> None:
+        first = self.links.write('link-chat', {'project': self.project, 'chat': -100, 'topic': 12}, actor=self.actor, idempotency_key='k1')
+        second = self.links.write('link-chat', {'project': self.project, 'chat': -100, 'topic': 12}, actor=self.actor, idempotency_key='k2')
+        assert isinstance(first, Preview) and isinstance(second, Preview)
+        self.assertEqual(first.plan['approval_id'], second.plan['approval_id'])
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM internal_jobs WHERE kind = 'chat_link_reminder'").fetchone()[0], 1)
+
+    def test_reminder_falls_back_when_person_name_unavailable_and_escapes_html(self) -> None:
+        from t6.chat_link import CHAT_LINK_REMINDER_SECONDS
+
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO linked_chat_topics VALUES (-100, 15, '<Edit & Cut>')")
+        links = ChatLinks(self.registry, self.tokens, lambda page: 'Show & <Co>' if page == 'a' * 32 else None)
+        preview = links.write('link-chat', {'project': self.project, 'chat': -100, 'topic': 15}, actor=self.actor, idempotency_key='escape')
+        assert isinstance(preview, Preview)
+        approval_id = preview.plan['approval_id']
+
+        def broken(_page: str) -> str | None:
+            raise OSError('Notion down')
+
+        gateway, _, worker = self._runner(person_name=broken)
+        self.now[0] += CHAT_LINK_REMINDER_SECONDS
+        self.assertTrue(worker.run_once())
+        text = gateway.calls[0][2]['text']
+        self.assertIn(f'Show &amp; &lt;Co&gt; [ABC123] {self.project}: chat -100, topic 15 (&lt;Edit &amp; Cut&gt;)', text)
+        self.assertIn(f'Requested by: {self.actor}', text)
+        self.assertIn(f'Approval: {approval_id}', text)
+
+    def test_worker_retry_idempotency(self) -> None:
+        from t6.chat_link import CHAT_LINK_REMINDER_SECONDS
+        from t6.worker.gateway import GatewayClient, GatewayRejected
+        from t6.worker.internal_queue import InternalJobQueue, InternalQueueClient
+        from t6.worker.linked_chats import LinkedChats
+        from t6.worker.runner import Worker
+
+        class FlakyGateway:
+            def __init__(self) -> None:
+                self.keys: list[str] = []
+                self.fail_next = True
+
+            def send(self, method: str, path: str, headers: Any, body: bytes) -> tuple[int, dict[str, Any]]:
+                data = json.loads(body)
+                self.keys.append(data['idempotency_key'])
+                if self.fail_next:
+                    self.fail_next = False
+                    return 503, {'detail': 'down'}
+                return 202, {'message_ref': 1}
+
+        preview = self.links.write('link-chat', {'project': self.project, 'chat': -100, 'topic': 12}, actor=self.actor, idempotency_key='retry')
+        assert isinstance(preview, Preview)
+        approval_id = preview.plan['approval_id']
+        gateway = FlakyGateway()
+        linked = LinkedChats(self.registry, GatewayClient(gateway, 'secret'), (900,))
+        queue = InternalJobQueue(self.registry, clock=lambda: self.now[0])
+        worker = Worker(InternalQueueClient(queue), 'main', {'chat_link_reminder': linked.remind_chat_link})
+
+        self.now[0] += CHAT_LINK_REMINDER_SECONDS
+        self.assertTrue(worker.run_once())
+        self.assertEqual(queue.find('chat_link_reminder')[0].state, 'queued')
+        self.now[0] += 60
+        self.assertTrue(worker.run_once())
+        self.assertEqual(queue.find('chat_link_reminder')[0].state, 'done')
+        self.assertEqual(gateway.keys, [f'chat-link:reminder:{approval_id}:900', f'chat-link:reminder:{approval_id}:900'])
+        with self.assertRaises(GatewayRejected):
+            GatewayClient(FlakyGateway(), 'secret').notify(900, 'x', [], 'k')
+
+    def test_reminder_without_operators_fails_instead_of_dropping(self) -> None:
+        from t6.chat_link import CHAT_LINK_REMINDER_SECONDS
+
+        preview = self.links.write('link-chat', {'project': self.project, 'chat': -100, 'topic': 12}, actor=self.actor, idempotency_key='no-ops')
+        assert isinstance(preview, Preview)
+        gateway, queue, worker = self._runner(operators=())
+        self.now[0] += CHAT_LINK_REMINDER_SECONDS
+        self.assertTrue(worker.run_once())
+        self.assertEqual(gateway.calls, [])
+        job = queue.find('chat_link_reminder')[0]
+        self.assertEqual(job.attempts, 1)
+        self.assertEqual(job.state, 'queued')
+        self.assertIn('T6_OPERATOR_IDS', str(job.result))
+
 
 class ProjectLinksVerbTests(unittest.TestCase):
     def setUp(self) -> None:

@@ -212,4 +212,10 @@ tap checks apply. Grant is one tap. Denial asks the tapper to choose a reason
 from the card; `approval deny` accepts a free-text `--reason` instead. CLI
 and card decisions apply the same allowed-tapper rule. A decision through the
 CLI also closes the card. The database keeps the decision and its audit and
-Activity entries even if card delivery fails.
+Activity entries even if card delivery fails. When a `chat link` Approval is
+granted or denied, the main worker posts one decision line in the chat and
+topic being linked (#687).
+
+A `chat link` Approval that is still `requested` after 24 hours sends one
+reminder in the operator chat naming the Project, chat and topic, requester, and
+Approval ID; it never expires and no second reminder is sent (#688).

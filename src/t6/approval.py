@@ -149,8 +149,10 @@ class Approvals:
             summary = 'Approval ' + verb + (' for Version ' + target if version else '')
             db.execute('INSERT INTO activity (project_id, subject_id, at, actor, action, summary, audit_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (project[0] if project and project[0] else approval_id, approval_id, now, actor, 'approval_' + verb, summary, cursor.lastrowid))
             if verb != 'request':
+                from t6.chat_link import decided as chat_link_decided
                 from t6.project_start import decided
                 decided(self.registry, db, approval_id, verb, actor, plan['reason'], now, cursor.lastrowid)
+                chat_link_decided(self.registry, db, approval_id, verb, actor, plan['reason'], now)
             db.execute('INSERT INTO used_preview_tokens VALUES (?)', (nonce,))
             db.execute('INSERT INTO verb_requests VALUES (?, ?, ?)', (key, fingerprint, json.dumps(plan)))
             return Done(result=plan)

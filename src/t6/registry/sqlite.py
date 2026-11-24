@@ -430,6 +430,13 @@ _MIGRATIONS = (
     # One photo per movement: the file is in the photo folder, the database keeps this pointer (t6-core #669).
     (60, False, """CREATE TABLE drive_movement_photos (movement_id TEXT PRIMARY KEY REFERENCES drive_movements(id),
     path TEXT NOT NULL, media_type TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, added_by TEXT NOT NULL, at REAL NOT NULL)"""),
+    # Queue one 24-hour operator reminder for any open chat link Approval created before this release (t6-core #688).
+    (61, False, """INSERT OR IGNORE INTO internal_jobs (queue, kind, dedupe_key, payload, run_at, state, created_at)
+    SELECT 'main', 'chat_link_reminder', a.id, json_object('approval', a.id), MIN(au.at) + 86400, 'queued', MIN(au.at)
+    FROM approvals a
+    JOIN audit au ON au.project_id = a.id AND au.action = 'approval_request'
+    WHERE a.gate = 'chat link' AND a.state = 'requested'
+    GROUP BY a.id"""),
 )
 
 
