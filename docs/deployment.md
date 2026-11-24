@@ -422,16 +422,27 @@ by hand (netops #185):
 - `Projects`: hidden. Column A holds one line per open Lead and active Project,
   `Name · t6p_...`, sorted by name, from row 1 with no header. t6 rewrites the
   whole column; do not type in it.
-- `History`: written by t6 (#713).
+- `History`: written by t6 (#713). Row 1 is the header `Date`, `Project`, `What
+  changed`, `From`, `To`, `By`; one row per edit below it, newest first. t6
+  rewrites the whole tab (columns A to F); do not type in it.
 
-The `Projects` list holds the registered Projects whose Notion Status is in the
-incoming group (Leads, Negotiations, Proposal Made) or is In-Progress or Airing.
-Standby, Archiving, Archived, Lost and unregistered pages are left out. The
+The `Projects` list holds the open Leads and the active Projects. A Project with
+a CRM stage in the stage history (#709) is an open Lead unless that stage is
+Lost. Any other registered Project is listed when its Notion Status is in the
+incoming group (Leads, Negotiations, Proposal Made, Onboarding) or is In-Progress
+or Airing. Standby, Archiving, Archived, Lost and unregistered pages are left out. The
 main worker queues one `crm.sheet_sync` job after a `registry.sync` (registration)
 or after a Notion edit of a Project's title or Status. Changes within five
 minutes share one job; the job rebuilds the column from Notion, writing the new
 lines before clearing the rows below, so a failed write leaves the old list and
 is retried (see `queue failed`).
+
+The `History` tab is kept the same way by `crm.history_sync`, queued when a
+Notion edit touches Status, Lead Owner, Delegate Producer, Line Producer,
+Prod Coor/Supe or Studio. Each edit of a Lead is stored once (by Notion event and
+property) in `crm_edit_history`; Contact and Studio names are read from Notion at
+the time of the edit, and By is the Notion editor's name. A Project that is not
+in a CRM stage is ignored. From is blank for a relation t6 has not seen before.
 
 The API also reads the Sheet (`spreadsheets.readonly` scope) when
 `T6_CRM_SHEET_ID` is set. `project crm-links PROJECT` (operator) reads the `Log`
@@ -439,3 +450,41 @@ tab and returns the Project's links grouped by kind: `quote`, `billing` and
 `gmail_thread`. Log rows map to a Project only by the `t6p_` ID in the Project
 column; a row with no ID, an unknown ID or no date is reported by the reader and
 never guessed. t6 does not read Notion page bodies.
+
+### Daily CRM DM
+
+At 10:00 Manila the main worker sends each Lead Owner one Telegram DM through
+the gateway with their cold Leads (stage, days since last contact, open
+Concerns, a missing client role or Studio). It is on when `T6_CRM_SHEET_ID`,
+`T6_CRM_DEFAULT_OWNER_PERSON_ID` (an active Person with a Telegram ID; it gets
+Leads with a blank Lead Owner), `T6_GATEWAY_URL`, `T6_GATEWAY_SECRET`,
+`T6_NOTION_TOKEN` and `T6_NOTION_PROJECTS_DATA_SOURCE` are all set, and off
+otherwise. Leads are cold after 28 days (Leads), 7 (Negotiations), 3 (Proposal
+Made) and 2 (Onboarding) without contact. A `Log` row dated later, or a stage
+change, restarts the count; a Lead with neither counts from when it was
+registered. A Lead Owner who is not a Person with a Telegram ID is treated as
+blank. Nobody with nothing due gets a message. The Sheet is read at send time,
+so a failed read fails the job and is retried (see `queue failed`).
+
+A `Log` row of Kind `quote` or `billing` with a Remind on date is a reminder from
+that date (Manila) until Done is ticked, whatever the Project's stage, and joins
+the same DM under "Reminders". Quotes go to the Post Producers
+(`T6_CRM_POST_PRODUCER_TELEGRAM_IDS`); billing goes to them, the Accountants
+(`T6_CRM_ACCOUNTANT_TELEGRAM_IDS`) and the Finance Heads
+(`T6_CRM_FINANCE_HEAD_TELEGRAM_IDS`). Each is a comma list of Telegram user IDs,
+not Persons; a holder who is also an active Person gets one DM with everything.
+An unset role gets no reminders, and a non-numeric ID stops the worker at
+startup.
+
+### Snooze
+
+`crm snooze --until DATE` pauses the caller's own CRM DMs through that date
+(Manila, inclusive; required, at most 30 days from today); `crm unsnooze` ends
+it early. Both are open to any active staff Person and audited. While someone
+is snoozed, their items in the DM (cold Leads and due reminders) go to the Post Producers
+(`T6_CRM_POST_PRODUCER_TELEGRAM_IDS`; one who is a Person can be snoozed too) who are not snoozed, each
+with a "Covering for NAME" line, else to the default owner. The default owner's
+own items go to the Post Producers, and stay with the default owner when none
+is available; a snooze never drops an item. A snoozed Post Producer's own Leads
+go to the other Post Producers, else the default owner. The person's items
+return on the day after the end date, with no job needed.

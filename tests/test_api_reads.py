@@ -24,7 +24,7 @@ class ReadTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.notion = FakeNotion()
-        for source in ('projects', 'job_orders', 'deliverables', 'meeting_notes', 'contacts', 'cameras'):
+        for source in ('projects', 'job_orders', 'deliverables', 'meeting_notes', 'contacts', 'cameras', 'studios'):
             self.notion.add_snapshot_data_source(source, source)
         self.notion.add_page('projects', {'Name': title('Client Corp campaign')})
         self.person = self.notion.add_page('contacts', {'Name': title('Ana Cruz')})
@@ -44,7 +44,7 @@ class ReadTests(unittest.TestCase):
         self.api = VerbAPI(People(registry, PreviewTokens('key'), {'watchdog': frozenset({'unmasked'})}), JobQueue(self.tmp.name + '/queue'),
                            {'secret': 'reports', 'operator': operator, 'mcp-secret': 'mcp', 'unmasked-secret': 'watchdog'}, lambda _: self.notion.client(),
                            privacy_registry=Registry(people=[Person(name='Client Corp')]),
-                           data_sources={name: name for name in ('projects', 'job_orders', 'deliverables', 'meeting_notes', 'contacts', 'cameras')})
+                           data_sources={name: name for name in ('projects', 'job_orders', 'deliverables', 'meeting_notes', 'contacts', 'cameras', 'studios')})
         env = patch.dict(os.environ, {'T6_NOTION_TOKEN': 'fake'})
         env.start()
         self.addCleanup(env.stop)
@@ -561,7 +561,7 @@ class ReadTests(unittest.TestCase):
     def test_lead_list_returns_open_leads_with_roles_and_days_in_stage(self) -> None:
         from t6.verbs import LeadListInput
         owner, producer = self.person['id'], self.notion.add_page('contacts', {'Name': title('Bea Lim')})['id']
-        studio = self.notion.add_page('contacts', {'Name': title('Studio')})['id']
+        studio = self.notion.add_page('studios', {'Name': title('Example Studio')})['id']
         lead = self.project_with('Lead Show', '🌱 Leads', lead_owner=relation(owner), delegate_producer=relation(producer), line_producer=relation(owner),
                                  prod_coor_supe=relation(producer), studio=relation(studio))
         moved = self.project_with('Moved Show', 'Negotiations')
@@ -582,6 +582,9 @@ class ReadTests(unittest.TestCase):
         shown = leads['Lead Show']
         self.assertEqual((shown['lead_owner_ids'], shown['delegate_producer_ids'], shown['line_producer_ids'], shown['prod_coor_supe_ids'], shown['studio_id']),
                          ([owner], [producer], [owner], [producer], studio))
+        self.assertEqual((shown['lead_owners'], shown['delegate_producers'], shown['line_producers'], shown['prod_coor_supes'], shown['studio']),
+                         (['Ana Cruz'], ['Bea Lim'], ['Ana Cruz'], ['Bea Lim'], 'Example Studio'))
+        self.assertEqual((leads['Moved Show']['lead_owners'], leads['Moved Show']['studio']), ([], None))
 
     def test_project_missing_roles_are_listed_only_for_in_progress_tvc_and_airing(self) -> None:
         from t6.verbs import ProjectListInput

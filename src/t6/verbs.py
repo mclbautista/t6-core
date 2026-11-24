@@ -18,7 +18,7 @@ from contextvars import ContextVar
 import json
 import os
 from dataclasses import asdict, dataclass
-from datetime import date as IsoDate, datetime, timezone
+from datetime import date as IsoDate, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, get_args, get_origin
 from types import UnionType
@@ -355,6 +355,61 @@ def project_links(inputs: ProjectLinksInput, open_notion: Callable[..., Any]) ->
 
     people = _people()
     return ChatLinks(people.registry, people.tokens, _project_name_reader(open_notion)).links(inputs.project)
+
+
+class CrmSnoozeInput(BaseModel):
+    until: str | None = None
+
+
+class CrmSnoozeOutput(BaseModel):
+    person_id: str
+    until: str
+    returns_on: str
+    message: str
+
+
+class CrmUnsnoozeInput(BaseModel):
+    pass
+
+
+class CrmUnsnoozeOutput(BaseModel):
+    person_id: str
+    was_snoozed: bool
+    message: str
+
+
+def _snoozer() -> tuple[Any, str] | Refused:
+    from t6.crm.snooze import Snoozes
+    actor = _actor.get()
+    person = _people().get(actor)
+    if person is None or not person['active'] or person['kind'] != 'staff':
+        return Refused(rule='person', reason='Only an active staff Person can snooze their own CRM reminders.')
+    return Snoozes(_people().registry), actor
+
+
+def crm_snooze(inputs: CrmSnoozeInput, open_notion: Callable[..., Any]) -> Outcome:
+    """Pause the actor's own CRM DMs through `until` (at most 30 days); their items go to the Post Producer, then the default owner."""
+    found = _snoozer()
+    if isinstance(found, Refused):
+        return found
+    snoozes, actor = found
+    try:
+        end = snoozes.snooze(actor, inputs.until)
+    except ValueError as error:
+        return Refused(rule='until', reason=str(error))
+    returns = (end + timedelta(days=1)).isoformat()
+    return Done(result=CrmSnoozeOutput(person_id=actor, until=end.isoformat(), returns_on=returns,
+                                       message=f'Snoozed through {end.isoformat()}. Your CRM reminders return on {returns}.').model_dump())
+
+
+def crm_unsnooze(inputs: CrmUnsnoozeInput, open_notion: Callable[..., Any]) -> Outcome:
+    """End the actor's CRM snooze early."""
+    found = _snoozer()
+    if isinstance(found, Refused):
+        return found
+    snoozes, actor = found
+    was = snoozes.unsnooze(actor)
+    return Done(result=CrmUnsnoozeOutput(person_id=actor, was_snoozed=was, message='Your CRM reminders are back on.' if was else 'You had no snooze. Your CRM reminders are on.').model_dump())
 
 
 class ProjectCrmLinksInput(BaseModel):
@@ -1370,6 +1425,11 @@ class LeadRead(BaseModel):
     delegate_producer_ids: list[str]
     line_producer_ids: list[str]
     prod_coor_supe_ids: list[str]
+    lead_owners: list[str] = []
+    studio: str | None = None
+    delegate_producers: list[str] = []
+    line_producers: list[str] = []
+    prod_coor_supes: list[str] = []
     days_in_stage: int | None
 
 
@@ -3521,6 +3581,8 @@ VERBS = (
     Verb("person", "unassign", "Remove a Project role", (), PersonProjectRoleInput, PersonWriteOutput, "coordinator", "Remove a Person from a Project role.", person_unassign),
     Verb("person", "get", "Get a Person", (), PersonGetInput, PersonGetOutput, "reader", "Read a Person.", person_get, read_only=True),
     Verb("lead", "list", "List the open Leads with CRM stage and client roles", (), LeadListInput, LeadListOutput, "reader", "Read the Projects in a CRM stage other than Lost.", api_read, read_only=True),
+    Verb("crm", "snooze", "Snooze your CRM reminders until a date", (), CrmSnoozeInput, CrmSnoozeOutput, "reader", "Your own CRM DMs pause through the end date (at most 30 days); your Leads and reminders go to the Post Producer, then the default owner.", crm_snooze),
+    Verb("crm", "unsnooze", "End your CRM snooze early", (), CrmUnsnoozeInput, CrmUnsnoozeOutput, "reader", "Your CRM DMs resume at the next 10:00 Manila.", crm_unsnooze),
     Verb("project", "links", "Read a Project's links card", (), ProjectLinksInput, ProjectLinksOutput, "operator", "Read a Project's links card.", project_links, read_only=True),
     Verb("project", "crm-links", "Read a Project's CRM links by kind", (), ProjectCrmLinksInput, ProjectCrmLinksOutput, "operator", "Read the CRM Sheet Log; links grouped by kind.", project_crm_links, read_only=True),
     Verb("project", "link-chat", "Link a Telegram chat to a Project", (), ProjectChatInput, ProjectChatOutput, "coordinator", "Approval is required.", project_link_chat),

@@ -951,12 +951,69 @@ def main(
                                            environ['T6_DRIVE_CUSTODIAN_PERSON_ID'])
                 reminder.schedule()
                 queue_handlers = {**queue_handlers, 'drive.reminder': reminder.handle}
+            if environ.get('T6_CRM_SHEET_ID') and environ.get('T6_CRM_DEFAULT_OWNER_PERSON_ID') and environ.get('T6_NOTION_TOKEN') \
+                    and environ.get('T6_NOTION_PROJECTS_DATA_SOURCE'):
+                from t6.crm.config import crm_roles, crm_source
+                from t6.crm.reminder import KIND as CRM_REMINDER, CrmReminder, read_leads
+                from t6.notion import NotionClient, NotionError, NotionSource
+                from t6.notion.generated import ProjectsRow
+                from t6.notion.reads import ProjectReader
+                from t6.person import People
+                from t6.preview import PreviewTokens
+                from t6.worker.internal_queue import InternalJobQueue
+
+                try:
+                    crm_sheet = crm_source(environ)
+                    crm_role_holders = crm_roles(environ)
+                except (OSError, ValueError) as error:
+                    print(f"t6.worker: {error}", file=sys.stderr)
+                    return 2
+                crm_registry = SqliteProjectRegistry(environ['T6_DATABASE'])
+                crm_people = People(crm_registry, PreviewTokens('crm-reminder'))
+                owner = crm_people.get(environ['T6_CRM_DEFAULT_OWNER_PERSON_ID']) if crm_sheet is not None else None
+                if crm_sheet is not None and (owner is None or not owner['active'] or not owner['telegram_id'] or int(owner['telegram_id']) <= 0):
+                    print('t6.worker: T6_CRM_DEFAULT_OWNER_PERSON_ID must name an active Person with a Telegram ID', file=sys.stderr)
+                    return 2
+                crm_notion = NotionSource(lambda: NotionClient(environ['T6_NOTION_TOKEN']))
+                crm_projects = ProjectReader(crm_notion, environ['T6_NOTION_PROJECTS_DATA_SOURCE'])
+                crm_contact_name = linked_chat_person_name(environ)
+
+                def crm_name(person_id: str) -> str | None:
+                    person = crm_people.get(person_id)
+                    page = next((b['page_id'] for b in person['bindings'] if b['active']), None) if person else None
+                    if page is None or crm_contact_name is None:
+                        return None
+                    try:
+                        return crm_contact_name(page)
+                    except NotionError:
+                        return None
+
+                def crm_project_name(project_id: str) -> str | None:
+                    project = crm_registry.get(project_id)
+                    try:
+                        return ProjectsRow.from_page(crm_notion.retrieve_page(project.notion_page)).name or None if project and project.notion_page else None
+                    except NotionError:
+                        return None
+
+                if crm_sheet is not None:
+                    crm_reminder = CrmReminder(crm_people, InternalJobQueue(crm_registry),
+                                               GatewayClient(HttpTransport(environ['T6_GATEWAY_URL']), environ['T6_GATEWAY_SECRET']),
+                                               crm_sheet, environ['T6_CRM_DEFAULT_OWNER_PERSON_ID'],
+                                               lambda: read_leads(crm_registry, crm_projects.list()), crm_name,
+                                               roles=crm_role_holders, project_name=crm_project_name)
+                    crm_reminder.schedule()
+                    queue_handlers = {**queue_handlers, CRM_REMINDER: crm_reminder.handle}
             def linked_tick() -> None:
                 try:
                     linked.tick()
                 except (OSError, URLError, GatewayRejected):
                     pass  # Retry on the next worker poll.
             tick = linked_tick
+        if settings.queue == "main":
+            from t6.crm.config import missing_key_warning
+
+            if (warning := missing_key_warning(environ)) is not None:
+                print(f"t6.worker: {warning}", file=sys.stderr)
         if settings.queue == "main" and environ.get("T6_CRM_SHEET_ID") and environ.get("T6_NOTION_TOKEN"):
             from t6.crm.sheet_sync import install as install_crm_sheet
             from t6.notion import NotionClient, NotionError, NotionSource

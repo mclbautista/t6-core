@@ -67,6 +67,12 @@ class People:
             permissions = [r[0] for r in db.execute("SELECT permission FROM person_permissions WHERE person_id = ? ORDER BY permission", (person_id,))]
         return dict(project_roles=project_roles, shift=dict(pattern=shift[0], start=shift[1], end=shift[2]) if shift else None, permissions=permissions, id=row[0], kind=row[1], departments=json.loads(row[2]), roles=json.loads(row[3]), telegram_id=row[4], master_brief=bool(row[5]), active=bool(row[6]), bindings=[dict(page_id=b[0], active=bool(b[1])) for b in bindings])
 
+    def by_telegram(self, telegram_id: int) -> str | None:
+        """The ID of the active Person holding this Telegram ID."""
+        with self.registry._transaction() as db:
+            row = db.execute('SELECT id FROM persons WHERE telegram_id = ? AND active = 1', (telegram_id,)).fetchone()
+        return str(row[0]) if row else None
+
     def authorize(self, actor: str, role: str) -> Refused | None:
         with self.registry._transaction() as db:
             return self._authorize(db, actor, role)
