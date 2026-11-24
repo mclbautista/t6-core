@@ -387,7 +387,6 @@
             "ambiguous_year",
             "weekday_mismatch",
             "ambiguous_span",
-            "span_not_read",
             "undated_entry",
             "unread_region"
           ],

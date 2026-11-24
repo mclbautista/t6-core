@@ -20,7 +20,7 @@ from t6.schedule.contract import (
     YearEvidence,
 )
 from t6.schedule.coverage import group_status, read_coverage, unread_days, with_source_uncertainty
-from t6.schedule.dates import DayCell, aligns, block_years, fitting_start_years, make_date, span_dates, weekday_name
+from t6.schedule.dates import DayCell, aligns, best_start_years, block_years, make_date, span_dates, weekday_name
 from t6.schedule.grid import Grid, a1, merge_range
 from t6.schedule.layout import DAY_COLUMNS, LEFT_COLUMNS, MonthBlock, day_pairs, find_month_blocks
 from t6.schedule.revision import source_ids, source_revision
@@ -38,7 +38,7 @@ def extract_schedule(request: ScheduleRequest) -> ScheduleSnapshot | Unsupported
     coverage = read_coverage(request, grid)
     if request.merges is None:
         # Month headers are recognised by their merges, so none can be told apart: nothing is read, nothing is unsupported.
-        return ScheduleSnapshot(source_scope=scope, source_revision=request.source_revision, coverage=coverage, groups=[])
+        return ScheduleSnapshot(source_scope=scope, source_revision=source_revision(request), coverage=coverage, groups=[])
     blocks = find_month_blocks(grid)
     if not blocks:
         return _unsupported(
@@ -48,7 +48,7 @@ def extract_schedule(request: ScheduleRequest) -> ScheduleSnapshot | Unsupported
             "above a SUNDAY to SATURDAY header row.",
         )
 
-    years, year_exceptions, method = _resolve_years(request.year, blocks, grid)
+    years, year_exceptions, method = _resolve_years(request, blocks)
     groups: list[Group] = []
     candidates: list[Candidate] = []
     non_tasks: list[NonTask] = []
@@ -107,43 +107,56 @@ def _day_cells(block: MonthBlock) -> list[DayCell]:
     return [DayCell(block.month, day, col) for band in block.bands for col, day in band.days.items()]
 
 
+def _mismatch(block: MonthBlock, year: int | None = None) -> list[GroupException]:
+    where = f" in {year}" if year is not None else " in the years around the reference date"
+    return [
+        GroupException(
+            code="weekday_mismatch",
+            detail=f"day numbers do not fall on their weekdays{where}",
+            anchor=block.header_range,
+        )
+    ]
+
+
 def _resolve_years(
-    supplied: int | None, blocks: list[MonthBlock], grid: Grid
+    request: ScheduleRequest, blocks: list[MonthBlock]
 ) -> tuple[dict[int, int], dict[int, list[GroupException]], Method]:
-    """Year per readable block, or the hold that stops it. Returns (years, holds, method)."""
+    """Year per readable block, or the hold that stops it. Returns (years, holds, method).
+
+    A supplied year is the first block's. Otherwise the start year that aligns the most blocks, within a year
+    of the reference date, must be unique; a block that does not align with it is held alone.
+    """
     months = [b.month for b in blocks]
     readable = [b for b in blocks if b.problem is None]
-    if supplied is not None:
-        method: Method = "supplied"
-        by_block = dict(enumerate(block_years(supplied, months)))
-        years = {}
-        holds: dict[int, list[GroupException]] = {}
-        for block in readable:
-            if aligns(by_block[block.index], _day_cells(block)):
-                years[block.index] = by_block[block.index]
-            else:
-                holds[block.index] = [
-                    GroupException(
-                        code="weekday_mismatch",
-                        detail=f"day numbers do not fall on their weekdays in {by_block[block.index]}",
-                        anchor=block.header_range,
-                    )
-                ]
-        return years, holds, method
-
-    inferred: Method = "inferred_weekday_alignment"
-    cells = [_day_cells(b) if b.problem is None else [] for b in blocks]
-    fits = fitting_start_years(months, cells)
-    if len(fits) == 1:
-        return dict(enumerate(block_years(fits[0], months))), {}, inferred
-    if fits:
-        hold = GroupException(
-            code="ambiguous_year",
-            detail=f"more than one year fits the weekday alignment, starting {', '.join(map(str, fits))}",
-        )
+    method: Method = "supplied" if request.year is not None else "inferred_weekday_alignment"
+    if request.year is not None:
+        start = request.year
+    elif request.reference_date is None:
+        hold = GroupException(code="ambiguous_year", detail="no year and no reference date to infer the year from")
+        return {}, {b.index: [hold] for b in readable}, method
     else:
-        hold = GroupException(code="weekday_mismatch", detail="no year in the inference window fits the weekday alignment")
-    return {}, {b.index: [hold] for b in readable}, inferred
+        fits = best_start_years(
+            months, [_day_cells(b) if b.problem is None else None for b in blocks], request.reference_date.year
+        )
+        if len(fits) > 1:
+            hold = GroupException(
+                code="ambiguous_year",
+                detail=f"more than one year fits the weekday alignment equally well, starting {', '.join(map(str, fits))}",
+            )
+            return {}, {b.index: [hold] for b in readable}, method
+        if not fits:
+            return {}, {b.index: _mismatch(b) for b in readable}, method
+        start = fits[0]
+    by_block = block_years(start, months)
+    years: dict[int, int] = {}
+    holds: dict[int, list[GroupException]] = {}
+    for block in readable:
+        year = by_block[block.index]
+        if aligns(year, _day_cells(block)):
+            years[block.index] = year
+        else:
+            holds[block.index] = _mismatch(block, year)
+    return years, holds, method
 
 
 def _blank_and_invalid_days(grid: Grid, block: MonthBlock, year: int | None) -> list[DayState]:
@@ -216,6 +229,8 @@ def _read_entries(
                     read.exceptions.append(
                         GroupException(code="undated_entry", detail="entry sits under a blank day", anchor=anchor)
                     )
+                    covered = range(col // 2, min(last_col // 2, DAY_COLUMNS // 2 - 1) + 1)
+                    read.unread.update(a1(band.number_row, pair * 2) for pair in covered)
                     continue
                 if is_availability(text):
                     read.non_tasks.append(NonTask(kind="availability", text=text, group_key=key, anchor=anchor))

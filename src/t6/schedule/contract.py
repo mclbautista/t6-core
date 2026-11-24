@@ -33,7 +33,6 @@ ExceptionCode = Literal[
     "ambiguous_year",
     "weekday_mismatch",
     "ambiguous_span",
-    "span_not_read",
     "undated_entry",
     "unread_region",
 ]
@@ -98,6 +97,8 @@ class ScheduleRequest(_Model):
     rows_total: int | None = Field(default=None, ge=0)
     columns_total: int | None = Field(default=None, ge=0)
     year: int | None = Field(default=None, ge=1900, le=2200)
+    # Without `year`, the year is inferred from the years around this date (its year and one either side).
+    reference_date: date | None = None
 
 
 class Coverage(_Model):

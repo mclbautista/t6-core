@@ -11,6 +11,7 @@ import json
 import re
 import time
 from collections.abc import Mapping
+from datetime import date
 from typing import Any
 from urllib.parse import quote, urlencode
 
@@ -96,7 +97,9 @@ class SheetTabReader:
             raise SheetReadError(f'Google Sheets read failed ({status})')
         return body
 
-    def read(self, spreadsheet_id: str, tab_title: str, year: int | None = None) -> ScheduleRequest:
+    def read(
+        self, spreadsheet_id: str, tab_title: str, year: int | None = None, reference_date: date | None = None
+    ) -> ScheduleRequest:
         base = API + quote(spreadsheet_id, safe='')
         listing = self._get(base + '?fields=' + quote('sheets.properties(sheetId,title,gridProperties(rowCount,columnCount))', safe='(),.'))
         found = [s.get('properties') or {} for s in listing.get('sheets') or [] if (s.get('properties') or {}).get('title') == tab_title]
@@ -124,7 +127,8 @@ class SheetTabReader:
         cells += [[None] * width for _ in range(read_rows - len(cells))]
         return ScheduleRequest(
             source_scope=SourceScope(document_id=spreadsheet_id, tab_id=str(sheet_id), tab_title=tab_title),
-            cells=cells, merges=merges, fills=fills, rows_total=rows, columns_total=columns, year=year)
+            cells=cells, merges=merges, fills=fills, rows_total=rows, columns_total=columns, year=year,
+            reference_date=reference_date)
 
     def _geometry(self, base: str, title: str, sheet_id: int) -> tuple[list[Merge] | None, list[CellFill]]:
         """The tab's merges and fills. A failed read gives no merge list (null), which the extractor reports as incomplete."""

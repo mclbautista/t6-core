@@ -98,5 +98,6 @@ def standing(snapshot: ScheduleSnapshot, group_key: str, day: str | None = None)
         state = next((d for d in group.days if d.date == day), None)
         if state is None:
             return "not_in_snapshot"
-        return "read" if state.state == "read" and snapshot.coverage.status == "complete" else "incomplete"
+        complete = group.status == "complete" and snapshot.coverage.status == "complete"
+        return "read" if state.state == "read" and complete else "incomplete"
     return "read" if group.status == "complete" and snapshot.coverage.status == "complete" else "incomplete"

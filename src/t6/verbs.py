@@ -1288,7 +1288,7 @@ class ScheduleSnapshotOutput(RootModel[ScheduleResult]):
 def schedule_snapshot(inputs: ScheduleSnapshotInput, open_notion: Callable[..., Any]) -> Outcome:
     """Read one tab of a Client Sheet, read only, and return its ScheduleSnapshot/v1. The Google credential stays on the API host."""
     from t6.schedule_read import read_snapshot
-    return read_snapshot(inputs.spreadsheet_id, inputs.tab_title, inputs.year)
+    return read_snapshot(inputs.spreadsheet_id, inputs.tab_title, inputs.year, IsoDate.today())
 
 
 class StandingCcInput(ReadInput):

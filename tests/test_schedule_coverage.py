@@ -271,5 +271,17 @@ class DayStateTests(unittest.TestCase):
         self.assertEqual(unread, ["2026-11-29", "2026-11-30"])
 
 
+class StandingBackstopTests(unittest.TestCase):
+    def test_a_day_is_not_read_in_a_group_that_is_not_complete(self) -> None:
+        snap = snapshot_of(three_months())
+        group = snap.groups[0]
+        day = next(d.date for d in group.days if d.state == "read")
+        assert day is not None
+        self.assertEqual(standing(snap, group.group_key, day), "read")
+        incomplete = group.model_copy(update={"status": "incomplete"})
+        patched = snap.model_copy(update={"groups": [incomplete, *snap.groups[1:]]})
+        self.assertEqual(standing(patched, group.group_key, day), "incomplete")
+
+
 if __name__ == "__main__":
     unittest.main()

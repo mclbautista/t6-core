@@ -5,6 +5,7 @@ import unittest
 from t6.schedule import ScheduleSnapshot, UnsupportedLayout, extract_schedule
 from t6.schedule.contract import ScheduleRequest, round_trip
 from schedule_fixtures import TabBuilder
+from t6.schedule.coverage import standing
 
 
 def snapshot_of(request: ScheduleRequest) -> ScheduleSnapshot:
@@ -85,19 +86,43 @@ class YearTests(unittest.TestCase):
         tab = TabBuilder()
         tab.add_month(2028, 1, {5: ["Grade review"]})
         tab.add_month(2028, 3, {6: ["Mix"]})
-        snap = snapshot_of(tab.request())
+        snap = snapshot_of(tab.request(reference_date="2028-02-10"))
         self.assertEqual([c.start for c in snap.candidates], ["2028-01-05", "2028-03-06"])
         self.assertEqual(snap.candidates[0].provenance.year_evidence.method, "inferred_weekday_alignment")
 
-    def test_ambiguous_year_holds_every_group_without_candidates(self) -> None:
+    def test_a_tied_year_holds_every_group_without_candidates(self) -> None:
+        tab = TabBuilder()
+        tab.add_month(2026, 1, {5: ["Grade review"]})  # fits a start of 2026 only
+        tab.add_month(2025, 3, {6: ["Mix"]})  # fits a start of 2025 only
+        snap = snapshot_of(tab.request(reference_date="2026-02-01"))
+        self.assertEqual(snap.candidates, [])
+        self.assertEqual([g.status for g in snap.groups], ["held", "held"])
+        for group in snap.groups:
+            self.assertEqual([e.code for e in group.exceptions], ["ambiguous_year"])
+            self.assertIsNone(group.year)
+
+    def test_one_mistyped_block_does_not_hold_the_others(self) -> None:
+        tab = TabBuilder()
+        tab.add_month(2026, 1, {5: ["Grade review"]})
+        tab.add_month(2027, 3, {6: ["Typo block"]})  # weekdays of another year
+        tab.add_month(2026, 5, {7: ["Mix"]})
+        snap = snapshot_of(tab.request(reference_date="2026-02-01"))
+        self.assertEqual([g.status for g in snap.groups], ["complete", "held", "complete"])
+        self.assertEqual([e.code for e in snap.groups[1].exceptions], ["weekday_mismatch"])
+        self.assertEqual([c.title for c in snap.candidates], ["Grade review", "Mix"])
+
+    def test_inference_looks_one_year_either_side_of_the_reference_year_only(self) -> None:
         tab = TabBuilder()
         tab.add_month(2026, 11, {3: ["Grade review"]})
-        snap = snapshot_of(tab.request())
-        self.assertEqual(snap.candidates, [])
-        [group] = snap.groups
-        self.assertEqual(group.status, "held")
-        self.assertEqual([e.code for e in group.exceptions], ["ambiguous_year"])
-        self.assertIsNone(group.year)
+        self.assertEqual(snapshot_of(tab.request(reference_date="2027-06-01")).groups[0].year, 2026)
+        far = snapshot_of(tab.request(reference_date="2029-06-01")).groups[0]
+        self.assertEqual((far.status, [e.code for e in far.exceptions]), ("held", ["weekday_mismatch"]))
+
+    def test_without_a_year_or_reference_date_nothing_is_guessed(self) -> None:
+        tab = TabBuilder()
+        tab.add_month(2026, 11, {3: ["Grade review"]})
+        [group] = snapshot_of(tab.request()).groups
+        self.assertEqual((group.status, [e.code for e in group.exceptions]), ("held", ["ambiguous_year"]))
 
     def test_supplied_year_that_breaks_weekday_alignment_holds_the_group(self) -> None:
         tab = TabBuilder()
@@ -253,11 +278,23 @@ class SpanTests(unittest.TestCase):
         self.assertEqual([c.title for c in snap.candidates], ["Grade review"])
         self.assertEqual(snap.groups[0].exceptions[0].code, "undated_entry")
 
+    def test_undated_multi_day_span_leaves_the_days_it_covers_unread(self) -> None:
+        tab = TabBuilder()
+        tab.add_month(2026, 12, {})  # Sunday and Monday are blank, Tuesday is the 1st
+        number_row = next(r for (r, c), v in tab.cells.items() if v == 1.0 and c == 4)
+        tab.cells[(number_row + 1, 0)] = "Orphan span"
+        tab.merges.append({"start_row": number_row + 1, "end_row": number_row + 2, "start_col": 0, "end_col": 6})
+        snap = snapshot_of(tab.request(year=2026))
+        [group] = snap.groups
+        self.assertEqual([e.code for e in group.exceptions], ["undated_entry"])
+        self.assertNotEqual(standing(snap, group.group_key, "2026-12-01"), "read")
+        self.assertEqual(next(d.state for d in group.days if d.date == "2026-12-01"), "unread")
+
     def test_each_hold_has_its_own_code(self) -> None:
         header = TabBuilder()
         header.add_month(2026, 11, {3: ["A"]}, weekday_header=False)
         year = TabBuilder()
-        year.add_month(2026, 11, {3: ["A"]})
+        year.add_month(2026, 11, {3: ["A"]})  # no year and no reference date
         weekday = TabBuilder()
         weekday.add_month(2026, 11, {3: ["A"]})
         span = TabBuilder()

@@ -8,6 +8,7 @@ import tempfile
 import threading
 import unittest
 from collections.abc import Mapping
+from datetime import date
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -15,6 +16,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+from pydantic import ValidationError
 
 from t6.client import Client
 from t6.person import People
@@ -175,7 +177,15 @@ class ScheduleSnapshotTests(unittest.TestCase):
         self.assertEqual([c.provenance.fill for c in result.candidates if c.provenance.anchor == 'E11'], ['#112233'])
 
     def test_without_a_year_the_extractor_decides_as_it_would_for_the_same_tab(self) -> None:
-        self.assertEqual(self.snapshot(year=None), self.expected(year=None))
+        self.assertEqual(self.snapshot(year=None), self.expected(year=None, reference_date=date.today()))
+
+    def test_a_request_the_models_reject_is_not_reported_as_a_google_failure(self) -> None:
+        from t6.google.sheet_tab import SheetTabReader
+        from t6.schedule.contract import Merge
+        from t6.schedule_read import read_snapshot
+        with self.assertRaises(ValidationError):
+            with patch.object(SheetTabReader, 'read', lambda *a, **k: Merge(start_row=1, end_row=1, start_col=0, end_col=1)):
+                read_snapshot('synthetic-book', TAB, None, date(2026, 11, 24))
 
     def test_blank_rows_and_columns_that_google_trims_are_still_a_complete_read(self) -> None:
         self.sheets.rows, self.sheets.columns = 40, 18

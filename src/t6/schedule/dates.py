@@ -11,8 +11,8 @@ from t6.schedule.contract import CellValue
 MONTHS = {name.upper(): number for number, name in enumerate(calendar.month_name) if name}
 WEEKDAYS = ("SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY")
 
-# Years tried when the caller supplies none. A sheet outside this window needs a supplied year.
-INFERENCE_WINDOW = range(2020, 2036)
+# Start years tried when the caller supplies none: the reference year and the one on either side.
+INFERENCE_SPAN = 1
 
 
 def day_number(value: CellValue) -> int | None:
@@ -71,14 +71,19 @@ def block_years(start_year: int, months: list[int]) -> list[int]:
     return years
 
 
-def fitting_start_years(months: list[int], cells_by_block: list[list[DayCell]]) -> list[int]:
-    """Start years in the window where every block's day numbers match their weekdays."""
-    fits = []
-    for start in INFERENCE_WINDOW:
+def best_start_years(months: list[int], cells_by_block: list[list[DayCell] | None], reference_year: int) -> list[int]:
+    """The start years near `reference_year` that align the most blocks (None cells: a block not counted).
+
+    Empty when no start aligns any block; more than one when the best is tied.
+    """
+    scores: dict[int, int] = {}
+    for start in range(reference_year - INFERENCE_SPAN, reference_year + INFERENCE_SPAN + 1):
         years = block_years(start, months)
-        if all(aligns(y, cells) for y, cells in zip(years, cells_by_block, strict=True)):
-            fits.append(start)
-    return fits
+        scores[start] = sum(
+            1 for y, cells in zip(years, cells_by_block, strict=True) if cells is not None and aligns(y, cells)
+        )
+    best = max(scores.values())
+    return [start for start, score in scores.items() if best and score == best]
 
 
 @dataclass(frozen=True, slots=True)

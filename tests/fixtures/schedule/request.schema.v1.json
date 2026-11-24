@@ -240,6 +240,19 @@
       ],
       "default": null,
       "title": "Year"
+    },
+    "reference_date": {
+      "anyOf": [
+        {
+          "format": "date",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reference Date"
     }
   },
   "required": [

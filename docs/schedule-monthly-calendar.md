@@ -53,10 +53,13 @@ LLM call, writes nothing and uses no dataframe. The API verb `schedule snapshot`
 - "NA:" cells are listed in `non_tasks` as `availability` and are never candidates. A cell that is only "BREAK" (optional colon) is a `break` non-task. Column O text below "NOTES" is a `note` non-task per month block (#720).
 - A tentative marker ("(TBC)", "[Tentative]" anywhere, "Tentative:" at the start, any case) is kept as written in `tentative`; the title keeps its text. Any other text, including instruction-like text, is only text: a title, or a note.
 - **Year.** The caller may pass `year`, the year of the first month block; the year rolls over when a later month number is
-  lower. Without it, the extractor tries years 2020 to 2035 and uses one only when exactly one year puts every day number on
-  its column's weekday. With a supplied year, a block whose weekdays do not fit is held (`weekday_mismatch`).
-- **Holds.** More than one fitting year holds every readable group (`ambiguous_year`); no fitting year holds them with
-  `weekday_mismatch`. A block with a bad weekday header or an unusable day number is held (`invalid_header`,
+  lower. Without it, the extractor uses the optional `reference_date` (ISO date; the API passes today's) and tries only the
+  year before, the year of, and the year after it as the first block's year. It takes the start year that puts the most
+  blocks' day numbers on their column's weekdays, and only when that year is unique. A block that does not fit it is held
+  alone (`weekday_mismatch`), so one mistyped block does not hold the rest. With a supplied year, a block whose weekdays do
+  not fit is held the same way. With neither `year` nor `reference_date`, nothing is guessed (`ambiguous_year`).
+- **Holds.** A tie between start years holds every readable group (`ambiguous_year`); no start year that fits any block
+  holds them with `weekday_mismatch`. A block with a bad weekday header or an unusable day number is held (`invalid_header`,
   `invalid_day_number`) and the other groups still read. A held group carries no candidates.
 - **Span holds.** A merge whose ends are not on day boundaries or that leaves A:N, whose end day has no day number, or
   whose day numbers do not run one day at a time, holds its group (`ambiguous_span`, with the title, merge range and
