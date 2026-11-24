@@ -445,6 +445,8 @@ _MIGRATIONS = (
     (63, False, """CREATE TABLE crm_edit_history (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL REFERENCES projects(id),
     at REAL NOT NULL, property TEXT NOT NULL, from_value TEXT NOT NULL, to_value TEXT NOT NULL, actor TEXT NOT NULL, event TEXT NOT NULL,
     UNIQUE (event, property))"""),
+    # A person's CRM snooze: the last snoozed day (Manila); one row per person, deleted on unsnooze (t6-core #716).
+    (64, False, """CREATE TABLE crm_snooze (person_id TEXT PRIMARY KEY REFERENCES persons(id), until TEXT NOT NULL, set_at REAL NOT NULL)"""),
 )
 
 

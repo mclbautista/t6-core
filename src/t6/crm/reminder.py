@@ -15,6 +15,7 @@ from typing import Any
 
 from t6.concern import ConcernStore
 from t6.crm.log import CrmLog, StageChange, read_log
+from t6.crm.snooze import Snoozes
 from t6.domain import CrmStage, Project
 from t6.domain.events import JsonValue
 from t6.domain.project_rules import status_key
@@ -90,9 +91,10 @@ def stage_changes(registry: Any) -> StageChange:
 class CrmReminder:
     def __init__(self, people: People, queue: InternalJobQueue, gateway: GatewayClient, source: SheetSource, default_owner: str,
                  leads: Callable[[], Sequence[LeadFacts]], name_of: Callable[[str], str | None], *,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time, post_producer_telegram_ids: Sequence[int] = ()) -> None:
         self.people, self.queue, self.gateway, self.source, self.default_owner = people, queue, gateway, source, default_owner
         self.leads, self.name_of, self.clock = leads, name_of, clock
+        self.post_producers = tuple(post_producer_telegram_ids)  # Telegram IDs of the Post Producer(s) (#716)
         self.registry = people.registry
         self.concerns = ConcernStore(self.registry, people.tokens)
 
@@ -123,7 +125,35 @@ class CrmReminder:
             item = Item('cold', self._lines(lead, (today - last).days))
             for owner in dict.fromkeys(owners):
                 digest.setdefault(owner, []).append(item)
-        return digest
+        return self._rerouted(digest, today)
+
+    def _post_producer_ids(self) -> list[str]:
+        """The active Persons holding a Post Producer Telegram ID."""
+        with self.registry._transaction() as db:
+            return [str(row[0]) for row in db.execute('SELECT id FROM persons WHERE active = 1 AND telegram_id IN (%s) ORDER BY id' % ','.join('?' * len(self.post_producers)),
+                                                      self.post_producers)] if self.post_producers else []
+
+    def _rerouted(self, digest: Digest, today: date) -> Digest:
+        """Move a snoozed person's items to the Post Producers who are not snoozed, else to the default owner.
+
+        The default owner keeps the items when nobody else can take them, even if snoozed; a snooze never drops an item.
+        """
+        snoozed = Snoozes(self.registry).active(today)
+        if not any(person in snoozed for person in digest):
+            return digest
+        producers = [person for person in self._post_producer_ids() if person not in snoozed]
+        rerouted: Digest = {person: items for person, items in digest.items() if person not in snoozed}
+        covering: dict[tuple[str, int], tuple[Item, list[str]]] = {}
+        for person, items in digest.items():
+            if person not in snoozed:
+                continue
+            note = f'{self.name_of(person) or "a colleague"} (snoozed until {snoozed[person].isoformat()})'
+            for target in [p for p in producers if p != person] or [self.default_owner]:
+                for item in items:
+                    covering.setdefault((target, id(item)), (item, []))[1].append(note)
+        for (target, _), (item, notes) in covering.items():
+            rerouted.setdefault(target, []).append(Item(item.section, (*item.lines, f'  Covering for {", ".join(notes)}')))
+        return rerouted
 
     def _lines(self, lead: LeadFacts, days: int) -> tuple[str, ...]:
         lines = [f'{lead.name} — {lead.stage.value}, {days} days since last contact']

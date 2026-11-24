@@ -465,3 +465,16 @@ change, restarts the count; a Lead with neither counts from when it was
 registered. A Lead Owner who is not a Person with a Telegram ID is treated as
 blank. Nobody with nothing due gets a message. The Sheet is read at send time,
 so a failed read fails the job and is retried (see `queue failed`).
+
+### Snooze
+
+`crm snooze --until DATE` pauses the caller's own CRM DMs through that date
+(Manila, inclusive; required, at most 30 days from today); `crm unsnooze` ends
+it early. Both are open to any active staff Person and audited. While someone
+is snoozed, their items in the DM go to the Post Producers (Persons holding a
+Telegram ID in `T6_CRM_POST_PRODUCER_TELEGRAM_IDS`) who are not snoozed, each
+with a "Covering for NAME" line, else to the default owner. The default owner's
+own items go to the Post Producers, and stay with the default owner when none
+is available; a snooze never drops an item. A snoozed Post Producer's own Leads
+go to the other Post Producers, else the default owner. The person's items
+return on the day after the end date, with no job needed.
