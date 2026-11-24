@@ -28,7 +28,7 @@ from t6.registry.sqlite import SqliteProjectRegistry
 from t6.verbs import Ambiguous, Outcome, Refused
 
 FACT_VERBS = ('add', 'edit', 'promote_serial')
-WRITE_VERBS = ('catalog_snapshot', 'receive', 'release', 'return', 'retire', 'assign', 'unassign', 'swing_assign', 'swing_unassign', 'swing_return', *FACT_VERBS)
+WRITE_VERBS = ('catalog_snapshot', 'receive', 'release', 'return', 'retire', 'assign', 'unassign', 'recycle', 'swing_assign', 'swing_unassign', 'swing_return', *FACT_VERBS)
 _TEXT_FACTS = ('label', 'serial', 'suspected_serial', 'review_note', 'description', 'brand', 'model', 'format', 'owner_studio_id', 'warranty', 'remarks', 'office_location', 'qr_code')
 _EDITABLE = (*_TEXT_FACTS, 'form_factor', 'needs_review', 'capacity_tb', 'ownership_known', 'purchase_date')
 _KINDS = {'receive': CustodyKind.RECEIVED, 'release': CustodyKind.RELEASED, 'return': CustodyKind.RETURNED, 'retire': CustodyKind.RETIRED}
@@ -118,6 +118,19 @@ class DriveVerbs:
             return self._validate_catalog(values)
         if verb in FACT_VERBS:
             return self._validate_fact(verb, values)
+        if verb == 'recycle':
+            if not isinstance(values.get('drive'), str) or not isinstance(values.get('project'), str):
+                return Refused(rule='input', reason='A Drive and a Project are required')
+            if not (values.get('label') or '').strip():
+                return Refused(rule='input', reason='A new label is required')
+            if values.get('role') is not None and values['role'] not in {role.value for role in Role}:
+                return Refused(rule='input', reason='role must be one of ' + ', '.join(role.value for role in Role))
+            if values.get('start') is not None:
+                try:
+                    date.fromisoformat(values['start'])
+                except (TypeError, ValueError):
+                    return Refused(rule='input', reason='start must be a date as YYYY-MM-DD')
+            return None
         drives = values.get('drives') if verb == 'release' else [values.get('drive')]
         if not isinstance(drives, list) or not drives or not all(isinstance(d, str) for d in drives):
             return Refused(rule='input', reason='At least one Drive is required')
@@ -379,6 +392,8 @@ class DriveVerbs:
             return self._plan_catalog(store, values, key)
         if verb in FACT_VERBS:
             return self._plan_fact(store, verb, values, key)
+        if verb == 'recycle':
+            return self._plan_recycle(store, values, key)
         ids = list(dict.fromkeys(values['drives'])) if verb == 'release' else [values['drive']]
         for drive_id in ids:
             if store.get_drive(drive_id) is None:
@@ -455,6 +470,43 @@ class DriveVerbs:
             plan['project_id'] = held.project.page_id if held.project else None
         state.append(number)
         return Plan(plan, state, lambda store_: self._close(store_, ids[0], number, held, date.fromisoformat(end)))
+
+    def _plan_recycle(self, store: DriveStore, values: dict[str, Any], key: str) -> Plan | Refused:
+        """A reused Drive: end its open Project uses, start one for the new Project with the new label, keep the old label in its remarks."""
+        drive_id = values['drive']
+        drive = store.get_drive(drive_id)
+        if drive is None:
+            return Refused(rule='drive', reason=f'Drive {drive_id} not found')
+        if store.status(drive_id) is DriveStatus.RETIRED:
+            return Refused(rule='custody', reason='A retired Drive cannot be recycled')
+        project, label = values['project'], values['label'].strip()
+        try:
+            store.check_project(Ref(page_id=project))
+        except ValueError as error:
+            return Refused(rule='project', reason=str(error))
+        role, today = Role(values.get('role') or Role.MASTER.value), self._today()
+        start = values.get('start') or today
+        open_uses = [(number, a) for number, a in enumerate(store.list_assignments(drive_id), 1) if a.is_open]
+        if drive.label == label and any(a.project is not None and a.project.page_id == project for _, a in open_uses):
+            return Refused(rule='input', reason='The Drive already has this label and Project')
+        plan = {'action': 'drive_recycle', 'drive_ids': [drive_id], 'project_id': project, 'idempotency_key': key,
+                'old_label': drive.label, 'label': label, 'role': role.value, 'start': start,
+                'ended_assignments': [number for number, _ in open_uses]}
+        assignment = Assignment(label=label, project=Ref(page_id=project), role=role, start=date.fromisoformat(start))
+        return Plan(plan, self._state(store, [drive_id]), lambda store_: self._recycle(store_, drive, open_uses, assignment, today))
+
+    def _recycle(self, store: DriveStore, drive: Drive, open_uses: list[tuple[int, Assignment]], assignment: Assignment, today: str) -> list[Change]:
+        changes: list[Change] = []
+        for number, held in open_uses:
+            end = date.fromisoformat(today)
+            if held.start is not None and end < held.start:
+                end = held.start
+            changes += self._close(store, drive.id, number, held, end)
+        changes += self._assign(store, drive.id, assignment)
+        note = f"Previously labelled '{drive.label}' until {today}." if drive.label else None
+        remarks = '\n'.join(part for part in (drive.remarks, note) if part) or None
+        changes += self._edit(store, drive, {'label': assignment.label, 'remarks': remarks})
+        return changes
 
     @staticmethod
     def _custody(store: DriveStore, verb: str, event: CustodyEvent, ids: list[str], delivery: str | None, recipient: str | None) -> list[Change]:

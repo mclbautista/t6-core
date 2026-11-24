@@ -21,7 +21,7 @@ from t6.verbs import (
     TranscriptCreateInput, TranscriptGetInput, TranscriptSpeakersInput, TranscriptTranslateInput,
     DriveCaptureInput, DriveCaptureListInput, DriveCaptureReadInput, DriveReloadReportInput,
     DriveMappingProposeInput, DriveMappingApplyInput, DriveProjectsInput, DriveOverdueInput, MovementListInput, MovementCorrectInput,
-    ContactCreateInput, ContactFindInput, DriveReloadInput, DriveReceiveInput, DriveReleaseInput, DriveReturnInput, DriveRetireInput, DriveAssignInput, DriveUnassignInput,
+    ContactCreateInput, ContactFindInput, DriveRecycleInput, DriveReloadInput, DriveReceiveInput, DriveReleaseInput, DriveReturnInput, DriveRetireInput, DriveAssignInput, DriveUnassignInput,
     DriveAddInput, DriveEditInput, DrivePromoteSerialInput, DriveListInput, DriveGetInput, DriveFindInput, DriveCatalogSnapshotInput, DriveCatalogSnapshotsInput, DriveCatalogDiffInput, DriveCatalogAtInput, DriveShipmentsInput, DriveShipmentInput, DriveExceptionsInput,
     MachineEditInput, MachineListInput, MachineSyncInput,
     SwingAssignInput, SwingUnassignInput, SwingReturnInput, SwingOverdueInput,
@@ -197,6 +197,9 @@ class Client:
 
     def contact_create(self, inputs: ContactCreateInput) -> Result:
         return self.call('contact', 'create', inputs)
+
+    def drive_recycle(self, inputs: DriveRecycleInput) -> Result:
+        return self.call('drive', 'recycle', inputs)
 
     def drive_reload(self, inputs: DriveReloadInput) -> Result:
         return self.call('drive', 'reload', inputs)
