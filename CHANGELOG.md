@@ -15,6 +15,7 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ### Changed
 
+- The Telegram Closer list is removed (spec #732, #736): `T6_CLOSER_TELEGRAM_IDS` is no longer read. `concern resolve` and `concern reopen` over the API follow the verb's `coordinator` role only (the rule `closer` is gone). `project notes-history` is readable by Persons with `master_brief` on and the Project's coordinators; everyone else is refused with rule `coordinator`.
 - The Approval for `project link-chat` and `project unlink-chat` (the Telegram card "Approval: chat link") now names the Project by its Notion name and code before the Project id, for example `Big Show [ABC123] t6p_...: chat -100, topic 12 (Edit)`. The ids stay in the target. The name is read from the Project's Notion page when the preview is made; if it cannot be read, the code (and, without one, only the id) is shown as before. The topic name was already shown when known.
 
 ## [0.6.27] - 2026-11-24

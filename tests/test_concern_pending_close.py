@@ -1,4 +1,4 @@
-"""Pending closes decided at the next PSR, and the Closer setting (#639)."""
+"""Pending closes decided at the next PSR; the API follows the verb role only (#736)."""
 import contextlib
 import io
 import json
@@ -16,7 +16,7 @@ from t6.verbs import Done
 from test_person import MemoryRegistry
 
 DAY = 86400.0
-CLOSER, COORDINATOR = 102, 101
+CLOSER, COORDINATOR, READER = 102, 101, 103
 
 
 def manila(text: str) -> float:
@@ -36,6 +36,7 @@ class PendingCloseTests(unittest.TestCase):
         with self.registry._transaction() as db:
             db.execute("INSERT INTO persons VALUES ('t6n_coordinator', 'staff', '[]', '[]', ?, 0, 1)", (COORDINATOR,))
             db.execute("INSERT INTO persons VALUES ('t6n_closer', 'staff', '[]', '[]', ?, 0, 1)", (CLOSER,))
+            db.execute("INSERT INTO persons VALUES ('t6n_reader', 'staff', '[]', '[]', ?, 0, 1)", (READER,))
             db.execute("UPDATE projects SET rotation = 'in' WHERE id = ?", (self.project,))
             for person in ('t6n_coordinator', 't6n_closer'):
                 db.execute("INSERT INTO person_permissions VALUES (?, 'coordinator')", (person,))
@@ -53,7 +54,7 @@ class PendingCloseTests(unittest.TestCase):
         queue = JobQueue(tmp.name + '/queue')
         return VerbAPI(People(self.registry, PreviewTokens('secret')), queue, {'gateway': 'gateway', 'unmasked': 'watchdog'}, lambda _: None,
                        WebhookApp(queue, ServerConfig(), registry=self.registry), llm_service=object(),
-                       privacy_registry=Registry(), closers=frozenset({CLOSER}))
+                       privacy_registry=Registry())
 
     def call(self, path: str, body: dict[str, Any], telegram_id: int = CLOSER) -> dict[str, Any]:
         """The gateway acting as a Person: its secret plus the Person's Telegram user id."""
@@ -185,11 +186,11 @@ class PendingCloseTests(unittest.TestCase):
         self.autoscan('2026-12-07T21:00')
         self.assertEqual((self.concern(late)[0], self.concern(vetoed)[0]), ('closed', 'open'))
 
-    def test_only_a_closer_may_close_and_undo_cancels(self) -> None:
+    def test_close_follows_the_verb_role_and_undo_cancels(self) -> None:
         concern = self.raise_concern()
-        refused = self.confirmed('resolve', concern, telegram_id=COORDINATOR)
-        self.assertEqual((refused['outcome'], refused['rule']), ('refused', 'closer'))
-        self.confirmed('resolve', concern)
+        refused = self.confirmed('resolve', concern, telegram_id=READER)
+        self.assertEqual((refused['outcome'], refused['rule']), ('refused', 'permission'))
+        self.assertEqual(self.confirmed('resolve', concern, telegram_id=COORDINATOR)['outcome'], 'done')
         again = self.confirmed('resolve', concern)
         self.assertEqual((again['outcome'], again['rule']), ('refused', 'state'))
         undone = self.confirmed('reopen', concern)
@@ -248,14 +249,14 @@ class PendingCloseTests(unittest.TestCase):
         self.autoscan('2026-11-30T21:00')
         self.assertEqual((self.settles(applied), self.settles(undone)), (job, None))
 
-    def test_only_a_closer_may_undo_a_pending_close(self) -> None:
+    def test_undo_of_a_pending_close_follows_the_verb_role(self) -> None:
         concern = self.raise_concern()
         self.confirmed('resolve', concern)
-        refused = self.confirmed('reopen', concern, telegram_id=COORDINATOR)
-        self.assertEqual((refused['outcome'], refused['rule']), ('refused', 'closer'))
+        refused = self.confirmed('reopen', concern, telegram_id=READER)
+        self.assertEqual((refused['outcome'], refused['rule']), ('refused', 'permission'))
         self.assertEqual(len(self.listed()['pending']), 1)
-        self.autoscan('2026-11-30T21:00')
-        self.assertEqual(self.confirmed('reopen', concern, telegram_id=COORDINATOR)['outcome'], 'done')  # a plain reopen keeps the role rules
+        self.assertEqual(self.confirmed('reopen', concern, telegram_id=COORDINATOR)['outcome'], 'done')
+        self.assertEqual(self.listed()['pending'], [])
 
     def test_a_data_close_stays_immediate_and_a_date_rule_concern_refuses_resolve(self) -> None:
         from t6.concern import ConcernStore

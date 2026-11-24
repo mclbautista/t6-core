@@ -145,7 +145,6 @@ that the edge route file and the API need.
 | `T6_CONCERNS_EXPORT_URL`, `T6_CONCERNS_EXPORT_PUSH_SECRET` | API (and later the main worker): the full URL of the VPS server's tailnet route `PUT /concerns/export` (for example `http://<vps tailnet name>:8790/concerns/export`) and its bearer secret. After each completed autoscan, once pending closes are applied, the API pushes the Concerns sheet export (CSV, one row per Concern that is not closed) there. Empty URL or secret turns the push off. A failed push is logged by error type and does not fail the run; the next autoscan pushes again. Private config only |
 | `T6_CONCERNS_EXPORT_PUSH_SECRET`, `T6_CONCERNS_EXPORT_READ_TOKEN`, `T6_CONCERNS_EXPORT_FILE` | VPS server (edge mode): the bearer secret the push route needs (empty: the route answers 503), the token the public `GET /concerns/export.csv` needs in the `X-T6-Read-Token` header (empty: the path answers 404), and the file the latest export is stored in, default `t6-concerns-export.csv` (put it in the data volume). The file is replaced atomically on each push. A missing or wrong token, a missing file or any other method is 404, the same as an unknown path. Private config only |
 | `T6_SHEET_SUBMIT_SECRET` | VPS server (edge mode): the secret of the Concerns sheet's Submit route, named by `secret_env` in the routes file (see `docs/edge-routes.example.yaml`). The route `/webhook/sheets/concerns` is refused with 401 unless `X-T6-Sheet-Signature` is the HMAC-SHA256 of `{X-T6-Sheet-Timestamp}:{body}` and the timestamp is within five minutes (signing format in `docs/deployment.md`). Also needs `T6_CONCERNS_EXPORT_URL` and `T6_CONCERNS_EXPORT_PUSH_SECRET` on the main worker to push the fresh export after a Submit (empty turns it off), with `T6_DATABASE` and `T6_PREVIEW_SIGNING_KEY` (without the key the worker does not run the job) and `T6_NOTION_TOKEN` for the Project and Person names in the export (without it they are blank). Private config only |
-| `T6_CLOSER_TELEGRAM_IDS` | The Closer setting: Telegram user IDs allowed to Close a Concern (`concern resolve`; anyone else is refused with rule `closer`), comma separated. Closers and a Project's coordinators may read `project notes-history`. Private config only; unset means no Closers |
 | `T6_OPERATOR_IDS` | Telegram user IDs allowed to tap operator cards and send `/project`, comma separated; the first receives the cards core starts, and a `/project` card goes to whoever sent it. Unset turns operator actions off |
 | `T6_STANDING_CC` | A Contact page ID, added to the cc of every Job Order (`t6.domain.studio_people.standing_cc`). Unset means none |
 | `T6_OPERATOR_DB`, `T6_OPERATOR_TTL_SECONDS` | operator action database, default `t6-operator.sqlite`; how long a card stays live, default 7 days |
@@ -2321,8 +2320,7 @@ line), `close_by_name` (their Contact name, null when unknown), `close_at` (when
 null for a close). See `docs/api-read-verbs.md`.
 
 Closes wait for the next PSR. `concern resolve` (preview, then confirm) is a
-Close: only a Closer may make it (the `coordinator` role plus a Telegram user id
-on `T6_CLOSER_TELEGRAM_IDS`; anyone else is refused with rule `closer`). It does
+Close: the verb's `coordinator` role is the only check. It does
 not close the Concern: it records a pending close with who and when. A Done line
 (the PM Notes scan's `settles`) records one too. The Monday 21:00 autoscan
 applies, at the end of its run, every pending close made before that Monday
@@ -2331,8 +2329,8 @@ Monday. A run applies a pending close only for a Project whose notes it read and
 lines it all settled; a failed run applies nothing; the next run that completes
 applies what it left. Before that, a dated line the scan reads as continuing the Concern is a
 veto: it deletes the pending close, and it must be dated after the Concern's
-as-of date. `concern reopen` on a Concern with a pending close is Undo: only a
-Closer may make it (anyone else is refused with rule `closer`); it cancels the
+as-of date. `concern reopen` on a Concern with a pending close is Undo (the
+verb's `coordinator` role is the only check); it cancels the
 close and leaves the Concern open. The `settles_id` of a Close is set on the
 Concern only when the close is applied. An applied
 Close sets `manual_override`, so later lines no longer change that Concern.
