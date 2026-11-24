@@ -891,11 +891,14 @@ def main(
                 raise RuntimeError('Chat subscriptions need a configured gateway')
             def unavailable_chat_link_notice(job: WorkerJob) -> bool:
                 raise RuntimeError('Chat link notice needs a configured gateway')
+            def unavailable_chat_link_reminder(job: WorkerJob) -> bool:
+                raise RuntimeError('Chat link reminder needs a configured gateway')
             queue_handlers = {
                 **queue_handlers,
                 "abang_nudge": unavailable_abang_nudge,
                 "chat_subscriptions": unavailable_subscriptions,
                 "chat_link_notice": unavailable_chat_link_notice,
+                "chat_link_reminder": unavailable_chat_link_reminder,
             }
         if settings.queue == 'main' and environ.get('T6_DATABASE'):
             from t6.drives.practice import apply_live_setting
@@ -933,6 +936,7 @@ def main(
                 "abang_nudge": linked.nudge,
                 "chat_subscriptions": linked.replace_subscriptions,
                 "chat_link_notice": linked.chat_link_notice,
+                "chat_link_reminder": linked.remind_chat_link,
             }
             if environ.get('T6_DRIVE_CUSTODIAN_PERSON_ID'):
                 from t6.drives.reminder import MorningReminder

@@ -237,6 +237,39 @@ class LinkedChats:
                 self._track(db, ref, chat, topic)
         return True
 
+    def _requester_label(self, db: Any, requester: str) -> str:
+        binding = db.execute("SELECT page_id FROM bindings WHERE system = 'notion' AND project_id = ? AND active = 1", (requester,)).fetchone()
+        name = None
+        if binding and self.person_name:
+            try:
+                name = (self.person_name(binding[0]) or '').strip()
+            except Exception:  # the name is a courtesy; the reminder still names the Person id
+                name = None
+        return f'{name} ({requester})' if name else requester
+
+    def remind_chat_link(self, job: WorkerJob) -> bool:
+        """After 24 hours with no tap on a chat link Approval, remind the operator chat once. The Approval stays requested."""
+        approval_id = job.payload.get('approval')
+        if not isinstance(approval_id, str):
+            raise ValueError('Invalid chat link reminder payload')
+        with self.registry._transaction() as db:
+            row = db.execute("SELECT target, requester FROM approvals WHERE id = ? AND gate = 'chat link' AND state = 'requested'", (approval_id,)).fetchone()
+            if row is None:
+                return False
+            if not self.operators:
+                raise RuntimeError('Chat link reminder needs T6_OPERATOR_IDS')
+            target, requester = row
+            who = self._requester_label(db, requester)
+        chat = self.operators[0]
+        text = (
+            '<b>Reminder: chat link approval waiting 24h</b>\n'
+            f'{escape(target)}\n'
+            f'Requested by: {escape(who)}\n'
+            f'Approval: {escape(approval_id)}'
+        )
+        self.gateway.notify(chat, text, [], f'chat-link:reminder:{approval_id}:{chat}')
+        return True
+
     def track_send(self, ref: int, chat: int, topic: int | None) -> None:
         with self.registry._transaction() as db:
             self._track(db, ref, chat, topic)
