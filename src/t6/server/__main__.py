@@ -78,6 +78,9 @@ def main() -> int:
     registry = None if mode == "edge" else SqliteProjectRegistry(environ.get("T6_REGISTRY_DB", "t6-registry.sqlite"))
     inside = None
     if registry is not None:
+        from t6.drives.practice import apply_live_setting
+
+        apply_live_setting(registry, environ)  # ADR 0010: T6_DRIVE_LIVE, read once on start; reloads nothing
         # ADR 0006: work that starts inside T6 uses the job table in the t6 database, which the main worker polls.
         from t6.server.handover import hand_over_inside_jobs
         from t6.worker.internal_queue import InternalJobQueue

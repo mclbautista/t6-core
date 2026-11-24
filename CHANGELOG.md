@@ -15,6 +15,16 @@ All notable changes to this project are documented here, following [Keep a Chang
 ### Changed
 
 - Jev's transmittal check now runs before the photo read, on the withheld caption and a has-photo flag only (no photo readings). Only an explicit "no" discards the post, without calling the image model; a failure or "maybe" keeps it. Follow-up answers and custodian-picked Drives skip Jev. Prompt tag `drive-transmittal-v1` becomes `drive-transmittal-v2`: a live eval run of v2 is an owner step and must be recorded before the release that contains it. ADR 0009 is amended (#661).
+- Going live is the setting `T6_DRIVE_LIVE=true`, read once when the API and the main worker start (ADR 0010). The first start with it on records live mode in the database: Practice is off in every read and reply, the nightly reload is not scheduled, and every reload is refused with rule `cutover`. Nothing is reloaded at start. Live mode is one way: it stays on if the setting is later removed, with a warning in the log (#666).
+
+### Removed
+
+- The `drive cutover` verb (client method `drive_cutover`, CLI and docs). Use `T6_DRIVE_LIVE=true` (#666).
+
+### Fixed
+
+- The tracker reader no longer reports a title row above the header row (a row with one filled cell, such as the tracker name on the monthly tabs or the tab name on the archive and swing tabs) as an unreadable row. A stray one-cell row below the header is still reported. The first reload in practice mode listed 14 such title rows as exceptions (#658).
+- `drive mapping apply` now works through the API and the `t6` command line: `--file` is a local file that the client uploads, and the preview token no longer depends on the temporary path of the upload, so a confirm matches its preview. `drive mapping propose` takes no output file over the API, reads the two configured Google spreadsheets when no workbook is given, and takes the data sources from `T6_READ_DATA_SOURCES` when none is uploaded. A sheet name that cleans to nothing is skipped by `propose`, and `apply` names it in its refusal (#657).
 
 ## [0.6.26] - 2026-11-24
 

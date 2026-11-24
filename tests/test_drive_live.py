@@ -1,4 +1,4 @@
-"""Practice and cutover through the Drive verbs on a temporary database."""
+"""Practice mode and live mode (ADR 0010) through the Drive verbs on a temporary database."""
 from t6.person import People
 from t6.preview import PreviewTokens
 from t6.registry import SqliteProjectRegistry
@@ -80,42 +80,55 @@ class PracticeTests(DriveReloadFixture):
         nightly.schedule()
         self.assertEqual(len(queue.find('drive.reload')), 2)
 
-    def test_cutover_final_reload_persists_off_and_disables_even_queued_nightly_jobs(self) -> None:
+    def test_live_setting_on_start_ends_practice_reloads_nothing_and_refuses_reloads(self) -> None:
         from t6.drives.nightly import NightlyReload
+        from t6.drives.practice import apply_live_setting
         from t6.worker.internal_queue import InternalJobQueue, InternalQueueClient
         from t6.worker import Worker
-        with self.registry._transaction() as db:
-            db.execute("INSERT INTO person_permissions VALUES ('synthetic-keeper', 'operator')")
         queue = InternalJobQueue(self.registry)
         nightly = NightlyReload(self.registry, PreviewTokens('test'), queue)
         nightly.schedule()
         self.workbook({'SYNTHETIC BEFORE': [HEADER, ['Synthetic old', 'SAMPLE-OLD']]})
         self.reload()
-        self.workbook({'SYNTHETIC FINAL': [HEADER, ['Synthetic final', 'SAMPLE-FINAL']]})
-        values = {'workbook': str(self.path), 'idempotency_key': 'cutover'}
-        preview = self.call('cutover', **values)
-        self.assertIsInstance(preview, Preview)
+        self.workbook({'SYNTHETIC NEXT': [HEADER, ['Synthetic next', 'SAMPLE-NEXT']]})
         self.assertTrue(self.call('list').result['practice'])
-        self.assertEqual([d['serial'] for d in self.drives()], ['SAMPLE-OLD'])
-        done = self.call('cutover', **values, confirm=preview.token)
-        self.assertIsInstance(done, Done)
-        self.assertFalse(done.result['practice'])
-        self.assertFalse(done.result['nightly_enabled'])
-        self.assertEqual([d['serial'] for d in self.drives()], ['SAMPLE-FINAL'])
+        for value in ('', 'false', '0', 'no'):
+            self.assertFalse(apply_live_setting(self.registry, {'T6_DRIVE_LIVE': value}))
+        self.assertTrue(self.call('list').result['practice'])
+        self.assertTrue(apply_live_setting(self.registry, {'T6_DRIVE_LIVE': 'true'}))
+        self.assertEqual([d['serial'] for d in self.drives()], ['SAMPLE-OLD'])  # nothing reloaded at start
         self.registry = SqliteProjectRegistry(self.folder / 't6.sqlite')
         self.people = People(self.registry, PreviewTokens('test'))
         self.assertFalse(self.call('list').result['practice'])
-        self.path.unlink()  # refusal must precede any source read
         refused = self.call('reload', workbook=str(self.path), idempotency_key='too-late')
         self.assertIsInstance(refused, Refused)
         self.assertEqual(refused.rule, 'cutover')
+        self.assertEqual([d['serial'] for d in self.drives()], ['SAMPLE-OLD'])
         nightly.schedule()
-        self.assertEqual(len(queue.find('drive.reload')), 1)
+        self.assertEqual(len(queue.find('drive.reload')), 1)  # none added
         queue.submit('main', 'drive.reload', 'synthetic-already-queued')
         worker = Worker(InternalQueueClient(queue), 'main', {'drive.reload': nightly.handle})
         self.assertTrue(worker.run_once())
-        self.assertEqual([d['serial'] for d in self.drives()], ['SAMPLE-FINAL'])
+        self.assertEqual([d['serial'] for d in self.drives()], ['SAMPLE-OLD'])
 
+    def test_live_mode_is_recorded_and_survives_removal_of_the_setting(self) -> None:
+        from t6.drives.practice import apply_live_setting
+        apply_live_setting(self.registry, {'T6_DRIVE_LIVE': 'true'})
+        reopened = SqliteProjectRegistry(self.folder / 't6.sqlite')
+        with self.assertLogs('t6.drives', level='WARNING') as logs:
+            self.assertTrue(apply_live_setting(reopened, {}))
+        self.assertIn('staying live', logs.output[0])
+        with self.assertLogs('t6.drives', level='WARNING'):
+            self.assertTrue(apply_live_setting(reopened, {'T6_DRIVE_LIVE': 'false'}))
+        self.people = People(reopened, PreviewTokens('test'))
+        self.registry = reopened
+        self.assertFalse(self.call('list').result['practice'])
+
+    def test_the_cutover_verb_is_gone(self) -> None:
+        from t6.client import Client
+        from t6.verbs import VERBS
+        self.assertFalse([v for v in VERBS if (v.noun, v.verb) == ('drive', 'cutover')])
+        self.assertFalse(hasattr(Client, 'drive_cutover'))
 
     def test_worker_startup_registers_and_restores_nightly_schedule(self) -> None:
         from t6.worker.__main__ import main
@@ -134,25 +147,24 @@ class PracticeTests(DriveReloadFixture):
             self.assertEqual(main(env, {'main': {}}, stop=stop), 0)
         self.assertEqual(len(InternalJobQueue(self.registry).find('drive.reload')), 1)
 
-    def test_failed_final_read_does_not_end_practice_or_disable_nightly(self) -> None:
-        from t6.drives.nightly import NightlyReload
+    def test_worker_start_in_live_mode_reloads_nothing_and_schedules_no_nightly(self) -> None:
+        import threading
+        from t6.worker.__main__ import main
         from t6.worker.internal_queue import InternalJobQueue
-        with self.registry._transaction() as db:
-            db.execute("INSERT INTO person_permissions VALUES ('synthetic-keeper', 'operator')")
-        self.workbook({'SYNTHETIC FINAL': [HEADER, ['Synthetic final', 'SAMPLE-FINAL']]})
+        from test_worker_main import ENVIRON
+        self.workbook({'SYNTHETIC BEFORE': [HEADER, ['Synthetic old', 'SAMPLE-OLD']]})
         self.reload()
-        before = self.drives()
-        values = {'workbook': str(self.path), 'idempotency_key': 'failed-cutover'}
-        preview = self.call('cutover', **values)
-        self.path.unlink()
-        failed = self.call('cutover', **values, confirm=preview.token)
-        self.assertIsInstance(failed, Refused)
-        self.assertEqual(failed.rule, 'sheet')
-        self.assertTrue(self.call('list').result['practice'])
-        self.assertEqual(self.drives(), before)
-        queue = InternalJobQueue(self.registry)
-        NightlyReload(self.registry, PreviewTokens('test'), queue).schedule()
-        self.assertEqual(len(queue.find('drive.reload')), 1)
+        stop = threading.Event()
+        stop.set()
+        env = {**ENVIRON, 'T6_DATABASE': str(self.folder / 't6.sqlite'), 'T6_API_URL': 'https://synthetic.invalid',
+               'T6_PREVIEW_SIGNING_KEY': 'test', 'T6_DRIVE_LIVE': 'true',
+               'T6_DRIVE_PROJECT_SPREADSHEET_ID': 'synthetic-projects', 'T6_DRIVE_TRACKER_SPREADSHEET_ID': 'synthetic-tracker'}
+        self.assertEqual(main(env, {'main': {}}, stop=stop), 0)
+        self.assertEqual(InternalJobQueue(self.registry).find('drive.reload'), [])
+        self.assertEqual([d['serial'] for d in self.drives()], ['SAMPLE-OLD'])
+        self.registry = SqliteProjectRegistry(self.folder / 't6.sqlite')
+        self.people = People(self.registry, PreviewTokens('test'))
+        self.assertFalse(self.call('list').result['practice'])
 
     def test_deployment_lists_sheet_configuration_keys(self) -> None:
         from pathlib import Path

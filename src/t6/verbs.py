@@ -2157,14 +2157,14 @@ class DrivePracticeOutput(BaseModel):
 
 
 class DriveMappingProposeInput(BaseModel):
-    workbook: str
+    workbook: str | None = None  # a workbook path on the API host; none reads the two configured Google spreadsheets
     tracker: str | None = None
-    data_sources: Path
-    file: str
+    data_sources: Path | None = None  # none: the API host's T6_READ_DATA_SOURCES
+    file: Path | None = None  # an optional output file; the result always carries the entries
 
 
 class DriveMappingApplyInput(BaseModel):
-    file: str
+    file: Path  # uploaded by the client, so a local file works through the API
     idempotency_key: str | None = None
     confirm: str | None = None
 
@@ -2183,25 +2183,32 @@ class DriveMappingOutput(DrivePracticeOutput):
 def drive_mapping_propose(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
     from t6.cli import TOKEN_VARIABLE, _read_data_sources
     from t6.drives.mapping import propose_mapping
-    from t6.drives.sheets import WorkbookSheetSource
+    from t6.drives.sheets import SheetSource, WorkbookSheetSource, configured_sources
     from t6.notion.reads import ProjectReader
     from t6.registry import ProjectRefs
     assert isinstance(inputs, DriveMappingProposeInput)
     token = os.environ.get(TOKEN_VARIABLE)
     if _notion_source.get() is None and not token:
         return Refused(rule='config', reason=f'Set {TOKEN_VARIABLE}')
+    data_sources = inputs.data_sources or (Path(os.environ['T6_READ_DATA_SOURCES']) if os.environ.get('T6_READ_DATA_SOURCES') else None)
+    if data_sources is None:
+        return Refused(rule='config', reason='Give data_sources or set T6_READ_DATA_SOURCES')
     try:
         refs = ProjectRefs(_people().registry)
         projects = tuple(refs.identified(project) for project in ProjectReader(
-            _verb_notion_source(open_notion, token or ''), _read_data_sources(inputs.data_sources)['projects']).list())
+            _verb_notion_source(open_notion, token or ''), _read_data_sources(data_sources)['projects']).list())
         registered = {project.t6_id: project for project in projects if project.t6_id}
         for project in _people().registry.list_projects():
             if project.id not in registered:
                 registered[project.id] = Project(page_id=project.id, name='', t6_id=project.id,
                                                   project_code=project.code, rotation=project.rotation.value)
-        mapping = propose_mapping(WorkbookSheetSource(inputs.workbook),
-                                  WorkbookSheetSource(inputs.tracker) if inputs.tracker else None,
-                                  tuple(registered.values()), inputs.file)
+        source: SheetSource
+        tracker: SheetSource | None
+        if inputs.workbook:
+            source, tracker = WorkbookSheetSource(inputs.workbook), WorkbookSheetSource(inputs.tracker) if inputs.tracker else None
+        else:
+            source, tracker = configured_sources(os.environ)
+        mapping = propose_mapping(source, tracker, tuple(registered.values()), inputs.file)
         return Done(result={'mapping': mapping})
     except (OSError, ValueError) as error:
         return Refused(rule='mapping', reason=str(error))
@@ -2326,10 +2333,6 @@ class DriveReloadInput(BaseModel):
     confirm: str | None = None
 
 
-class DriveCutoverInput(DriveReloadInput):
-    pass
-
-
 class DriveWithoutSerial(BaseModel):
     id: str
     label: str | None
@@ -2360,7 +2363,7 @@ def drive_reload(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
     people = _people()
     from t6.drives.practice import practice_mode
     if not practice_mode(people.registry):
-        return Refused(rule='cutover', reason='Drive reload is disabled after cutover')
+        return Refused(rule='cutover', reason='Drive reload is disabled: the system is live')
     source: SheetSource
     tracker: SheetSource | None
     try:
@@ -2371,8 +2374,7 @@ def drive_reload(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
             source, tracker = configured_sources(os.environ)
         return reload_drives(people.registry, people.tokens, source,
                              tracker=tracker,
-                             actor=_actor.get(), idempotency_key=inputs.idempotency_key, confirm=inputs.confirm,
-                             cutover=isinstance(inputs, DriveCutoverInput))
+                             actor=_actor.get(), idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
     except (OSError, ValueError) as error:
         return Refused(rule='sheet', reason=str(error))
 
@@ -3118,7 +3120,6 @@ VERBS = (
     Verb('drive', 'capture result', 'Read a capture outcome', (), DriveCaptureReadInput, DriveCaptureOutput, 'reader', 'Includes Practice and ask-for-label state.', drive_capture_result, read_only=True),
     Verb('movement', 'correct', 'Append a Movement correction', (), MovementCorrectInput, MovementCorrectOutput, 'drives', 'Preview and confirm a correction; the original Movement and custody events remain.', movement_correct),
     Verb('movement', 'list', 'Search the Movement log', (), MovementListInput, MovementListOutput, 'reader', 'Filters combine with AND; includes unresolved rows and corrections.', movement_list, read_only=True),
-    Verb('drive', 'cutover', 'Final reload and end Drive practice mode', (), DriveCutoverInput, DriveReloadOutput, 'operator', 'Preview and confirm the final reload; disables nightly and operator reloads.', drive_reload),
     Verb('drive', 'reload', 'Replace Drive data from the per-project sheet', (), DriveReloadInput, DriveReloadOutput, 'drives', 'Preview and confirm a complete reload, preserving accepted serial IDs.', drive_reload),
     Verb('drive', 'receive', 'Receive a Drive into custody', (), DriveReceiveInput, DriveWriteOutput, 'drives', 'Preview and confirm; appends a received event. Refused for a Drive in custody or retired.', drive_write),
     Verb('drive', 'release', 'Release Drives in one shipment', (), DriveReleaseInput, DriveWriteOutput, 'drives', 'Preview and confirm; one released event per Drive, grouped by shipment, with the Drives\' facts kept as they are now. Optional reason and free-text recipient. Refused whole if a Drive is released or retired.', drive_write),
@@ -3423,12 +3424,13 @@ def add_parsers(commands: Any) -> None:
             if 'drive mapping' not in nouns:
                 nouns['drive mapping'] = parser.add_parser('mapping', help='Sheet Project mappings').add_subparsers(dest='drive_mapping_verb', required=True)
             parser = nouns['drive mapping'].add_parser(entry.verb.split()[1], help=entry.description)
-            parser.add_argument('--file', required=True)
             if entry.handler is drive_mapping_propose:
-                parser.add_argument('--workbook', required=True)
+                parser.add_argument('--file', type=Path)
+                parser.add_argument('--workbook')
                 parser.add_argument('--tracker')
-                parser.add_argument('--data-sources', type=Path, required=True)
+                parser.add_argument('--data-sources', type=Path)
             else:
+                parser.add_argument('--file', type=Path, required=True)
                 parser.add_argument('--idempotency-key')
                 parser.add_argument('--confirm')
             parser.set_defaults(registered_verb=entry)
