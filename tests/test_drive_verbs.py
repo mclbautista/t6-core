@@ -132,6 +132,39 @@ class DriveVerbTests(unittest.TestCase):
         self.assertEqual(listed[c], [])
         self.assertEqual([(x['label'], x['project']['page_id'], x['project']['text'], x['role']) for x in listed[text_only.id]], [('T', None, 'Invented Show', 'swing')])
 
+    def test_recycle_gives_a_drive_a_new_label_and_project_and_keeps_the_old_label(self) -> None:
+        drive = self.drives[0]
+        self.write('assign', {'drive': drive, 'project': self.projects[0], 'label': 'Old assignment', 'role': 'master', 'start': '2026-01-01'})
+        values = {'drive': drive, 'project': self.projects[1], 'label': ' Fresh label ', 'start': '2026-02-01'}
+        preview = self.call('drive', 'recycle', {**values, 'idempotency_key': 'recycle-1'})
+        self.assertIsInstance(preview, Preview)
+        self.assertEqual(self.read('get', {'drive': drive})['drive']['label'], 'Synthetic 0')  # a preview changes nothing
+        self.assertIsInstance(self.call('drive', 'recycle', {**values, 'idempotency_key': 'recycle-1', 'confirm': preview.token}), Done)
+        detail = self.read('get', {'drive': drive})
+        self.assertEqual(detail['drive']['label'], 'Fresh label')
+        self.assertIn("Previously labelled 'Synthetic 0'", detail['drive']['remarks'])
+        uses = detail['assignments']
+        self.assertEqual([(a['label'], a['open']) for a in uses], [('Old assignment', False), ('Fresh label', True)])
+        self.assertEqual(uses[1]['project']['page_id'], self.projects[1])
+        self.assertEqual(uses[1]['role'], 'master')
+        self.assertEqual([d['label'] for d in self.read('list', {'q': 'Fresh'})['drives']], ['Fresh label'])
+
+    def test_recycle_refuses_a_retired_drive_an_unknown_project_a_blank_label_and_no_change(self) -> None:
+        drive = self.drives[1]
+        self.write('receive', {'drive': drive, 'project': self.projects[0], 'on': '2026-01-01'})
+        refused = self.call('drive', 'recycle', {'drive': drive, 'project': 't6p_' + '9' * 24, 'label': 'New', 'idempotency_key': 'r-unknown'})
+        self.assertEqual((refused.outcome, refused.rule), ('refused', 'project'))
+        blank = self.call('drive', 'recycle', {'drive': drive, 'project': self.projects[0], 'label': '  ', 'idempotency_key': 'r-blank'})
+        self.assertEqual((blank.outcome, blank.rule), ('refused', 'input'))
+        same = self.write('assign', {'drive': drive, 'project': self.projects[0], 'label': 'Synthetic 1', 'role': 'master'})
+        self.assertIsInstance(same, Done)
+        again = self.call('drive', 'recycle', {'drive': drive, 'project': self.projects[0], 'label': 'Synthetic 1', 'idempotency_key': 'r-same'})
+        self.assertEqual((again.outcome, again.rule), ('refused', 'input'))
+        self.write('retire', {'drive': drive, 'project': self.projects[0], 'reason': 'dead', 'on': '2026-03-01'})
+        retired = self.call('drive', 'recycle', {'drive': drive, 'project': self.projects[1], 'label': 'New', 'idempotency_key': 'r-retired'})
+        self.assertEqual((retired.outcome, retired.rule), ('refused', 'custody'))
+        self.assertEqual(self.read('get', {'drive': drive})['drive']['label'], 'Synthetic 1')
+
     def test_drive_search_matches_partial_project_codes_and_preserves_paging(self) -> None:
         registered = self.registry.register(actor='setup', idempotency_key='search-project', code='SYN-ORBIT')
         assert isinstance(registered, Registered)

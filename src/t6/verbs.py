@@ -2541,6 +2541,16 @@ class DriveAssignInput(BaseModel):
     confirm: str | None = None
 
 
+class DriveRecycleInput(BaseModel):
+    drive: str
+    project: str  # the registered Project the Drive is reused for
+    label: str  # the new label
+    role: DriveRole | None = None  # the new Project use; master when not given
+    start: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
 class DriveUnassignInput(BaseModel):
     drive: str
     project: str | None = None  # needed unless `assignment` names the Assignment
@@ -2574,7 +2584,8 @@ def drive_write(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
         return Refused(rule='config', reason='Set T6_PREVIEW_SIGNING_KEY')
     people = _people()
     verb = next(name for model, name in ((DriveReceiveInput, 'receive'), (DriveReleaseInput, 'release'), (DriveReturnInput, 'return'),
-                                         (DriveRetireInput, 'retire'), (DriveAssignInput, 'assign'), (DriveUnassignInput, 'unassign'))
+                                         (DriveRetireInput, 'retire'), (DriveAssignInput, 'assign'), (DriveUnassignInput, 'unassign'),
+                                         (DriveRecycleInput, 'recycle'))
                 if type(inputs) is model)
     return DriveVerbs(people.registry, people.tokens).write(
         verb, inputs.model_dump(exclude={'idempotency_key', 'confirm'}, exclude_none=True), actor=_actor.get(),
@@ -3157,6 +3168,7 @@ VERBS = (
     Verb('drive', 'return', 'Return a Drive to custody', (), DriveReturnInput, DriveWriteOutput, 'drives', 'Preview and confirm; appends a returned event. Only for a released Drive.', drive_write),
     Verb('drive', 'retire', 'Retire a Drive', (), DriveRetireInput, DriveWriteOutput, 'drives', 'Needs a reason; refused for a Drive already retired.', drive_write),
     Verb('drive', 'assign', 'Assign a Drive to a Project', (), DriveAssignInput, DriveWriteOutput, 'drives', 'Preview and confirm; adds an Assignment with label, role and optional remarks.', drive_write),
+    Verb('drive', 'recycle', 'Give a Drive a new label and Project', (), DriveRecycleInput, DriveWriteOutput, 'drives', 'Preview and confirm; ends the Drive\'s open Project uses, starts one for the chosen Project with the new label, and keeps the old label in the Drive\'s remarks. A retired Drive is refused.', drive_write),
     Verb('drive', 'unassign', 'End a Drive Assignment', (), DriveUnassignInput, DriveWriteOutput, 'drives', 'Ends the open Assignment and keeps it in history; when several are open, pick by label, role or assignment number. The number alone is enough, and the only way to end one whose Project is text only.', drive_write),
     Verb('drive', 'add', 'Register a Drive', (), DriveAddInput, DriveFactsOutput, 'drives', 'Preview and confirm; a serial already recorded is refused, naming the Drive that holds it.', drive_fact_write),
     Verb('drive', 'edit', 'Correct the facts of a Drive', (), DriveEditInput, DriveFactsOutput, 'drives', 'Preview and confirm; changes only the facts named, and an empty value clears one. expected_version (from drive get or list) refuses the edit if the Drive changed since. Custody events and Assignments are not touched.', drive_fact_write),
@@ -3490,7 +3502,11 @@ def add_parsers(commands: Any) -> None:
                 parser.add_argument('--label')
                 parser.add_argument('--role', choices=DRIVE_ROLES)
                 parser.add_argument('--assignment', type=int)
-            if entry.verb in ('assign', 'unassign'):
+            if entry.verb == 'recycle':
+                parser.add_argument('--label', required=True)
+                parser.add_argument('--role', choices=DRIVE_ROLES)
+                parser.add_argument('--start')
+            elif entry.verb in ('assign', 'unassign'):
                 parser.add_argument('--end')
             else:
                 parser.add_argument('--on')
