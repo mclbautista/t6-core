@@ -63,7 +63,7 @@ class MCPTests(unittest.TestCase):
         self.assertIn('Client Corp', call('operator-secret'))
 
     TOOL_NAMES = [
-        'bay__drift', 'bay__list', 'bay__scan__list', 'booking__get', 'booking__list', 'camera__get', 'concern__changes', 'concern__counts', 'concern__for-message', 'concern__get', 'concern__list', 'deliverable__bangko',
+        'bay__drift', 'bay__list', 'bay__scan__list', 'booking__get', 'booking__list', 'camera__get', 'concern__changes', 'concern__counts', 'concern__for-message', 'concern__get', 'concern__list', 'contact__find', 'deliverable__bangko',
         'deliverable__candidates', 'deliverable__get', 'deliverable__hand-to-mouth', 'deliverable__list', 'deliverable__sabit', 'departments',
         'drive__capture__list', 'drive__capture__result', 'drive__catalog-at', 'drive__catalog-diff', 'drive__catalog-snapshots', 'drive__exceptions', 'drive__find', 'drive__get', 'drive__list', 'drive__overdue', 'drive__projects', 'drive__reload__report', 'drive__shipment', 'drive__shipments', 'external-link__find', 'jo__find', 'jo__get', 'jo__list', 'machine__list', 'media__list', 'meeting-notes__list', 'movement__list', 'package__get',
         'package__list', 'person__find', 'person__get', 'person__list', 'project__activity', 'project__flags',

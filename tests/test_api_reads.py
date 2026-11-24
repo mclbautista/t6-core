@@ -63,6 +63,65 @@ class ReadTests(unittest.TestCase):
         assert isinstance(result, Done)
         self.assertEqual(result.result['projects'][1]['name'], 'Example Show')
 
+    def _drives_clients(self) -> tuple[Client, Client, Client]:
+        base = f'http://127.0.0.1:{self.server.server_port}'
+        keeper, masked, plain = 't6n_' + '2' * 32, 't6n_' + '3' * 32, 't6n_' + '4' * 32
+        with self.registry._transaction() as db:
+            for person in (keeper, masked, plain):
+                db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', NULL, 0, 1)", (person,))
+            db.execute("INSERT INTO person_permissions VALUES (?, 'drives')", (keeper,))
+            db.execute("INSERT INTO person_permissions VALUES (?, 'unmasked')", (keeper,))
+            db.execute("INSERT INTO person_permissions VALUES (?, 'drives')", (masked,))
+        self.api.secrets.update({'keeper-secret': keeper, 'masked-secret': masked, 'plain-secret': plain})
+        return Client(base, 'keeper-secret'), Client(base, 'masked-secret'), Client(base, 'plain-secret')
+
+    def test_contact_find_is_a_short_type_ahead_that_needs_the_drives_permission_and_masks_for_others(self) -> None:
+        from t6.verbs import ContactFindInput
+        keeper, masked, plain = self._drives_clients()
+        self.notion.add_page('contacts', {'Name': title('Client Corp'), 'Telegram Handle': rich_text('@client')})
+        for n in range(30):
+            self.notion.add_page('contacts', {'Name': title(f'Synthetic Person {n:02d}')})
+        found = keeper.contact_find(ContactFindInput(q='cru'))
+        assert isinstance(found, Done)
+        self.assertEqual([c['name'] for c in found.result['contacts']], ['Ana Cruz'])
+        listed = keeper.contact_find(ContactFindInput(limit=5))
+        assert isinstance(listed, Done)
+        self.assertEqual(len(listed.result['contacts']), 5)
+        real = keeper.contact_find(ContactFindInput(q='client'))
+        assert isinstance(real, Done)
+        self.assertEqual(real.result['contacts'][0]['name'], 'Client Corp')
+        hidden = masked.contact_find(ContactFindInput(q='client'))
+        assert isinstance(hidden, Done)
+        self.assertNotIn('Client Corp', str(hidden.result))
+        refused = plain.contact_find(ContactFindInput(q='ana'))
+        self.assertIsInstance(refused, Refused)
+
+    def test_contact_create_previews_then_adds_one_marked_contact_and_refuses_blank_and_duplicates(self) -> None:
+        from t6.verbs import ContactCreateInput, ContactFindInput
+        keeper, _, plain = self._drives_clients()
+        before = self.notion.page_count()
+        values = {'name': '  Synthetic   Newcomer ', 'telegram_handle': '@newcomer', 'phone': '0000', 'idempotency_key': 'contact-1'}
+        preview = keeper.contact_create(ContactCreateInput(**values))
+        assert isinstance(preview, Preview)
+        self.assertEqual(self.notion.page_count(), before)
+        done = keeper.contact_create(ContactCreateInput(**values, confirm=preview.token))
+        assert isinstance(done, Done)
+        self.assertEqual(done.result['contact']['name'], 'Synthetic Newcomer')
+        self.assertEqual(self.notion.page_count(), before + 1)
+        page = self.notion.page(done.result['contact']['page_id'])
+        self.assertIn('Synthetic Newcomer', str(page))
+        notes = self.notion.block_children(done.result['contact']['page_id'])
+        self.assertIn('Added from Drives', str(notes))
+        replay = keeper.contact_create(ContactCreateInput(**values, confirm=preview.token))
+        self.assertEqual(self.notion.page_count(), before + 1)
+        self.assertIsInstance(replay, (Done, Refused))
+        for bad, rule in ((' ', 'name'), ('synthetic newcomer', 'duplicate'), ('ANA CRUZ', 'duplicate')):
+            refused = keeper.contact_create(ContactCreateInput(name=bad, idempotency_key=f'bad-{rule}-{bad.strip()}'))
+            assert isinstance(refused, Refused)
+            self.assertEqual(refused.rule, rule)
+        self.assertIsInstance(plain.contact_create(ContactCreateInput(name='Synthetic Other', idempotency_key='no-permission')), Refused)
+        self.assertEqual(self.notion.page_count(), before + 1)
+
     def test_health_reports_projects_with_a_blank_name_as_a_data_gap_with_page_ids_only(self) -> None:
         health = self.client.health()
         assert isinstance(health, dict)

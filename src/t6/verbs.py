@@ -2227,6 +2227,33 @@ def drive_mapping_apply(inputs: BaseModel, open_notion: Callable[..., Any]) -> O
         return Refused(rule='mapping', reason=str(error))
 
 
+class ContactFindInput(BaseModel):
+    q: str = ''  # part of a name or Telegram handle; empty lists the first ones
+    limit: int = Field(default=20, ge=1, le=50)
+
+
+class ContactItem(BaseModel):
+    page_id: str
+    name: str
+    telegram_handle: str | None = None
+
+
+class ContactFindOutput(BaseModel):
+    contacts: list[ContactItem]
+
+
+class ContactCreateInput(BaseModel):
+    name: str
+    telegram_handle: str | None = None
+    phone: str | None = None
+    idempotency_key: str | None = None
+    confirm: str | None = None
+
+
+class ContactCreateOutput(BaseModel):
+    contact: ContactItem
+
+
 class DriveCaptureInput(BaseModel):
     chat_id: int | None = None
     topic_id: int | None = None
@@ -3122,6 +3149,8 @@ VERBS = (
     Verb('drive', 'capture result', 'Read a capture outcome', (), DriveCaptureReadInput, DriveCaptureOutput, 'reader', 'Includes Practice and ask-for-label state.', drive_capture_result, read_only=True),
     Verb('movement', 'correct', 'Append a Movement correction', (), MovementCorrectInput, MovementCorrectOutput, 'drives', 'Preview and confirm a correction; the original Movement and custody events remain.', movement_correct),
     Verb('movement', 'list', 'Search the Movement log', (), MovementListInput, MovementListOutput, 'reader', 'Filters combine with AND; includes unresolved rows and corrections.', movement_list, read_only=True),
+    Verb('contact', 'find', 'Find Contacts by name or handle', (), ContactFindInput, ContactFindOutput, 'drives', 'A short type-ahead list over the Notion mirror Contacts, for the Drive web app person picker.', api_read, read_only=True),
+    Verb('contact', 'create', 'Add a Contact from the Drive web app', (), ContactCreateInput, ContactCreateOutput, 'drives', 'Preview and confirm; creates a Notion Contact marked "Added from Drives". A blank name or an existing name is refused.', api_write),
     Verb('drive', 'reload', 'Replace Drive data from the per-project sheet', (), DriveReloadInput, DriveReloadOutput, 'drives', 'Preview and confirm a complete reload, preserving accepted serial IDs.', drive_reload),
     Verb('drive', 'receive', 'Receive a Drive into custody', (), DriveReceiveInput, DriveWriteOutput, 'drives', 'Preview and confirm; appends a received event. Refused for a Drive in custody or retired.', drive_write),
     Verb('drive', 'release', 'Release Drives in one shipment', (), DriveReleaseInput, DriveWriteOutput, 'drives', 'Preview and confirm; one released event per Drive, grouped by shipment, with the Drives\' facts kept as they are now. Optional reason and free-text recipient. Refused whole if a Drive is released or retired.', drive_write),
