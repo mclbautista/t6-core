@@ -343,12 +343,33 @@ def configured_handlers(
         with open(environ['T6_LLM_CONFIG'], encoding='utf-8') as file:
             capture_config = json.load(file)
             photo_config = LLMConfig.from_mapping(capture_config['llm'])
-        resolver = CaptureResolver(SqliteProjectRegistry(environ['T6_DATABASE']),
+        capture_registry = SqliteProjectRegistry(environ['T6_DATABASE'])
+        resolver = CaptureResolver(capture_registry,
                                    photo_config.provider_for(PHOTO_READ.prompt_tag, env=environ),
                                    decisions=decisions_from(capture_config['decisions'], environ) if 'decisions' in capture_config else None,
-                                   environ=environ)
+                                   environ=environ, debug=debug_notifier(environ, capture_registry))
         handlers['drive.capture.resolve'] = resolver.handle
+        handlers['drive.capture.debug'] = resolver.refresh_debug
     return {"main": handlers} if handlers else {}
+
+
+def debug_notifier(environ: Mapping[str, str], registry: Any) -> Any:
+    """The Drive debug topic (`T6_DRIVE_DEBUG_CHAT_ID`, `T6_DRIVE_DEBUG_TOPIC_ID`, `T6_DRIVE_DEBUG` on|off), or None.
+
+    It needs the gateway settings too. Without `T6_DRIVE_DEBUG` it is on exactly while practice mode is on.
+    """
+    from t6.drives.debug import DebugNotifier
+    from t6.drives.practice import practice_mode
+
+    chat, topic = _whole_number(environ, 'T6_DRIVE_DEBUG_CHAT_ID', required=False), _whole_number(environ, 'T6_DRIVE_DEBUG_TOPIC_ID', required=False)
+    switch = (environ.get('T6_DRIVE_DEBUG') or '').strip().lower()
+    if switch not in ('', 'on', 'off'):
+        raise ConfigError(f"T6_DRIVE_DEBUG must be on or off, got {switch!r}")
+    url, secret = environ.get('T6_GATEWAY_URL'), environ.get('T6_GATEWAY_SECRET')
+    if chat is None or not (url and secret) or switch == 'off':
+        return None
+    enabled = (lambda: True) if switch == 'on' else (lambda: practice_mode(registry))
+    return DebugNotifier(registry, GatewayClient(HttpTransport(url), secret), chat, topic, enabled)
 
 
 def file_versions_handler(environ: Mapping[str, str]) -> Handler:

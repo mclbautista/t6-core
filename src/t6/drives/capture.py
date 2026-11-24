@@ -5,18 +5,21 @@ import base64
 import binascii
 import json
 import os
+import re
+import time
 from collections.abc import Mapping
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
 
 from t6.domain.events import JsonValue
 from t6.drives import Ref
 from t6.drives.movements import Movement, active_movements, append, custody_event, latest_custody, _append_event
+from t6.drives.debug import DebugNotifier
 from t6.drives.sqlite import SqliteDriveStore
 from t6.llm.drive_photo import read_drive_photo
-from t6.llm.drive_transmittal import classify_transmittal
+from t6.llm.drive_transmittal import judge_transmittal
 from t6.llm.transport import Image, ImageType, Provider
 from t6.worker import WorkerJob
 
@@ -36,6 +39,28 @@ def recording_topic(environ: Mapping[str, str] | None = None) -> int | None:
     return int(value) if value else None
 
 
+UNDO_WINDOW_SECONDS = 3600
+_DIRECTION = re.compile(r'(in|out)(?=[\s:\-]|$)[\s:\-]*', re.IGNORECASE)
+_PLACES = ('TABLE', 'CABINET', 'SHELF', 'BOX')
+
+
+def _parse_text(text: str) -> tuple[Literal['IN', 'OUT'] | None, str, Literal['TABLE', 'CABINET', 'SHELF', 'BOX'] | None, str]:
+    """Read a caption or follow-up answer as (direction, person, place, typed label); direction is None without a leading IN/OUT."""
+    command, _, typed = text.strip().replace('|', '\n', 1).partition('\n')
+    typed = typed.strip()
+    start = _DIRECTION.match(command.strip())
+    if start is None:
+        return None, '', None, typed or command.strip()
+    direction: Literal['IN', 'OUT'] = 'IN' if start[1].upper() == 'IN' else 'OUT'
+    tail = command.strip()[start.end():].strip()
+    if direction == 'OUT':
+        return direction, tail, None, typed
+    first, _, rest = tail.partition(' ')
+    if first.upper() in _PLACES:
+        return direction, '', first.upper(), typed or rest.strip()  # type: ignore[return-value]
+    return direction, '', None, typed or tail
+
+
 def capture_post(registry: SqliteProjectRegistry, inputs: DriveCaptureInput) -> Outcome:
     if inputs.capture:
         queue = InternalJobQueue(registry)
@@ -51,23 +76,33 @@ def capture_post(registry: SqliteProjectRegistry, inputs: DriveCaptureInput) -> 
                 return Refused(rule='input', reason='Give a label, serial or Drive')
             if inputs.drive and SqliteDriveStore(registry, within=db).get_drive(inputs.drive) is None:
                 return Refused(rule='drive', reason='Drive not found')
+            if inputs.edit and inputs.drive:
+                return Refused(rule='input', reason='An edit replaces the caption text, not the Drive')
+            if inputs.edit:  # replaces the caption only: any follow-up already given and the one-question allowance stay as they are
+                if data['state'] not in ('pending', 'exception') or data.get('text') == inputs.text:
+                    return Done(result=_result(data))
+                data.update(text=inputs.text, revision=data.get('revision', 0) + 1, state='pending', reason=None, differences=[], edited=True)
+                db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), inputs.capture))
+                queue.submit('main', 'drive.capture.resolve', f"{inputs.capture}:{data['revision']}",
+                             {'capture': inputs.capture, 'revision': data['revision']}, db=db)
+                return Done(result=_result(data))
             if data['state'] in ('resolved', 'undone', 'ignored') or data['state'] == 'pending' and (
                     data.get('follow_up_drive') == inputs.drive if inputs.drive else not data.get('follow_up_drive') and data.get('follow_up') == inputs.text.strip()):
                 return Done(result=_result(data))
-            data.update(follow_up=inputs.text.strip(), follow_up_drive=inputs.drive, revision=data.get('revision', 0) + 1, state='pending')
+            data.update(follow_up=inputs.text.strip(), follow_up_drive=inputs.drive, revision=data.get('revision', 0) + 1, state='pending', reason=None, answered=True)
             db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), inputs.capture))
             queue.submit('main', 'drive.capture.resolve', f"{inputs.capture}:{data['revision']}",
                          {'capture': inputs.capture, 'revision': data['revision']}, db=db)
             return Done(result=_result(data))
     if inputs.drive:
         return Refused(rule='input', reason='A Drive is only given for an existing capture')
-    if any(value is None for value in (inputs.chat_id, inputs.message_id, inputs.sender_telegram_id, inputs.posted_at, inputs.photo)):
-        return Refused(rule='input', reason='Give chat, message, sender, post time and photo')
-    assert inputs.chat_id is not None and inputs.photo is not None
+    if any(value is None for value in (inputs.chat_id, inputs.message_id, inputs.sender_telegram_id, inputs.posted_at)) or not (inputs.photo or inputs.text.strip()):
+        return Refused(rule='input', reason='Give chat, message, sender, post time and a photo or text')
+    assert inputs.chat_id is not None
     try:
         configured = recording_chat()
         topic = recording_topic()
-        photo = base64.b64decode(inputs.photo, validate=True)
+        photo = base64.b64decode(inputs.photo, validate=True) if inputs.photo else b''  # a text-only post has no photo
     except (ValueError, binascii.Error):
         return Refused(rule='input', reason='Invalid recording channel configuration or base64 photo')
     admitted = recording_input(inputs.chat_id, inputs.text, photo, recording_chat_id=configured,
@@ -89,8 +124,17 @@ def capture_post(registry: SqliteProjectRegistry, inputs: DriveCaptureInput) -> 
         return Done(result=_result(data))
 
 
+def _undo_until(data: dict[str, Any]) -> str | None:
+    if data['state'] != 'resolved' or data.get('resolved_at') is None:
+        return None
+    return datetime.fromtimestamp(data['resolved_at'] + UNDO_WINDOW_SECONDS, UTC).isoformat()
+
+
 def _result(data: dict[str, Any]) -> dict[str, Any]:
-    return {key: data[key] for key in ('capture', 'state', 'lines', 'differences')} | {'photo_reference': None if data['state'] == 'ignored' else data['capture'], 'message': 'ask for the label' if data['state'] == 'exception' else None}
+    return {key: data[key] for key in ('capture', 'state', 'lines', 'differences')} | {'photo_reference': None if data['state'] == 'ignored' else data['capture'], 'message': 'ask for the label' if data['state'] == 'exception' else None,
+            'reason': data.get('reason') if data['state'] == 'exception' else None,
+            'may_ask': data['state'] == 'exception' and not data.get('answered') and data.get('reason') != 'no_photo',
+            'undo_until': _undo_until(data)}
 
 
 def list_captures(registry: SqliteProjectRegistry, state: str) -> Outcome:
@@ -123,12 +167,34 @@ def capture_result(registry: SqliteProjectRegistry, capture: str) -> Outcome:
 
 
 class CaptureResolver:
-    def __init__(self, registry: SqliteProjectRegistry, provider: Provider, *, decisions: Provider | None = None, environ: Mapping[str, str] | None = None) -> None:
+    def __init__(self, registry: SqliteProjectRegistry, provider: Provider, *, decisions: Provider | None = None, environ: Mapping[str, str] | None = None,
+                 debug: DebugNotifier | None = None) -> None:
         self.registry, self.provider, self.environ = registry, provider, environ
         self.decisions = decisions
+        self.debug = debug
+
+    def refresh_debug(self, job: WorkerJob) -> JsonValue:
+        """`drive.capture.debug`: re-render a Capture's debug message after a change made through the API (undo)."""
+        if self.debug is not None:
+            self.debug.update(str(job.payload['capture']), None)
+        return None
+
+    def _note(self, capture: str, caption: str, facts: dict[str, Any] | None = None, error: str | None = None) -> None:
+        if self.debug is not None:
+            self.debug.update(capture, caption, facts, error)
 
     def handle(self, job: WorkerJob) -> JsonValue:
-        capture = str(job.payload['capture'])
+        capture, seen = str(job.payload['capture']), dict[str, str]()
+        try:
+            result = self._handle(job, capture, seen)
+        except Exception as error:
+            self._note(capture, seen.get('caption', ''), error=f'{type(error).__name__}: {error}')
+            raise
+        if 'caption' in seen:
+            self._note(capture, seen['caption'])
+        return result
+
+    def _handle(self, job: WorkerJob, capture: str, seen: dict[str, str]) -> JsonValue:
         with self.registry._transaction() as db:
             row = db.execute('SELECT data, photo FROM drive_captures WHERE id=?', (capture,)).fetchone()
             if row is None:
@@ -140,9 +206,23 @@ class CaptureResolver:
                                        topic_id=data.get('topic_id'), recording_topic_id=recording_topic(self.environ))
             if admitted is None:
                 raise ValueError('Capture no longer belongs to the configured recording channel')
+        seen['caption'] = admitted.text
+        self._note(capture, admitted.text, {'errors': [], 'parsed': None, 'photo': None})
         picked = data.get('follow_up_drive')  # the custodian chose the Drive: the photo is not read again
-        readings = [] if picked else read_drive_photo(Image(admitted.photo, ImageType(data['media_type'])), provider=self.provider).drives
-        verdict = classify_transmittal(admitted.text, bool(admitted.photo), readings, provider=self.decisions) if self.decisions is not None and not picked else 'transmittal'
+        # Jev runs once, first, on the withheld caption and has-photo flag; follow-ups, picks and caption edits skip it.
+        judged = judge_transmittal(admitted.text, bool(admitted.photo), provider=self.decisions) if self.decisions is not None and not picked and not data.get('answered') and not data.get('edited') else None
+        verdict = judged.verdict if judged else 'transmittal'
+        if judged:
+            self._note(capture, admitted.text, {'jev': {'choice': judged.choice, 'probabilities': judged.probabilities, 'model': judged.model,
+                                                        'ms': judged.latency_ms, 'failed': judged.failed}}, f'Jev failed: {judged.failed}' if judged.failed else None)
+        readings: list[Any] = []
+        if not (picked or verdict == 'not_transmittal' or not admitted.photo):
+            started = time.monotonic()
+            read = read_drive_photo(Image(admitted.photo, ImageType(data['media_type'])), provider=self.provider)
+            readings = read.drives
+            self._note(capture, admitted.text, {'photo': {'readings': [{'label': r.label, 'serial': r.serial, 'confidence': r.confidence} for r in readings],
+                                                         'model': read.trace.model, 'ms': read.trace.latency_ms or round((time.monotonic() - started) * 1000)}},
+                       f'Photo read failed: {read.reason}' if read.reason not in ('', 'unreadable') else None)
         with self.registry._transaction() as db:
             row = db.execute('SELECT data FROM drive_captures WHERE id=?', (capture,)).fetchone()
             if row is None:
@@ -159,20 +239,19 @@ class CaptureResolver:
             store = SqliteDriveStore(self.registry, within=db)
             drives = store.list_drives()
             found = {}
-            command, _, typed = data['text'].replace('|', '\n', 1).partition('\n')
-            typed = typed.strip()
-            direction: Literal['IN', 'OUT'] = 'IN' if command == 'IN' or command.startswith('IN ') else 'OUT'
-            place: Literal['TABLE', 'CABINET', 'SHELF', 'BOX'] | None = None
-            if direction == 'IN':
-                tail = command[2:].strip()
-                first, _, rest = tail.partition(' ')
-                if first in ('TABLE', 'CABINET', 'SHELF', 'BOX'):
-                    place = first
-                    typed = typed or rest.strip()
-                else:
-                    typed = typed or tail
-            if direction == 'OUT' and (not command.startswith('OUT ') or not command[4:].strip()):
-                data['state'] = 'exception'
+            direction, person, place, typed = _parse_text(data['text'])
+            follow_up = data.get('follow_up') or ''
+            if (answer := _parse_text(follow_up))[0] is not None and not picked:  # an IN/OUT answer replaces the caption's direction
+                direction, person, place, typed = answer[0], answer[1], answer[2], answer[3] or typed
+                follow_up = answer[3]
+            if self.debug is not None:
+                data.setdefault('debug', {})['parsed'] = {'direction': direction, 'person': person or None, 'place': place}
+            if not admitted.photo and not picked and not data.get('follow_up'):  # any answer lets a text-only Capture go on
+                data['state'], data['reason'] = 'exception', 'no_photo'
+                db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), capture))
+                return _result(data)
+            if direction is None or direction == 'OUT' and not person:
+                data['state'], data['reason'] = 'exception', 'missing_direction' if direction == 'OUT' or readings or typed or follow_up else 'unreadable_label'
                 db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), capture))
                 return _result(data)
             for item in readings:
@@ -185,13 +264,12 @@ class CaptureResolver:
                         data['differences'].append(f'Photo label {item.label} differs from typed {typed}')
             if picked and (chosen := store.get_drive(picked)) is not None:
                 found[chosen.id] = chosen
-            elif not found and (not readings or data.get('follow_up')):
-                identifier = data.get('follow_up') or typed
+            elif not found and (not readings or follow_up):
+                identifier = follow_up or typed
                 candidates = [d for d in drives if identifier and d.label == identifier]
                 drive = candidates[0] if len(candidates) == 1 else store.find_by_serial(identifier) if identifier else None
                 if drive:
                     found[drive.id] = drive
-            person = command[4:]
             recorder = db.execute('SELECT id FROM persons WHERE telegram_id=?', (data['sender_telegram_id'],)).fetchone()
             logged_by = Ref(page_id=recorder[0]) if recorder else Ref(text=f"telegram:{data['sender_telegram_id']}")
             if direction == 'IN':
@@ -214,6 +292,9 @@ class CaptureResolver:
                     _append_event(db, store, drive.id, latest, movement.id)
                 data['lines'].append({'label': drive.label, 'direction': direction, 'person': person})
             data['state'] = 'resolved' if found else 'exception'
+            if found:
+                data['resolved_at'] = self.registry._clock()
+            data['reason'] = None if found else 'no_drive_match' if readings or follow_up or typed else 'unreadable_label'
             db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), capture))
             return _result(data)
 
@@ -228,6 +309,8 @@ def undo_capture(registry: SqliteProjectRegistry, capture: str) -> Outcome:
         data = json.loads(row[0])
         if data['state'] in ('undone', 'ignored'):
             return Done(result=_result(data))
+        if data['state'] == 'resolved' and data.get('resolved_at') is not None and registry._clock() - data['resolved_at'] > UNDO_WINDOW_SECONDS:
+            return Refused(rule='undo_window', reason='A capture can be undone only within one hour of being resolved')
         store = SqliteDriveStore(registry, within=db)
         active = active_movements(db)
         for original in [m for m in active if m.capture == capture]:
@@ -244,4 +327,6 @@ def undo_capture(registry: SqliteProjectRegistry, capture: str) -> Outcome:
                 db.execute('INSERT INTO drive_status_resets VALUES (last_insert_rowid())')
         data['state'] = 'undone'
         db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), capture))
+        if data.get('debug', {}).get('message_ref') is not None:  # the worker keeps the debug message current
+            InternalJobQueue(registry).submit('main', 'drive.capture.debug', f'{capture}:undone', {'capture': capture}, db=db)
         return Done(result=_result(data))

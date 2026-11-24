@@ -353,6 +353,7 @@ stay outside this repository):
 - `T6_DRIVE_PROJECT_SPREADSHEET_ID`: the per-project source spreadsheet.
 - `T6_DRIVE_TRACKER_SPREADSHEET_ID`: the tracker source spreadsheet.
 - `T6_DRIVE_RECORDING_TOPIC_ID`: the recording channel topic (message_thread_id) inside the configured chat; unset admits the whole chat.
+- `T6_DRIVE_DEBUG_CHAT_ID`, `T6_DRIVE_DEBUG_TOPIC_ID`, `T6_DRIVE_DEBUG` (`on` or `off`; unset means on while practice mode is on): the main worker's Drive debug topic, one gateway message per Capture edited as steps finish. Needs `T6_GATEWAY_URL` and `T6_GATEWAY_SECRET`. See the README's environment table.
 - `GOOGLE_APPLICATION_CREDENTIALS`: the mounted service account key file.
 - `T6_DATABASE`: the shared t6 SQLite database.
 - `T6_PREVIEW_SIGNING_KEY`: the shared preview signing key.

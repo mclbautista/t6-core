@@ -90,7 +90,8 @@ Modelled in `t6.drives`.
   movements that cannot be tied with certainty to a Drive.
 - **Capture**: a recording-channel post kept before reading or matching it,
   with its chat and message IDs, sender Telegram user ID, post time, text and
-  photo. It is the source of the Movements resolved from that post.
+  photo. A Capture may be text-only (no photo); Jev keeps it as an exception
+  with reason `no_photo`. It is the source of the Movements resolved from that post.
 - **Recording channel**: TRANSMITTAL, configured by Telegram chat ID plus topic ID
   (the whole chat when no topic is configured),
   whose drive posts are recording input under [ADR 0009](docs/adr/0009-recording-channel.md).
