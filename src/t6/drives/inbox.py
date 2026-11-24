@@ -8,6 +8,7 @@ from dataclasses import replace
 from typing import Any
 from uuid import uuid4
 
+from t6.domain.studio_time import MANILA
 from t6.drives import Drive, DuplicateSerial, Ref
 from t6.drives.caption import parse_caption
 from t6.drives.movements import Movement, _movement, append, custody_event, latest_custody, _append_event
@@ -106,7 +107,7 @@ def _move(db: sqlite3.Connection, store: SqliteDriveStore, data: dict[str, Any],
     assignments = [a for a in store.list_assignments(drive.id) if a.end is None]
     project = assignments[0].project if len(assignments) == 1 and assignments[0].project else None
     movement = Movement(id='t6m_' + uuid4().hex, drive=drive.id, label=drive.label, corrects=corrects,
-                        on=datetime.fromisoformat(data['posted_at']).date(), direction=direction, person=person,
+                        on=datetime.fromisoformat(data['posted_at']).astimezone(MANILA).date(), direction=direction, person=person,
                         recorder=recorder[0] if recorder else None, recorder_telegram_id=data['sender_telegram_id'],
                         place=None, project=project, capture=data['capture'], posted_at=data['posted_at'],
                         shipment_id='shipment-' + data['capture'] if direction == 'OUT' else None,

@@ -142,7 +142,9 @@ that the edge route file and the API need.
 | `T6_CONCERN_AUTOSCAN` | Set to `1` to run the autoscan in the API server: it archives every Project's dated PM Notes lines in the PM Notes history, then scans them for Concerns. Off by default; needs the LLM service. |
 | `T6_CONCERN_OBSERVE_CLOSES` | Set to `1` to let `concern observe` close a Concern its run did not find. Off by default: a run closes nothing. |
 | `T6_CONCERN_AUTOSCAN_AT` | Manila time of the daily autoscan as `HH:MM`, default `21:00`. It never runs at start, except one catch-up when a run completed before the most recent run time and none since (the last slot served is kept in the registry); the first start after the upgrade has no stored run, so it only records that slot and waits for the next one. A run time that passes while a run is still going is served right after it. A run stops at the first `llm run` refusal and logs its rule; a stopped or failed run is not retried until the next day. Each run logs counts only: `archived`, `projects`, `skipped`, `raised`, `continued`, `announced`, `applied` (pending closes it closed) |
-| `T6_CLOSER_TELEGRAM_IDS` | The Closer setting: Telegram user IDs allowed to Close a Concern (`concern resolve`; anyone else is refused with rule `closer`), comma separated. Closers and a Project's coordinators may read `project notes-history`. Private config only; unset means no Closers |
+| `T6_CONCERNS_EXPORT_URL`, `T6_CONCERNS_EXPORT_PUSH_SECRET` | API (and later the main worker): the full URL of the VPS server's tailnet route `PUT /concerns/export` (for example `http://<vps tailnet name>:8790/concerns/export`) and its bearer secret. After each completed autoscan, once pending closes are applied, the API pushes the Concerns sheet export (CSV, one row per Concern that is not closed) there. Empty URL or secret turns the push off. A failed push is logged by error type and does not fail the run; the next autoscan pushes again. Private config only |
+| `T6_CONCERNS_EXPORT_PUSH_SECRET`, `T6_CONCERNS_EXPORT_READ_TOKEN`, `T6_CONCERNS_EXPORT_FILE` | VPS server (edge mode): the bearer secret the push route needs (empty: the route answers 503), the token the public `GET /concerns/export.csv` needs in the `X-T6-Read-Token` header (empty: the path answers 404), and the file the latest export is stored in, default `t6-concerns-export.csv` (put it in the data volume). The file is replaced atomically on each push. A missing or wrong token, a missing file or any other method is 404, the same as an unknown path. Private config only |
+| `T6_SHEET_SUBMIT_SECRET` | VPS server (edge mode): the secret of the Concerns sheet's Submit route, named by `secret_env` in the routes file (see `docs/edge-routes.example.yaml`). The route `/webhook/sheets/concerns` is refused with 401 unless `X-T6-Sheet-Signature` is the HMAC-SHA256 of `{X-T6-Sheet-Timestamp}:{body}` and the timestamp is within five minutes (signing format in `docs/deployment.md`). Also needs `T6_CONCERNS_EXPORT_URL` and `T6_CONCERNS_EXPORT_PUSH_SECRET` on the main worker to push the fresh export after a Submit (empty turns it off), with `T6_DATABASE` and `T6_PREVIEW_SIGNING_KEY` (without the key the worker does not run the job) and `T6_NOTION_TOKEN` for the Project and Person names in the export (without it they are blank). Private config only |
 | `T6_CRM_SHEET_ID` | The CRM Google Sheet ID, read by the API and the main worker with `GOOGLE_APPLICATION_CREDENTIALS` (the Sheet is shared with the service account; `project crm-links` reads its `Log` tab). Unset turns every CRM feature off |
 | `T6_CRM_DEFAULT_OWNER_PERSON_ID` | The Person who gets Leads with a blank Lead Owner in the daily CRM DM (10:00 Manila, main worker; needs `T6_CRM_SHEET_ID`, the gateway settings, `T6_NOTION_TOKEN` and `T6_NOTION_PROJECTS_DATA_SOURCE`). Must be an active Person with a Telegram ID, like `T6_DRIVE_CUSTODIAN_PERSON_ID`. Unset turns the DM off |
 | `T6_CRM_POST_PRODUCER_TELEGRAM_IDS`, `T6_CRM_ACCOUNTANT_TELEGRAM_IDS`, `T6_CRM_FINANCE_HEAD_TELEGRAM_IDS` | Telegram user IDs (comma separated, like `T6_CLOSER_TELEGRAM_IDS`; they need not be Persons) who get due `quote` and `billing` Log reminders in the daily CRM DM: quotes go to the Post Producers, billing to the Post Producers, Accountants and Finance Heads. A bad ID stops the worker at startup. Unset means nobody gets that role's reminders. The Post Producers also take a snoozed person's items (`crm snooze`) |
@@ -2321,8 +2323,7 @@ line), `close_by_name` (their Contact name, null when unknown), `close_at` (when
 null for a close). See `docs/api-read-verbs.md`.
 
 Closes wait for the next PSR. `concern resolve` (preview, then confirm) is a
-Close: only a Closer may make it (the `coordinator` role plus a Telegram user id
-on `T6_CLOSER_TELEGRAM_IDS`; anyone else is refused with rule `closer`). It does
+Close: the verb's `coordinator` role is the only check. It does
 not close the Concern: it records a pending close with who and when. A Done line
 (the PM Notes scan's `settles`) records one too. The Monday 21:00 autoscan
 applies, at the end of its run, every pending close made before that Monday
@@ -2331,8 +2332,8 @@ Monday. A run applies a pending close only for a Project whose notes it read and
 lines it all settled; a failed run applies nothing; the next run that completes
 applies what it left. Before that, a dated line the scan reads as continuing the Concern is a
 veto: it deletes the pending close, and it must be dated after the Concern's
-as-of date. `concern reopen` on a Concern with a pending close is Undo: only a
-Closer may make it (anyone else is refused with rule `closer`); it cancels the
+as-of date. `concern reopen` on a Concern with a pending close is Undo (the
+verb's `coordinator` role is the only check); it cancels the
 close and leaves the Concern open. The `settles_id` of a Close is set on the
 Concern only when the close is applied. An applied
 Close sets `manual_override`, so later lines no longer change that Concern.

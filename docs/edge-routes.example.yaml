@@ -3,3 +3,5 @@
 - {path: /events/frameio/files, verifier: frameio_v0, secret_env: FRAMEIO_WEBHOOK_SECRET, job_kind: frameio.file_versioned, queue: main}
 - {path: /events/notion/pages, verifier: notion, secret_env: NOTION_WEBHOOK_TOKEN, job_kind: notion.page_changed, queue: main}
 - {path: /events/google/calendar, verifier: google_channel, secret_env: T6_GOOGLE_CHANNEL_TOKEN, job_kind: google.calendar_changed, queue: main}
+# The Concerns sheet's Submit (#735). Apps Script signs `{timestamp}:{body}` with this secret (see docs/deployment.md).
+- {path: /webhook/sheets/concerns, verifier: sheets_hmac, secret_env: T6_SHEET_SUBMIT_SECRET, job_kind: sheets.concerns_submit, queue: main}

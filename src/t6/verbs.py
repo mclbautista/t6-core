@@ -2668,6 +2668,46 @@ class DriveProjectsOutput(DrivePracticeOutput):
     projects: list[DriveProjectCount]
 
 
+class DriveProjectMovementsInput(BaseModel):
+    project: str = Field(min_length=1)
+
+
+class DriveProjectWeeklyInput(BaseModel):
+    project: str | None = None
+    week: str | None = None  # Any ISO date in the Monday–Sunday Manila week; defaults to this week.
+
+
+class DriveProjectWeeklyCount(BaseModel):
+    project: DriveRef
+    in_count: int
+    out_count: int
+    overdue: list[DriveOverdueItem]
+
+
+class DriveProjectWeeklyOutput(DrivePracticeOutput):
+    week_start: str
+    week_end: str
+    as_of: str  # Manila date used for the current overdue list, independently of the selected week.
+    projects: list[DriveProjectWeeklyCount]
+
+
+def drive_project_weekly(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.drives.project_reads import project_weekly
+    assert isinstance(inputs, DriveProjectWeeklyInput)
+    try:
+        week = IsoDate.fromisoformat(inputs.week) if inputs.week is not None else None
+    except ValueError:
+        return Refused(rule='date', reason='Use an ISO date (YYYY-MM-DD) for the week')
+    return Done(result=project_weekly(_people().registry, week, inputs.project).model_dump(mode='json'))
+
+
+def drive_project_movements(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.drives.project_reads import project_movements
+    assert isinstance(inputs, DriveProjectMovementsInput)
+    with _people().registry._transaction() as db:
+        return Done(result={'movements': project_movements(db, inputs.project)})
+
+
 def drive_projects(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
     from t6.drive_reads import project_counts
     from t6.drives.sqlite import SqliteDriveStore
@@ -3082,6 +3122,7 @@ class DriveRef(BaseModel):
 
 class MovementItem(BaseModel):
     to_review: bool = False
+    coordinators: list[str] = Field(default_factory=list)
     recorder_telegram_id: int | None = None
     shipment_id: str | None = None
     posted_at: str | None = None
@@ -3463,6 +3504,8 @@ VERBS = (
     Verb('drive', 'mapping propose', 'Write proposed sheet Project mappings for review', (), DriveMappingProposeInput, DriveMappingOutput, 'drives', 'Propose exact names, then codes, then fuzzy names; never store mappings.', drive_mapping_propose),
     Verb('drive', 'mapping apply', 'Store a checked sheet Project mapping file', (), DriveMappingApplyInput, DriveMappingOutput, 'drives', 'Preview and confirm mappings to registered T6 Project IDs. Null removes a mapping.', drive_mapping_apply),
     Verb('drive', 'projects', 'Project Drive counts', (), DriveProjectsInput, DriveProjectsOutput, 'reader', 'Distinct Drives per Project with an open Assignment, grouped by derived custody status.', drive_projects, read_only=True),
+    Verb('drive', 'project-movements', 'Read a Project\'s Drive Movements', (), DriveProjectMovementsInput, MovementListOutput, 'reader', 'Effective Movements, newest first, with the coordinator IDs stored at the move; dates are Manila days.', drive_project_movements, read_only=True),
+    Verb('drive', 'project-weekly', 'Read weekly Project Drive traffic', (), DriveProjectWeeklyInput, DriveProjectWeeklyOutput, 'reader', 'IN and OUT counts for a Monday–Sunday Manila week, per Project, with its open-use Drives currently OUT more than 14 Manila days. Omit project for all Projects with Drive uses or Movements.', drive_project_weekly, read_only=True),
     Verb('drive', 'capture', 'Store a recording-channel post', (), DriveCaptureInput, DriveCaptureOutput, 'gateway', 'Gateway only; stores first and queues resolution.', drive_capture),
     Verb('drive', 'capture undo', 'Undo a capture', (), DriveCaptureReadInput, DriveCaptureOutput, 'gateway', 'Gateway only; appends reversing entries once.', drive_capture_undo),
     Verb('drive', 'capture list', 'List captures by state', (), DriveCaptureListInput, DriveCaptureListOutput, 'drives', 'Newest first; default state exception. Each has its text, sender and photo size and type; an ignored capture has no text and no photo. Drive callers only.', drive_capture_list, read_only=True),
@@ -3536,7 +3579,7 @@ VERBS = (
     Verb("external-link", "find", "Find an External Link", (), ExternalLinkFindInput, ExternalLinkFindOutput, "reader", "Resolve an external reference.", api_read, read_only=True),
     Verb("project", "get", "Get a Project", (), ProjectGetInput, ProjectGetOutput, "reader", "Read a Project.", api_read, read_only=True),
     Verb("project", "notes", "Read dated PM Notes", (), ProjectNotesInput, ProjectNotesOutput, "reader", "Read dated PM Notes lines.", api_read, read_only=True),
-    Verb("project", "notes-history", "Read a Project's PM Notes history", (), ProjectNotesHistoryInput, ProjectNotesHistoryOutput, "reader", "Every dated line the autoscan has archived for the Project (its t6 ID), newest first, with first seen, last seen and removed (the first run the line was absent) as Manila dates. Only Closers and the Project's coordinators may read it.", api_read, read_only=True),
+    Verb("project", "notes-history", "Read a Project's PM Notes history", (), ProjectNotesHistoryInput, ProjectNotesHistoryOutput, "reader", "Every dated line the autoscan has archived for the Project (its t6 ID), newest first, with first seen, last seen and removed (the first run the line was absent) as Manila dates. Only Persons with the master brief on and the Project's coordinators may read it.", api_read, read_only=True),
     Verb("project", "flags", "Read Project flags", (), ProjectFlagsInput, ProjectFlagsOutput, "reader", "Recompute data gaps and date warnings.", api_read, read_only=True),
     Verb("person", "list", "List Contacts", (), PersonListInput, PersonListOutput, "reader", "Read Contacts.", api_read, read_only=True),
     Verb('text', 'withhold', 'Withhold credentials from text', (), TextWithholdInput, TextWithholdOutput, 'reader', 'Give up to 200 texts; each comes back in order with labelled credential values (password, passcode, pass, pin, pw) replaced by the placeholder. Nothing is stored. Use it before showing message text outside its chat.', text_withhold, read_only=True),
@@ -3614,7 +3657,7 @@ VERBS = (
     Verb("concern", "get", "Get a Concern", (), ConcernGetInput, ConcernGetOutput, "reader", "Read a Concern and its age.", concern_get, read_only=True),
     Verb("concern", "raise", "Raise a Concern", (), ConcernRaiseInput, ConcernOutput, "coordinator", "Record a line waiting on a party.", concern_write),
     Verb("concern", "note", "Add a Concern note", (), ConcernNoteInput, ConcernOutput, "coordinator", "Notes are append-only.", concern_write),
-    Verb("concern", "resolve", "Resolve a Concern", (), ConcernResolveInput, ConcernOutput, "coordinator", "A Closer's close is pending until the next PSR: the Monday autoscan applies it unless a PM Notes line continues the Concern first. Reopen cancels it.", concern_write),
+    Verb("concern", "resolve", "Resolve a Concern", (), ConcernResolveInput, ConcernOutput, "coordinator", "A close is pending until the next PSR: the Monday autoscan applies it unless a PM Notes line continues the Concern first. Reopen cancels it.", concern_write),
     Verb("concern", "reopen", "Reopen a Concern", (), ConcernReopenInput, ConcernOutput, "coordinator", "Keep its original age.", concern_write),
     Verb("jo", "get", "Get a Job Order", (), JoGetInput, JoGetOutput, "reader", "Read a Job Order.", None, read_only=True),
     Verb("jo", "raise", "Raise a Job Order", (), JoRaiseInput, JoWriteOutput, "coordinator", "Create a Job Order.", jo_write),

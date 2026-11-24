@@ -11,7 +11,7 @@ from typing import Any
 from t6.drives import Assignment, CatalogSnapshot, CustodyEvent, CustodyKind, Drive, DriveStatus, DriveStore, Ownership, Party, Ref, normalize_serial
 from t6.verbs import (DriveCatalogAtOutput, DriveCatalogChange, DriveCatalogDiffOutput, DriveCatalogEntryItem, DriveCatalogSnapshotItem,
                       DriveCatalogSnapshotsOutput, DriveAssignmentItem, DriveEventItem, DriveExceptionItem, DriveExceptionsOutput, DriveFindOutput, DriveGetOutput, DriveItem,
-                      DriveListItem, DriveListOutput, DriveMatch, DriveOverdueItem, DriveOverdueOutput, DriveParty, DriveRef, DriveRelease, DriveReloadReport, DriveReloadReportOutput, DriveShipmentItem, DriveShipmentOutput,
+                      DriveListItem, DriveListOutput, DriveMatch, DriveOverdueOutput, DriveParty, DriveRef, DriveRelease, DriveReloadReport, DriveReloadReportOutput, DriveShipmentItem, DriveShipmentOutput,
                       DriveShipmentsOutput, DriveSourceItem)
 
 
@@ -223,19 +223,5 @@ def reload_report(store: DriveStore, stored: tuple[float, dict[str, Any]] | None
 
 
 def overdue(store: DriveStore, today: date) -> DriveOverdueOutput:
-    rows = []
-    for drive in store.list_drives():
-        if drive.ownership is not Ownership.T6:
-            continue
-        events = store.list_events(drive.id)
-        if not events:
-            continue
-        last = events[-1]
-        if last.kind is not CustodyKind.RELEASED or last.on is None or (today - last.on).days <= 14:
-            continue
-        facts = store.shipment_facts(last.shipment_id) if last.shipment_id else None
-        person = facts[0] if facts and facts[0] else (last.party.ref.text or last.party.ref.page_id) if last.party else None
-        rows.append(DriveOverdueItem(drive_id=drive.id, label=drive.label, serial=drive.serial, person=person,
-                                    released_on=last.on.isoformat(), days_out=(today - last.on).days))
-    rows.sort(key=lambda row: (row.released_on, row.label or '', row.drive_id))
-    return DriveOverdueOutput(overdue=rows)
+    from t6.drives.overdue import overdue_drives
+    return DriveOverdueOutput(overdue=overdue_drives(store, (d for d in store.list_drives() if d.ownership is Ownership.T6), today))

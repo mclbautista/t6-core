@@ -447,6 +447,8 @@ _MIGRATIONS = (
     UNIQUE (event, property))"""),
     # A person's CRM snooze: the last snoozed day (Manila); one row per person, deleted on unsnooze (t6-core #716).
     (64, False, """CREATE TABLE crm_snooze (person_id TEXT PRIMARY KEY REFERENCES persons(id), until TEXT NOT NULL, set_at REAL NOT NULL)"""),
+    # What the Concerns sheet last showed for a Concern: the result of its latest Submit, and the job that wrote it (t6-core #735).
+    (65, False, """CREATE TABLE concern_sheet_results (concern_id TEXT PRIMARY KEY REFERENCES concerns(id), result TEXT NOT NULL, job_id INTEGER NOT NULL, at REAL NOT NULL)"""),
 )
 
 
