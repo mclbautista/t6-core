@@ -12,7 +12,7 @@ from t6.google.sharing import PERMISSION as BOOKINGS, enqueue as enqueue_sharing
 from t6.ids import EntityKind, T6Id
 from t6.preview import PreviewTokens
 from t6.registry.core import normalize_page_id
-from t6.registry.sqlite import SqliteProjectRegistry, _audit
+from t6.registry.sqlite import SqliteProjectRegistry, _audit, _intend_sync
 from t6.verbs import Done, Outcome, Refused
 from t6.vocabulary import PERSON_KINDS
 
@@ -35,6 +35,12 @@ INTERNAL_ACTORS: Mapping[str, frozenset[str]] = {CALENDAR_ACTOR: frozenset({'boo
 PERMISSIONS = frozenset({"operator", "coordinator", "bookings", "drives", "admin", "llm", "unmasked", "fleet", "bays_edit", "minutes", "bay_scan"})
 STAFF_RULE = "role:staff"
 """An allowed-tapper rule: any active staff Person (a kind, not a permission, so it is not in `PERMISSIONS`)."""
+
+
+def _intend_person_sync(db: Any, person_id: str, now: float) -> None:
+    """Queue showing the Person's T6 ID on its newly bound Contacts page."""
+    _intend_sync(db, person_id, 1, now)
+    db.execute('INSERT INTO person_sync_intents (intent_id) VALUES (last_insert_rowid())')
 
 
 class People:
@@ -188,6 +194,7 @@ class People:
                     db.execute("INSERT INTO persons VALUES (?, NULL, '[]', '[]', ?, 0, 1)", (person_id, entry['telegram_id']))
                     db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, ?, 1)", (entry['page_id'], person_id, now))
                     _audit(db, person_id, 'person_migrated', actor, now, None, {'page_id': entry['page_id'], 'telegram_id': entry['telegram_id']})
+                    _intend_person_sync(db, person_id, now)
                     entry.update(action='registered', t6_id=person_id)
                 db.execute('INSERT OR REPLACE INTO person_migration_receipts VALUES (?, ?, ?)', (fingerprint, snapshot, json.dumps(entries)))
         return {'digest': fingerprint, 'entries': entries, 'review': [e for e in entries if e['problem'] is not None]}
@@ -289,6 +296,7 @@ class People:
                 person_id = str(T6Id.mint(EntityKind.PERSON))
                 db.execute('INSERT INTO persons VALUES (?, ?, ?, ?, ?, ?, ?)', (person_id, values['kind'], json.dumps(values.get('departments', [])), json.dumps(values.get('roles', [])), telegram, int(values.get('master_brief', False)), int(values.get('active', True))))
                 db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, ?, 1)", (page, person_id, now))
+                _intend_person_sync(db, str(person_id), now)
                 before = None
             elif verb in ('assign', 'unassign'):
                 role = values['role'].strip()
@@ -305,6 +313,7 @@ class People:
                 before = {'page_id': current[0] if current else None}
                 db.execute("UPDATE bindings SET active = 0 WHERE system = 'notion' AND project_id = ?", (person_id,))
                 db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, ?, 1) ON CONFLICT(system, page_id) DO UPDATE SET active = 1", (page, person_id, now))
+                _intend_person_sync(db, str(person_id), now)
                 enqueue_sharing(self.registry, db, str(person_id), verb, key, now)  # the Person's Google email comes from the bound page
             elif verb == 'shift':
                 current = db.execute('SELECT pattern, start, end FROM person_shifts WHERE person_id = ?', (person_id,)).fetchone()

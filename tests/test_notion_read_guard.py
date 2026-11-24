@@ -53,6 +53,8 @@ LIVE_READ_ALLOWLIST: dict[tuple[str, str, str], str] = {
     ("notion/jo_projection.py", "JobOrderProjection.reconcile", "retrieve_page"): "Reconcile live Job Order page state for notion.page_changed event.",
     ("notion/jo_projection.py", "JobOrderProjection.sync", "query_data_source"): "Deduplicate or recover Job Order create by T6 ID against live Notion.",
     ("notion/jo_projection.py", "JobOrderProjection.sync", "retrieve_page"): "Check current Notion status baseline before projecting Job Order.",
+    ("notion/person_projection.py", "PersonProjection.reconcile", "retrieve_page"): "Reconcile live Contacts page state for notion.page_changed event.",
+    ("notion/person_projection.py", "PersonProjection.sync", "retrieve_page"): "Check the shown T6 ID on the Contacts page before projecting.",
     ("notion/deliverable_projection.py", "DeliverableProjection._option", "retrieve_data_source"): "Resolve live Deliverable Status option name before projecting status.",
     ("notion/deliverable_projection.py", "DeliverableProjection.reconcile", "retrieve_page"): "Reconcile live Deliverable page state for notion.page_changed event.",
     ("notion/deliverable_projection.py", "DeliverableProjection.sync", "query_data_source"): "Deduplicate Deliverable create by T6 ID against live Notion.",

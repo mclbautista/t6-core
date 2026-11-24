@@ -860,6 +860,10 @@
           "id": "nhqJ"
         },
         {
+          "name": "T6 ID",
+          "type": "rich_text"
+        },
+        {
           "name": "TelegramHandle",
           "type": "rich_text",
           "id": "GvDU"

@@ -106,6 +106,7 @@ class ContactsRow(NotionModel):
     related_to_tasks_freelancer: tuple[str, ...] = notion("Related to Tasks (Freelancer)", "relation", id="ibTG", default=())
     software: tuple[str, ...] = notion("Software", "multi_select", id="F_%3Fl", default=())
     swing_drives_in_possession: tuple[str, ...] = notion("Swing Drives in Possession", "relation", id="nhqJ", default=())
+    t6_id: str | None = notion("T6 ID", "rich_text")
     telegram_handle: str | None = notion("TelegramHandle", "rich_text", id="GvDU")
     telegram_user_id: str | None = notion("TelegramUserID", "rich_text", id="%5Cz%7Cf")
     wiki: tuple[str, ...] = notion("\U0001f4d4 Wiki", "relation", id="naL%5B", default=())
