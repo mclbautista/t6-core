@@ -97,6 +97,9 @@ def project_from_row(row: ProjectsRow, last_edited: dt.datetime | None = None, p
         director_ids=row.director,
         cinematographer_ids=row.cinematographer,
         prod_coor_supe_ids=row.prod_coor_supe,
+        lead_owner_ids=row.lead_owner,
+        delegate_producer_ids=row.delegate_producer,
+        line_producer_ids=row.line_producer,
         last_edited=last_edited,
     )
 

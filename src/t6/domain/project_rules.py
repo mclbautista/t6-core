@@ -46,8 +46,8 @@ class StatusGroup(StrEnum):
 _DATED = {"in-progress", "in-progress tvc"}
 _IN_PROGRESS = _DATED | {"airing"}
 _ON_HOLD = {"standby", "archiving"}
-_INCOMING = {"leads", "lead", "negotiations", "proposal made"}
-"""Refine later with the CRM's own definition of a lead."""
+_INCOMING = {"leads", "lead", "negotiations", "proposal made", "onboarding"}
+"""The CRM stages before a Project is In-Progress (`t6.domain.CrmStage`), Lost excepted."""
 _NEVER_SNAPSHOTTED = {"archived", "lost"}
 _IN_PROGRESS_DATES = ("playdate", "submission_deadline")
 _ARCHIVING_DATES = ("archival_deadline",)

@@ -301,7 +301,7 @@ The Concerns sheet's Submit (#735) is a signed POST to `/webhook/sheets/concerns
 - `X-T6-Sheet-Signature`: the lower-case hex of HMAC-SHA256, keyed with the submit secret (UTF-8), over the bytes `{timestamp}:{body}`: the timestamp text exactly as sent in the header, a colon, then the body bytes exactly as sent. No prefix.
 - The edge answers 401 for a missing header, a bad signature, or a timestamp more than five minutes from its clock (past or future); nothing is queued. It checks the signature first and the age second, in constant time, as for Frame.io.
 
-The main worker (`T6_DATABASE`, `T6_PREVIEW_SIGNING_KEY`) applies each row in order: a `revision` that differs from the Concern's current one is refused with "Changed since your last refresh"; a Note goes through `concern note`; Close goes through `concern resolve` (a pending close) and Undo close through `concern reopen`; the store's own refusals pass through. It calls the store directly as actor `sheet:<email>`, not through the API. One row's refusal does not stop the others, and each write has the idempotency key `sheet:<job id>:<Concern id>:<verb>`, so a re-delivered job writes nothing twice. The result per row (`Closing after PSR`, `Undone`, `Note added`, or the reason) is kept in `concern_sheet_results` (migration 65) and shown as `last result` in every export until the next Submit for that Concern. After the rows the worker pushes a fresh export with `T6_CONCERNS_EXPORT_URL` and `T6_CONCERNS_EXPORT_PUSH_SECRET` (the API's values); a failed push is logged and never fails the job. Project and Person names in the export come from Notion with `T6_NOTION_TOKEN` and are blank without it. `concern list` shows the email as `close_by_name` for a close made from the sheet.
+The main worker (`T6_DATABASE`, `T6_PREVIEW_SIGNING_KEY`) applies each row in order: a `revision` that differs from the Concern's current one is refused with "Changed since your last refresh"; a Note goes through `concern note`; Close goes through `concern resolve` (a pending close) and Undo close through `concern reopen`; the store's own refusals pass through. It calls the store directly as actor `sheet:<email>`, not through the API. One row's refusal does not stop the others, and each write has the idempotency key `sheet:<job id>:<Concern id>:<verb>`, so a re-delivered job writes nothing twice. The result per row (`Closing after PSR`, `Undone`, `Note added`, or the reason) is kept in `concern_sheet_results` (migration 63) and shown as `last result` in every export until the next Submit for that Concern. After the rows the worker pushes a fresh export with `T6_CONCERNS_EXPORT_URL` and `T6_CONCERNS_EXPORT_PUSH_SECRET` (the API's values); a failed push is logged and never fails the job. Project and Person names in the export come from Notion with `T6_NOTION_TOKEN` and are blank without it. `concern list` shows the email as `close_by_name` for a close made from the sheet.
 
 The `main` jobs the API starts itself go to the internal job table in the t6 database (ADR 0006), not to `T6_QUEUE_DB`: `registry.sync`, `deliverable.sync`, `jo.sync`, `project.status_sync`, `operator.deliver`, `chat.reply`, the `/tap` job and the reconcile `notion.page_changed`. Outside events (Notion and Frame.io webhooks) keep using the VPS queue. When the API starts it moves the waiting `main` jobs of the four sync kinds from its queue file into the internal job table (same kind, same dedupe key; running it twice moves nothing twice) and logs, by kind, the other waiting jobs it leaves in the queue file (`t6.server: waiting jobs left in the queue file: ...`). Read that count before deciding what to do with them.
 
@@ -412,3 +412,41 @@ for staff; the adapter has no write scope to change their sharing.
 Until the release that implements ADR 0010 (planned 0.6.27), the deployed 0.6.26 still
 has the old `drive cutover` verb and ignores `T6_DRIVE_LIVE`. Do not run `drive cutover`;
 it is being removed.
+
+## CRM Sheet
+
+The CRM keep-warm feature (spec #705) uses one Google Sheet. It is off until
+`T6_CRM_SHEET_ID` (the Sheet ID) is set on the main worker; with the setting
+absent nothing is read or written. The worker also needs `T6_DATABASE`,
+`T6_NOTION_TOKEN` and `GOOGLE_APPLICATION_CREDENTIALS` (the same service account
+key file as the Drive sheets).
+
+This Sheet is the one place t6 writes to Google Sheets, so share it with the
+service account as **Editor** (the Drive source spreadsheets stay Viewer).
+The Sheet writer signs in with the service account only, with the
+`https://www.googleapis.com/auth/spreadsheets` scope; the Drive reads keep
+`spreadsheets.readonly`. t6 writes values only. Cyril sets up these tabs once
+by hand (netops #185):
+
+- `Log`: people type here. Its Project column has a data-validation dropdown
+  from the list in `Projects!A:A`.
+- `Projects`: hidden. Column A holds one line per open Lead and active Project,
+  `Name · t6p_...`, sorted by name, from row 1 with no header. t6 rewrites the
+  whole column; do not type in it.
+- `History`: written by t6 (#713).
+
+The `Projects` list holds the registered Projects whose Notion Status is in the
+incoming group (Leads, Negotiations, Proposal Made) or is In-Progress or Airing.
+Standby, Archiving, Archived, Lost and unregistered pages are left out. The
+main worker queues one `crm.sheet_sync` job after a `registry.sync` (registration)
+or after a Notion edit of a Project's title or Status. Changes within five
+minutes share one job; the job rebuilds the column from Notion, writing the new
+lines before clearing the rows below, so a failed write leaves the old list and
+is retried (see `queue failed`).
+
+The API also reads the Sheet (`spreadsheets.readonly` scope) when
+`T6_CRM_SHEET_ID` is set. `project crm-links PROJECT` (operator) reads the `Log`
+tab and returns the Project's links grouped by kind: `quote`, `billing` and
+`gmail_thread`. Log rows map to a Project only by the `t6p_` ID in the Project
+column; a row with no ID, an unknown ID or no date is reported by the reader and
+never guessed. t6 does not read Notion page bodies.

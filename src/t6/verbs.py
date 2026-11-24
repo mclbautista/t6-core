@@ -356,6 +356,34 @@ def project_links(inputs: ProjectLinksInput, open_notion: Callable[..., Any]) ->
     return ChatLinks(people.registry, people.tokens, _project_name_reader(open_notion)).links(inputs.project)
 
 
+class ProjectCrmLinksInput(BaseModel):
+    project: str
+
+
+class ProjectCrmLinksOutput(BaseModel):
+    project_id: str
+    links: dict[str, list[str]]
+
+
+def project_crm_links(inputs: ProjectCrmLinksInput, open_notion: Callable[..., Any]) -> Outcome:
+    """A Project's CRM Log links grouped by kind, in one read of the CRM Sheet."""
+    from t6.chat_link import ChatLinks
+    from t6.crm.config import SHEET_VARIABLE, crm_source
+    from t6.crm.log import links_by_kind, read_log
+
+    with _people().registry._transaction() as db:
+        row = ChatLinks._resolve_project(db, inputs.project)
+    if not row:
+        return Refused(rule='project', reason='Project not found')
+    try:
+        source = crm_source(os.environ)
+        if source is None:
+            return Refused(rule='config', reason=f'Set {SHEET_VARIABLE}')
+        return Done(result={'project_id': row[0], 'links': links_by_kind(read_log(source, {row[0]}), row[0])})
+    except (OSError, ValueError) as error:
+        return Refused(rule='crm_sheet', reason=str(error))
+
+
 class PersonAddInput(BaseModel):
     page_id: str
     kind: str
@@ -1307,6 +1335,29 @@ class ProjectListInput(ReadInput):
 
 class ProjectListOutput(BaseModel):
     projects: list[ReadProject]
+
+
+class LeadListInput(ReadInput):
+    pass
+
+
+class LeadRead(BaseModel):
+    """An open Lead: a Project in a CRM stage other than Lost. `days_in_stage` is None when no stage change is recorded."""
+
+    project_id: str
+    page_id: str
+    name: str
+    stage: str
+    lead_owner_ids: list[str]
+    studio_id: str | None
+    delegate_producer_ids: list[str]
+    line_producer_ids: list[str]
+    prod_coor_supe_ids: list[str]
+    days_in_stage: int | None
+
+
+class LeadListOutput(BaseModel):
+    leads: list[LeadRead]
 
 
 class JoListInput(ReadInput):
@@ -2321,7 +2372,7 @@ class DriveCaptureLine(BaseModel):
 
 class DriveCaptureItem(BaseModel):
     text: str
-    state: Literal['open']
+    state: Literal['open', 'approved', 'not_a_drive', 'closed']  # open waits in the Inbox; closed is an open Item whose Capture was undone
 
 
 class DriveCaptureCount(BaseModel):
@@ -2358,6 +2409,66 @@ def drive_capture_undo(inputs: BaseModel, open_notion: Callable[..., Any]) -> Ou
     from t6.drives.capture import undo_capture
     assert isinstance(inputs, DriveCaptureReadInput)
     return undo_capture(_registry.get(), inputs.capture)
+
+
+class DriveInboxInput(BaseModel):
+    pass
+
+
+class DriveGuess(BaseModel):
+    drive: str
+    confidence: float
+    reason: str
+
+
+class DriveInboxItem(BaseModel):
+    capture: str
+    item: int  # the Item's place in the Capture, counted from 0; with `capture` it names the Item for `drive approve`
+    text: str
+    caption: str
+    direction: Literal['IN', 'OUT']
+    recipient: str | None
+    photo_reference: str | None  # the Capture ID when it kept a photo; read the bytes with `drive capture photo`
+    guesses: list[DriveGuess]  # ranked, best first; none until guessing exists
+    chat_id: int  # with the topic and message, the link to the post
+    topic_id: int | None
+    message_id: int
+    posted_at: str
+
+
+class DriveInboxOutput(DrivePracticeOutput):
+    items: list[DriveInboxItem]
+
+
+class DriveApproveInput(BaseModel):
+    capture: str
+    item: int
+    choice: Literal['drive', 'new', 'not_a_drive', 'none']  # drive: the Drive given by `drive` or `typed`; new: create the Drive; not_a_drive: close the Item; none: leave it waiting
+    drive: str | None = None  # a Drive ID the custodian picked
+    typed: str | None = None  # a label or serial the custodian typed
+    label: str | None = None  # for `new`: the Drive's label; the Item's text when not given
+    serial: str | None = None  # for `new`
+
+
+class DriveApproveOutput(DrivePracticeOutput):
+    capture: str
+    item: int
+    state: Literal['open', 'approved', 'not_a_drive', 'closed']
+    drive: str | None
+    movement: str | None
+
+
+def drive_inbox(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.drives.inbox import inbox
+    return inbox(_registry.get())
+
+
+def drive_approve(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.drives.inbox import approve
+    assert isinstance(inputs, DriveApproveInput)
+    token = os.environ.get('T6_NOTION_TOKEN')
+    source = _verb_notion_source(open_notion, token or '') if _notion_source.get() is not None or token else None
+    return approve(_registry.get(), inputs, source, _actor.get())
 
 
 class DriveCaptureListInput(BaseModel):
@@ -3278,6 +3389,8 @@ VERBS = (
     Verb('drive', 'capture list', 'List captures by state', (), DriveCaptureListInput, DriveCaptureListOutput, 'drives', 'Newest first; default state exception. Each has its text, sender and photo size and type; an ignored capture has no text and no photo. Drive callers only.', drive_capture_list, read_only=True),
     Verb('drive', 'capture photo', 'Read the photo of a capture', (), DriveCaptureReadInput, DriveCapturePhotoOutput, 'drives', 'Returns the kept photo bytes, base64-encoded, to a Drive caller only. Not an MCP tool; never sent to another service.', drive_capture_photo),
     Verb('drive', 'capture result', 'Read a capture outcome', (), DriveCaptureReadInput, DriveCaptureOutput, 'reader', 'Includes Practice and ask-for-label state.', drive_capture_result, read_only=True),
+    Verb('drive', 'inbox', 'List the Items waiting on approval', (), DriveInboxInput, DriveInboxOutput, 'drives', 'Newest Capture first, each Item in caption order, with its caption, direction, recipient, photo reference and guesses (none yet). Count lines never appear. A Capture whose caption needs IN or OUT, or R: on an OUT, waits for its poster and is left out.', drive_inbox, read_only=True),
+    Verb('drive', 'approve', 'Settle one Inbox Item', (), DriveApproveInput, DriveApproveOutput, 'drives', 'Give the Item (capture and item number) and one choice. drive appends the Movement for the Drive given or typed; new creates the Drive and its Movement; not_a_drive closes the Item with no Movement; none leaves it waiting. A repeat of the settling call returns the same result; another choice for a settled Item is refused.', drive_approve),
     Verb('movement', 'correct', 'Append a Movement correction', (), MovementCorrectInput, MovementCorrectOutput, 'drives', 'Preview and confirm a correction; the original Movement and custody events remain.', movement_correct),
     Verb('movement', 'list', 'Search the Movement log', (), MovementListInput, MovementListOutput, 'reader', 'Filters combine with AND; includes unresolved rows and corrections.', movement_list, read_only=True),
     Verb('movement', 'photo-add', 'Add or replace the photo of a movement', (), MovementPhotoAddInput, MovementPhotoOutput, 'drives', 'One photo per movement: JPEG, PNG or WebP, at most 10 MB, stored in its own folder, never sent to an LLM. Replaces an earlier photo.', movement_photo_add),
@@ -3387,7 +3500,9 @@ VERBS = (
     Verb("person", "assign", "Assign a Project role", (), PersonProjectRoleInput, PersonWriteOutput, "coordinator", "Assign a Person to a Project role.", person_assign),
     Verb("person", "unassign", "Remove a Project role", (), PersonProjectRoleInput, PersonWriteOutput, "coordinator", "Remove a Person from a Project role.", person_unassign),
     Verb("person", "get", "Get a Person", (), PersonGetInput, PersonGetOutput, "reader", "Read a Person.", person_get, read_only=True),
+    Verb("lead", "list", "List the open Leads with CRM stage and client roles", (), LeadListInput, LeadListOutput, "reader", "Read the Projects in a CRM stage other than Lost.", api_read, read_only=True),
     Verb("project", "links", "Read a Project's links card", (), ProjectLinksInput, ProjectLinksOutput, "operator", "Read a Project's links card.", project_links, read_only=True),
+    Verb("project", "crm-links", "Read a Project's CRM links by kind", (), ProjectCrmLinksInput, ProjectCrmLinksOutput, "operator", "Read the CRM Sheet Log; links grouped by kind.", project_crm_links, read_only=True),
     Verb("project", "link-chat", "Link a Telegram chat to a Project", (), ProjectChatInput, ProjectChatOutput, "coordinator", "Approval is required.", project_link_chat),
     Verb("project", "unlink-chat", "Unlink a Telegram chat from a Project", (), ProjectChatInput, ProjectChatOutput, "coordinator", "Approval is required.", project_unlink_chat),
     Verb("project", "start", "Start a Project: a previewed plan, then its t6 steps", (), ProjectStartInput, ProjectStartOutput, "operator", "A preview by job; confirm requests the Approval and the Start waits. When the Approval is granted the Frame.io step, Deliverables, Media locations and Bookings are applied once, as the Person who confirmed; a denied Approval applies nothing. The manual steps are listed and recorded then.", project_start),
@@ -3880,7 +3995,7 @@ def add_parsers(commands: Any) -> None:
                                     required=field.is_required(), default=field.get_default())
             parser.set_defaults(registered_verb=entry)
             continue
-        if entry.handler is project_links:
+        if entry.handler in (project_links, project_crm_links):
             parser.add_argument('project')
             parser.set_defaults(registered_verb=entry)
             continue

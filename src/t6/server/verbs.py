@@ -334,12 +334,12 @@ class VerbAPI:
         if (entry.noun, entry.verb) in {('transcript', 'create'), ('transcript', 'speakers'), ('transcript', 'translate')}:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._transcripts().request(entry.verb, inputs, actor, translate_enabled=self.translate_enabled)
-        elif (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'notes'), ('project', 'notes-history'), ('project', 'flags'), ('project', 'resolve'), ('concern', 'list'), ('concern', 'get'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'candidates'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find'), ('version', 'get')}:
+        elif (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'notes'), ('project', 'notes-history'), ('project', 'flags'), ('project', 'resolve'), ('lead', 'list'), ('concern', 'list'), ('concern', 'get'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'candidates'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find'), ('version', 'get')}:
             refusal = self.people.authorize(actor, entry.role)
             if not refusal and (entry.noun, entry.verb) == ('project', 'notes-history') and not self._master_brief(actor) and actor not in self._coordinators(inputs.project):
                 refusal = Refused(rule='coordinator', reason="Only Persons with the master brief and the Project's coordinators may read its PM Notes history")
             outcome = refusal or self._typed_read(entry.noun, entry.verb, inputs, seen=seen)
-            if isinstance(outcome, Done) and entry.noun in {'project', 'concern', 'jo', 'person', 'camera', 'deliverable', 'meeting-notes', 'external-link', 'studio'} and not self._reads_unmasked(actor):
+            if isinstance(outcome, Done) and entry.noun in {'project', 'lead', 'concern', 'jo', 'person', 'camera', 'deliverable', 'meeting-notes', 'external-link', 'studio'} and not self._reads_unmasked(actor):
                 outcome = self._masked_outcome(outcome)
         elif (entry.noun, entry.verb) in {('contact', 'find'), ('contact', 'create')}:
             refusal = self.people.authorize(actor, entry.role)
@@ -1328,6 +1328,9 @@ class VerbAPI:
                         director_ids=ids(project.director_ids),
                         cinematographer_ids=ids(project.cinematographer_ids),
                         prod_coor_supe_ids=ids(project.prod_coor_supe_ids),
+                        lead_owner_ids=ids(project.lead_owner_ids),
+                        delegate_producer_ids=ids(project.delegate_producer_ids),
+                        line_producer_ids=ids(project.line_producer_ids),
                     )
                 )
             return batched
@@ -1427,6 +1430,25 @@ class VerbAPI:
                 from t6.notion.cameras import get_cameras
                 cameras = get_cameras(notion, self.data_sources['cameras'], page_id=inputs.page_id)
                 return Done(result={'cameras': [{'page_id': c['id'], 'name': c['name'] or '', 'tags': c['tags']} for c in cameras]})
+            if noun == 'lead':
+                from t6.domain import CrmStage
+                from t6.verbs import LeadListOutput, LeadRead
+                now = self.people.registry._clock()
+                with self.people.registry._transaction() as db:
+                    current = {str(row[0]): (str(row[1]), float(row[2])) for row in db.execute(
+                        'SELECT project_id, to_value, at FROM project_stage_history WHERE id IN (SELECT MAX(id) FROM project_stage_history GROUP BY project_id)')}
+                leads: list[LeadRead] = []
+                for project in batch_project_results(ProjectReader(notion, self.data_sources['projects']).list()):
+                    stage, at = current.get(project.t6_id or '', (None, None))
+                    if stage is None:
+                        stage = next((m.value for m in CrmStage if project_rules.status_key(m.value) == project_rules.status_key(project.status)), None)
+                    if stage is None or stage not in CrmStage.__members__.values() or stage == CrmStage.LOST:
+                        continue
+                    leads.append(LeadRead(project_id=project.t6_id or project.page_id, page_id=project.page_id, name=project.name, stage=stage,
+                                          lead_owner_ids=list(project.lead_owner_ids), studio_id=project.studio_id,
+                                          delegate_producer_ids=list(project.delegate_producer_ids), line_producer_ids=list(project.line_producer_ids),
+                                          prod_coor_supe_ids=list(project.prod_coor_supe_ids), days_in_stage=None if at is None else int((now - at) // 86400)))
+                return Done(result=LeadListOutput(leads=leads).model_dump(mode='json'))
             if noun == 'project':
                 project_reader = ProjectReader(notion, self.data_sources['projects'])
                 projects = batch_project_results(project_reader.list())

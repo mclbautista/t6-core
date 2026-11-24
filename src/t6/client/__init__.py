@@ -19,7 +19,7 @@ from t6.verbs import (
     VersionAddInput, VersionLockInput, VersionFindInput, VersionGetInput,
     MediaLinkInput, MediaUnlinkInput, TimelineLinkInput, TimelineRestampInput, TimelineListInput, FrameioProjectInput, MediaListInput, MediaMigrateInput,
     TranscriptCreateInput, TranscriptGetInput, TranscriptSpeakersInput, TranscriptTranslateInput,
-    DriveCaptureInput, DriveCaptureListInput, DriveCaptureReadInput, DriveReloadReportInput,
+    DriveApproveInput, DriveCaptureInput, DriveCaptureListInput, DriveInboxInput, DriveCaptureReadInput, DriveReloadReportInput,
     DriveMappingProposeInput, DriveMappingApplyInput, DriveProjectsInput, DriveOverdueInput, MovementListInput, MovementCorrectInput,
     ContactCreateInput, ContactFindInput, MovementPhotoAddInput, MovementPhotoRefInput, DriveRecycleInput, DriveReloadInput, DriveReceiveInput, DriveReleaseInput, DriveReturnInput, DriveRetireInput, DriveAssignInput, DriveUnassignInput,
     DriveAddInput, DriveEditInput, DrivePromoteSerialInput, DriveListInput, DriveGetInput, DriveFindInput, DriveCatalogSnapshotInput, DriveCatalogSnapshotsInput, DriveCatalogDiffInput, DriveCatalogAtInput, DriveShipmentsInput, DriveShipmentInput, DriveExceptionsInput,
@@ -34,7 +34,7 @@ from t6.verbs import (
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
     LLMDecideInput, LLMFilterInput, LLMRunInput, PersonAddInput, PersonCreateInput, PersonFindInput,
     PersonGetInput, PersonProjectRoleInput, PersonPermissionInput, PersonRebindInput, PersonShiftInput, PersonClassifyInput,
-    PersonTelegramInput, ProjectChatInput, ProjectHoldInput, ProjectLinksInput, ProjectResolveInput, ProjectResumeInput, ProjectStartInput,
+    LeadListInput, PersonTelegramInput, ProjectChatInput, ProjectCrmLinksInput, ProjectHoldInput, ProjectLinksInput, ProjectResolveInput, ProjectResumeInput, ProjectStartInput,
 )
 
 
@@ -179,6 +179,12 @@ class Client:
 
     def drive_capture_result(self, inputs: DriveCaptureReadInput) -> Result:
         return self.call('drive', 'capture result', inputs)
+
+    def drive_inbox(self, inputs: DriveInboxInput) -> Result:
+        return self.call('drive', 'inbox', inputs)
+
+    def drive_approve(self, inputs: DriveApproveInput) -> Result:
+        return self.call('drive', 'approve', inputs)
 
     def drive_projects(self, inputs: DriveProjectsInput) -> Result:
         return self.call('drive', 'projects', inputs)
@@ -528,8 +534,14 @@ class Client:
     def project_list(self, inputs: ProjectListInput) -> Result:
         return self.call('project', 'list', inputs)
 
+    def lead_list(self, inputs: LeadListInput) -> Result:
+        return self.call('lead', 'list', inputs)
+
     def project_links(self, inputs: ProjectLinksInput) -> Result:
         return self.call('project', 'links', inputs)
+
+    def project_crm_links(self, inputs: ProjectCrmLinksInput) -> Result:
+        return self.call('project', 'crm-links', inputs)
 
     def project_link_chat(self, inputs: ProjectChatInput) -> Result:
         return self.call('project', 'link-chat', inputs)

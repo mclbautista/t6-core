@@ -90,13 +90,22 @@ Modelled in `t6.drives`.
   movements that cannot be tied with certainty to a Drive.
 - **Capture**: a recording-channel post kept before reading or matching it,
   with its chat and message IDs, sender Telegram user ID, post time, text and
-  photo. A Capture may be text-only (no photo); Jev keeps it as an exception
-  with reason `no_photo`. It is the source of the Movements resolved from that post.
+  photo. A Capture may be text-only (no photo). It is the source of the Movements
+  made when its Items are approved.
 - **Item**: one named line of a Capture's caption (a short name such as "MC7 D21"
   or a label), on the first line after IN/OUT or on a following line. It is read as
   written: "RM D07 (Master 02 and 03)" is one Item.
 - **Count line**: a caption line that is only a number and a kind ("48 FD", "50
   Portable drives"). It is kept on the Capture and is never an Item.
+- **Inbox**: the Items waiting on the custodian's Approval. Every Item of a kept
+  Capture is in the Inbox until it is settled; Count lines never are. A Capture
+  that needs the custodian is an Inbox item, not an exception: exceptions are
+  sheet and data problems only. A Capture whose caption has a problem (no IN or
+  OUT, or an OUT without `R:`) waits for its poster to edit it and is not in the Inbox.
+- **Approval**: the custodian's decision on one Item: a Drive (picked or typed),
+  `new` (create the Drive), `not_a_drive` (close the Item) or `none` (leave it
+  waiting). Approving a Drive appends the Movement, which keeps the Project's T6
+  Post Coordinator Person IDs as they were at the move, apart from the recipient.
 - **Recording channel**: TRANSMITTAL, configured by Telegram chat ID plus topic ID
   (the whole chat when no topic is configured),
   whose drive posts are recording input under [ADR 0009](docs/adr/0009-recording-channel.md).
@@ -482,9 +491,8 @@ ADMIN, then any other Department A to Z, then none) and the alias `TO` for
 words, ignoring emoji, case and spaces.
 
 - **Status gate**: In-Progress, In-Progress TVC and Airing are *in progress*;
-  Standby and Archiving are *on hold*; Leads, Lead, Negotiations and Proposal
-  Made are *incoming* (to refine later with the CRM). Any other Status is
-  dropped. Archived and Lost are never snapshotted.
+  Standby and Archiving are *on hold*; Leads, Lead, Negotiations, Proposal
+  Made and Onboarding are *incoming* (see CRM). Any other Status is dropped. Archived and Lost are never snapshotted.
 - **Date flags**: In-Progress and TVC flag a blank or overdue Playdate and
   Submission Deadline; Airing flags blank ones only; Standby none; Archiving a
   blank or overdue Archival Deadline; Incoming an overdue Playdate or one less
@@ -496,6 +504,29 @@ words, ignoring emoji, case and spaces.
   Incoming, other, blank.
 - **Code display**: the code in capitals, or "CODE (Name)" when several
   Projects share it; the name when there is no code.
+
+## CRM
+
+The Leads side of a Project, before it is In-Progress (spec #705).
+
+- **Lead**: a Project in a CRM stage other than Lost. It is a Project, not a
+  separate record.
+- **CRM stage**: Leads, Negotiations, Proposal Made, Onboarding or Lost
+  (`t6.domain.CrmStage`). The t6 database owns it; the Notion Status shows it.
+  The stage options are read and written by their saved Notion option ID (the
+  `projects` `named_options` in the schema snapshot), so a renamed option is
+  still found. Nothing blocks a move: any stage to any other, Lost from any
+  stage, Lost back to Leads reopens. In-Progress ends the CRM part.
+- **Stage history**: one append-only row per change (who, when, from, to), in
+  `project_stage_history`. The newest row is the current stage; the days in
+  stage count from its time. A change by a known Person is accepted and shows
+  in Activity as from and to; an unknown editor is flagged as before.
+- **Lead Owner**: the Person named in the Project's Lead Owner relation.
+- **Lead contact**: a client person on the Project: its Delegate Producer, Line
+  Producer or Prod Coor/Supe.
+
+`lead list` reads the open Leads with stage, Lead Owner, Studio, the Lead
+contacts and days in stage.
 
 ## Fleet
 

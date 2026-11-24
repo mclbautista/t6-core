@@ -16,10 +16,11 @@ whose option is no longer live.
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from typing import Any
 
-from t6.domain import Department, JobOrderStatus, Ring
+from t6.domain import CrmStage, Department, JobOrderStatus, Ring
 from t6.notion.model import OptionId
 
 JSON = dict[str, Any]
@@ -27,6 +28,7 @@ JSON = dict[str, Any]
 NAMED_FIELDS: dict[str, dict[str, type[StrEnum]]] = {
     "job_orders": {"status": JobOrderStatus, "department": Department},
     "bays": {"ring": Ring},
+    "projects": {"status": CrmStage},
 }
 """Snapshot database key, then domain attribute, to the enum of known values."""
 
@@ -34,6 +36,7 @@ FIRST_FILL_PROPERTY: dict[tuple[str, str], str] = {
     ("job_orders", "status"): "Status",
     ("job_orders", "department"): "Department",
     ("bays", "ring"): "Ring",
+    ("projects", "status"): "Status",
 }
 """The property name to look for the first time a named block is filled."""
 
@@ -41,6 +44,16 @@ FIRST_FILL_PROPERTY: dict[tuple[str, str], str] = {
 def named_block(snapshot: JSON, database: str, attribute: str) -> JSON | None:
     block = (snapshot["databases"].get(database) or {}).get("named_options", {}).get(attribute)
     return block if isinstance(block, dict) else None
+
+
+def _plain(name: object) -> str:
+    """A label for matching: emoji and punctuation removed, spaces collapsed, case kept."""
+    return " ".join(re.sub(r"[^\w\s-]", "", str(name or "")).split())
+
+
+def _label(enum: type[StrEnum], name: object) -> StrEnum | None:
+    """The member whose label is `name`, ignoring emoji (Project Status options carry them)."""
+    return next((member for member in enum if _plain(member.value) == _plain(name)), None)
 
 
 def to_option(snapshot: JSON, database: str, attribute: str, value: str | None) -> OptionId | str | None:
@@ -66,10 +79,7 @@ def from_option(snapshot: JSON, database: str, attribute: str, option: JSON | No
     for key, option_id in values.items():
         if option_id == option.get("id") and key in enum.__members__:
             return enum[key]
-    try:
-        return enum(option["name"])
-    except ValueError:
-        return str(option["name"])
+    return _label(enum, option["name"]) or str(option["name"])
 
 
 def live_options(prop: JSON) -> list[JSON]:
@@ -132,10 +142,10 @@ def missing_values(snapshot_database: JSON, database: str, properties: JSON) -> 
             continue
         options = live_options(live)
         ids = {str(option.get("id")) for option in options}
-        names = {str(option.get("name")) for option in options}
+        names = {_plain(option.get("name")) for option in options}
         for member in enum:
             option_id = (block.get("values") or {}).get(member.name)
-            if (option_id not in ids) if option_id else (member.value not in names):
+            if (option_id not in ids) if option_id else (_plain(member.value) not in names):
                 missing.append({"attribute": attribute, "value": member.name})
     return missing
 
@@ -151,9 +161,9 @@ def fill(snapshot_database: JSON, database: str, properties: JSON) -> None:
         if live is None:
             continue
         block["property"] = str(live.get("id") or live["name"])
-        by_name = {str(option.get("name")): option for option in live_options(live)}
+        by_name = {_plain(option.get("name")): option for option in live_options(live)}
         for member in enum:
-            option = by_name.get(member.value)
+            option = by_name.get(_plain(member.value))
             if member.name not in block["values"] and option is not None and "id" in option:
                 block["values"][member.name] = str(option["id"])
         snapshot_database.setdefault("named_options", {})[attribute] = block

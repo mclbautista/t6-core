@@ -29,7 +29,8 @@ class CaptureTests(DriveReloadFixture):
             db.execute("INSERT INTO person_permissions VALUES ('t6n_synthetickeeper', 'drives')")
         self.queue = InternalJobQueue(self.registry)
         self.fake = FakeProvider()
-        api = VerbAPI(self.people, self.queue, {'synthetic-gateway': 'gateway', 'synthetic-other': 'worker', 'synthetic-keeper-secret': 't6n_synthetickeeper'}, lambda _: None)
+        api = VerbAPI(self.people, self.queue, {'synthetic-gateway': 'gateway', 'synthetic-other': 'worker', 'synthetic-keeper-secret': 't6n_synthetickeeper'}, lambda _: None,
+                      notion_source=self.notion_source)
         self.server = make_server(('127.0.0.1', 0), api)
         thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         thread.start()
@@ -54,21 +55,6 @@ class CaptureTests(DriveReloadFixture):
         self.assertIn('outcome', result, result)
         return dict(result)
 
-    def test_in_with_place_sets_the_drive_place_and_out_clears_it(self) -> None:
-        drive = self.drives()[0]['id']
-        for number, command, expected, holder in (
-                (1, 'IN SHELF', 'SHELF', None),
-                (2, 'OUT Synthetic borrower', None, 'Synthetic borrower'),
-                (3, 'IN CABINET', 'CABINET', None),
-                (4, 'IN', 'CABINET', None)):
-            self.api('capture', **{**self.post, 'message_id': number, 'text': command,
-                                   'posted_at': f'2026-11-24T{10 + number}:30:00+08:00'})
-            self.resolve([{'label': 'Synthetic first', 'serial': 'SAMPLE-FIRST', 'confidence': 0.9}])
-            listed = next(d for d in self.api('list')['result']['drives'] if d['id'] == drive)
-            detail = self.api('get', drive=drive)['result']['drive']
-            for item in (listed, detail):
-                self.assertEqual((item['place'], item['office_location'], item['holder']), (expected, expected, holder))
-
     def test_capture_stores_first_and_repeated_delivery_queues_nothing_new(self) -> None:
         first = self.api('capture', **self.post)
         self.assertEqual(first['outcome'], 'done', first)
@@ -82,7 +68,7 @@ class CaptureTests(DriveReloadFixture):
         self.assertEqual(self.fake.calls, [])
         self.assertEqual([d['status'] for d in self.drives()], ['in custody', 'in custody'])
 
-    def resolve(self, readings: list[dict[str, Any]], choice: str = "match") -> None:
+    def resolve(self, choice: str = "match") -> None:
         from t6.drives.capture import CaptureResolver
         from t6.worker import Worker
         from t6.worker.internal_queue import InternalQueueClient
@@ -92,8 +78,6 @@ class CaptureTests(DriveReloadFixture):
             self.fake.decisions({'model': 'synthetic-jev', 'answers': {'c0': {
                 'type': 'choice', 'choice': choice,
                 'probabilities': {'match': 1 if choice == 'match' else 0, 'maybe': 0, 'no': 1 if choice == 'no' else 0}}}})
-        if choice != 'no':
-            self.fake.reply(json.dumps({'drives': readings}))
         resolver = CaptureResolver(self.registry, self.fake, decisions=self.fake)
         worker = Worker(InternalQueueClient(self.queue), 'main', {'drive.capture.resolve': resolver.handle})
         self.assertTrue(worker.run_once())
@@ -101,7 +85,7 @@ class CaptureTests(DriveReloadFixture):
     def test_not_transmittal_is_ignored_and_silent_without_retained_content(self) -> None:
         from t6.verbs import VERBS, invoke
         capture = self.api('capture', **{**self.post, 'text': 'Synthetic lunch photo'})['result']['capture']
-        self.resolve([{'label': 'Synthetic first', 'serial': 'SAMPLE-FIRST', 'confidence': 0.9}], 'no')
+        self.resolve('no')
         result = self.api('capture result', capture=capture)['result']
         self.assertEqual(result['state'], 'ignored')
         self.assertEqual(result['lines'], [])
@@ -130,86 +114,28 @@ class CaptureTests(DriveReloadFixture):
         from t6.worker import Worker
         from t6.worker.internal_queue import InternalQueueClient
         for number, failure in enumerate(('timeout', 'api_error', 'malformed', 'policy'), 10):
-            for matched in (True, False):
-                with self.subTest(failure=failure, matched=matched):
-                    capture = self.api('capture', **{**self.post, 'message_id': number * 2 + matched})['result']['capture']
-                    readings = [{'label': 'Synthetic first', 'serial': 'SAMPLE-FIRST', 'confidence': 0.9}] if matched else []
-                    self.fake.reply(json.dumps({'drives': readings}))
-                    decisions = FakeProvider(retention='unknown' if failure == 'policy' else 'zdr_enforced')
-                    if failure == 'timeout':
-                        decisions.timeout()
-                    elif failure == 'api_error':
-                        decisions.api_error()
-                    else:
-                        decisions.decisions({})
-                    resolver = CaptureResolver(self.registry, self.fake, decisions=decisions)
-                    worker = Worker(InternalQueueClient(self.queue), 'main', {'drive.capture.resolve': resolver.handle})
-                    self.assertTrue(worker.run_once())
-                    result = self.api('capture result', capture=capture)['result']
-                    self.assertEqual(result['state'], 'resolved' if matched else 'exception')
-                    self.assertEqual(result['photo_reference'], capture)
-                    if failure != 'policy':
-                        request = decisions.calls[0].request
-                        self.assertIsInstance(request, DecisionsRequest)
-                        assert isinstance(request, DecisionsRequest)
-                        self.assertEqual(request.state, {
-                            'text': 'OUT Synthetic borrower', 'has_photo': 'true',
-                        })
-
-    def test_two_photo_drives_make_two_movements_and_one_shipment(self) -> None:
-        from t6.verbs import VERBS, invoke
-        capture = self.api('capture', **self.post)['result']['capture']
-        self.resolve([{'label': label, 'serial': None, 'confidence': 0.99}
-                      for label in ('Synthetic first', 'Synthetic second')])
-        result = self.api('capture result', capture=capture)['result']
-        self.assertEqual(result['state'], 'resolved')
-        self.assertEqual(result['lines'], [dict(label=label, direction='OUT', person='Synthetic borrower')
-                                          for label in ('Synthetic first', 'Synthetic second')])
-        entry = next(v for v in VERBS if (v.noun, v.verb) == ('movement', 'list'))
-        rows = invoke(entry, entry.input_model(), actor='synthetic-keeper', people=self.people,
-                      open_notion=lambda _: None).result['movements']  # type: ignore[union-attr]
-        self.assertEqual(len(rows), 2)
-        self.assertEqual({m['capture'] for m in rows}, {capture})
-        self.assertEqual({m['on'] for m in rows}, {'2026-11-24'})
-        self.assertEqual({m['recorder_telegram_id'] for m in rows}, {900010})
-        self.assertEqual({m['recorder'] for m in rows}, {None})
-        self.assertEqual({m['project']['text'] for m in rows}, {'SYNTHETIC PROJECT'})
-        shipments = self.call('shipments').result['shipments']
-        self.assertEqual(len(shipments), 1)
-        self.assertEqual(shipments[0]['drive_count'], 2)
-        self.assertEqual({m['shipment_id'] for m in rows}, {shipments[0]['shipment_id']})
-        self.assertEqual({m['posted_at'] for m in rows}, {self.post['posted_at']})
-        self.assertEqual([d['status'] for d in self.drives()], ['released', 'released'])
-        self.assertEqual(len(self.fake.calls), 2)
-
-    def test_photo_label_wins_over_typed_label_and_notes_difference(self) -> None:
-        capture = self.api('capture', **{**self.post, 'text': 'OUT Synthetic borrower\nSynthetic second'})['result']['capture']
-        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
-        result = self.api('capture result', capture=capture)['result']
-        self.assertEqual(result['lines'], [dict(label='Synthetic first', direction='OUT', person='Synthetic borrower')])
-        self.assertEqual(len(result['differences']), 1)
-        self.assertIn('Synthetic second', result['differences'][0])
-        self.assertIn('Synthetic first', result['differences'][0])
-        self.assertEqual({d['label']: d['status'] for d in self.drives()},
-                         {'Synthetic first': 'released', 'Synthetic second': 'in custody'})
-
-    def test_tolerant_captions_resolve_direction_place_and_person(self) -> None:
-        drive = self.drives()[0]['id']
-        reading = [{'label': 'Synthetic first', 'serial': 'SAMPLE-FIRST', 'confidence': 0.9}]
-        for number, (text, direction, person, place) in enumerate((
-                ('IN: SHELF', 'IN', None, 'SHELF'), ('in - table', 'IN', None, 'TABLE'),
-                ('OUT: Marco', 'OUT', 'Marco', None), ('Out-Marco', 'OUT', 'Marco', None),
-                ('in', 'IN', None, None), ('IN\nSAMPLE-FIRST', 'IN', None, None)), 1):
-            with self.subTest(text=text):
-                capture = self.api('capture', **{**self.post, 'message_id': number, 'text': text,
-                                                 'posted_at': f'2026-11-24T{10 + number}:30:00+08:00'})['result']['capture']
-                self.resolve(reading)
+            with self.subTest(failure=failure):
+                capture = self.api('capture', **{**self.post, 'message_id': number})['result']['capture']
+                decisions = FakeProvider(retention='unknown' if failure == 'policy' else 'zdr_enforced')
+                if failure == 'timeout':
+                    decisions.timeout()
+                elif failure == 'api_error':
+                    decisions.api_error()
+                else:
+                    decisions.decisions({})
+                resolver = CaptureResolver(self.registry, self.fake, decisions=decisions)
+                worker = Worker(InternalQueueClient(self.queue), 'main', {'drive.capture.resolve': resolver.handle})
+                self.assertTrue(worker.run_once())
                 result = self.api('capture result', capture=capture)['result']
                 self.assertEqual(result['state'], 'resolved')
-                self.assertEqual(result['lines'][0]['direction'], direction)
-                if direction == 'OUT':
-                    self.assertEqual(result['lines'][0]['person'], person)
-                self.assertEqual(self.api('get', drive=drive)['result']['drive']['place'], place if direction == 'IN' else None)
+                self.assertEqual(result['photo_reference'], capture)
+                if failure != 'policy':
+                    request = decisions.calls[0].request
+                    self.assertIsInstance(request, DecisionsRequest)
+                    assert isinstance(request, DecisionsRequest)
+                    self.assertEqual(request.state, {
+                        'text': 'OUT Synthetic borrower', 'has_photo': 'true',
+                    })
 
     def read_caption(self, text: str, message_id: int = 1) -> dict[str, Any]:
         return dict(self.api('capture', **{**self.post, 'message_id': message_id, 'text': text})['result'])
@@ -254,96 +180,15 @@ class CaptureTests(DriveReloadFixture):
             self.assertEqual((edited['grade'], edited['problem']), (grade, problem))
             self.assertEqual(self.api('capture result', capture=capture)['result']['grade'], grade)
 
-    def test_the_r_line_names_the_person_an_out_is_released_to(self) -> None:
-        capture = self.read_caption('OUT SYN7 D21\nR: Marco')['capture']
-        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
-        result = self.api('capture result', capture=capture)['result']
-        self.assertEqual((result['state'], result['lines'][0]['person']), ('resolved', 'Marco'))
-
     def test_an_ignored_capture_keeps_no_caption_reading(self) -> None:
         capture = self.read_caption('OUT SYN7 D21\nR: Marco')['capture']
-        self.resolve([], 'no')
+        self.resolve('no')
         result = self.api('capture result', capture=capture)['result']
         self.assertEqual((result['state'], result['items'], result['grade'], result['problem']), ('ignored', [], None, None))
 
-    def test_incident_caption_with_readable_label_resolves_as_in(self) -> None:
-        capture = self.api('capture', **{**self.post, 'text': 'IN: Remote Master 3 Day 8'})['result']['capture']
-        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
-        result = self.api('capture result', capture=capture)['result']
-        self.assertEqual(result['state'], 'resolved')
-        self.assertEqual([line['direction'] for line in result['lines']], ['IN'])
-        self.assertEqual([d['status'] for d in self.drives()], ['in custody', 'in custody'])
-
-    def test_missing_direction_asks_once_and_a_direction_answer_resolves(self) -> None:
-        reading = [{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}]
-        for number, (answer, direction) in enumerate((('OUT Angel', 'OUT'), ('in: shelf', 'IN')), 1):
-            with self.subTest(answer=answer):
-                capture = self.api('capture', **{**self.post, 'message_id': number, 'text': 'Remote Master 3 Day 8'})['result']['capture']
-                self.resolve(reading)
-                result = self.api('capture result', capture=capture)['result']
-                self.assertEqual((result['state'], result['reason'], result['may_ask']), ('exception', 'missing_direction', True))
-                self.assertEqual(self.api('capture', capture=capture, text=answer)['result']['state'], 'pending')
-                self.resolve(reading)
-                result = self.api('capture result', capture=capture)['result']
-                self.assertEqual((result['state'], result['reason'], result['may_ask']), ('resolved', None, False))
-                self.assertEqual(result['lines'][0]['direction'], direction)
-
-    def test_reasons_and_no_second_question_after_a_failed_answer(self) -> None:
-        capture = self.api('capture', **self.post)['result']['capture']
-        self.resolve([])
-        result = self.api('capture result', capture=capture)['result']
-        self.assertEqual((result['reason'], result['may_ask']), ('unreadable_label', True))
-        self.api('capture', capture=capture, text='NO-SUCH-DRIVE')
-        self.resolve([])
-        result = self.api('capture result', capture=capture)['result']
-        self.assertEqual((result['state'], result['reason'], result['may_ask']), ('exception', 'no_drive_match', False))  # a label was typed but matches no Drive
-        other = self.api('capture', **{**self.post, 'message_id': 2})['result']['capture']
-        self.resolve([{'label': 'Unknown label', 'serial': None, 'confidence': 0.9}])
-        result = self.api('capture result', capture=other)['result']
-        self.assertEqual((result['reason'], result['may_ask']), ('no_drive_match', True))
-        self.api('capture', capture=other, text='still wrong')
-        self.resolve([{'label': 'Unknown label', 'serial': None, 'confidence': 0.9}])
-        self.assertFalse(self.api('capture result', capture=other)['result']['may_ask'])
-
-    def test_out_without_person_asks_for_direction_and_a_typed_unmatched_label_is_no_drive_match(self) -> None:
-        capture = self.api('capture', **{**self.post, 'text': 'OUT:'})['result']['capture']
-        self.resolve([])
-        result = self.api('capture result', capture=capture)['result']
-        self.assertEqual((result['reason'], result['may_ask']), ('missing_direction', True))
-        other = self.api('capture', **{**self.post, 'message_id': 2, 'text': 'IN: SHELF Unknown typed'})['result']['capture']
-        self.resolve([])
-        self.assertEqual(self.api('capture result', capture=other)['result']['reason'], 'no_drive_match')
-
-    def test_direction_answer_on_a_text_only_capture_is_not_no_photo_again(self) -> None:
-        text_only = {k: v for k, v in self.post.items() if k != 'photo'}
-        capture = self.api('capture', **text_only)['result']['capture']
-        self.resolve([], 'match')
-        self.assertEqual(self.api('capture result', capture=capture)['result']['reason'], 'no_photo')
-        self.api('capture', capture=capture, text='IN')
-        self.resolve([], 'match')
-        self.assertEqual(self.api('capture result', capture=capture)['result']['reason'], 'unreadable_label')
-
-    def test_edit_of_an_exception_caption_resolves_it_without_using_the_question(self) -> None:
-        reading = [{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}]
-        capture = self.api('capture', **{**self.post, 'text': 'Remote Master 3 Day 8'})['result']['capture']
-        self.resolve(reading)
-        self.assertEqual(self.api('capture result', capture=capture)['result']['reason'], 'missing_direction')
-        edited = self.api('capture', capture=capture, text='OUT Angel', edit=True)['result']
-        self.assertEqual(edited['state'], 'pending')
-        self.assertEqual(self.api('capture', capture=capture, text='OUT Angel', edit=True)['result'], edited)
-        self.assertEqual(len(self.queue.find('drive.capture.resolve')), 2)
-        self.resolve(reading)
-        result = self.api('capture result', capture=capture)['result']
-        self.assertEqual((result['state'], result['lines'][0]['person']), ('resolved', 'Angel'))
-        other = self.api('capture', **{**self.post, 'message_id': 2, 'text': 'Remote Master 3 Day 8'})['result']['capture']
-        self.resolve([])
-        self.api('capture', capture=other, text='Remote Master 3 Day 8 again', edit=True)
-        self.resolve([])
-        self.assertTrue(self.api('capture result', capture=other)['result']['may_ask'])
-
     def test_edit_of_a_resolved_undone_or_ignored_capture_changes_nothing_and_needs_the_channel(self) -> None:
-        capture = self.api('capture', **self.post)['result']['capture']
-        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
+        capture = self.api('capture', **{**self.post, 'text': 'IN Synthetic first'})['result']['capture']
+        self.resolve()
         resolved = self.api('capture result', capture=capture)['result']
         self.assertEqual(self.api('capture', capture=capture, text='IN SHELF', edit=True)['result'], resolved)
         self.api('capture undo', capture=capture)
@@ -359,7 +204,7 @@ class CaptureTests(DriveReloadFixture):
         self.registry._clock = lambda: now[0]
         capture = self.api('capture', **self.post)['result']['capture']
         self.assertIsNone(self.api('capture result', capture=capture)['result']['undo_until'])
-        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
+        self.resolve()
         result = self.api('capture result', capture=capture)['result']
         self.assertEqual(result['undo_until'], '2027-01-15T09:00:00+00:00')
         now[0] += 3601
@@ -372,30 +217,13 @@ class CaptureTests(DriveReloadFixture):
 
     def test_undo_of_a_capture_resolved_before_the_window_existed_is_allowed(self) -> None:
         capture = self.api('capture', **self.post)['result']['capture']
-        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
+        self.resolve()
         with self.registry._transaction() as db:
             data = json.loads(db.execute('SELECT data FROM drive_captures WHERE id=?', (capture,)).fetchone()[0])
             data.pop('resolved_at')
             db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), capture))
         self.assertIsNone(self.api('capture result', capture=capture)['result']['undo_until'])
         self.assertEqual(self.api('capture undo', capture=capture)['result']['state'], 'undone')
-
-    def test_unreadable_photo_is_exception_and_follow_up_resolves_same_capture(self) -> None:
-        capture = self.api('capture', **self.post)['result']['capture']
-        self.resolve([])
-        result = self.api('capture result', capture=capture)['result']
-        self.assertEqual(result['state'], 'exception')
-        self.assertEqual(result['message'], 'ask for the label')
-        self.assertEqual(result['photo_reference'], capture)
-        follow = self.api('capture', capture=capture, text='SAMPLE-FIRST')
-        self.assertEqual(follow['outcome'], 'done', follow)
-        self.assertEqual(follow['result']['capture'], capture)
-        self.assertEqual(follow['result']['state'], 'pending')
-        self.resolve([])
-        resolved = self.api('capture result', capture=capture)['result']
-        self.assertEqual(resolved['state'], 'resolved')
-        self.assertEqual(resolved['lines'], [dict(label='Synthetic first', direction='OUT', person='Synthetic borrower')])
-        self.assertEqual(self.api('capture', capture=capture, text='SAMPLE-FIRST')['result'], resolved)
 
     def test_jev_runs_before_the_photo_read_and_a_no_never_reaches_the_image_model(self) -> None:
         from t6.drives.capture import CaptureResolver
@@ -415,76 +243,40 @@ class CaptureTests(DriveReloadFixture):
             row = db.execute('SELECT data, photo FROM drive_captures WHERE id=?', (capture,)).fetchone()
         self.assertEqual((row[1], 'text' in json.loads(row[0])), (b'', False))
 
-    def test_text_only_post_is_accepted_and_becomes_no_photo_exception_without_an_image_read(self) -> None:
+    def test_text_only_post_is_accepted_and_kept_for_the_inbox_without_an_image_read(self) -> None:
         text_only = {k: v for k, v in self.post.items() if k != 'photo'}
         self.assertEqual(self.api('capture', **{**text_only, 'chat_id': -900002})['rule'], 'recording_channel')
-        capture = self.api('capture', **text_only)['result']['capture']
-        self.resolve([], 'match')
+        capture = self.api('capture', **{**text_only, 'text': 'OUT Synthetic first\nR: Marco'})['result']['capture']
+        self.resolve('match')
         self.assertEqual(len(self.fake.calls), 1)  # Jev only
         self.assertEqual(self.fake.calls[0].request.state['has_photo'], 'false')  # type: ignore[union-attr]
         result = self.api('capture result', capture=capture)['result']
-        self.assertEqual((result['state'], result['reason'], result['may_ask']), ('exception', 'no_photo', False))
-        (row,) = self.api('capture list', 'synthetic-keeper-secret')['result']['captures']
-        self.assertEqual((row['capture'], row['text'], row['photo']), (capture, 'OUT Synthetic borrower', None))
+        self.assertEqual((result['state'], result['reason'], result['may_ask']), ('resolved', None, False))
+        self.assertEqual([(i['capture'], i['text'], i['photo_reference']) for i in self.inbox()], [(capture, 'Synthetic first', None)])
+        (row,) = self.api('capture list', 'synthetic-keeper-secret', state='resolved')['result']['captures']
+        self.assertEqual((row['capture'], row['text'], row['photo']), (capture, 'OUT Synthetic first\nR: Marco', None))
 
     def test_text_only_post_ignored_when_jev_says_no_and_empty_post_refused(self) -> None:
         text_only = {k: v for k, v in self.post.items() if k != 'photo'}
         capture = self.api('capture', **{**text_only, 'text': 'Synthetic chatter'})['result']['capture']
-        self.resolve([], 'no')
+        self.resolve('no')
         self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'ignored')
         self.assertEqual(self.api('capture', **{**text_only, 'message_id': 9, 'text': ''})['rule'], 'input')
 
-    def test_follow_up_answers_and_custodian_picks_skip_jev(self) -> None:
-        from t6.drives.capture import CaptureResolver
-        from t6.worker import Worker
-        from t6.worker.internal_queue import InternalQueueClient
-        capture = self.api('capture', **self.post)['result']['capture']
-        self.resolve([])
-        before = len(self.fake.calls)
-        self.api('capture', capture=capture, text='Synthetic first')
-        self.fake.reply(json.dumps({'drives': []}))
-        decisions = FakeProvider()  # nothing queued: a Jev call would fail the run
-        resolver = CaptureResolver(self.registry, self.fake, decisions=decisions)
-        self.assertTrue(Worker(InternalQueueClient(self.queue), 'main', {'drive.capture.resolve': resolver.handle}).run_once())
-        self.assertEqual(decisions.calls, [])
-        self.assertEqual(len(self.fake.calls), before + 1)  # the photo is read again for a label answer
-        self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'resolved')
-
-    def test_caption_edit_never_calls_jev_and_keeps_may_ask(self) -> None:
+    def test_caption_edit_never_calls_jev(self) -> None:
         from t6.drives.capture import CaptureResolver
         from t6.worker import Worker
         from t6.worker.internal_queue import InternalQueueClient
         capture = self.api('capture', **{**self.post, 'text': 'Remote Master 3 Day 8'})['result']['capture']
-        self.resolve([])
-        self.assertTrue(self.api('capture result', capture=capture)['result']['may_ask'])
-        self.api('capture', capture=capture, text='Remote Master 3 Day 8 again', edit=True)
-        self.fake.reply(json.dumps({'drives': []}))
+        self.resolve()
+        self.assertEqual(self.api('capture result', capture=capture)['result']['problem'], 'missing_direction')
+        self.api('capture', capture=capture, text='IN Remote Master 3 Day 8', edit=True)
         decisions = FakeProvider()  # nothing queued: a Jev call would fail the run
         resolver = CaptureResolver(self.registry, self.fake, decisions=decisions)
         self.assertTrue(Worker(InternalQueueClient(self.queue), 'main', {'drive.capture.resolve': resolver.handle}).run_once())
         self.assertEqual(decisions.calls, [])
         result = self.api('capture result', capture=capture)['result']
-        self.assertEqual((result['state'], result['may_ask']), ('exception', True))
-
-    def test_edit_of_a_text_only_no_photo_capture_stays_no_photo_without_any_read(self) -> None:
-        from t6.drives.capture import CaptureResolver
-        from t6.worker import Worker
-        from t6.worker.internal_queue import InternalQueueClient
-        text_only = {k: v for k, v in self.post.items() if k != 'photo'}
-        capture = self.api('capture', **text_only)['result']['capture']
-        self.resolve([], 'match')
-        self.assertEqual(self.api('capture result', capture=capture)['result']['reason'], 'no_photo')
-        before = len(self.fake.calls)
-        edited = self.api('capture', capture=capture, text='OUT Someone else', edit=True)['result']
-        self.assertEqual(edited['state'], 'pending')
-        decisions = FakeProvider()
-        resolver = CaptureResolver(self.registry, self.fake, decisions=decisions)
-        self.assertTrue(Worker(InternalQueueClient(self.queue), 'main', {'drive.capture.resolve': resolver.handle}).run_once())
-        self.assertEqual((decisions.calls, len(self.fake.calls)), ([], before))
-        result = self.api('capture result', capture=capture)['result']
-        self.assertEqual((result['state'], result['reason'], result['may_ask']), ('exception', 'no_photo', False))
-        (row,) = self.api('capture list', 'synthetic-keeper-secret')['result']['captures']
-        self.assertEqual((row['text'], row['photo']), ('OUT Someone else', None))
+        self.assertEqual((result['state'], result['problem'], [i['text'] for i in result['items']]), ('resolved', None, ['Remote Master 3 Day 8']))
 
     def test_no_jev_provider_keeps_the_post(self) -> None:
         from t6.drives.capture import CaptureResolver
@@ -494,32 +286,32 @@ class CaptureTests(DriveReloadFixture):
         capture = self.api('capture', **text_only)['result']['capture']
         resolver = CaptureResolver(self.registry, self.fake)
         self.assertTrue(Worker(InternalQueueClient(self.queue), 'main', {'drive.capture.resolve': resolver.handle}).run_once())
-        self.assertEqual(self.api('capture result', capture=capture)['result']['reason'], 'no_photo')
+        self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'resolved')
         self.assertEqual(self.fake.calls, [])
 
     def test_capture_list_shows_unresolved_captures_with_text_and_photo_access(self) -> None:
         keeper = 'synthetic-keeper-secret'
         photo_bytes = base64.b64decode(self.post['photo'])
         pending = self.api('capture', **self.post)['result']['capture']
-        self.assertEqual(self.api('capture list', keeper)['result']['captures'], [])
-        self.resolve([])
+        self.assertEqual(self.api('capture list', keeper, state='resolved')['result']['captures'], [])
+        self.resolve()
         second = self.api('capture', **{**self.post, 'message_id': 2, 'posted_at': '2026-11-24T11:30:00+08:00'})['result']['capture']
         self.assertEqual([c['capture'] for c in self.api('capture list', keeper, state='pending')['result']['captures']], [second])
-        self.resolve([])
-        listed = self.api('capture list', keeper)['result']['captures']
+        self.resolve()
+        listed = self.api('capture list', keeper, state='resolved')['result']['captures']
         self.assertEqual([c['capture'] for c in listed], [second, pending])  # newest first
         self.assertEqual({k: listed[1][k] for k in ('state', 'text', 'posted_at', 'sender_telegram_id', 'photo')},
-                         {'state': 'exception', 'text': 'OUT Synthetic borrower', 'posted_at': '2026-11-24T10:30:00+08:00',
+                         {'state': 'resolved', 'text': 'OUT Synthetic borrower', 'posted_at': '2026-11-24T10:30:00+08:00',
                           'sender_telegram_id': 900010, 'photo': {'size': len(photo_bytes), 'media_type': 'image/png'}})
         photo = self.api('capture photo', keeper, capture=pending)
         self.assertEqual(photo['outcome'], 'done', photo)
         self.assertEqual((base64.b64decode(photo['result']['photo']), photo['result']['media_type']), (photo_bytes, 'image/png'))
-        self.assertEqual(self.api('capture list', keeper, state='resolved')['result']['captures'], [])
+        self.assertEqual(self.api('capture list', keeper)['result']['captures'], [])
         self.assertEqual(self.api('capture photo', keeper, capture='capture_missing')['rule'], 'capture')
 
     def test_only_a_drive_caller_reads_the_capture_list_or_photo(self) -> None:
         capture = self.api('capture', **self.post)['result']['capture']
-        self.resolve([])
+        self.resolve()
         for secret in ('synthetic-gateway', 'synthetic-other'):
             for result in (self.api('capture list', secret), self.api('capture photo', secret, capture=capture)):
                 self.assertEqual((result['outcome'], result['rule']), ('refused', 'permission'), (secret, result))
@@ -527,41 +319,15 @@ class CaptureTests(DriveReloadFixture):
 
     def test_an_ignored_capture_lists_with_no_text_and_no_photo(self) -> None:
         capture = self.api('capture', **{**self.post, 'text': 'Synthetic lunch photo'})['result']['capture']
-        self.resolve([{'label': 'Synthetic first', 'serial': 'SAMPLE-FIRST', 'confidence': 0.9}], 'no')
+        self.resolve('no')
         (row,) = self.api('capture list', 'synthetic-keeper-secret', state='ignored')['result']['captures']
         self.assertEqual((row['capture'], row['state'], row['text'], row['photo']), (capture, 'ignored', None, None))
         self.assertEqual(self.api('capture list', 'synthetic-keeper-secret')['result']['captures'], [])
         photo = self.api('capture photo', 'synthetic-keeper-secret', capture=capture)
         self.assertEqual((photo['outcome'], photo['rule']), ('refused', 'capture'))
 
-    def test_giving_an_unresolved_capture_a_drive_resolves_it_without_reading_the_photo(self) -> None:
-        keeper = 'synthetic-keeper-secret'
-        capture = self.api('capture', **self.post)['result']['capture']
-        self.resolve([])
-        drive = self.drives()[1]['id']
-        self.assertEqual([c['capture'] for c in self.call('exceptions').result['captures']], [capture])
-        refused = self.api('capture', 'synthetic-gateway', capture=capture, drive=drive)
-        self.assertEqual((refused['outcome'], refused['rule']), ('refused', 'permission'))
-        self.assertEqual(self.api('capture', keeper, capture=capture, drive='t6d_missing')['rule'], 'drive')
-        calls = len(self.fake.calls)
-        follow = self.api('capture', keeper, capture=capture, drive=drive)
-        self.assertEqual((follow['outcome'], follow['result']['state']), ('done', 'pending'), follow)
-        self.assertEqual(self.api('capture', keeper, capture=capture, drive=drive)['result'], follow['result'])
-        self.resolve([])
-        self.assertEqual(len(self.fake.calls), calls)
-        resolved = self.api('capture result', capture=capture)['result']
-        self.assertEqual((resolved['state'], resolved['lines']),
-                         ('resolved', [dict(label='Synthetic second', direction='OUT', person='Synthetic borrower')]))
-        self.assertEqual({d['id']: d['status'] for d in self.drives()}[drive], 'released')
-        self.assertEqual(self.call('exceptions').result['captures'], [])
-        self.assertEqual(self.api('capture list', keeper)['result']['captures'], [])
-        (row,) = self.api('capture list', keeper, state='resolved')['result']['captures']
-        self.assertEqual(row['capture'], capture)
-        self.assertEqual(self.api('capture', keeper, capture=capture, drive=drive)['result']['state'], 'resolved')
-
     def test_undo_appends_reversals_and_restores_previous_status_once(self) -> None:
-        capture = self.api('capture', **self.post)['result']['capture']
-        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
+        capture = self.settle()
         drive = self.drives()[0]['id']
         self.assertEqual(self.call('get', drive=drive).result['drive']['status'], 'released')
         undone = self.api('capture undo', capture=capture)
@@ -602,8 +368,7 @@ class CaptureTests(DriveReloadFixture):
         values = dict(drive=drive, assignment=1, end='2026-11-23', idempotency_key='synthetic-unassign')
         preview = self.call('unassign', **values)
         self.call('unassign', **values, confirm=preview.token)
-        capture = self.api('capture', **self.post)['result']['capture']
-        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
+        capture = self.settle()
         self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'resolved')
         entry = next(v for v in VERBS if (v.noun, v.verb) == ('movement', 'list'))
         rows = invoke(entry, entry.input_model.model_validate({'needs_project': True}), actor='synthetic-keeper',
@@ -629,8 +394,7 @@ class CaptureTests(DriveReloadFixture):
         drive = self.drives()[0]['id']
         values = dict(drive=drive, assignment=1, end='2026-11-23', idempotency_key='synthetic-unassign')
         self.call('unassign', **values, confirm=self.call('unassign', **values).token)
-        self.api('capture', **self.post)
-        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
+        self.settle()
         (original,) = self.movements('list', needs_project=True).result['movements']
         return dict(original)
 
@@ -656,32 +420,14 @@ class CaptureTests(DriveReloadFixture):
         self.assertEqual(self.bare(self.movements('list', drive=original['drive']).result['movements']), self.bare([original, corrected]))
         self.assertIsNone(self.movements('list', drive=original['drive']).result['movements'][0]['project'])
 
-    def test_in_uses_sender_as_receiver_and_recorder_and_keeps_place(self) -> None:
-        with self.registry._transaction() as db:
-            db.execute("UPDATE persons SET telegram_id=900010 WHERE id='synthetic-keeper'")
-        capture = self.api('capture', **{**self.post, 'text': 'IN SHELF\nSAMPLE-FIRST'})['result']['capture']
-        self.resolve([])
-        result = self.api('capture result', capture=capture)['result']
-        self.assertEqual(result['lines'], [dict(label='Synthetic first', direction='IN', person='synthetic-keeper')])
-        from t6.verbs import VERBS, invoke
-        entry = next(v for v in VERBS if (v.noun, v.verb) == ('movement', 'list'))
-        row = invoke(entry, entry.input_model(), actor='synthetic-keeper', people=self.people,
-                     open_notion=lambda _: None).result['movements'][0]  # type: ignore[union-attr]
-        self.assertEqual((row['direction'], row['person'], row['recorder'], row['place']),
-                         ('IN', 'synthetic-keeper', 'synthetic-keeper', 'SHELF'))
-        self.assertEqual(self.call('get', drive=row['drive']).result['events'][-1]['logged_by']['page_id'], 'synthetic-keeper')
-
-    def test_exceptions_list_and_reload_include_captures(self) -> None:
-        capture = self.api('capture', **self.post)['result']['capture']
-        self.resolve([])
-        unresolved = self.call('exceptions').result['captures']
-        self.assertEqual([row['capture'] for row in unresolved], [capture])
-        self.assertEqual(unresolved[0]['photo_reference'], capture)
+    def test_reload_wipes_captures_and_their_inbox_items(self) -> None:
+        capture = self.kept()
+        self.assertEqual([i['capture'] for i in self.inbox()], [capture, capture])
         self.reload('synthetic-wipe-captures')
         self.assertEqual(self.api('capture result', capture=capture)['rule'], 'capture')
-        self.assertEqual(self.call('exceptions').result['captures'], [])
+        self.assertEqual(self.inbox(), [])
 
-    def test_production_worker_configuration_reaches_photo_resolution(self) -> None:
+    def test_production_worker_configuration_reaches_capture_resolution(self) -> None:
         from t6.worker.__main__ import WorkerSettings, configured_handlers
         from t6.worker.client import HttpTransport
         from t6.worker import Worker
@@ -693,7 +439,6 @@ class CaptureTests(DriveReloadFixture):
         env = dict(T6_SERVER_URL='https://synthetic.invalid', T6_WORKER_SECRET='synthetic', T6_WORKER_QUEUE='main',
                    T6_API_URL='https://synthetic.invalid', T6_DATABASE=str(self.folder / 't6.sqlite'), T6_LLM_CONFIG=str(config), T6_DRIVE_RECORDING_CHAT_ID='-900001')
         capture = self.api('capture', **self.post)['result']['capture']
-        self.fake.reply(json.dumps({'drives': [{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}]}))
         with patch('t6.llm.config.LLMConfig.provider_for', return_value=self.fake):
             handlers = configured_handlers(env, WorkerSettings.from_env(env), HttpTransport('https://synthetic.invalid'))
             self.assertIn('drive.capture.resolve', handlers.get('main', {}))
@@ -717,7 +462,6 @@ class CaptureTests(DriveReloadFixture):
                    T6_API_URL='https://synthetic.invalid', T6_DATABASE=str(self.folder / 't6.sqlite'),
                    T6_LLM_CONFIG=str(config), T6_DRIVE_RECORDING_CHAT_ID='-900001', SYNTHETIC_JEV_KEY='synthetic')
         capture = self.api('capture', **self.post)['result']['capture']
-        self.fake.reply('{"drives": []}')
         reply = {'model': JEV_MODEL, 'answers': {'c0': {
             'type': 'choice', 'choice': 'no', 'probabilities': {'match': 0, 'maybe': 0, 'no': 1}}}}
         with patch('t6.llm.config.LLMConfig.provider_for', return_value=self.fake):
@@ -730,12 +474,11 @@ class CaptureTests(DriveReloadFixture):
         self.assertEqual(request.full_url, DECISIONS_URL)
         self.assertEqual(json.loads(request.data)['model'], JEV_MODEL)
 
-    def test_multiple_open_assignments_need_project_and_pending_undo_stops_read(self) -> None:
+    def test_multiple_open_assignments_need_project_and_pending_undo_stops_resolution(self) -> None:
         self.workbook({'SYNTHETIC ALPHA': [HEADER, ['Synthetic first', 'SAMPLE-FIRST']],
                        'SYNTHETIC BETA': [HEADER, ['Synthetic first', 'SAMPLE-FIRST']]})
         self.reload('synthetic-multiple')
-        capture = self.api('capture', **self.post)['result']['capture']
-        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
+        capture = self.settle()
         from t6.verbs import VERBS, invoke
         entry = next(v for v in VERBS if (v.noun, v.verb) == ('movement', 'list'))
         rows = invoke(entry, entry.input_model(needs_project=True), actor='synthetic-keeper',
@@ -745,28 +488,24 @@ class CaptureTests(DriveReloadFixture):
         pending = self.api('capture', **{**self.post, 'message_id': 2})['result']['capture']
         self.api('capture undo', capture=pending)
         before = len(self.fake.calls)
-        self.resolve([])
+        self.resolve()
         self.assertEqual(len(self.fake.calls), before)
         self.assertEqual(self.api('capture result', capture=pending)['result']['state'], 'undone')
 
-    def test_matching_is_exact_and_ignores_suspected_serials(self) -> None:
+    def test_a_typed_drive_is_matched_exactly_and_never_by_a_suspected_serial(self) -> None:
         values = dict(label='Synthetic uncertain', suspected_serial='SAMPLE-SUSPECTED', idempotency_key='synthetic-uncertain')
         preview = self.call('add', **values)
         self.call('add', **values, confirm=preview.token)
-        for message, label, serial in ((2, 'Synthetic fir', None), (3, None, 'SAMPLE-SUSPECTED')):
-            with self.subTest(label=label, serial=serial):
-                capture = self.api('capture', **{**self.post, 'message_id': message})['result']['capture']
-                self.resolve([{'label': label, 'serial': serial, 'confidence': 0.9}])
-                self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'exception')
-                follow = self.api('capture', capture=capture, text='Synthetic first')
-                self.assertEqual(follow['outcome'], 'done')
-                self.resolve([{'label': label, 'serial': serial, 'confidence': 0.9}])
-                self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'resolved')
+        capture = self.kept('IN\nSynthetic first')
+        for typed in ('Synthetic fir', 'SAMPLE-SUSPECTED'):
+            with self.subTest(typed=typed):
+                self.assertEqual(self.approve(capture, 0, 'drive', typed=typed)['rule'], 'drive')
+        self.assertEqual(self.approve(capture, 0, 'drive', typed='Synthetic first')['result']['state'], 'approved')
 
     def test_resolution_rechecks_channel_before_sending_photo(self) -> None:
         capture = self.api('capture', **self.post)['result']['capture']
         with patch.dict(os.environ, {'T6_DRIVE_RECORDING_CHAT_ID': '-900002'}):
-            self.resolve([])
+            self.resolve()
         self.assertEqual(self.fake.calls, [])
         self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'pending')
 
@@ -774,7 +513,7 @@ class CaptureTests(DriveReloadFixture):
         with patch.dict(os.environ, {'T6_DRIVE_RECORDING_TOPIC_ID': '4801'}):
             capture = self.api('capture', **{**self.post, 'topic_id': 4801})['result']['capture']
         with patch.dict(os.environ, {'T6_DRIVE_RECORDING_TOPIC_ID': '4802'}):
-            self.resolve([])
+            self.resolve()
         self.assertEqual(self.fake.calls, [])
         self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'pending')
 
@@ -804,12 +543,12 @@ class CaptureTests(DriveReloadFixture):
             with redirect_stdout(output):
                 self.assertEqual(main(args), 0)
             second = json.loads(output.getvalue())
-            self.resolve([])
-            self.resolve([])
+            self.resolve()
+            self.resolve()
         assert isinstance(first, Done)
         for capture in (first.result['capture'], second['result']['capture']):
-            self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'exception')
-        self.assertEqual(len(self.fake.calls), 4)
+            self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'resolved')
+        self.assertEqual(len(self.fake.calls), 2)
 
     def test_no_configured_topic_admits_posts_with_or_without_a_topic(self) -> None:
         for message, topic in enumerate((None, 4801, 4802), 1):
@@ -822,19 +561,15 @@ class CaptureTests(DriveReloadFixture):
         values = dict(label='Synthetic new', serial='SAMPLE-NEW', idempotency_key='synthetic-new')
         preview = self.call('add', **values)
         self.call('add', **values, confirm=preview.token)
-        capture = self.api('capture', **self.post)['result']['capture']
-        self.resolve([{'label': 'Synthetic new', 'serial': None, 'confidence': 0.9}])
+        capture = self.settle(label='Synthetic new')
         self.api('capture undo', capture=capture)
         drive = next(d for d in self.drives() if d['serial'] == 'SAMPLE-NEW')
         self.assertEqual(drive['status'], 'unknown')
         self.assertEqual(self.call('get', drive=drive['id']).result['drive']['status'], 'unknown')
 
     def test_undo_in_restores_release_and_does_not_readd_undone_capture(self) -> None:
-        out = self.api('capture', **self.post)['result']['capture']
-        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
-        returned = self.api('capture', **{**self.post, 'message_id': 2, 'text': 'IN TABLE',
-                                        'posted_at': '2026-11-25T10:00:00+08:00'})['result']['capture']
-        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
+        out = self.settle()
+        returned = self.settle('IN\nSynthetic first', message_id=2, posted_at='2026-11-25T10:00:00+08:00')
         self.api('capture undo', capture=returned)
         self.assertEqual(self.drives()[0]['status'], 'released')
         self.api('capture undo', capture=out)
@@ -845,21 +580,11 @@ class CaptureTests(DriveReloadFixture):
                                 people=self.people, open_notion=lambda _: None).result['movements'], [])  # type: ignore[union-attr]
 
     def test_late_delivery_keeps_latest_post_status(self) -> None:
-        self.api('capture', **{**self.post, 'message_id': 2, 'text': 'IN',
-                              'posted_at': '2026-11-25T10:00:00+08:00'})
-        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
-        old = self.api('capture', **self.post)['result']['capture']
-        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
+        self.settle('IN\nSynthetic first', message_id=2, posted_at='2026-11-25T10:00:00+08:00')
+        old = self.settle()
         self.assertEqual(self.drives()[0]['status'], 'in custody')
         self.api('capture undo', capture=old)
         self.assertEqual(self.drives()[0]['status'], 'in custody')
-
-    def test_jpeg_photo_bytes_are_sent_with_their_image_type(self) -> None:
-        image = self.folder / 'synthetic.jpg'
-        image.write_bytes(b'\xff\xd8\xffsynthetic-jpeg-bytes')
-        self.api('capture', **{**self.post, 'photo': base64.b64encode(image.read_bytes()).decode()})
-        self.resolve([])
-        self.assertEqual(self.fake.calls[1].messages[-1]['image'].media_type.value, 'image/jpeg')
 
     # The debug topic, against a fake gateway transport (this class is the transport).
     DEBUG_CHAT, DEBUG_TOPIC = -1004352220086, 632
@@ -871,7 +596,7 @@ class CaptureTests(DriveReloadFixture):
         self.sent.append((path, message))
         return 202, {'message_ref': message.get('message_ref', 41)}
 
-    def run_debug(self, enabled: bool = True, readings: str = 'Synthetic first', text: str = 'OUT Synthetic borrower password: hunter2') -> str:
+    def run_debug(self, enabled: bool = True, text: str = 'OUT Synthetic borrower password: hunter2') -> str:
         from t6.drives.capture import CaptureResolver
         from t6.drives.debug import DebugNotifier
         from t6.worker import Worker
@@ -880,7 +605,6 @@ class CaptureTests(DriveReloadFixture):
         capture = self.api('capture', **{**self.post, 'text': text})['result']['capture']
         self.fake.decisions({'model': 'synthetic-jev', 'answers': {'c0': {'type': 'choice', 'choice': 'match',
                              'probabilities': {'match': 0.9, 'maybe': 0.1, 'no': 0}}}})
-        self.fake.reply(json.dumps({'drives': [{'label': readings, 'serial': None, 'confidence': 0.9}]}))
         notifier = DebugNotifier(self.registry, GatewayClient(self, 'secret'), self.DEBUG_CHAT, self.DEBUG_TOPIC, lambda: enabled)
         self.resolver = CaptureResolver(self.registry, self.fake, decisions=self.fake, debug=notifier)
         self.worker = Worker(InternalQueueClient(self.queue), 'main', {'drive.capture.resolve': self.resolver.handle,
@@ -898,8 +622,7 @@ class CaptureTests(DriveReloadFixture):
         self.assertEqual(last['message_ref'], 41)
         text = last['text']
         for expected in ('✅ resolved', 'Telegram 900010', 'https://t.me/c/900001/1', 'OUT Synthetic borrower', 'match 0.90 maybe 0.10 no 0.00',
-                         'synthetic-jev', 'Synthetic first', 'direction OUT, person Synthetic borrower', 'Matched drives: Synthetic first',
-                         'State: resolved', 'Undo until:'):
+                         'synthetic-jev', 'State: resolved', 'Undo until:'):
             self.assertIn(expected, text)
         self.assertNotIn('hunter2', text)
         self.assertNotIn('photo', {key for _, message in self.sent for key in message})
@@ -925,7 +648,7 @@ class CaptureTests(DriveReloadFixture):
         self.assertEqual(len(self.sent), before + 1)
         self.assertIn('⚠️ undone', self.sent[-1][1]['text'])
 
-    def test_unreadable_photo_and_a_failed_jev_show_the_exception_and_the_error(self) -> None:
+    def test_a_failed_jev_shows_the_error_and_keeps_the_post(self) -> None:
         from t6.drives.capture import CaptureResolver
         from t6.drives.debug import DebugNotifier
         from t6.llm.testing import FakeProvider
@@ -935,13 +658,12 @@ class CaptureTests(DriveReloadFixture):
         self.api('capture', **self.post)
         jev = FakeProvider()
         jev.timeout()
-        self.fake.reply(json.dumps({'drives': []}))
         notifier = DebugNotifier(self.registry, GatewayClient(self, 'secret'), self.DEBUG_CHAT, None, lambda: True)
         resolver = CaptureResolver(self.registry, self.fake, decisions=jev, debug=notifier)
         Worker(InternalQueueClient(self.queue), 'main', {'drive.capture.resolve': resolver.handle}).run_once()
         self.assertIn('⛔ error', self.sent[-1][1]['text'])
         self.assertIn('Jev failed: timeout', self.sent[-1][1]['text'])
-        self.assertIn('reason unreadable_label', self.sent[-1][1]['text'])
+        self.assertIn('State: resolved', self.sent[-1][1]['text'])
         self.assertNotIn('topic', self.sent[0][1])
 
     def test_switch_defaults_to_practice_mode_and_needs_a_chat(self) -> None:
@@ -958,3 +680,230 @@ class CaptureTests(DriveReloadFixture):
         self.assertTrue(on.enabled())
         self.assertIsNone(debug_notifier({**env, 'T6_DRIVE_DEBUG': 'off'}, self.registry))
         self.assertIsNone(debug_notifier({k: v for k, v in env.items() if k != 'T6_DRIVE_DEBUG_CHAT_ID'}, self.registry))
+
+    # Every Item of a kept Capture waits in the Inbox until the custodian approves it (#724).
+    keeper = 'synthetic-keeper-secret'
+    two_items = 'OUT\nSynthetic first\nSynthetic second\nR: Marco'
+
+    def kept(self, text: str = two_items, message_id: int = 1, **values: Any) -> str:
+        capture = str(self.api('capture', **{**self.post, 'message_id': message_id, 'text': text,
+                                             'posted_at': f'2026-11-24T{10 + message_id}:30:00+08:00', **values})['result']['capture'])
+        self.resolve()
+        return capture
+
+    def settle(self, text: str = two_items, label: str = 'Synthetic first', message_id: int = 1, **values: Any) -> str:
+        """Keep a post and approve its first Item with the Drive labelled `label`; the Capture ID."""
+        capture = self.kept(text, message_id, **values)
+        self.approve(capture, 0, 'drive', typed=label)
+        return capture
+
+    def inbox(self) -> list[dict[str, Any]]:
+        result = self.api('inbox', self.keeper)
+        self.assertEqual(result['outcome'], 'done', result)
+        return list(result['result']['items'])
+
+    def approve(self, capture: str, item: int, choice: str, **values: Any) -> dict[str, Any]:
+        return self.api('approve', self.keeper, capture=capture, item=item, choice=choice, **values)
+
+    def moved(self, **values: Any) -> list[dict[str, Any]]:
+        from t6.verbs import VERBS, invoke
+        entry = next(v for v in VERBS if (v.noun, v.verb) == ('movement', 'list'))
+        return list(invoke(entry, entry.input_model.model_validate(values), actor='synthetic-keeper', people=self.people,
+                           open_notion=lambda _: None).result['movements'])  # type: ignore[union-attr]
+
+    def ids(self) -> dict[str, str]:
+        return {str(d['label']): str(d['id']) for d in self.drives()}
+
+    def test_a_two_item_capture_shows_two_inbox_items_and_makes_no_movement_until_approved(self) -> None:
+        capture = self.kept()
+        self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'resolved')
+        items = self.inbox()
+        self.assertEqual([(i['capture'], i['item'], i['text'], i['direction'], i['recipient'], i['guesses']) for i in items],
+                         [(capture, 0, 'Synthetic first', 'OUT', 'Marco', []), (capture, 1, 'Synthetic second', 'OUT', 'Marco', [])])
+        self.assertEqual((items[0]['caption'], items[0]['photo_reference'], items[0]['chat_id'], items[0]['message_id']),
+                         (self.two_items, capture, -900001, 1))
+        self.assertEqual(self.moved(), [])
+        self.assertEqual([d['status'] for d in self.drives()], ['in custody', 'in custody'])
+        self.assertEqual(self.call('exceptions').result['captures'], [])
+        self.assertEqual(len(self.fake.calls), 1)  # Jev only: the photo is not read
+
+    def test_approving_each_item_with_a_drive_appends_one_movement_each(self) -> None:
+        capture = self.kept()
+        drives = self.ids()
+        first = self.approve(capture, 0, 'drive', drive=drives['Synthetic first'])
+        self.assertEqual((first['outcome'], first['result']['state'], first['result']['drive']), ('done', 'approved', drives['Synthetic first']), first)
+        self.assertEqual([i['item'] for i in self.inbox()], [1])
+        self.approve(capture, 1, 'drive', drive=drives['Synthetic second'])
+        self.assertEqual(self.inbox(), [])
+        rows = self.moved()
+        self.assertEqual([(m['drive'], m['direction'], m['person'], m['capture'], m['on']) for m in rows],
+                         [(drives[label], 'OUT', 'Marco', capture, '2026-11-24') for label in ('Synthetic first', 'Synthetic second')])
+        self.assertEqual(len({m['shipment_id'] for m in rows}), 1)
+        self.assertEqual([d['status'] for d in self.drives()], ['released', 'released'])
+        self.assertEqual([i['state'] for i in self.api('capture result', capture=capture)['result']['items']], ['approved', 'approved'])
+
+    def test_a_drive_can_be_typed_by_label_or_serial(self) -> None:
+        capture = self.kept('IN\nA\nB')
+        self.assertEqual(self.approve(capture, 0, 'drive', typed='Synthetic second')['result']['state'], 'approved')
+        self.assertEqual(self.approve(capture, 1, 'drive', typed='SAMPLE-FIRST')['result']['state'], 'approved')
+        self.assertEqual(sorted(m['label'] for m in self.moved()), ['Synthetic first', 'Synthetic second'])
+        other = self.kept('IN\nC', 2)
+        refused = self.approve(other, 0, 'drive', typed='NO-SUCH-DRIVE')
+        self.assertEqual((refused['outcome'], refused['rule']), ('refused', 'drive'))
+        self.assertEqual(self.approve(other, 0, 'drive', drive='t6d_missing')['rule'], 'drive')
+        self.assertEqual(self.approve(other, 0, 'drive')['rule'], 'input')
+        self.assertEqual(len(self.moved()), 2)
+
+    def test_an_in_is_received_by_the_poster(self) -> None:
+        with self.registry._transaction() as db:
+            db.execute("UPDATE persons SET telegram_id=900010 WHERE id='synthetic-keeper'")
+        capture = self.kept('IN: Synthetic first')
+        self.approve(capture, 0, 'drive', typed='Synthetic first')
+        (row,) = self.moved()
+        self.assertEqual((row['direction'], row['person'], row['recorder'], row['recorder_telegram_id']),
+                         ('IN', 'synthetic-keeper', 'synthetic-keeper', 900010))
+
+    def test_none_keeps_the_item_waiting_and_not_a_drive_closes_it_without_a_movement(self) -> None:
+        capture = self.kept()
+        for _ in range(2):
+            none = self.approve(capture, 0, 'none')
+            self.assertEqual((none['outcome'], none['result']['state']), ('done', 'open'))
+        self.assertEqual([i['item'] for i in self.inbox()], [0, 1])
+        closed = self.approve(capture, 1, 'not_a_drive')
+        self.assertEqual((closed['result']['state'], closed['result']['movement']), ('not_a_drive', None))
+        self.assertEqual([i['item'] for i in self.inbox()], [0])
+        self.assertEqual(self.moved(), [])
+        self.assertEqual([d['status'] for d in self.drives()], ['in custody', 'in custody'])
+
+    def test_new_creates_the_drive_and_its_movement(self) -> None:
+        capture = self.kept('IN\nSYN9 D01')
+        made = self.approve(capture, 0, 'new', serial='SAMPLE-NEW')
+        self.assertEqual((made['outcome'], made['result']['state']), ('done', 'approved'), made)
+        drive = self.call('get', drive=made['result']['drive']).result['drive']
+        self.assertEqual((drive['label'], drive['serial'], drive['status']), ('SYN9 D01', 'SAMPLE-NEW', 'in custody'))
+        (row,) = self.moved()
+        self.assertEqual((row['drive'], row['direction'], row['capture']), (drive['id'], 'IN', capture))
+        self.assertEqual(self.inbox(), [])
+        self.assertEqual(len(self.drives()), 3)
+        self.assertEqual(self.approve(capture, 0, 'new', serial='SAMPLE-NEW')['result'], made['result'])
+        self.assertEqual(len(self.drives()), 3)
+        again = self.kept('IN\nSYN9 D02', 2)
+        self.assertEqual(self.approve(again, 0, 'new', label='Synthetic named', serial='SAMPLE-NEW')['rule'], 'serial')
+
+    def test_repeated_approvals_are_idempotent_and_a_settled_item_is_not_changed(self) -> None:
+        capture = self.kept()
+        drives = self.ids()
+        first = self.approve(capture, 0, 'drive', drive=drives['Synthetic first'])
+        self.assertEqual(self.approve(capture, 0, 'drive', drive=drives['Synthetic first'])['result'], first['result'])
+        self.assertEqual(len(self.moved()), 1)
+        for choice, values in (('drive', dict(drive=drives['Synthetic second'])), ('not_a_drive', {}), ('none', {})):
+            refused = self.approve(capture, 0, choice, **values)
+            self.assertEqual((refused['outcome'], refused['rule']), ('refused', 'item_settled'), choice)
+        self.approve(capture, 1, 'not_a_drive')
+        self.assertEqual(self.approve(capture, 1, 'not_a_drive')['outcome'], 'done')
+        self.assertEqual(self.approve(capture, 1, 'drive', drive=drives['Synthetic first'])['rule'], 'item_settled')
+        self.assertEqual(len(self.moved()), 1)
+
+    def test_only_a_drive_caller_reads_the_inbox_or_approves(self) -> None:
+        capture = self.kept()
+        for secret in ('synthetic-gateway', 'synthetic-other'):
+            for result in (self.api('inbox', secret), self.api('approve', secret, capture=capture, item=0, choice='none')):
+                self.assertEqual((result['outcome'], result['rule']), ('refused', 'permission'), (secret, result))
+
+    def test_unknown_captures_items_and_unusable_captures_are_refused(self) -> None:
+        capture = self.kept()
+        self.assertEqual(self.approve('capture_missing', 0, 'none')['rule'], 'capture')
+        self.assertEqual(self.approve(capture, 5, 'none')['rule'], 'item')
+        ignored = self.api('capture', **{**self.post, 'message_id': 2, 'text': 'Synthetic lunch photo'})['result']['capture']
+        self.resolve('no')
+        self.assertEqual(self.approve(ignored, 0, 'none')['rule'], 'capture')
+        pending = self.api('capture', **{**self.post, 'message_id': 3})['result']['capture']
+        self.assertEqual(self.approve(pending, 0, 'none')['rule'], 'capture')
+        self.assertEqual([i['capture'] for i in self.inbox()], [capture, capture])
+
+    def test_the_inbox_lists_the_newest_capture_first_and_leaves_out_count_lines_and_ignored_posts(self) -> None:
+        older = self.kept('IN\nSYN7 D21\n48 FD', 1)
+        newer = self.kept('OUT\nSYN7 D22\nR: Marco', 2)
+        self.assertEqual([(i['capture'], i['text']) for i in self.inbox()], [(newer, 'SYN7 D22'), (older, 'SYN7 D21')])
+        counted = self.api('capture result', capture=older)['result']
+        self.assertEqual(counted['counts'], [{'count': 48, 'kind': 'FD'}])
+        self.assertEqual(counted['items'], [{'text': 'SYN7 D21', 'state': 'open'}])
+        photo_only = self.kept('IN', 3)
+        self.assertEqual(self.api('capture result', capture=photo_only)['result']['state'], 'resolved')
+        self.assertNotIn(photo_only, [i['capture'] for i in self.inbox()])
+
+    def test_a_capture_with_a_problem_is_never_an_exception_and_joins_the_inbox_once_fixed(self) -> None:
+        capture = self.kept('OUT\nSynthetic first')
+        result = self.api('capture result', capture=capture)['result']
+        self.assertEqual((result['state'], result['grade'], result['problem'], result['reason']), ('resolved', 'problem', 'missing_recipient', None))
+        self.assertEqual(self.inbox(), [])
+        self.assertEqual(self.approve(capture, 0, 'drive', typed='Synthetic first')['rule'], 'problem')
+        self.assertEqual(self.call('exceptions').result['captures'], [])
+        edited = self.api('capture', capture=capture, text='OUT\nSynthetic first\nR: Marco', edit=True)['result']
+        self.assertEqual(edited['state'], 'pending')
+        self.resolve()
+        self.assertEqual([(i['capture'], i['recipient']) for i in self.inbox()], [(capture, 'Marco')])
+        self.assertEqual(self.approve(capture, 0, 'drive', typed='Synthetic first')['result']['state'], 'approved')
+
+    def test_no_capture_becomes_an_exception(self) -> None:
+        text_only = {k: v for k, v in self.post.items() if k != 'photo'}
+        for number, (text, extra) in enumerate((('Synthetic first', {}), ('IN', {}), ('OUT', {}), ('IN\nSynthetic first', text_only)), 1):
+            with self.subTest(text=text, text_only=bool(extra)):
+                capture = self.api('capture', **{**self.post, **extra, 'message_id': number, 'text': text})['result']['capture']
+                self.resolve()
+                self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'resolved')
+        self.assertEqual(self.call('exceptions').result['captures'], [])
+        self.assertEqual(self.api('capture list', self.keeper)['result']['captures'], [])
+
+    def test_undo_reverses_the_movements_and_closes_the_inbox_items(self) -> None:
+        capture = self.kept()
+        drives = self.ids()
+        self.approve(capture, 0, 'drive', drive=drives['Synthetic first'])
+        self.assertEqual(self.drives()[0]['status'], 'released')
+        undone = self.api('capture undo', capture=capture)['result']
+        self.assertEqual(undone['state'], 'undone')
+        self.assertEqual([i['state'] for i in undone['items']], ['approved', 'closed'])
+        self.assertEqual(self.inbox(), [])
+        self.assertEqual([d['status'] for d in self.drives()], ['in custody', 'in custody'])
+        self.assertEqual(self.approve(capture, 1, 'drive', drive=drives['Synthetic second'])['rule'], 'item_settled')
+        self.assertEqual(self.approve(capture, 1, 'none')['rule'], 'item_settled')
+        self.assertEqual(len([m for m in self.moved() if m['capture'] == capture and m['corrects'] is None]), 1)
+
+    def coordinated_drive(self) -> tuple[str, str, str, str]:
+        """A mapped Project whose Notion page names `contact` as T6 Post Coordinator, and a Drive on it."""
+        from t6.ids import EntityKind, T6Id
+        from t6.notion.generated import ProjectsRow
+        from t6.notion.testing import project_properties, relation
+        contact, other = '0b000000-0000-0000-0000-00000000c001', '0b000000-0000-0000-0000-00000000c002'
+        person = str(T6Id.mint(EntityKind.PERSON))
+        self.registry.bind_entity('notion', contact, T6Id.parse(person, EntityKind.PERSON), actor='setup')
+        page = self.notion.add_page('synthetic-projects', {**project_properties(name='Synthetic Show'),
+                                                           ProjectsRow.notion_name('t6_post_coordinator'): relation(contact)})
+        project = self.registry.register(actor='setup', idempotency_key='coordinated', notion_page_id=page['id']).project.id  # type: ignore[union-attr]
+        mapping = self.folder / 'mapping.json'
+        mapping.write_text(json.dumps([{'name': 'SYNTHETIC PROJECT', 'project': project, 'certain': True}]))
+        values = {'file': str(mapping), 'idempotency_key': 'map-coordinated'}
+        self.call('mapping apply', **values, confirm=self.call('mapping apply', **values).token)
+        self.reload('reload-mapped')
+        return str(page['id']), other, person, contact
+
+    def test_the_movement_keeps_the_coordinator_it_had_at_the_move_after_the_project_coordinator_changes(self) -> None:
+        from t6.notion.generated import ProjectsRow
+        from t6.notion.testing import relation
+        page, other, person, _ = self.coordinated_drive()
+        capture = self.kept('OUT\nSynthetic first\nSynthetic second\nR: Marco')
+        drives = self.ids()
+        self.approve(capture, 0, 'drive', drive=drives['Synthetic first'])
+        self.notion.update_page(page, {ProjectsRow.notion_name('t6_post_coordinator'): relation(other)})
+        self.approve(capture, 1, 'drive', drive=drives['Synthetic second'])
+        first, second = self.moved()
+        self.assertEqual((first['coordinators'], first['person']), ([person], 'Marco'))  # the coordinator is not the recipient
+        self.assertEqual(second['coordinators'], [other])  # a contact with no Person is kept by its page
+        self.assertEqual(self.moved(drive=drives['Synthetic first'])[0]['coordinators'], [person])
+        self.notion.update_page(page, {ProjectsRow.notion_name('t6_post_coordinator'): relation()})
+        self.assertEqual(self.moved(drive=drives['Synthetic first'])[0]['coordinators'], [person])
+
+    def test_a_movement_without_a_registered_project_or_notion_has_no_coordinators(self) -> None:
+        capture = self.kept('IN\nSynthetic first')
+        self.approve(capture, 0, 'drive', typed='Synthetic first')
+        self.assertEqual(self.moved()[0]['coordinators'], [])

@@ -437,8 +437,12 @@ _MIGRATIONS = (
     JOIN audit au ON au.project_id = a.id AND au.action = 'approval_request'
     WHERE a.gate = 'chat link' AND a.state = 'requested'
     GROUP BY a.id"""),
+    # The CRM stage of a Lead: one append-only row per change; the newest row is the current stage (t6-core #709).
+    (62, False, """CREATE TABLE project_stage_history (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL REFERENCES projects(id),
+    at REAL NOT NULL, actor TEXT NOT NULL, field TEXT NOT NULL, from_value TEXT, to_value TEXT NOT NULL, event TEXT NOT NULL UNIQUE);
+    CREATE INDEX project_stage_history_project ON project_stage_history (project_id, id)"""),
     # What the Concerns sheet last showed for a Concern: the result of its latest Submit, and the job that wrote it (t6-core #735).
-    (65, False, """CREATE TABLE concern_sheet_results (concern_id TEXT PRIMARY KEY REFERENCES concerns(id), result TEXT NOT NULL, job_id INTEGER NOT NULL, at REAL NOT NULL)"""),
+    (63, False, """CREATE TABLE concern_sheet_results (concern_id TEXT PRIMARY KEY REFERENCES concerns(id), result TEXT NOT NULL, job_id INTEGER NOT NULL, at REAL NOT NULL)"""),
 )
 
 
@@ -478,6 +482,10 @@ def _migrate(db: sqlite3.Connection) -> None:
                 for operation in ("UPDATE", "DELETE"):
                     db.execute(f"CREATE TRIGGER drive_shipment_facts_no_{operation.lower()} BEFORE {operation} ON drive_shipment_facts "
                                "BEGIN SELECT RAISE(ABORT, 'drive shipment facts are append-only'); END")
+            if version == 62:
+                for operation in ("UPDATE", "DELETE"):
+                    db.execute(f"CREATE TRIGGER project_stage_history_no_{operation.lower()} BEFORE {operation} ON project_stage_history "
+                               "BEGIN SELECT RAISE(ABORT, 'project stage history is append-only'); END")
             if version == 53:
                 for operation in ("UPDATE", "DELETE"):
                     db.execute(f"CREATE TRIGGER drive_movements_no_{operation.lower()} BEFORE {operation} ON drive_movements "
