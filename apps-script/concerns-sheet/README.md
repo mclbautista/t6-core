@@ -30,7 +30,7 @@ Run as Cyril, under his Google account, in a normal terminal. Never in a Sixto c
    | `SUBMIT_SECRET` | the sheet submit secret the verifier uses |
 
    These values live in private config and in Script Properties only, never in this repo. The sheet needs a tab named `Concerns` (the script makes it if missing).
-6. Run `onOpen` once and accept the permissions, then `Concerns > Set up refresh on open (once)`. Share the sheet as editor with Leizette and Jam; access is Google sharing only.
+6. Run `onOpen` once and accept the permissions, then `Concerns > Set up refresh on open (once)`. Share the sheet as editor with the Closers; access is Google sharing only.
 
 ## Signature check by hand
 
