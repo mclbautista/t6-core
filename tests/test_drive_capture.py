@@ -579,21 +579,26 @@ class CaptureTests(DriveReloadFixture):
         (original,) = self.movements('list', needs_project=True).result['movements']
         return dict(original)
 
+    @staticmethod
+    def bare(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """A movement row without its `photo` mark (a corrected row comes from the correct verb, which has none)."""
+        return [{k: v for k, v in row.items() if k != 'photo'} for row in rows]
+
     def test_correcting_the_project_takes_a_movement_off_the_needs_project_list(self) -> None:
         original = self.needs_project_movement()
         registered = self.registry.register(actor='setup', idempotency_key='synthetic-project').project.id  # type: ignore[union-attr]
         corrected = self.correct_project(original['id'], registered, 'synthetic-registered')
         self.assertEqual((corrected['project'], corrected['corrects']), ({'page_id': registered, 'text': None}, original['id']))
         self.assertEqual(self.movements('list', needs_project=True).result['movements'], [])
-        self.assertEqual(self.movements('list', project=registered).result['movements'], [corrected])
-        self.assertEqual(self.movements('list', drive=original['drive']).result['movements'], [original, corrected])
+        self.assertEqual(self.bare(self.movements('list', project=registered).result['movements']), [corrected])
+        self.assertEqual(self.bare(self.movements('list', drive=original['drive']).result['movements']), self.bare([original, corrected]))
 
     def test_correcting_to_a_text_project_keeps_the_text_and_the_original_entry(self) -> None:
         original = self.needs_project_movement()
         corrected = self.correct_project(original['id'], 'SYNTHETIC TEXT PROJECT', 'synthetic-text')
         self.assertEqual(corrected['project'], {'page_id': None, 'text': 'SYNTHETIC TEXT PROJECT'})
         self.assertEqual(self.movements('list', needs_project=True).result['movements'], [])
-        self.assertEqual(self.movements('list', drive=original['drive']).result['movements'], [original, corrected])
+        self.assertEqual(self.bare(self.movements('list', drive=original['drive']).result['movements']), self.bare([original, corrected]))
         self.assertIsNone(self.movements('list', drive=original['drive']).result['movements'][0]['project'])
 
     def test_in_uses_sender_as_receiver_and_recorder_and_keeps_place(self) -> None:

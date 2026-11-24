@@ -21,7 +21,7 @@ from t6.verbs import (
     TranscriptCreateInput, TranscriptGetInput, TranscriptSpeakersInput, TranscriptTranslateInput,
     DriveCaptureInput, DriveCaptureListInput, DriveCaptureReadInput, DriveReloadReportInput,
     DriveMappingProposeInput, DriveMappingApplyInput, DriveProjectsInput, DriveOverdueInput, MovementListInput, MovementCorrectInput,
-    ContactCreateInput, ContactFindInput, DriveRecycleInput, DriveReloadInput, DriveReceiveInput, DriveReleaseInput, DriveReturnInput, DriveRetireInput, DriveAssignInput, DriveUnassignInput,
+    ContactCreateInput, ContactFindInput, MovementPhotoAddInput, MovementPhotoRefInput, DriveRecycleInput, DriveReloadInput, DriveReceiveInput, DriveReleaseInput, DriveReturnInput, DriveRetireInput, DriveAssignInput, DriveUnassignInput,
     DriveAddInput, DriveEditInput, DrivePromoteSerialInput, DriveListInput, DriveGetInput, DriveFindInput, DriveCatalogSnapshotInput, DriveCatalogSnapshotsInput, DriveCatalogDiffInput, DriveCatalogAtInput, DriveShipmentsInput, DriveShipmentInput, DriveExceptionsInput,
     MachineEditInput, MachineListInput, MachineSyncInput,
     SwingAssignInput, SwingUnassignInput, SwingReturnInput, SwingOverdueInput,
@@ -197,6 +197,15 @@ class Client:
 
     def contact_create(self, inputs: ContactCreateInput) -> Result:
         return self.call('contact', 'create', inputs)
+
+    def movement_photo_add(self, inputs: MovementPhotoAddInput) -> Result:
+        return self.call('movement', 'photo-add', inputs)
+
+    def movement_photo_get(self, inputs: MovementPhotoRefInput) -> Result:
+        return self.call('movement', 'photo-get', inputs)
+
+    def movement_photo_delete(self, inputs: MovementPhotoRefInput) -> Result:
+        return self.call('movement', 'photo-delete', inputs)
 
     def drive_recycle(self, inputs: DriveRecycleInput) -> Result:
         return self.call('drive', 'recycle', inputs)

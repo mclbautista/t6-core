@@ -427,6 +427,9 @@ _MIGRATIONS = (
     DELETE FROM concern_pm_pending"""),
     # A pending close keeps the settlement its Closer gave; the Concern takes it only when the close is applied.
     (59, False, "ALTER TABLE concern_pending_closes ADD COLUMN settles_id TEXT"),
+    # One photo per movement: the file is in the photo folder, the database keeps this pointer (t6-core #669).
+    (60, False, """CREATE TABLE drive_movement_photos (movement_id TEXT PRIMARY KEY REFERENCES drive_movements(id),
+    path TEXT NOT NULL, media_type TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, added_by TEXT NOT NULL, at REAL NOT NULL)"""),
 )
 
 
