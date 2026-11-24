@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import patch
 
 from t6.concern import _insert
+from t6.crm.config import CrmRoles, crm_roles
 from t6.crm.reminder import CrmReminder, LeadFacts, read_leads
 from t6.domain import CrmStage, Project
 from t6.domain.studio_time import MANILA
@@ -188,6 +189,57 @@ class CrmReminderTests(unittest.TestCase):
         self.assertEqual(self.gateway.calls, [])
         result = self.queue.result(self.queue.find('crm.reminder')[0].job_id, 'main')
         self.assertTrue(result is None or 'Telegram' in str(result))
+
+    def reminders(self, roles: CrmRoles) -> None:
+        self.reminder.roles = roles
+
+    def test_quote_goes_to_the_post_producer_and_billing_to_all_three_in_one_dm(self) -> None:
+        self.person('pat', 700000011)
+        old = self.lead('Old', CrmStage.LEADS, '2026-10-01')
+        self.lead('Fresh', CrmStage.LEADS, '2026-11-30', ())
+        self.reminders(CrmRoles(frozenset({700000011}), frozenset({800000001}), frozenset({700000001})))
+        self.log += [row(datetime(2026, 10, 2), f'Old · {old}', 'quote', 'https://example.test/q', datetime(2026, 12, 1)),
+                     row(datetime(2026, 10, 2), f'Old · {old}', 'billing', None, datetime(2026, 11, 28))]
+        self.run_day()
+        sent = self.sent()
+        self.assertEqual(sorted(sent), [700000001, 700000011, 800000001])
+        self.assertEqual(len(self.gateway.calls), 3)  # the Finance Head is also Ada: one DM, cold Lead and reminder
+        self.assertEqual(sent[700000011], 'Hi,\nReminders\nBilling due 2026-11-28: Old, note\n'
+                                          'Quote due 2026-12-01: Old, note https://example.test/q')
+        self.assertEqual(sent[800000001], 'Hi,\nReminders\nBilling due 2026-11-28: Old, note')
+        self.assertEqual(sent[700000001], 'Hi Ada,\nCold Leads\nOld — Leads, 60 days since last contact\nReminders\nBilling due 2026-11-28: Old, note')
+        self.assertIn('crm-dm:tg:800000001:2026-12-01', [c['idempotency_key'] for c in self.gateway.calls])
+
+    def test_done_or_future_rows_send_nothing_and_a_row_survives_the_stage(self) -> None:
+        past = self.lead('Past', CrmStage.LEADS, '2026-11-30')
+        self.reminders(CrmRoles(frozenset({700000002}), frozenset(), frozenset()))
+        self.log += [row(datetime(2026, 11, 1), f'Past · {past}', 'quote', None, datetime(2026, 11, 20), True),
+                     row(datetime(2026, 11, 1), f'Past · {past}', 'quote', None, datetime(2026, 12, 5))]
+        self.run_day()
+        self.assertEqual(self.gateway.calls, [])
+        self.log.append(row(datetime(2026, 11, 1), f'Past · {past}', 'quote', None, datetime(2026, 11, 20)))
+        self.projects.clear()  # no longer a Lead: the reminder still comes
+        self.now[0] = at('2026-12-02', 10)
+        self.reminder.schedule()
+        self.assertTrue(self.worker.run_once())
+        self.assertEqual(self.sent(), {700000002: 'Hi,\nReminders\nQuote due 2026-11-20: ' + past + ', note'})
+
+    def test_no_role_settings_means_no_reminders(self) -> None:
+        project = self.lead('Q', CrmStage.LEADS, '2026-11-30')
+        self.log.append(row(datetime(2026, 11, 1), f'Q · {project}', 'billing', None, datetime(2026, 11, 20)))
+        self.run_day()
+        self.assertEqual(self.gateway.calls, [])
+
+
+class CrmRolesTests(unittest.TestCase):
+    def test_roles_read_telegram_ids(self) -> None:
+        self.assertEqual(crm_roles({}), CrmRoles(frozenset(), frozenset(), frozenset()))
+        roles = crm_roles({'T6_CRM_POST_PRODUCER_TELEGRAM_IDS': ' 11, 22 ,', 'T6_CRM_ACCOUNTANT_TELEGRAM_IDS': '33',
+                           'T6_CRM_FINANCE_HEAD_TELEGRAM_IDS': '44'})
+        self.assertEqual(roles, CrmRoles(frozenset({11, 22}), frozenset({33}), frozenset({44})))
+        self.assertEqual(roles.billing, frozenset({11, 22, 33, 44}))
+        with self.assertRaises(ValueError):
+            crm_roles({'T6_CRM_ACCOUNTANT_TELEGRAM_IDS': 'abc'})
 
 
 class ReadLeadsTests(unittest.TestCase):

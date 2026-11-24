@@ -14,7 +14,8 @@ from datetime import date, datetime, time as daytime, timedelta
 from typing import Any
 
 from t6.concern import ConcernStore
-from t6.crm.log import CrmLog, StageChange, read_log
+from t6.crm.config import CrmRoles
+from t6.crm.log import CrmLog, StageChange, due_reminders, read_log
 from t6.domain import CrmStage, Project
 from t6.domain.events import JsonValue
 from t6.domain.project_rules import status_key
@@ -30,9 +31,11 @@ KIND = 'crm.reminder'
 HOUR = 10
 COLD_DAYS = {CrmStage.LEADS: 28, CrmStage.NEGOTIATIONS: 7, CrmStage.PROPOSAL_MADE: 3, CrmStage.ONBOARDING: 2}
 """A Lead is cold once this many Manila days have passed since its last contact."""
-HEADERS = {'cold': 'Cold Leads'}
+HEADERS = {'cold': 'Cold Leads', 'reminders': 'Reminders'}
 """The DM's sections, in order. Each Item names its section."""
 CONCERNS_SHOWN = 3
+TELEGRAM_PREFIX = 'tg:'
+"""A role holder who is no Person is addressed as `tg:<Telegram ID>`."""
 
 
 @dataclass(frozen=True)
@@ -90,9 +93,10 @@ def stage_changes(registry: Any) -> StageChange:
 class CrmReminder:
     def __init__(self, people: People, queue: InternalJobQueue, gateway: GatewayClient, source: SheetSource, default_owner: str,
                  leads: Callable[[], Sequence[LeadFacts]], name_of: Callable[[str], str | None], *,
-                 clock: Callable[[], float] = time.time) -> None:
+                 roles: CrmRoles = CrmRoles(), clock: Callable[[], float] = time.time) -> None:
         self.people, self.queue, self.gateway, self.source, self.default_owner = people, queue, gateway, source, default_owner
         self.leads, self.name_of, self.clock = leads, name_of, clock
+        self.roles = roles
         self.registry = people.registry
         self.concerns = ConcernStore(self.registry, people.tokens)
 
@@ -102,6 +106,8 @@ class CrmReminder:
         self.queue.submit('main', KIND, day.isoformat(), run_at=morning.timestamp())
 
     def _telegram(self, person_id: str) -> int | None:
+        if person_id.startswith(TELEGRAM_PREFIX):
+            return int(person_id[len(TELEGRAM_PREFIX):])
         person = self.people.get(person_id)
         if person is None or not person['active'] or not person['telegram_id'] or int(person['telegram_id']) <= 0:
             return None
@@ -123,7 +129,23 @@ class CrmReminder:
             item = Item('cold', self._lines(lead, (today - last).days))
             for owner in dict.fromkeys(owners):
                 digest.setdefault(owner, []).append(item)
+        self._add_reminders(digest, log, today, {lead.project_id: lead.name for lead in leads})
         return digest
+
+    def _recipient(self, telegram: int) -> str:
+        """The active Person holding this Telegram ID, so one DM covers all their items; else `tg:<id>`."""
+        with self.registry._transaction() as db:
+            row = db.execute('SELECT id FROM persons WHERE telegram_id = ? AND active = 1', (telegram,)).fetchone()
+        return str(row[0]) if row else f'{TELEGRAM_PREFIX}{telegram}'
+
+    def _add_reminders(self, digest: Digest, log: CrmLog, today: date, names: dict[str, str]) -> None:
+        """Due quote rows go to the Post Producer, billing rows to the Post Producer, Accountant and Finance Head."""
+        for row in sorted(due_reminders(log, today), key=lambda r: (r.remind_on or today, r.project_id)):
+            holders = self.roles.quote if row.kind == 'quote' else self.roles.billing
+            line = f'{row.kind.title()} due {row.remind_on}: {names.get(row.project_id, row.project_id)}, {row.note or "no note"}'
+            item = Item('reminders', (f'{line} {row.link}' if row.link else line,))
+            for recipient in dict.fromkeys(self._recipient(t) for t in sorted(holders)):
+                digest.setdefault(recipient, []).append(item)
 
     def _lines(self, lead: LeadFacts, days: int) -> tuple[str, ...]:
         lines = [f'{lead.name} — {lead.stage.value}, {days} days since last contact']
