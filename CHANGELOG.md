@@ -6,6 +6,7 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ### Changed
 
+- `drive projects` returns `latest_movement` for each Project: the newest movement on any of its Drives, or none, so the Drive web app can sort Projects by it (#667).
 - Going live is the setting `T6_DRIVE_LIVE=true`, read once when the API and the main worker start (ADR 0010). The first start with it on records live mode in the database: Practice is off in every read and reply, the nightly reload is not scheduled, and every reload is refused with rule `cutover`. Nothing is reloaded at start. Live mode is one way: it stays on if the setting is later removed, with a warning in the log (#666).
 
 ### Removed
