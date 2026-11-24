@@ -2489,8 +2489,70 @@ def movement_list(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome
             values[field] = IsoDate.fromisoformat(values[field]) if values[field] else None
     except ValueError:
         return Refused(rule='date', reason='Use ISO dates (YYYY-MM-DD)')
+    from t6.drives.photos import flag_rows
     with _people().registry._transaction() as db:
-        return Done(result={'movements': list_movements(db, **values)})
+        return Done(result={'movements': flag_rows(db, list_movements(db, **values))})
+
+
+class MovementPhotoAddInput(BaseModel):
+    movement: str
+    photo: str  # base64-encoded file bytes: JPEG, PNG or WebP, at most 10 MB
+    media_type: Literal['image/png', 'image/jpeg', 'image/webp']
+    idempotency_key: str | None = None
+
+
+class MovementPhotoRefInput(BaseModel):
+    movement: str
+    idempotency_key: str | None = None
+
+
+class MovementPhotoOutput(BaseModel):
+    movement: str
+    media_type: str
+    size: int
+
+
+class MovementPhotoDataOutput(MovementPhotoOutput):
+    photo: str  # base64-encoded file bytes
+
+
+class MovementPhotoDeleteOutput(BaseModel):
+    movement: str
+    deleted: bool
+
+
+def _photo_call(action: Callable[[], Any]) -> Outcome:
+    from t6.drives.photos import PhotoError
+    try:
+        return Done(result=action())
+    except PhotoError as error:
+        return Refused(rule=error.rule, reason=error.reason)
+
+
+def movement_photo_add(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.drives.photos import PhotoError, add_photo, decode, photo_dir
+    assert isinstance(inputs, MovementPhotoAddInput)
+    try:
+        data = decode(inputs.photo, inputs.media_type)
+    except PhotoError as error:
+        return Refused(rule=error.rule, reason=error.reason)
+    return _photo_call(lambda: add_photo(_people().registry, inputs.movement, data, inputs.media_type, actor=_actor.get(), folder=photo_dir()))
+
+
+def movement_photo_get(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.drives.photos import photo_dir, read_photo
+    assert isinstance(inputs, MovementPhotoRefInput)
+    return _photo_call(lambda: read_photo(_people().registry, inputs.movement, folder=photo_dir()))
+
+
+def movement_photo_delete(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    """Only the drive custodian (T6_DRIVE_CUSTODIAN_PERSON_ID) or an operator may delete a photo."""
+    from t6.drives.photos import delete_photo, photo_dir
+    assert isinstance(inputs, MovementPhotoRefInput)
+    people, actor = _people(), _actor.get()
+    if actor != os.environ.get('T6_DRIVE_CUSTODIAN_PERSON_ID', '') and people.authorize(actor, 'operator') is not None:
+        return Refused(rule='permission', reason='Only the drive custodian or an operator may delete a photo')
+    return _photo_call(lambda: delete_photo(people.registry, inputs.movement, folder=photo_dir()))
 
 
 class DriveReceiveInput(BaseModel):
@@ -2790,6 +2852,7 @@ class MovementItem(BaseModel):
     corrects: str | None
     description: str | None
     remarks: str | None
+    photo: Literal['upload', 'capture'] | None = None  # where its photo comes from, if it has one
 
 
 class DriveParty(BaseModel):
@@ -3160,6 +3223,9 @@ VERBS = (
     Verb('drive', 'capture result', 'Read a capture outcome', (), DriveCaptureReadInput, DriveCaptureOutput, 'reader', 'Includes Practice and ask-for-label state.', drive_capture_result, read_only=True),
     Verb('movement', 'correct', 'Append a Movement correction', (), MovementCorrectInput, MovementCorrectOutput, 'drives', 'Preview and confirm a correction; the original Movement and custody events remain.', movement_correct),
     Verb('movement', 'list', 'Search the Movement log', (), MovementListInput, MovementListOutput, 'reader', 'Filters combine with AND; includes unresolved rows and corrections.', movement_list, read_only=True),
+    Verb('movement', 'photo-add', 'Add or replace the photo of a movement', (), MovementPhotoAddInput, MovementPhotoOutput, 'drives', 'One photo per movement: JPEG, PNG or WebP, at most 10 MB, stored in its own folder, never sent to an LLM. Replaces an earlier photo.', movement_photo_add),
+    Verb('movement', 'photo-get', 'Read the photo of a movement', (), MovementPhotoRefInput, MovementPhotoDataOutput, 'drives', 'The kept photo, base64-encoded. A movement recorded from TRANSMITTAL shows its capture photo through `drive capture photo`.', movement_photo_get),
+    Verb('movement', 'photo-delete', 'Delete the photo of a movement', (), MovementPhotoRefInput, MovementPhotoDeleteOutput, 'drives', 'Only the drive custodian or an operator may delete a photo.', movement_photo_delete),
     Verb('contact', 'find', 'Find Contacts by name or handle', (), ContactFindInput, ContactFindOutput, 'drives', 'A short type-ahead list over the Notion mirror Contacts, for the Drive web app person picker.', api_read, read_only=True),
     Verb('contact', 'create', 'Add a Contact from the Drive web app', (), ContactCreateInput, ContactCreateOutput, 'drives', 'Preview and confirm; creates a Notion Contact marked "Added from Drives". A blank name or an existing name is refused.', api_write),
     Verb('drive', 'reload', 'Replace Drive data from the per-project sheet', (), DriveReloadInput, DriveReloadOutput, 'drives', 'Preview and confirm a complete reload, preserving accepted serial IDs.', drive_reload),

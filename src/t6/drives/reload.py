@@ -11,6 +11,7 @@ from typing import Any
 from t6 import verbflow
 from t6.drives import CustodyEvent, CustodyKind, DriveStatus, Ref
 from t6.drives.importer import import_per_project_workbook, reload_tracker_inventory
+from t6.drives.photos import forget_all, photo_dir, remove_files
 from t6.drives.mapping import load_mapping, project_key, project_names
 from t6.drives.sheets import SheetSource
 from t6.drives.sqlite import SqliteDriveStore
@@ -54,6 +55,7 @@ def reload_drives(registry: SqliteProjectRegistry, tokens: PreviewTokens, source
         triggers = db.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name IN ('drive_events', 'drive_shipment_facts', 'drive_movements') AND name LIKE '%_no_delete'").fetchall()
         for name, _ in triggers:
             db.execute(f'DROP TRIGGER {name}')
+        stale_photos = forget_all(db)
         for table in ('drive_catalog_changes', 'drive_catalog_snapshots', 'delivery_drives', 'drive_shipment_facts',
                       'drive_status_resets', 'drive_captures', 'drive_movement_events', 'drive_movements', 'drive_events', 'drive_imports', 'drive_assignments', 'drive_exceptions', 'drive_previews', 'drives'):
             db.execute(f'DELETE FROM {table}')
@@ -88,4 +90,6 @@ def reload_drives(registry: SqliteProjectRegistry, tokens: PreviewTokens, source
         report.update(practice=True, nightly_enabled=True)
         db.execute('INSERT INTO drive_reload_reports (at, actor, data) VALUES (?, ?, ?)',
                    (registry._clock(), actor, json.dumps(report)))
-        return verbflow.finish(db, request, report)
+        done = verbflow.finish(db, request, report)
+    remove_files(stale_photos, photo_dir())  # after the commit: a failed reload keeps its photos
+    return done

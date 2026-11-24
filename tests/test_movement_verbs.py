@@ -131,6 +131,97 @@ class MovementTests(reload_tests.DriveReloadFixture):
         self.assertTrue(latest['SYNTHETIC BETA'].startswith('2026-03-15'))
         self.assertIsNone(latest['SYNTHETIC GAMMA'])
 
+    # --- movement photos (t6-core #669)
+    PNG = b'\x89PNG\r\n\x1a\n' + b'synthetic photo bytes'
+    JPEG = b'\xff\xd8\xff' + b'synthetic other photo'
+
+    def photo_call(self, verb: str, actor: str = 'synthetic-keeper', **values: Any) -> Any:
+        entry = next(e for e in VERBS if (e.noun, e.verb) == ('movement', f'photo-{verb}'))
+        return invoke(entry, entry.input_model.model_validate(values), actor=actor, people=self.people, open_notion=lambda _: None)
+
+    def photo_setup(self) -> tuple[str, Any]:
+        import base64
+        from unittest.mock import patch
+        import os
+        folder = self.folder / 'photos'
+        env = patch.dict(os.environ, {'T6_DRIVE_PHOTO_DIR': str(folder), 'T6_DRIVE_CUSTODIAN_PERSON_ID': 'synthetic-keeper'})
+        env.start()
+        self.addCleanup(env.stop)
+        self.workbook({'SYNTHETIC PROJECT': [HEADER, ['Synthetic photo drive', 'SAMPLE-PHOTO']]})
+        self.load_tracker([[date(2026, 5, 1), 'SYNTHETIC PROJECT', 'Synthetic photo drive', None, 'OUT', 'Synthetic borrower']])
+        movement = self.call_movement('list').result['movements'][0]['id']
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES ('synthetic-other', 'staff', '[]', '[]', NULL, 0, 1)")
+            db.execute("INSERT INTO person_permissions VALUES ('synthetic-other', 'drives')")
+            db.execute("INSERT INTO persons VALUES ('synthetic-operator', 'staff', '[]', '[]', NULL, 0, 1)")
+            db.execute("INSERT INTO person_permissions VALUES ('synthetic-operator', 'drives')")
+            db.execute("INSERT INTO person_permissions VALUES ('synthetic-operator', 'operator')")
+        return movement, base64
+
+    def test_a_photo_is_added_read_replaced_and_listed_on_its_movement(self) -> None:
+        movement, base64 = self.photo_setup()
+        encoded = base64.b64encode(self.PNG).decode()
+        added = self.photo_call('add', movement=movement, photo=encoded, media_type='image/png')
+        self.assertIsInstance(added, Done)
+        self.assertEqual((added.result['size'], added.result['media_type']), (len(self.PNG), 'image/png'))
+        files = [p for p in (self.folder / 'photos').rglob('*') if p.is_file()]
+        self.assertEqual(len(files), 1)
+        self.assertEqual(oct(files[0].stat().st_mode & 0o777), oct(0o600))
+        self.assertEqual(base64.b64decode(self.photo_call('get', movement=movement).result['photo']), self.PNG)
+        self.assertEqual(self.call_movement('list').result['movements'][0]['photo'], 'upload')
+        self.photo_call('add', movement=movement, photo=base64.b64encode(self.JPEG).decode(), media_type='image/jpeg')
+        again = self.photo_call('get', movement=movement).result
+        self.assertEqual((again['media_type'], base64.b64decode(again['photo'])), ('image/jpeg', self.JPEG))
+        self.assertEqual(len([p for p in (self.folder / 'photos').rglob('*') if p.is_file()]), 1)  # the old file is gone
+
+    def test_a_photo_must_be_a_real_image_of_the_stated_type_within_the_size_limit_on_a_real_movement(self) -> None:
+        from unittest.mock import patch
+        movement, base64 = self.photo_setup()
+        png = base64.b64encode(self.PNG).decode()
+        def rule(**values: Any) -> str:
+            result = self.photo_call('add', **values)
+            self.assertEqual(result.outcome, 'refused')
+            return str(result.rule)
+        self.assertEqual(rule(movement=movement, photo=png, media_type='image/jpeg'), 'media_type')
+        self.assertEqual(rule(movement=movement, photo=base64.b64encode(b'GIF89a....').decode(), media_type='image/png'), 'media_type')
+        self.assertEqual(rule(movement=movement, photo='not base64 !!', media_type='image/png'), 'input')
+        self.assertEqual(rule(movement='t6m_' + '0' * 32, photo=png, media_type='image/png'), 'movement')
+        with patch('t6.drives.photos.LIMIT', 10):
+            self.assertEqual(rule(movement=movement, photo=png, media_type='image/png'), 'too_large')
+        self.assertEqual(list((self.folder / 'photos').rglob('*.png')), [])
+        self.assertEqual(self.photo_call('get', movement=movement).rule, 'photo')
+
+    def test_only_the_custodian_or_an_operator_may_delete_a_photo_and_nothing_goes_to_an_llm(self) -> None:
+        from unittest.mock import patch
+        movement, base64 = self.photo_setup()
+        with patch('t6.llm.task.run', side_effect=AssertionError('a photo must never reach t6.llm')):
+            self.photo_call('add', movement=movement, photo=base64.b64encode(self.PNG).decode(), media_type='image/png')
+            self.photo_call('get', movement=movement)
+        refused = self.photo_call('delete', actor='synthetic-other', movement=movement)
+        self.assertEqual((refused.outcome, refused.rule), ('refused', 'permission'))
+        self.assertEqual(self.photo_call('get', movement=movement).outcome, 'done')
+        self.assertEqual(self.photo_call('delete', actor='synthetic-operator', movement=movement).outcome, 'done')
+        self.assertEqual(self.photo_call('get', movement=movement).rule, 'photo')
+        self.photo_call('add', movement=movement, photo=base64.b64encode(self.PNG).decode(), media_type='image/png')
+        self.assertEqual(self.photo_call('delete', movement=movement).outcome, 'done')  # the custodian
+        self.assertEqual([p for p in (self.folder / 'photos').rglob('*') if p.is_file()], [])
+        self.assertIsNone(self.call_movement('list').result['movements'][0].get('photo'))
+
+    def test_a_reload_removes_the_photos_of_the_movements_it_replaces_but_a_failed_reload_keeps_them(self) -> None:
+        movement, base64 = self.photo_setup()
+        self.photo_call('add', movement=movement, photo=base64.b64encode(self.PNG).decode(), media_type='image/png')
+        self.assertEqual(len([p for p in (self.folder / 'photos').rglob('*') if p.is_file()]), 1)
+        tracker = self.tracker({'SYNTHETIC MONTH': [['DATE', 'PROJECT NAME', 'LABEL', 'HD DESCRIPTION', 'IN/OUT', 'RECEIVED BY', 'REMARKS'],
+                                                    [date(2026, 6, 1), 'SYNTHETIC PROJECT', 'Synthetic photo drive', None, 'IN', 'Synthetic keeper']]})
+        values = {'workbook': str(self.path), 'tracker': tracker, 'idempotency_key': 'photo-reload'}
+        preview = self.call('reload', **values)
+        self.assertIsInstance(preview, Preview)
+        self.assertEqual(len([p for p in (self.folder / 'photos').rglob('*') if p.is_file()]), 1)  # a preview changes nothing
+        self.assertIsInstance(self.call('reload', **values, confirm=preview.token), Done)
+        self.assertEqual([p for p in (self.folder / 'photos').rglob('*') if p.is_file()], [])
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM drive_movement_photos').fetchone()[0], 0)
+
     def test_project_counts_distinct_drives_and_unknown_party(self) -> None:
         self.workbook({'SYNTHETIC PROJECT': [HEADER, ['Synthetic first', 'SAMPLE-FIRST'],
                                             ['Synthetic second', 'SAMPLE-SECOND'], ['Synthetic second', 'SAMPLE-SECOND'],
