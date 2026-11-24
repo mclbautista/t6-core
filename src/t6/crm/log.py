@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import urlsplit
 from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -99,11 +100,17 @@ def read_log(source: SheetSource, known_projects: Collection[str]) -> CrmLog:
 
 
 def links_by_kind(log: CrmLog, project_id: str) -> dict[str, list[str]]:
-    """A Project's Log links grouped by kind, in Sheet order; every known kind is present."""
+    """A Project's Log links grouped by kind, in Sheet order; every known kind is present.
+
+    The Log's Kind list has no gmail_thread, so a link to mail.google.com is one whatever its Kind.
+    """
     links: dict[str, list[str]] = {kind: [] for kind in LINK_KINDS}
     for row in log.by_project.get(project_id, ()):
-        if row.link and row.kind in links:
-            links[row.kind].append(row.link)
+        if not row.link:
+            continue
+        kind = 'gmail_thread' if urlsplit(row.link).hostname == 'mail.google.com' else row.kind
+        if kind in links:
+            links[kind].append(row.link)
     return links
 
 

@@ -64,7 +64,7 @@ class DerivedTests(unittest.TestCase):
             row(46000, A, 'call'),
             row(46010, A, 'quote', 'https://example.invalid/q1', remind=46020),
             row(46005, A, 'billing', 'https://example.invalid/b1', remind=46030, done=True),
-            row(46006, A, 'gmail_thread', 'https://example.invalid/g1'),
+            row(46006, A, 'message', 'https://mail.google.com/mail/u/0/#inbox/g1'),
             row(46007, A, 'other', 'https://example.invalid/o'),
             row(46008, A, 'quote', None),
             row(46100, B, 'billing', 'https://example.invalid/b2', remind=46200),
@@ -87,7 +87,7 @@ class DerivedTests(unittest.TestCase):
         self.assertEqual(links_by_kind(self.log(), A), {
             'quote': ['https://example.invalid/q1'],
             'billing': ['https://example.invalid/b1'],
-            'gmail_thread': ['https://example.invalid/g1']})
+            'gmail_thread': ['https://mail.google.com/mail/u/0/#inbox/g1']})
         self.assertEqual(links_by_kind(self.log(), 't6p_' + 'd' * 24), {'quote': [], 'billing': [], 'gmail_thread': []})
 
     def test_due_reminders_are_quote_or_billing_due_today_or_earlier_and_not_done(self) -> None:
