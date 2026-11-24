@@ -8,7 +8,7 @@ built from this description; no client sheet, link, name or task text belongs in
 
 `t6.schedule.extract_schedule(request)` is a pure function. The request carries the tab's cell values, merge geometry and
 raw fill colours; the response is a `ScheduleSnapshot/v1`, or an unsupported-layout result. It makes no network, browser or
-LLM call, writes nothing and uses no dataframe. Reading the sheet is another ticket (#722).
+LLM call, writes nothing and uses no dataframe. The API verb `schedule snapshot` (#722) reads the tab from Google and calls it; see `docs/api-read-verbs.md`.
 
 - Request: `ScheduleSnapshotRequest/v1`. `cells` is a list of rows (strings, numbers or null; day numbers may be floats such
   as `1.0`). `merges` use 0-based, end-exclusive bounds. `fills` is sparse. `rows_total` and `columns_total` say how big the

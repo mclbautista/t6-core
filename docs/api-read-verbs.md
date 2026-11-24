@@ -77,6 +77,20 @@ when the caller has neither `operator` nor the `unmasked` grant, before it reads
 It stores nothing and reads nothing. An app calls it before it shows message text outside the chat the
 text came from (the watchdog's ops post and dry-run plan). The rule is `t6.privacy.withhold`.
 
+`schedule snapshot` (#722, spec #694; role `operator`, which a service gets by grant; `t6 schedule snapshot --spreadsheet-id ID --tab-title TITLE [--year N]`;
+`Client.schedule_snapshot`) reads one tab of a Client Sheet and returns a `ScheduleSnapshot/v1` (or an
+`unsupported_layout` result) from the extractor described in `docs/schedule-monthly-calendar.md`. The API signs in with the
+service account named by `GOOGLE_APPLICATION_CREDENTIALS`, so an app or the CLI never holds a Google credential; the sheet
+must be shared with that account. The path is read only: the sign-in asks for the `spreadsheets.readonly` scope and every
+Sheets request is a GET. It makes four: the workbook's tab list (titles, IDs and grid sizes only), one `spreadsheets.get`
+limited by `ranges` and `fields` to the selected tab's merges and background colours (no grid data for any other tab), and
+`values.get` for the tab's whole grid. It calls no browser, Instagantt or LLM. The tab's grid size is the coverage target
+(`rows_total`, `columns_total`): a read that ends early, or a failed merge read, is an incomplete snapshot, never a smaller
+schedule. A failed sign-in, tab list or values read is refused with rule `google`, a missing credential with rule `config`. Sheets
+gives no cheap revision, so `source_revision` is the content fingerprint. `year` is optional and is the year of the first
+month block. Unlike the Notion reads it is not an MCP tool, and the response is not name-masked: it holds the client's task
+text, so only an operator, or a service granted `operator`, may call it.
+
 Inputs and outputs are in `t6.verbs` and the `t6 commands --json` catalogue;
 call them with the matching methods on `t6.client.Client`. Each call returns a
 standard verb outcome or `Unavailable`. Related entities use T6 IDs where a
