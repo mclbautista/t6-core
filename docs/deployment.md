@@ -466,13 +466,23 @@ registered. A Lead Owner who is not a Person with a Telegram ID is treated as
 blank. Nobody with nothing due gets a message. The Sheet is read at send time,
 so a failed read fails the job and is retried (see `queue failed`).
 
+A `Log` row of Kind `quote` or `billing` with a Remind on date is a reminder from
+that date (Manila) until Done is ticked, whatever the Project's stage, and joins
+the same DM under "Reminders". Quotes go to the Post Producers
+(`T6_CRM_POST_PRODUCER_TELEGRAM_IDS`); billing goes to them, the Accountants
+(`T6_CRM_ACCOUNTANT_TELEGRAM_IDS`) and the Finance Heads
+(`T6_CRM_FINANCE_HEAD_TELEGRAM_IDS`). Each is a comma list of Telegram user IDs,
+not Persons; a holder who is also an active Person gets one DM with everything.
+An unset role gets no reminders, and a non-numeric ID stops the worker at
+startup.
+
 ### Snooze
 
 `crm snooze --until DATE` pauses the caller's own CRM DMs through that date
 (Manila, inclusive; required, at most 30 days from today); `crm unsnooze` ends
 it early. Both are open to any active staff Person and audited. While someone
-is snoozed, their items in the DM go to the Post Producers (Persons holding a
-Telegram ID in `T6_CRM_POST_PRODUCER_TELEGRAM_IDS`) who are not snoozed, each
+is snoozed, their items in the DM (cold Leads and due reminders) go to the Post Producers
+(`T6_CRM_POST_PRODUCER_TELEGRAM_IDS`; one who is a Person can be snoozed too) who are not snoozed, each
 with a "Covering for NAME" line, else to the default owner. The default owner's
 own items go to the Post Producers, and stay with the default owner when none
 is available; a snooze never drops an item. A snoozed Post Producer's own Leads

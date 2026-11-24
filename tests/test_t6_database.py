@@ -104,7 +104,7 @@ class MigrationTests(unittest.TestCase):
                 self.assertIsNotNone(db.execute("SELECT name FROM sqlite_master WHERE name = 'abang_requests'").fetchone())
             SqliteProjectRegistry(path)
             with closing(sqlite3.connect(path)) as db, db:
-                self.assertEqual([row[0] for row in db.execute('SELECT version FROM schema_version ORDER BY version')], list(range(1, 64)))
+                self.assertEqual([row[0] for row in db.execute('SELECT version FROM schema_version ORDER BY version')], list(range(1, 65)))
                 tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
                 self.assertTrue({'abang_requests', 'concern_pm_attempts', 'bays', 'media_locations', 'drives', 'transcripts', 'transcript_speaker_maps',
                                  'timelines', 'calendar_channels', 'frameio_held_activity', 'drive_shipment_facts', 'bay_scan_reports'} <= tables)
@@ -172,10 +172,10 @@ class MigrationTests(unittest.TestCase):
             path = Path(directory) / 'db'
             SqliteProjectRegistry(path)
             with closing(sqlite3.connect(path)) as db, db:
-                db.execute('INSERT INTO schema_version VALUES (64, 0)')
+                db.execute('INSERT INTO schema_version VALUES (65, 0)')
             SqliteProjectRegistry(path)
             with closing(sqlite3.connect(path)) as db, db:
-                db.execute('INSERT INTO schema_version VALUES (65, 1)')
+                db.execute('INSERT INTO schema_version VALUES (66, 1)')
             with self.assertRaises(RegistryError):
                 SqliteProjectRegistry(path)
 
@@ -185,7 +185,7 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'db'
             SqliteProjectRegistry(path)
-            with patch.object(migrations, '_MIGRATIONS', migrations._MIGRATIONS + ((64, True, "CREATE TABLE incompatible (id INTEGER)"),)):
+            with patch.object(migrations, '_MIGRATIONS', migrations._MIGRATIONS + ((65, True, "CREATE TABLE incompatible (id INTEGER)"),)):
                 SqliteProjectRegistry(path)
             with self.assertRaises(RegistryError):
                 SqliteProjectRegistry(path)

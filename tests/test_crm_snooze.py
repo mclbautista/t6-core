@@ -5,7 +5,7 @@ from datetime import date
 from typing import Any
 from unittest.mock import patch
 
-from t6.crm.snooze import post_producer_telegram_ids
+from t6.crm.config import CrmRoles
 from t6.crm.reminder import CrmReminder, LeadFacts
 from t6.domain import CrmStage
 from t6.ids import EntityKind, T6Id
@@ -110,7 +110,7 @@ class RoutingTests(Base):
         self.gateway = Gateway()
         self.reminder = CrmReminder(
             self.people, self.queue, GatewayClient(self.gateway, 'synthetic-secret'), FakeSheet([]), 'cyril',
-            lambda: list(self.projects.values()), self.names.get, clock=lambda: self.now[0], post_producer_telegram_ids=(700000004, 700000005))
+            lambda: list(self.projects.values()), self.names.get, clock=lambda: self.now[0], roles=CrmRoles(post_producer=frozenset({700000004, 700000005})))
         self.worker = Worker(InternalQueueClient(self.queue), 'main', {'crm.reminder': self.reminder.handle})
 
     def lead(self, name: str, owners: tuple[str, ...]) -> None:
@@ -156,13 +156,13 @@ class RoutingTests(Base):
         self.assertIn('Covering for Cyril (snoozed until 2026-12-05)', sent[700000004])
 
     def test_a_snoozed_default_owner_with_no_post_producer_keeps_the_items(self) -> None:
-        self.reminder.post_producers = ()
+        self.reminder.roles = CrmRoles()
         self.lead('Blank', ())
         self.snooze('cyril', '2026-12-05')
         self.assertEqual(list(self.run_day()), [700000003])
 
     def test_without_post_producers_a_snoozed_owner_goes_to_the_default_owner(self) -> None:
-        self.reminder.post_producers = ()
+        self.reminder.roles = CrmRoles()
         self.lead('Alpha', ('ada',))
         self.snooze('ada', '2026-12-05')
         self.assertEqual(list(self.run_day()), [700000003])
@@ -193,12 +193,6 @@ class RoutingTests(Base):
         self.now[0] = at('2026-12-04', 10)
         self.assertEqual(self.run_verb('unsnooze', 'ada').result['was_snoozed'], True)
         self.assertIn(700000001, self.run_day())
-
-
-class SettingTests(unittest.TestCase):
-    def test_telegram_ids_parse_like_the_closer_setting(self) -> None:
-        self.assertEqual(post_producer_telegram_ids({'T6_CRM_POST_PRODUCER_TELEGRAM_IDS': '7, 8,,'}), (7, 8))
-        self.assertEqual(post_producer_telegram_ids({}), ())
 
 
 if __name__ == '__main__':

@@ -5,19 +5,12 @@ a row whose date has passed is simply not active, so nothing can fail to wake so
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
 from datetime import date, datetime, timedelta
 
 from t6.domain.studio_time import MANILA
 from t6.registry.sqlite import SqliteProjectRegistry, _audit
 
 MAX_DAYS = 30
-POST_PRODUCERS_VARIABLE = 'T6_CRM_POST_PRODUCER_TELEGRAM_IDS'
-
-
-def post_producer_telegram_ids(environ: Mapping[str, str]) -> tuple[int, ...]:
-    """The Post Producer setting: Telegram user ids, comma-separated (parsed like `T6_CLOSER_TELEGRAM_IDS`)."""
-    return tuple(int(value) for value in environ.get(POST_PRODUCERS_VARIABLE, '').split(',') if value.strip())
 
 
 class Snoozes:
