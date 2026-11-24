@@ -1337,6 +1337,29 @@ class ProjectListOutput(BaseModel):
     projects: list[ReadProject]
 
 
+class LeadListInput(ReadInput):
+    pass
+
+
+class LeadRead(BaseModel):
+    """An open Lead: a Project in a CRM stage other than Lost. `days_in_stage` is None when no stage change is recorded."""
+
+    project_id: str
+    page_id: str
+    name: str
+    stage: str
+    lead_owner_ids: list[str]
+    studio_id: str | None
+    delegate_producer_ids: list[str]
+    line_producer_ids: list[str]
+    prod_coor_supe_ids: list[str]
+    days_in_stage: int | None
+
+
+class LeadListOutput(BaseModel):
+    leads: list[LeadRead]
+
+
 class JoListInput(ReadInput):
     project: str | None = None
     assignee: str | None = None
@@ -3399,6 +3422,7 @@ VERBS = (
     Verb("person", "assign", "Assign a Project role", (), PersonProjectRoleInput, PersonWriteOutput, "coordinator", "Assign a Person to a Project role.", person_assign),
     Verb("person", "unassign", "Remove a Project role", (), PersonProjectRoleInput, PersonWriteOutput, "coordinator", "Remove a Person from a Project role.", person_unassign),
     Verb("person", "get", "Get a Person", (), PersonGetInput, PersonGetOutput, "reader", "Read a Person.", person_get, read_only=True),
+    Verb("lead", "list", "List the open Leads with CRM stage and client roles", (), LeadListInput, LeadListOutput, "reader", "Read the Projects in a CRM stage other than Lost.", api_read, read_only=True),
     Verb("project", "links", "Read a Project's links card", (), ProjectLinksInput, ProjectLinksOutput, "operator", "Read a Project's links card.", project_links, read_only=True),
     Verb("project", "crm-links", "Read a Project's CRM links by kind", (), ProjectCrmLinksInput, ProjectCrmLinksOutput, "operator", "Read the CRM Sheet Log; links grouped by kind.", project_crm_links, read_only=True),
     Verb("project", "link-chat", "Link a Telegram chat to a Project", (), ProjectChatInput, ProjectChatOutput, "coordinator", "Approval is required.", project_link_chat),

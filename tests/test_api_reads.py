@@ -558,6 +558,31 @@ class ReadTests(unittest.TestCase):
             self.client.call('project', 'list', ProjectListInput.model_construct(status_group='bogus'))
         self.assertEqual(refused.exception.status, 422)
 
+    def test_lead_list_returns_open_leads_with_roles_and_days_in_stage(self) -> None:
+        from t6.verbs import LeadListInput
+        owner, producer = self.person['id'], self.notion.add_page('contacts', {'Name': title('Bea Lim')})['id']
+        studio = self.notion.add_page('contacts', {'Name': title('Studio')})['id']
+        lead = self.project_with('Lead Show', '🌱 Leads', lead_owner=relation(owner), delegate_producer=relation(producer), line_producer=relation(owner),
+                                 prod_coor_supe=relation(producer), studio=relation(studio))
+        moved = self.project_with('Moved Show', 'Negotiations')
+        self.project_with('Lost Show', 'Lost')
+        self.project_with('Running Show', 'In-Progress')
+        ended = self.project_with('Ended Show', 'Leads')
+        projects = {page['id']: self.registry.register(actor='setup', idempotency_key='k' + page['id'], notion_page_id=page['id']).project.id for page in (moved, ended)}  # type: ignore[union-attr]
+        with self.registry._transaction() as db:
+            for page, to, at in ((moved, 'Negotiations', self.registry._clock() - 3 * 86400 - 5), (ended, 'In-Progress', self.registry._clock() - 86400)):
+                db.execute('INSERT INTO project_stage_history (project_id, at, actor, field, from_value, to_value, event) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                           (projects[page['id']], at, 'someone', 'crm_stage', None, to, 'e' + page['id']))
+        result = self.client.lead_list(LeadListInput())
+        assert isinstance(result, Done)
+        leads = {item['name']: item for item in result.result['leads']}
+        self.assertEqual(set(leads), {'Lead Show', 'Moved Show'})
+        self.assertEqual((leads['Lead Show']['stage'], leads['Lead Show']['days_in_stage']), ('Leads', None))
+        self.assertEqual((leads['Moved Show']['stage'], leads['Moved Show']['days_in_stage']), ('Negotiations', 3))
+        shown = leads['Lead Show']
+        self.assertEqual((shown['lead_owner_ids'], shown['delegate_producer_ids'], shown['line_producer_ids'], shown['prod_coor_supe_ids'], shown['studio_id']),
+                         ([owner], [producer], [owner], [producer], studio))
+
     def test_project_missing_roles_are_listed_only_for_in_progress_tvc_and_airing(self) -> None:
         from t6.verbs import ProjectListInput
         for status in ('In-Progress', 'In-Progress TVC', 'Airing', 'Standby', 'Archiving', 'Leads'):
