@@ -324,6 +324,8 @@ def _read_log_sheet(path: Path | SheetSource) -> tuple[list[_Row], list[_Row], l
                 elif _filled(values):
                     drive_rows.append(row)
             elif columns is None and _filled(values):
+                if sum(1 for text in texts if text) == 1:
+                    continue  # a title above the header row, such as the name of the tracker or of the tab
                 unparsed.append(ReviewItem(sheet_name, number, "unreadable", json.dumps(values, default=str, ensure_ascii=False), source.workbook))
     return (
         [replace(row, workbook=source.workbook) for row in drive_rows],
