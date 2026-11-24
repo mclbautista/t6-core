@@ -117,3 +117,18 @@ Scripted test on the 202 Mac Pro (macOS 15.6.1), `GetProductName()` "DaVinci Res
 - `ExportProject(name, path.drp, False)` and `ImportProject` returned True, and the imported timeline kept its stamp.
 
 Open: writing a project on the project server, a project locked by another user, and restore. Until then the Resolve worker treats every load or write failure as a final job failure with its reason.
+
+## Results 2026-11-24 (#579, project server)
+
+Scripted test on the 175 Mac mini (`202A-Mac-Mini-M4`), `GetProductName()` "DaVinci Resolve Studio", `GetVersionString()` 20.0.0.49, in the owner's Resolve session. Owner's OK in chat, 2026-11-24. The project was `test_joshua`, a project on the network project server that was already open in Resolve (the one timeline, "Timeline 1", started at frame 86400 with no markers). No other project was loaded, no database was switched, and `ArchiveProject` was not called. The scripts were run over SSH from the Mac mini the owner uses, composed for this test; they are not committed.
+
+- **Project server write and read: works.** `AddMarker(0, "Blue", "T6 test 579", "throwaway", 1, "t6t_TEST579A")` returned True and `GetMarkers()`, `GetMarkerCustomData(0)` and `GetMarkerByCustomData(...)` returned it. `UpdateMarkerCustomData(0, "t6t_TEST579B")` returned True. Frame id 0 is the first frame, as in 21.1.
+- **Save and reload keep the stamp.** `ProjectManager.SaveProject()` returned True. `CloseProject`, then `LoadProject("test_joshua")`, then `GetMarkerCustomData(0)` returned `t6t_TEST579B`. In Resolve 20, `SaveProject` is on the ProjectManager; `Project.SaveProject` does not exist.
+- **The worker can run while Resolve is open with the project loaded.** The test ran against a Resolve that had the project open; nothing blocked. An editor actively working in the project was not tested.
+- **A woken Resolve answers `None`.** Right after the Mac woke from sleep, project and timeline reads worked but `GetCurrentPage()`, `GetCurrentDatabase()` and `AddMarker` returned `None`, and nothing was written. About 10 minutes later, with the Mac awake, the same calls worked. The worker must treat `None` from a call that should return a value as a failed job (`scripting_not_ready`), never as an empty result, and must not retry silently. `GetCurrentDatabase()` still returned `None` on this version; do not depend on it in 20.
+- **Locking:** Resolve's log shows `Lock project <id>` when a project loads and `Unlock project <id>` when it closes, also on the project server. Another user holding the project was not tested (no safe second client).
+- **Restore: not tested.** `ArchiveProject` crashed Resolve on the 202 Mac Pro (above) and was not called.
+
+Left on the project server: the marker `t6t_TEST579B` on the first frame of `test_joshua` / "Timeline 1". The worker's rule is never to delete a marker, so it was not removed.
+
+Open: a project locked by another user, restore, and an editor using the project at the same time.
