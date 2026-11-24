@@ -38,6 +38,7 @@ class Movement:
     recorder_telegram_id: int | None = None
     shipment_id: str | None = None
     posted_at: str | None = None
+    coordinators: tuple[str, ...] = ()  # the Project's T6 Post Coordinator Person IDs when the Movement was made; never refreshed
 
 
 def append(db: sqlite3.Connection, movement: Movement) -> None:
@@ -113,6 +114,7 @@ def _movement(row: dict[str, Any]) -> Movement:
     values['on'] = date.fromisoformat(row['on']) if row['on'] else None
     values['project'] = Ref(**row['project']) if row['project'] else None
     values['origin'] = SourceRow(**row['origin']) if row['origin'] else None
+    values['coordinators'] = tuple(row.get('coordinators', ()))
     return Movement(**values)
 
 

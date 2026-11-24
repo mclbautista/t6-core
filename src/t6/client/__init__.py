@@ -19,7 +19,7 @@ from t6.verbs import (
     VersionAddInput, VersionLockInput, VersionFindInput, VersionGetInput,
     MediaLinkInput, MediaUnlinkInput, TimelineLinkInput, TimelineRestampInput, TimelineListInput, FrameioProjectInput, MediaListInput, MediaMigrateInput,
     TranscriptCreateInput, TranscriptGetInput, TranscriptSpeakersInput, TranscriptTranslateInput,
-    DriveCaptureInput, DriveCaptureListInput, DriveCaptureReadInput, DriveReloadReportInput,
+    DriveApproveInput, DriveCaptureInput, DriveCaptureListInput, DriveInboxInput, DriveCaptureReadInput, DriveReloadReportInput,
     DriveMappingProposeInput, DriveMappingApplyInput, DriveProjectsInput, DriveOverdueInput, MovementListInput, MovementCorrectInput,
     ContactCreateInput, ContactFindInput, MovementPhotoAddInput, MovementPhotoRefInput, DriveRecycleInput, DriveReloadInput, DriveReceiveInput, DriveReleaseInput, DriveReturnInput, DriveRetireInput, DriveAssignInput, DriveUnassignInput,
     DriveAddInput, DriveEditInput, DrivePromoteSerialInput, DriveListInput, DriveGetInput, DriveFindInput, DriveCatalogSnapshotInput, DriveCatalogSnapshotsInput, DriveCatalogDiffInput, DriveCatalogAtInput, DriveShipmentsInput, DriveShipmentInput, DriveExceptionsInput,
@@ -179,6 +179,12 @@ class Client:
 
     def drive_capture_result(self, inputs: DriveCaptureReadInput) -> Result:
         return self.call('drive', 'capture result', inputs)
+
+    def drive_inbox(self, inputs: DriveInboxInput) -> Result:
+        return self.call('drive', 'inbox', inputs)
+
+    def drive_approve(self, inputs: DriveApproveInput) -> Result:
+        return self.call('drive', 'approve', inputs)
 
     def drive_projects(self, inputs: DriveProjectsInput) -> Result:
         return self.call('drive', 'projects', inputs)
