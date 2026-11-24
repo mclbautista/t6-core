@@ -97,6 +97,27 @@ class MovementTests(reload_tests.DriveReloadFixture):
         self.assertEqual((released['drive']['status'], released['events'][-1]['on']), ('released', '2026-03-02'))
         self.assertEqual(released['assignments'][0]['project']['text'], 'SYNTHETIC GROUP')
 
+    def test_a_title_row_above_the_header_is_skipped_but_a_stray_row_below_it_is_not(self) -> None:
+        self.workbook({'SYNTHETIC PROJECT': [HEADER, ['Synthetic existing', 'SAMPLE-ONE']]})
+        month_header = ['DATE', 'PROJECT NAME', 'LABEL', 'HD DESCRIPTION', 'IN/OUT', 'RECEIVED BY', 'REMARKS']
+        month_row = [date(2026, 3, 2), 'SYNTHETIC PROJECT', 'Synthetic existing', None, 'OUT', 'Synthetic borrower']
+        tracker = self.tracker({
+            'SYNTHETIC MONTH': [['SYNTHETIC TRACKER TITLE', None, None, None, None, None, None], month_header, month_row],
+            'Archive HD': [['ARCHIVE', None, None, None, None, None], HEADER, ['Synthetic archive', 'SAMPLE-ARCHIVE']],
+            'Swing Drives': [['SWING DRIVE', None, None, None, None], HEADER, ['Synthetic swing', 'SAMPLE-SWING']],
+        })
+        values = {'workbook': str(self.path), 'tracker': tracker, 'idempotency_key': 'titles'}
+        done = self.call('reload', **values, confirm=self.call('reload', **values).token)
+        self.assertIsInstance(done, Done)
+        self.assertEqual(done.result['exceptions'], 0)
+        self.assertEqual(self.call('exceptions').result['exceptions'], [])
+        self.assertEqual((done.result['movements_read'], {d['serial'] for d in self.drives()}),
+                         (1, {'SAMPLE-ONE', 'SAMPLE-ARCHIVE', 'SAMPLE-SWING'}))
+        stray = self.tracker({'SYNTHETIC MONTH': [month_header, month_row, ['SYNTHETIC STRAY', None, None, None, None, None, None]]})
+        again = {'workbook': str(self.path), 'tracker': stray, 'idempotency_key': 'stray'}
+        done = self.call('reload', **again, confirm=self.call('reload', **again).token)
+        self.assertEqual(done.result['exceptions'], 1)
+
     def test_project_counts_distinct_drives_and_unknown_party(self) -> None:
         self.workbook({'SYNTHETIC PROJECT': [HEADER, ['Synthetic first', 'SAMPLE-FIRST'],
                                             ['Synthetic second', 'SAMPLE-SECOND'], ['Synthetic second', 'SAMPLE-SECOND'],
