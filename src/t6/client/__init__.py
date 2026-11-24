@@ -34,7 +34,7 @@ from t6.verbs import (
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
     LLMDecideInput, LLMFilterInput, LLMRunInput, PersonAddInput, PersonCreateInput, PersonFindInput,
     PersonGetInput, PersonProjectRoleInput, PersonPermissionInput, PersonRebindInput, PersonShiftInput, PersonClassifyInput,
-    CrmSnoozeInput, CrmUnsnoozeInput, LeadListInput, PersonTelegramInput, ProjectChatInput, ProjectCrmLinksInput, ProjectHoldInput, ProjectLinksInput, ProjectResolveInput, ProjectResumeInput, ProjectStartInput,
+    CrmSnoozeInput, CrmUnsnoozeInput, ScheduleSnapshotInput, LeadListInput, PersonTelegramInput, ProjectChatInput, ProjectCrmLinksInput, ProjectHoldInput, ProjectLinksInput, ProjectResolveInput, ProjectResumeInput, ProjectStartInput,
 )
 
 
@@ -452,6 +452,9 @@ class Client:
 
     def text_withhold(self, inputs: TextWithholdInput) -> Result:
         return self.call('text', 'withhold', inputs)
+
+    def schedule_snapshot(self, inputs: ScheduleSnapshotInput) -> Result:
+        return self.call('schedule', 'snapshot', inputs)
 
     def standing_cc(self, inputs: StandingCcInput) -> Result:
         return self.call('standing-cc', '', inputs)

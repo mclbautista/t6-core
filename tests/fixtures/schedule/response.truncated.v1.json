@@ -1,0 +1,163 @@
+{
+  "schema_version": "ScheduleSnapshot/v1",
+  "result": "snapshot",
+  "source_scope": {
+    "document_id": "doc-synthetic",
+    "tab_id": "tab-1",
+    "tab_title": "as of Nov 1"
+  },
+  "source_revision": "rev-synthetic-truncated",
+  "layout_version": "monthly-calendar/v1",
+  "coverage": {
+    "status": "incomplete",
+    "rows_read": 18,
+    "columns_read": 15,
+    "rows_total": 56,
+    "columns_total": 15,
+    "read_range": "A1:O18",
+    "total_range": "A1:O56",
+    "reasons": [
+      "rows_short"
+    ]
+  },
+  "groups": [
+    {
+      "group_key": "m01-nov",
+      "label": "NOVEMBER",
+      "status": "incomplete",
+      "anchor": "A7:N8",
+      "year": 2026,
+      "evidence": [
+        {
+          "kind": "year",
+          "detail": "2026 supplied",
+          "anchor": "A7:N8"
+        }
+      ],
+      "exceptions": [
+        {
+          "code": "unread_region",
+          "detail": "source not fully read (rows_short): read A1:O18 of A1:O56",
+          "anchor": null
+        }
+      ],
+      "days": [
+        {
+          "anchor": "A10",
+          "state": "unread",
+          "day": 1,
+          "date": "2026-11-01"
+        },
+        {
+          "anchor": "C10",
+          "state": "unread",
+          "day": 2,
+          "date": "2026-11-02"
+        },
+        {
+          "anchor": "E10",
+          "state": "unread",
+          "day": 3,
+          "date": "2026-11-03"
+        },
+        {
+          "anchor": "G10",
+          "state": "unread",
+          "day": 4,
+          "date": "2026-11-04"
+        },
+        {
+          "anchor": "I10",
+          "state": "unread",
+          "day": 5,
+          "date": "2026-11-05"
+        },
+        {
+          "anchor": "K10",
+          "state": "unread",
+          "day": 6,
+          "date": "2026-11-06"
+        },
+        {
+          "anchor": "M10",
+          "state": "unread",
+          "day": 7,
+          "date": "2026-11-07"
+        },
+        {
+          "anchor": "A14",
+          "state": "unread",
+          "day": 8,
+          "date": "2026-11-08"
+        },
+        {
+          "anchor": "C14",
+          "state": "unread",
+          "day": 9,
+          "date": "2026-11-09"
+        },
+        {
+          "anchor": "E14",
+          "state": "unread",
+          "day": 10,
+          "date": "2026-11-10"
+        },
+        {
+          "anchor": "G14",
+          "state": "unread",
+          "day": 11,
+          "date": "2026-11-11"
+        },
+        {
+          "anchor": "I14",
+          "state": "unread",
+          "day": 12,
+          "date": "2026-11-12"
+        },
+        {
+          "anchor": "K14",
+          "state": "unread",
+          "day": 13,
+          "date": "2026-11-13"
+        },
+        {
+          "anchor": "M14",
+          "state": "unread",
+          "day": 14,
+          "date": "2026-11-14"
+        }
+      ]
+    }
+  ],
+  "candidates": [
+    {
+      "candidate_key": "c1",
+      "group_key": "m01-nov",
+      "title": "Grade review",
+      "start": "2026-11-03",
+      "due": "2026-11-03",
+      "tentative": null,
+      "source_id": null,
+      "provenance": {
+        "tab_id": "tab-1",
+        "tab_title": "as of Nov 1",
+        "anchor": "E11",
+        "range": "E11:F11",
+        "merged": true,
+        "fill": null,
+        "year_evidence": {
+          "year": 2026,
+          "method": "supplied"
+        },
+        "date_evidence": {
+          "month": 11,
+          "day": 3,
+          "weekday": "TUESDAY",
+          "month_header_anchor": "A7",
+          "day_number_anchor": "E10"
+        }
+      }
+    }
+  ],
+  "non_tasks": []
+}

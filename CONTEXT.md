@@ -657,6 +657,37 @@ a term describes behaviour that is decided but not yet built, it says so.
   every snoozed Concern was reopened; quiet and expired are legacy states that
   do nothing.
 
+## Schedule snapshot
+
+Modelled in `t6.schedule`; layout in [schedule-monthly-calendar.md](docs/schedule-monthly-calendar.md) (spec #694).
+
+- **ScheduleSnapshot**: `ScheduleSnapshot/v1`, the versioned result of reading one
+  tab of a client's calendar-style Sheet: source scope, source revision, layout
+  version, read coverage, Groups and Candidates. The planner (#695) consumes it.
+  It is never written back to the Sheet and holds no Instagantt IDs.
+- **Source scope**: the document and tab a snapshot came from. One tab is one
+  dated version of the whole schedule.
+- **Group**: one independently read part of a tab (a month block). Its status is
+  `complete`, `held` (a problem confined to it; it carries no Candidates) or
+  `incomplete` (parts of it were not read).
+- **Hold**: a typed exception that stops a Group or the year being guessed, such
+  as `ambiguous_year`, `invalid_header` or `weekday_mismatch`.
+- **Candidate**: one task the sheet shows: snapshot-local `candidate_key`, title,
+  inclusive ISO `start` and `due`, optional tentative marker and source ID, and
+  provenance. Its cell address is provenance, not identity across revisions.
+- **Read coverage**: the ranges read against the tab's full extent. Incomplete
+  coverage (a short read, an unreported size, no merge list) is whole-source
+  uncertainty: every Group that is not held becomes `incomplete`. It is never
+  evidence that a task is absent.
+- **Day state**: what was read at a day-number cell: `read`, `blank`, `unread` or
+  `invalid`. Only `read` lets an empty day mean "no task here".
+- **Unsupported layout**: the typed result for a tab that is not a supported
+  layout; it carries a diagnostic and no Candidates.
+- **Month block**, **week band**, **day pair**: the layout's parts: a month name
+  with its weekday header, the rows from one day-number row to the next, and the
+  two columns that make one weekday.
+- **Non-task**: availability ("NA:"), note or break text; never a Candidate.
+
 ## Consumer contract
 
 The rules every app follows to use t6-core (scope, boundary, the API,

@@ -1,0 +1,264 @@
+{
+  "$defs": {
+    "CellFill": {
+      "additionalProperties": false,
+      "description": "A cell's raw background colour, kept as evidence. Mapping it to a category is out of scope.",
+      "properties": {
+        "row": {
+          "minimum": 0,
+          "title": "Row",
+          "type": "integer"
+        },
+        "col": {
+          "minimum": 0,
+          "title": "Col",
+          "type": "integer"
+        },
+        "color": {
+          "minLength": 1,
+          "title": "Color",
+          "type": "string"
+        }
+      },
+      "required": [
+        "row",
+        "col",
+        "color"
+      ],
+      "title": "CellFill",
+      "type": "object"
+    },
+    "Merge": {
+      "additionalProperties": false,
+      "description": "A merged range, 0-based, end exclusive (the Sheets grid-range convention).",
+      "properties": {
+        "start_row": {
+          "minimum": 0,
+          "title": "Start Row",
+          "type": "integer"
+        },
+        "end_row": {
+          "minimum": 1,
+          "title": "End Row",
+          "type": "integer"
+        },
+        "start_col": {
+          "minimum": 0,
+          "title": "Start Col",
+          "type": "integer"
+        },
+        "end_col": {
+          "minimum": 1,
+          "title": "End Col",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start_row",
+        "end_row",
+        "start_col",
+        "end_col"
+      ],
+      "title": "Merge",
+      "type": "object"
+    },
+    "SourceId": {
+      "additionalProperties": false,
+      "description": "A durable ID the client supplied for the entry in a cell. The cell is only where it was read.",
+      "properties": {
+        "row": {
+          "minimum": 0,
+          "title": "Row",
+          "type": "integer"
+        },
+        "col": {
+          "minimum": 0,
+          "title": "Col",
+          "type": "integer"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "row",
+        "col",
+        "id"
+      ],
+      "title": "SourceId",
+      "type": "object"
+    },
+    "SourceScope": {
+      "additionalProperties": false,
+      "description": "Document and tab identity. Opaque strings the caller chose; the extractor never opens them.",
+      "properties": {
+        "document_id": {
+          "minLength": 1,
+          "title": "Document Id",
+          "type": "string"
+        },
+        "tab_id": {
+          "minLength": 1,
+          "title": "Tab Id",
+          "type": "string"
+        },
+        "tab_title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tab Title"
+        }
+      },
+      "required": [
+        "document_id",
+        "tab_id"
+      ],
+      "title": "SourceScope",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One tab read in full. `rows_total` and `columns_total` are the tab's own size, when known.",
+  "properties": {
+    "schema_version": {
+      "const": "ScheduleSnapshotRequest/v1",
+      "default": "ScheduleSnapshotRequest/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_scope": {
+      "$ref": "#/$defs/SourceScope"
+    },
+    "source_revision": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Revision"
+    },
+    "cells": {
+      "items": {
+        "items": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "title": "Cells",
+      "type": "array"
+    },
+    "merges": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/Merge"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Merges"
+    },
+    "fills": {
+      "items": {
+        "$ref": "#/$defs/CellFill"
+      },
+      "title": "Fills",
+      "type": "array"
+    },
+    "source_ids": {
+      "items": {
+        "$ref": "#/$defs/SourceId"
+      },
+      "title": "Source Ids",
+      "type": "array"
+    },
+    "rows_total": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Rows Total"
+    },
+    "columns_total": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Columns Total"
+    },
+    "year": {
+      "anyOf": [
+        {
+          "maximum": 2200,
+          "minimum": 1900,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Year"
+    },
+    "reference_date": {
+      "anyOf": [
+        {
+          "format": "date",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reference Date"
+    }
+  },
+  "required": [
+    "source_scope",
+    "cells"
+  ],
+  "title": "ScheduleRequest",
+  "type": "object"
+}

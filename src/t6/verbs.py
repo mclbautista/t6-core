@@ -23,9 +23,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, get_args, get_origin
 from types import UnionType
 
-from pydantic import AwareDatetime, BaseModel, Field, ConfigDict, SerializerFunctionWrapHandler, field_validator, model_serializer, model_validator
+from pydantic import AwareDatetime, BaseModel, Field, ConfigDict, RootModel, SerializerFunctionWrapHandler, field_validator, model_serializer, model_validator
 from t6.domain import Project, JobOrder, Deliverable, MeetingNote, Contact, Camera, ExternalRef, Machine, Ring
 from t6.bay_scan import BayScanReport
+from t6.schedule.contract import ScheduleResult
 from t6.vocabulary import DRIVE_ROLES, DriveRole, MediaKind, MediaRole, PersonKind
 from t6.llm.api import Done as Done, LLMDecideInput as LLMDecideInput, LLMDecideOutput as LLMDecideOutput, LLMFilterInput as LLMFilterInput, LLMFilterOutput as LLMFilterOutput, LLMRunInput as LLMRunInput, LLMRunOutput as LLMRunOutput
 
@@ -1327,6 +1328,22 @@ def text_withhold(inputs: TextWithholdInput, open_notion: Callable[..., Any]) ->
     from t6.privacy.withhold import withhold
     done = [withhold(text) for text in inputs.texts]
     return Done(result={'texts': [w.text for w in done], 'withheld': sum(w.count for w in done)})
+
+
+class ScheduleSnapshotInput(ReadInput):
+    spreadsheet_id: str = Field(min_length=1)
+    tab_title: str = Field(min_length=1)
+    year: int | None = Field(default=None, ge=1900, le=2200)  # the year of the first month block, when the tab does not say
+
+
+class ScheduleSnapshotOutput(RootModel[ScheduleResult]):
+    pass
+
+
+def schedule_snapshot(inputs: ScheduleSnapshotInput, open_notion: Callable[..., Any]) -> Outcome:
+    """Read one tab of a Client Sheet, read only, and return its ScheduleSnapshot/v1. The Google credential stays on the API host."""
+    from t6.schedule_read import read_snapshot
+    return read_snapshot(inputs.spreadsheet_id, inputs.tab_title, inputs.year, IsoDate.today())
 
 
 class StandingCcInput(ReadInput):
@@ -3566,6 +3583,7 @@ VERBS = (
     Verb("project", "flags", "Read Project flags", (), ProjectFlagsInput, ProjectFlagsOutput, "reader", "Recompute data gaps and date warnings.", api_read, read_only=True),
     Verb("person", "list", "List Contacts", (), PersonListInput, PersonListOutput, "reader", "Read Contacts.", api_read, read_only=True),
     Verb('text', 'withhold', 'Withhold credentials from text', (), TextWithholdInput, TextWithholdOutput, 'reader', 'Give up to 200 texts; each comes back in order with labelled credential values (password, passcode, pass, pin, pw) replaced by the placeholder. Nothing is stored. Use it before showing message text outside its chat.', text_withhold, read_only=True),
+    Verb('schedule', 'snapshot', 'Read one Client Sheet tab as a ScheduleSnapshot', (), ScheduleSnapshotInput, ScheduleSnapshotOutput, 'operator', 'Read only: one tab\'s values, merges and fills from Google, then the monthly-calendar extractor. The tab\'s grid size is the coverage target, so a short read is an incomplete snapshot. Operator or a service granted operator; not an MCP tool.', schedule_snapshot),
     Verb("standing-cc", "", "Get standing cc", (), StandingCcInput, StandingCcOutput, "reader", "Read configured standing cc.", None, read_only=True),
     Verb("jo", "list", "List Job Orders", (), JoListInput, JoListOutput, "reader", "Filter by Project, assignee or status group.", api_read, read_only=True),
     Verb("jo", "find", "Find Job Orders by Telegram Key, chat and message ID, or duplicate key", (), JoFindInput, JoListOutput, "reader", "Return all matching orders.", api_read, read_only=True),
