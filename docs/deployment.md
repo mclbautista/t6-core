@@ -389,10 +389,14 @@ label, accepted serial, person, release date and days out. Only T6-owned Drives
 whose last custody event is a dated release more than 14 Manila days ago count.
 Reads include `practice`, and reminder messages carry “Practice” while it is on.
 
-An operator runs `drive cutover`, previews the final reload, then confirms it with
-the same idempotency key. The final replacement and the switch out of practice
-are atomic. A failed final read leaves practice and the nightly job enabled.
-After success, replies carry `practice: false` and `nightly_enabled: false`;
-`drive reload` refuses with rule `cutover`, and already queued nightly jobs finish
-without reading or replacing data. Make the source sheets read-only for staff as
-the manual cutover step; the adapter has no write scope to change their sharing.
+**Cutover is a config setting (ADR 0010, decided 2026-11-24).** Set
+`T6_DRIVE_LIVE=true` in the API and main worker env file and deploy. On start, t6
+turns Practice mode off, stops the nightly reload and refuses every reload with rule
+`cutover`; it reloads nothing at startup, so the last reload before the deploy is the
+final load. The first live start is recorded in the database and is one way: removing
+the setting later logs a warning and stays live. Then make the source sheets read-only
+for staff; the adapter has no write scope to change their sharing.
+
+Until the release that implements ADR 0010 (planned 0.6.27), the deployed 0.6.26 still
+has the old `drive cutover` verb and ignores `T6_DRIVE_LIVE`. Do not run `drive cutover`;
+it is being removed.
