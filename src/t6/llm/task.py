@@ -272,6 +272,7 @@ def run(
 
     started = time.monotonic()
     model, tokens, repaired = provider.model, Tokens(), False
+    cost: float | None = 0.0 if active_skill is not None else None
     skill_name = active_skill.name if active_skill is not None else None
     skill_hash = active_skill.skill_hash if active_skill is not None else None
     turns = 0 if active_skill is not None else 1
@@ -288,6 +289,7 @@ def run(
             skill_hash=skill_hash,
             turns=turns,
             script_runs=tuple(script_runs),
+            cost=cost,
         )
 
     def failed(reason: Reason, detail: str) -> Failed:
@@ -316,6 +318,7 @@ def run(
             return failed(outcome.reason, outcome.detail)
         completion = outcome
         model, tokens = completion.model, completion.tokens
+        cost = completion.cost
     else:
         if session is not None:
             leak_detail = _check_skill_leaks(active_skill, session)
@@ -364,9 +367,11 @@ def run(
                     model = outcome.model
                 if outcome.tokens is not None:
                     tokens = tokens.add(outcome.tokens)
+                cost = None
                 return failed(outcome.reason, outcome.detail)
             model = outcome.model
             tokens = tokens.add(outcome.tokens)
+            cost = cost + outcome.cost if cost is not None and outcome.cost is not None else None
             if not outcome.tool_calls:
                 completion_opt = outcome
                 break

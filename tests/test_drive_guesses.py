@@ -5,6 +5,9 @@ import json
 import os
 import threading
 from typing import Any
+from collections.abc import Sequence
+
+from t6.llm.transport import Completion, DecisionsRequest, Request as LLMRequest, ToolSpec
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -19,7 +22,22 @@ from t6.worker import Worker
 from t6.worker.internal_queue import InternalJobQueue, InternalQueueClient
 
 
-class DriveGuessTests(DriveReloadFixture):
+class OrderedShortlistProvider(FakeProvider):
+    """Default synthetic vision answer: select the supplied candidates in order.
+
+    Explicitly scripted replies take precedence so tests can choose different rankings.
+    """
+    def complete(self, request: LLMRequest, *, timeout: float, zdr: bool = False,
+                 tools: Sequence[ToolSpec] = ()) -> Completion:
+        if not self.pending and not isinstance(request, DecisionsRequest):
+            entries = json.loads(request[1]['content'])['shortlist']
+            self.reply(json.dumps({'guesses': [
+                {'letter': e['letter'], 'confidence': 0.8, 'reason': 'Synthetic matching box'}
+                for e in entries[:3]], 'label_text': None}))
+        return super().complete(request, timeout=timeout, zdr=zdr, tools=tools)
+
+
+class DriveGuessFixture(DriveReloadFixture):
     def setUp(self) -> None:
         super().setUp()
         self.enterContext(patch.dict(os.environ, {'T6_DRIVE_RECORDING_CHAT_ID': '-900001', 'T6_DRIVE_RECORDING_TOPIC_ID': ''}))
@@ -27,7 +45,7 @@ class DriveGuessTests(DriveReloadFixture):
             db.execute("INSERT INTO persons VALUES ('t6n_synthetickeeper', 'staff', '[]', '[]', NULL, 0, 1)")
             db.execute("INSERT INTO person_permissions VALUES ('t6n_synthetickeeper', 'drives')")
         self.queue = InternalJobQueue(self.registry)
-        self.fake = FakeProvider()
+        self.fake = OrderedShortlistProvider()
         api = VerbAPI(self.people, self.queue, {'synthetic-gateway': 'gateway', 'synthetic-keeper': 't6n_synthetickeeper'},
                       lambda _: None, notion_source=self.notion_source)
         self.server = make_server(('127.0.0.1', 0), api)
@@ -40,7 +58,7 @@ class DriveGuessTests(DriveReloadFixture):
 
     def http(self, path: str, **values: Any) -> dict[str, Any]:
         request = Request(f'http://127.0.0.1:{self.server.server_port}/v1/{path}', data=json.dumps(values).encode(),
-                          headers={'Authorization': 'Bearer synthetic-' + ('gateway' if path.startswith('drive/capture') else 'keeper')})
+                          headers={'Authorization': 'Bearer synthetic-' + ('gateway' if path in ('drive/capture', 'drive/capture/result', 'drive/capture/undo') else 'keeper')})
         try:
             response = urlopen(request)
         except HTTPError as error:
@@ -55,7 +73,7 @@ class DriveGuessTests(DriveReloadFixture):
         capture = self.http('drive/capture', chat_id=-900001, message_id=self.sequence, sender_telegram_id=900010,
                             posted_at='2026-11-24T10:30:00+08:00', text=text,
                             **{'photo': base64.b64encode(photo(str(self.folder)).data).decode(), **values})['capture']
-        resolver = CaptureResolver(self.registry, self.fake, source=self.notion_source if with_notion else None,
+        resolver = CaptureResolver(self.registry, self.fake, debug=getattr(self, 'notifier', None), source=self.notion_source if with_notion else None,
                                    environ={'T6_DRIVE_RECORDING_CHAT_ID': '-900001'})
         self.assertTrue(Worker(InternalQueueClient(self.queue), 'main', {'drive.capture.resolve': resolver.handle}).run_once())
         return self.http('drive/capture/result', capture=capture)
@@ -68,29 +86,6 @@ class DriveGuessTests(DriveReloadFixture):
 
     def inventory(self) -> dict[str, dict[str, Any]]:
         return {d['label']: d for d in self.http('drive/list')['drives']}
-
-    def test_direction_filters_out_in_custody_for_in_and_released_for_out(self) -> None:
-        self.workbook({'SYNTHETIC SHOW': [HEADER,
-            ['SYN D01', 'SAMPLE-IN'],
-            ['SYN D02', 'SAMPLE-OUT', None, None, None, date(2026, 10, 1), date(2026, 11, 1)],
-        ]})
-        self.reload()
-        ids = self.inventory()
-        incoming = self.capture('IN SYN')
-        self.assertEqual([g['drive'] for g in self.inbox()[0]['guesses']], [ids['SYN D02']['id']])
-        self.http('drive/capture/undo', capture=incoming['capture'])
-        self.capture('OUT SYN\nR: Synthetic recipient')
-        self.assertEqual([g['drive'] for g in self.inbox()[0]['guesses']], [ids['SYN D01']['id']])
-
-    def test_empty_shortlist_waits_without_a_movement_and_grades_capture_thin(self) -> None:
-        self.workbook({'SYNTHETIC SHOW': [HEADER, ['SYN D01', 'SAMPLE-IN']]})
-        self.reload()
-        result = self.capture('OUT Unrelated zebra\nR: Synthetic recipient')
-        self.assertEqual((result['grade'], result['problem']), ('thin', None))
-        self.assertEqual([(i['text'], i['guesses']) for i in self.inbox()], [('Unrelated zebra', [])])
-        self.assertEqual(result['items'][0]['state'], 'open')
-        self.assertEqual(self.movements(), [])
-        self.assertEqual(self.inventory()['SYN D01']['status'], 'in custody')
 
     def project(self, name: str, code: str, contact: str | None = None, active: bool = True) -> str:
         from t6.notion.generated import ProjectsRow
@@ -121,6 +116,31 @@ class DriveGuessTests(DriveReloadFixture):
         values = dict(file=str(mapping), idempotency_key='map')
         self.call('mapping apply', **values, confirm=self.call('mapping apply', **values).token)
         self.reload()
+
+
+class DriveGuessTests(DriveGuessFixture):
+    def test_direction_filters_out_in_custody_for_in_and_released_for_out(self) -> None:
+        self.workbook({'SYNTHETIC SHOW': [HEADER,
+            ['SYN D01', 'SAMPLE-IN'],
+            ['SYN D02', 'SAMPLE-OUT', None, None, None, date(2026, 10, 1), date(2026, 11, 1)],
+        ]})
+        self.reload()
+        ids = self.inventory()
+        incoming = self.capture('IN SYN')
+        self.assertEqual([g['drive'] for g in self.inbox()[0]['guesses']], [ids['SYN D02']['id']])
+        self.http('drive/capture/undo', capture=incoming['capture'])
+        self.capture('OUT SYN\nR: Synthetic recipient')
+        self.assertEqual([g['drive'] for g in self.inbox()[0]['guesses']], [ids['SYN D01']['id']])
+
+    def test_empty_shortlist_waits_without_a_movement_and_grades_capture_thin(self) -> None:
+        self.workbook({'SYNTHETIC SHOW': [HEADER, ['SYN D01', 'SAMPLE-IN']]})
+        self.reload()
+        result = self.capture('OUT Unrelated zebra\nR: Synthetic recipient')
+        self.assertEqual((result['grade'], result['problem']), ('thin', None))
+        self.assertEqual([(i['text'], i['guesses']) for i in self.inbox()], [('Unrelated zebra', [])])
+        self.assertEqual(result['items'][0]['state'], 'open')
+        self.assertEqual(self.movements(), [])
+        self.assertEqual(self.inventory()['SYN D01']['status'], 'in custody')
 
     def test_project_close_name_and_code_find_open_uses_without_matching_drive_labels(self) -> None:
         project = self.project('Synthetic Nebula', 'SNB')

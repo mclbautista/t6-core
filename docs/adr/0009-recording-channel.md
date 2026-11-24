@@ -63,3 +63,31 @@ Date: 2026-11-24. Source: [spec #659](https://github.com/mclbautista/t6-core/iss
 - Prompt answers and undo replies are verb input from the poster or a
   custodian, like any other recording-channel input.
 
+
+## Amendment: photo-to-photo Drive matching (#693, #727)
+
+Date: 2026-11-25. Source: [spec #693](https://github.com/mclbautista/t6-core/issues/693).
+
+The photo of a recording-channel post and the stored **Reference photos of
+shortlisted Drives** may go to the image model to **match** Drives, as well as
+read visible labels. `drive-photo-match` replaces `drive-photo-read` in Capture
+resolution. Each Item sends its caption and a direction-filtered shortlist of
+at most six Drives, the post photo shrunk to about 1600 px on its long side,
+and available Reference photos as small thumbnails labelled A–F. A Drive without
+a Reference photo is listed as text only. No surrounding conversation or other
+chat content is authorized.
+
+Jev still runs first and unchanged. An empty shortlist or text-only post never
+reaches the image model. Admission and resolution both enforce the exact
+configured recording chat and topic; changing or removing that configuration
+cannot authorize a stored photo. Missing vision providers, errors, timeouts and
+invalid output keep the Capture and leave its Item waiting in Inbox with no
+guess or Movement. Valid vision guesses merge with the confirmed 0.95 exact-match
+rule, which stays first. Only guess one creates a Movement, marked to review.
+
+The HTTP boundary tests in `tests/test_drive_capture.py` and
+`tests/test_drive_photo_match.py` guard this authorization, including a valid
+shortlist in a stored Capture whose chat or topic no longer qualifies. Synthetic
+photo-match evals run offline with the fake provider in CI; a recorded live run
+with human review remains a release prerequisite under
+`docs/agents/llm-task-specs.md`.

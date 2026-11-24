@@ -70,6 +70,7 @@ class Trace:
     skill_hash: str | None = None
     turns: int = 1
     script_runs: tuple[ScriptRun, ...] = ()
+    cost: float | None = None  # USD; unknown unless every completion reports it
 
 
 @dataclasses.dataclass(frozen=True)

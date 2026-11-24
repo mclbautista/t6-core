@@ -58,6 +58,16 @@ def render(data: Mapping[str, Any], *, person: str | None, caption: str | None) 
     if photo := facts.get('photo'):
         read = '; '.join(f"label {r['label']} serial {r['serial']} confidence {r['confidence']}" for r in photo['readings']) or 'nothing readable'
         lines.append(f"Photo read: {read} [{photo['model']}, {photo['ms']} ms]")
+    for match in facts.get('matches', []):
+        lines.append('Item: ' + match['item'])
+        lines.append('Shortlist: ' + ('; '.join(f"{chr(65 + n)} {g.get('label', g['drive'])} ({g['drive']})"
+                                               for n, g in enumerate(match['shortlist'])) or 'none'))
+        lines.append('Thumbnails sent: ' + (', '.join(match['thumbnails']) or 'none'))
+        lines.append('Guesses: ' + ('; '.join(f"{g['drive']} {g['confidence']:.2f}: {g['reason']}" for g in match['guesses']) or 'none'))
+        lines.append(f"Model: {match['model']}; Latency: {match['ms']} ms; Cost: {match['cost'] if match['cost'] is not None else 'unknown (provider does not report cost)'}; Tokens: {match.get('tokens')}")
+        lines.append('Exact-match checks: ' + json.dumps(match['exact_checks'], ensure_ascii=False))
+        if match.get('failed'):
+            lines.append('Photo match failed: ' + match['failed'])
     if parsed := facts.get('parsed'):
         lines.append('Parsed: direction {direction}, person {person}, place {place}'.format(**parsed))
     lines.append('Matched drives: ' + (', '.join(str(line['label']) for line in data['lines']) or 'none'))

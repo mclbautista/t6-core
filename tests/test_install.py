@@ -62,6 +62,7 @@ else:
                             "elevenlabs<3,>=2.78.0; extra == 'transcribe'",
                             "psycopg[binary]<4,>=3.2; extra == 'resolve'",
                             "openpyxl<4,>=3.1; extra == 'drives'",
+                            "pillow<13,>=11; extra == 'llm'",
                             "rapidfuzz<4,>=3.9; extra == 'lookup'",
                             "cryptography<48,>=43; extra == 'google'",
                         },

@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import sqlite3
+from contextlib import nullcontext
 from datetime import date, datetime, time, timedelta
 from typing import Any
 
@@ -41,11 +42,11 @@ def learned(db: sqlite3.Connection, drive: str) -> dict[str, Any]:
     return {'short_names': names, 'reference_photo': drive if db.execute('SELECT 1 FROM drive_reference_photos WHERE drive_id=?', (drive,)).fetchone() else None}
 
 
-def reference_photo(registry: SqliteProjectRegistry, drive: str) -> dict[str, Any]:
+def reference_photo(registry: SqliteProjectRegistry, drive: str, *, within: sqlite3.Connection | None = None) -> dict[str, Any]:
     folder = photo_dir()
     if folder is None:
         raise PhotoError('config', 'Set T6_DRIVE_PHOTO_DIR')
-    with registry._transaction() as db:
+    with nullcontext(within) if within is not None else registry._transaction() as db:
         row = db.execute('SELECT path, media_type, size, sha256 FROM drive_reference_photos WHERE drive_id=?', (drive,)).fetchone()
     if row is None:
         raise PhotoError('photo', 'This Drive has no Reference photo')

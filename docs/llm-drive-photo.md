@@ -1,5 +1,8 @@
 # Drive photo read
 
+Capture resolution now uses [Drive photo match](llm-drive-photo-match.md)
+(#727). The label-read task remains available for its existing callers.
+
 Ticket #621, parent #615. The internal task is
 `t6.llm.drive_photo.PHOTO_READ` (`drive-photo-read-v1`).
 `read_drive_photo(Image(photo_bytes, ImageType.jpeg), provider=provider)`
