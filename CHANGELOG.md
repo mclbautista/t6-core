@@ -6,6 +6,7 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ### Added
 
+- When a `chat link` Approval is granted or denied (via card tap or CLI), the main worker posts one HTML-escaped line in the chat and topic being linked: `Linked to Name [CODE]`, `Unlinked from Name [CODE]`, or `Link to Name [CODE] was not approved by <denier>` / `Unlink from Name [CODE] was not approved by <denier>` (with `: <reason>` when a reason is given, falling back to the Project id when neither name nor code is present, and to the Person id when the denier's Notion name is unavailable) (#687).
 - Chat link Approvals (`project link-chat` and `project unlink-chat`) still `requested` 24 hours after they were made now send one reminder in the operator chat (`T6_OPERATOR_IDS`), naming the Project, chat and topic, requester, and Approval ID. The Approval never expires and no second reminder is sent; requests granted or denied within 24 hours send none. Migration 61 (`forward_only=False`) queues reminders for any `requested` `chat link` Approvals already in the database (#688).
 
 ### Changed

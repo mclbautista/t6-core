@@ -181,24 +181,36 @@ class ModelReadWriteTests(unittest.TestCase):
         )
         self.assertEqual(row.last_check_in, checked_in)
         self.assertEqual(row.os_version, "macOS 26.5")
-        self.assertEqual(fake.select_options(BAYS, "Ring"), ["pilot"])
+        self.assertEqual(fake.select_options(BAYS, "Ring"), ["testing", "pilot", "production"])
 
 
 class SelectOptionTests(unittest.TestCase):
-    def test_writing_a_new_bays_ring_creates_the_select_option(self) -> None:
-        fake = fake_with(bays=BAYS)
-        self.assertEqual(fake.select_options(BAYS, "Ring"), [])
+    def test_writing_a_new_select_value_creates_the_option(self) -> None:
+        fake = fake_with(projects=PROJECTS)
+        self.assertEqual(fake.select_options(PROJECTS, "TRT"), [])
         with fake.client() as client:
             client.create_page(
                 {
-                    "parent": {"data_source_id": BAYS},
-                    "properties": BaysRow.to_properties(name="Bay 02", ring="pilot"),
+                    "parent": {"data_source_id": PROJECTS},
+                    "properties": ProjectsRow.to_properties(name="Harbour Lights", trt="60 min"),
                 }
             )
-            live = client.retrieve_data_source(BAYS)
-        self.assertEqual([o["name"] for o in live["properties"]["Ring"]["select"]["options"]], ["pilot"])
+            live = client.retrieve_data_source(PROJECTS)
+        self.assertEqual([o["name"] for o in live["properties"]["TRT"]["select"]["options"]], ["60 min"])
 
     def test_an_existing_option_is_not_added_twice(self) -> None:
+        fake = fake_with(projects=PROJECTS)
+        with fake.client() as client:
+            for name in ("Harbour Lights", "Low Tide"):
+                client.create_page(
+                    {
+                        "parent": {"data_source_id": PROJECTS},
+                        "properties": ProjectsRow.to_properties(name=name, trt="30 min"),
+                    }
+                )
+        self.assertEqual(fake.select_options(PROJECTS, "TRT"), ["30 min"])
+
+    def test_a_named_ring_is_written_by_its_recorded_option(self) -> None:
         fake = fake_with(bays=BAYS)
         with fake.client() as client:
             for name in ("Bay 03", "Bay 04"):
@@ -208,7 +220,7 @@ class SelectOptionTests(unittest.TestCase):
                         "properties": BaysRow.to_properties(name=name, ring="production"),
                     }
                 )
-        self.assertEqual(fake.select_options(BAYS, "Ring"), ["production"])
+        self.assertEqual(fake.select_options(BAYS, "Ring"), ["testing", "pilot", "production"])
 
     def test_a_multi_select_value_creates_its_options(self) -> None:
         fake = fake_with(bays=BAYS)

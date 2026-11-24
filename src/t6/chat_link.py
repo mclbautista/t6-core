@@ -1,8 +1,11 @@
 """Project Chat links and their Approval-gated writes."""
 from __future__ import annotations
 
+import html
 import json
+import re
 import secrets
+import sqlite3
 from collections.abc import Callable
 from typing import Any
 
@@ -11,6 +14,91 @@ from t6.preview import PreviewTokens
 from t6.registry import normalize_code
 from t6.registry.sqlite import SqliteProjectRegistry
 from t6.verbs import Done, Outcome, Refused
+
+_TARGET_SUFFIX = re.compile(r"(?:^| )(?P<project_id>\S+): chat -?\d+, topic (?:\d+|none)(?: \(.*\))?$", re.DOTALL)
+
+
+def project_label_from_target(target: str) -> str:
+    """Extract `Name [CODE]` (or `Name`, `[CODE]`, or fallback `t6p_...`) from `approvals.target`."""
+    match = _TARGET_SUFFIX.search(target)
+    if match:
+        label = target[:match.start()].strip()
+        return label or match.group('project_id')
+    return target.partition(':')[0].strip() or target
+
+
+def format_decision_notice(
+    action: str,
+    decision: str,
+    target_label: str,
+    *,
+    denier: str | None = None,
+    reason: str | None = None,
+) -> str:
+    """Format an HTML-escaped single-line decision reply for the chat and topic being linked."""
+    if action not in ('link-chat', 'unlink-chat'):
+        raise ValueError(f'Unknown chat link action: {action!r}')
+    if decision not in ('grant', 'deny'):
+        raise ValueError(f'Unknown approval decision: {decision!r}')
+    if decision == 'grant':
+        verb = 'Linked to' if action == 'link-chat' else 'Unlinked from'
+        line = f'{verb} {target_label}'
+    else:
+        verb = 'Link to' if action == 'link-chat' else 'Unlink from'
+        who = denier.strip() if isinstance(denier, str) and denier.strip() else 'an operator'
+        line = f'{verb} {target_label} was not approved by {who}'
+        note = reason.strip() if isinstance(reason, str) else ''
+        if note:
+            line = f'{line}: {note}'
+    return html.escape(line, quote=False)
+
+
+def decided(
+    registry: SqliteProjectRegistry,
+    db: sqlite3.Connection,
+    approval_id: str,
+    verb: str,
+    actor: str,
+    reason: str | None,
+    now: float,
+) -> None:
+    """Queue one topic reply when a `chat link` Approval is granted or denied."""
+    if verb not in ('grant', 'deny'):
+        return
+    row = db.execute("SELECT target FROM approvals WHERE id = ? AND gate = 'chat link'", (approval_id,)).fetchone()
+    if row is None:
+        return
+    preview = db.execute(
+        'SELECT request FROM chat_link_previews WHERE approval_id = ? ORDER BY rowid LIMIT 1',
+        (approval_id,),
+    ).fetchone()
+    if preview is None:
+        return
+    request = json.loads(preview[0])
+    action = request.get('verb')
+    values = request.get('values') or {}
+    chat, topic = values.get('chat'), values.get('topic')
+    if action not in ('link-chat', 'unlink-chat') or type(chat) is not int:
+        return
+    from t6.worker.internal_queue import InternalJobQueue
+
+    payload = {
+        'approval_id': approval_id,
+        'action': action,
+        'decision': verb,
+        'chat': chat,
+        'topic': topic,
+        'label': project_label_from_target(row[0]),
+        'decided_by': actor,
+        'reason': reason,
+    }
+    InternalJobQueue(registry, clock=lambda: now).submit(
+        'main',
+        'chat_link_notice',
+        f'chat_link_notice:{approval_id}',
+        payload,
+        db=db,
+    )
 
 CHAT_LINK_REMINDER_SECONDS = 86400
 

@@ -356,3 +356,138 @@ class ApprovalCardTests(unittest.TestCase):
         approval = Approvals(self.registry, PreviewTokens('test')).get(done['result']['approval_id'])
         assert approval is not None
         self.assertEqual(approval['reason'], 'pilot failed')
+
+    def test_chat_link_tap_approve_and_duplicate_tap_send_one_notice_to_topic(self) -> None:
+        import json
+        from typing import Any
+        from test_operator import GATEWAY_SECRET, FakeGateway
+        from t6.registry import Registered
+        from t6.worker import Worker
+        from t6.worker.gateway import GatewayClient
+        from t6.worker.internal_queue import InternalJobQueue, InternalQueueClient
+        from t6.worker.linked_chats import LinkedChats
+
+        sent_topics: list[tuple[int, int | None, str, str]] = []
+
+        class RecordingGateway(FakeGateway):
+            def send(self, method: str, path: str, headers: Any, body: bytes) -> tuple[int, dict[str, Any]]:
+                status, answer = super().send(method, path, headers, body)
+                if status == 202 and path == '/notify':
+                    req = json.loads(body)
+                    sent_topics.append((req['to'], req.get('topic'), req['text'], req['idempotency_key']))
+                return status, answer
+
+        self.gateway = RecordingGateway()
+        self.registry._new_id = lambda: 't6p_' + '5' * 24
+        project = self.registry.register(actor=self.actor, idempotency_key='tap-approve-proj', code='SHOW')
+        assert isinstance(project, Registered)
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO person_permissions VALUES (?, 'operator')", (self.actor,))
+        body = {'kind': 'command', 'command': 'link', 'args': project.project.id, 'chat': -100, 'topic': 12, 'from': {'id': 42}, 'message_id': 123}
+        self.assertEqual(self.send('/tap', body, secret='gateway', headers={'X-Telegram-User-Id': '42', 'Idempotency-Key': 'cmd-tap-1'})['outcome'], 'accepted')
+        self.drain()
+        payload = self.gateway.messages[1]['buttons'][0][0]['payload']
+        self.assertEqual(self.send('/tap', {'data': payload, 'from': {'id': 42}, 'chat': 42, 'message_id': 1001}, secret='gateway', headers={'X-Telegram-User-Id': '42', 'Idempotency-Key': 'tap-1'})['outcome'], 'granted')
+        self.assertEqual(self.send('/tap', {'data': payload, 'from': {'id': 42}, 'chat': 42, 'message_id': 1001}, secret='gateway', headers={'X-Telegram-User-Id': '42', 'Idempotency-Key': 'tap-2'})['outcome'], 'already_handled')
+
+        linked = LinkedChats(self.registry, GatewayClient(self.gateway, GATEWAY_SECRET))
+        worker = Worker(InternalQueueClient(InternalJobQueue(self.registry)), 'main', {'chat_link_notice': linked.chat_link_notice})
+        while worker.run_once():
+            pass
+        topic_notices = [item for item in sent_topics if item[0] == -100]
+        self.assertEqual(len(topic_notices), 1)
+        self.assertEqual(topic_notices[0][1], 12)
+        self.assertEqual(topic_notices[0][2], 'Linked to [SHOW]')
+
+    def test_chat_link_tap_deny_with_reason_sends_notice_to_topic(self) -> None:
+        import json
+        from typing import Any
+        from test_operator import GATEWAY_SECRET, FakeGateway
+        from t6.registry import Registered
+        from t6.worker import Worker
+        from t6.worker.gateway import GatewayClient
+        from t6.worker.internal_queue import InternalJobQueue, InternalQueueClient
+        from t6.worker.linked_chats import LinkedChats
+
+        sent_topics: list[tuple[int, int | None, str]] = []
+
+        class RecordingGateway(FakeGateway):
+            def send(self, method: str, path: str, headers: Any, body: bytes) -> tuple[int, dict[str, Any]]:
+                status, answer = super().send(method, path, headers, body)
+                if status == 202 and path == '/notify':
+                    req = json.loads(body)
+                    sent_topics.append((req['to'], req.get('topic'), req['text']))
+                return status, answer
+
+        self.gateway = RecordingGateway()
+        self.registry._new_id = lambda: 't6p_' + '6' * 24
+        project = self.registry.register(actor=self.actor, idempotency_key='tap-deny-proj', code='DENY')
+        assert isinstance(project, Registered)
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO person_permissions VALUES (?, 'operator')", (self.actor,))
+            db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, 'now', 1)", ('c' * 32, self.actor))
+        body = {'kind': 'command', 'command': 'link', 'args': project.project.id, 'chat': -100, 'topic': 22, 'from': {'id': 42}, 'message_id': 124}
+        self.assertEqual(self.send('/tap', body, secret='gateway', headers={'X-Telegram-User-Id': '42', 'Idempotency-Key': 'cmd-deny-1'})['outcome'], 'accepted')
+        self.drain()
+        deny_payload = self.gateway.messages[1]['buttons'][0][1]['payload']
+        self.assertEqual(self.send('/tap', {'data': deny_payload, 'from': {'id': 42}, 'chat': 42, 'message_id': 1001}, secret='gateway', headers={'X-Telegram-User-Id': '42', 'Idempotency-Key': 'tap-deny'})['outcome'], 'choose_reason')
+        self.drain()
+        reason_payload = self.gateway.messages[1]['buttons'][0][0]['payload']
+        self.assertEqual(self.send('/tap', {'data': reason_payload, 'from': {'id': 42}, 'chat': 42, 'message_id': 1001}, secret='gateway', headers={'X-Telegram-User-Id': '42', 'Idempotency-Key': 'tap-reason'})['outcome'], 'denied')
+
+        linked = LinkedChats(self.registry, GatewayClient(self.gateway, GATEWAY_SECRET), person_name=lambda page: 'Sam' if page == 'c' * 32 else None)
+        worker = Worker(InternalQueueClient(InternalJobQueue(self.registry)), 'main', {'chat_link_notice': linked.chat_link_notice})
+        while worker.run_once():
+            pass
+        topic_notices = [item for item in sent_topics if item[0] == -100]
+        self.assertEqual(topic_notices, [(-100, 22, 'Link to [DENY] was not approved by Sam: Changes requested')])
+
+    def test_chat_link_cli_grant_and_deny_send_notices_to_topic(self) -> None:
+        import json
+        from typing import Any
+        from test_operator import GATEWAY_SECRET, FakeGateway
+        from t6.registry import Registered
+        from t6.worker import Worker
+        from t6.worker.gateway import GatewayClient
+        from t6.worker.internal_queue import InternalJobQueue, InternalQueueClient
+        from t6.worker.linked_chats import LinkedChats
+
+        sent_topics: list[tuple[int, int | None, str]] = []
+
+        class RecordingGateway(FakeGateway):
+            def send(self, method: str, path: str, headers: Any, body: bytes) -> tuple[int, dict[str, Any]]:
+                status, answer = super().send(method, path, headers, body)
+                if status == 202 and path == '/notify':
+                    req = json.loads(body)
+                    sent_topics.append((req['to'], req.get('topic'), req['text']))
+                return status, answer
+
+        self.gateway = RecordingGateway()
+        self.registry._new_id = lambda: 't6p_' + '7' * 24
+        project = self.registry.register(actor=self.actor, idempotency_key='cli-proj', code='CLI1')
+        assert isinstance(project, Registered)
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO person_permissions VALUES (?, 'operator')", (self.actor,))
+
+        p1 = self.send('/v1/project/link-chat', {'project': project.project.id, 'chat': -100, 'topic': 31, 'idempotency_key': 'cli-link-1'})
+        self.assertEqual(p1['outcome'], 'preview')
+        g_prev = self.send('/v1/approval/grant', {'approval': p1['plan']['approval_id'], 'idempotency_key': 'cli-grant'})
+        self.assertEqual(self.send('/v1/approval/grant', {'approval': p1['plan']['approval_id'], 'idempotency_key': 'cli-grant', 'confirm': g_prev['token']})['outcome'], 'done')
+
+        p2 = self.send('/v1/project/link-chat', {'project': project.project.id, 'chat': -100, 'topic': 32, 'idempotency_key': 'cli-link-2'})
+        self.assertEqual(p2['outcome'], 'preview')
+        d_prev = self.send('/v1/approval/deny', {'approval': p2['plan']['approval_id'], 'reason': 'Use topic 31', 'idempotency_key': 'cli-deny'})
+        self.assertEqual(self.send('/v1/approval/deny', {'approval': p2['plan']['approval_id'], 'reason': 'Use topic 31', 'idempotency_key': 'cli-deny', 'confirm': d_prev['token']})['outcome'], 'done')
+
+        linked = LinkedChats(self.registry, GatewayClient(self.gateway, GATEWAY_SECRET))
+        worker = Worker(InternalQueueClient(InternalJobQueue(self.registry)), 'main', {'chat_link_notice': linked.chat_link_notice})
+        while worker.run_once():
+            pass
+        topic_notices = [item for item in sent_topics if item[0] == -100]
+        self.assertEqual(
+            topic_notices,
+            [
+                (-100, 31, 'Linked to [CLI1]'),
+                (-100, 32, f'Link to [CLI1] was not approved by {self.actor}: Use topic 31'),
+            ],
+        )
