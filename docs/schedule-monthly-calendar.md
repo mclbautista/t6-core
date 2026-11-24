@@ -12,7 +12,8 @@ LLM call, writes nothing and uses no dataframe. Reading the sheet is another tic
 
 - Request: `ScheduleSnapshotRequest/v1`. `cells` is a list of rows (strings, numbers or null; day numbers may be floats such
   as `1.0`). `merges` use 0-based, end-exclusive bounds. `fills` is sparse. `rows_total` and `columns_total` say how big the
-  tab is, so a short read shows as incomplete. `year` is optional.
+  tab is, so a short read shows as incomplete. `year` is optional. `source_revision` is the Google revision, when the caller has
+  one. `source_ids` is optional: durable IDs the client supplied, each `{row, col, id}` for the entry in that cell.
 - Response: `result` is `snapshot` or `unsupported_layout`. Both carry `schema_version: "ScheduleSnapshot/v1"`.
 - Fixtures: `tests/fixtures/schedule/` holds versioned request and response fixtures and the JSON Schemas. A test fails when
   the committed schemas drift from the models. The planner (#695) reuses `t6.schedule.parse_response` and
@@ -60,9 +61,15 @@ LLM call, writes nothing and uses no dataframe. Reading the sheet is another tic
   snapshot `coverage.status: incomplete`.
 - **Unsupported layout.** A tab with no month header merged across A:N returns `result: unsupported_layout` with a
   `diagnostic` (`empty_tab` or `no_month_header`) and no candidates.
+- **Revision and identity.** `source_revision` is the request's Google revision when given. Otherwise it is
+  `sha256:` plus a hash of the normalized values (text stripped, blanks dropped, whole floats as integers) and the merge
+  geometry, so identical input gives the same value and any changed value or merge gives a new one. Fills and supplied IDs
+  are not part of it. A cell address is provenance only. A candidate carries `source_id` only when the client supplied an ID
+  for that cell; a moved entry then keeps its ID and gets its new anchor and date. Without an ID the snapshot makes no link
+  between candidates of two revisions: that association belongs to the planner (#695). Fixtures:
+  `request.moved-before.v1.json` and `request.moved-after.v1.json` with their responses.
 
 ## Not yet read
 
-Multi-day spans and date holds (#718), coverage statuses (#719), tentative markers, notes and breaks (#720), the revision
-fingerprint and moved cells (#721), and the Google read and API verb (#722). The contract already has fields for them
+Multi-day spans and date holds (#718), coverage statuses (#719), tentative markers, notes and breaks (#720), and the Google read and API verb (#722). The contract already has fields for them
 (`tentative`, `source_id`, `source_revision`, `non_tasks`, the exception codes).

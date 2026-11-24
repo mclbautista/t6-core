@@ -22,6 +22,7 @@ from t6.schedule.coverage import group_status, read_coverage
 from t6.schedule.dates import DayCell, aligns, block_years, fitting_start_years, weekday_name
 from t6.schedule.grid import Grid, a1, merge_range
 from t6.schedule.layout import DAY_COLUMNS, MonthBlock, find_month_blocks
+from t6.schedule.revision import source_ids, source_revision
 from t6.schedule.text import clean_text, is_availability
 
 
@@ -71,7 +72,7 @@ def extract_schedule(request: ScheduleRequest) -> ScheduleSnapshot | Unsupported
     numbered = [c.model_copy(update={"candidate_key": f"c{n}"}) for n, c in enumerate(candidates, 1)]
     return ScheduleSnapshot(
         source_scope=scope,
-        source_revision=request.source_revision,
+        source_revision=source_revision(request),
         coverage=read_coverage(request, grid),
         groups=groups,
         candidates=numbered,
@@ -83,7 +84,7 @@ def _unsupported(request: ScheduleRequest, code: str, message: str) -> Unsupport
     return UnsupportedLayout.model_validate(
         {
             "source_scope": request.source_scope,
-            "source_revision": request.source_revision,
+            "source_revision": source_revision(request),
             "diagnostic": {"code": code, "message": message},
         }
     )
@@ -143,6 +144,7 @@ def _read_entries(
     grid: Grid, request: ScheduleRequest, block: MonthBlock, key: str, year_evidence: YearEvidence, year: int
 ) -> _Read:
     read = _Read()
+    ids = source_ids(request)
     for band in block.bands:
         for row in range(band.number_row + 1, band.end_row):
             for col in range(DAY_COLUMNS):
@@ -175,6 +177,7 @@ def _read_entries(
                         title=text,
                         start=iso,
                         due=iso,
+                        source_id=ids.get((row, col)),
                         provenance=Provenance(
                             tab_id=request.source_scope.tab_id,
                             tab_title=request.source_scope.tab_title,

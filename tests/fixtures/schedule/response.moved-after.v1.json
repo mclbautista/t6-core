@@ -1,0 +1,94 @@
+{
+  "schema_version": "ScheduleSnapshot/v1",
+  "result": "snapshot",
+  "source_scope": {
+    "document_id": "doc-synthetic",
+    "tab_id": "tab-moved-after",
+    "tab_title": "as of Nov 8"
+  },
+  "source_revision": "sha256:b8a7eb834d153b1b1b621646890f533d46d9998d990517a222f8f7aca4a3bc5f",
+  "layout_version": "monthly-calendar/v1",
+  "coverage": {
+    "status": "complete",
+    "rows_read": 29,
+    "columns_read": 15,
+    "rows_total": 29,
+    "columns_total": 15
+  },
+  "groups": [
+    {
+      "group_key": "m01-nov",
+      "label": "NOVEMBER",
+      "status": "complete",
+      "anchor": "A7:N8",
+      "year": 2026,
+      "evidence": [
+        {
+          "kind": "year",
+          "detail": "2026 supplied",
+          "anchor": "A7:N8"
+        }
+      ],
+      "exceptions": []
+    }
+  ],
+  "candidates": [
+    {
+      "candidate_key": "c1",
+      "group_key": "m01-nov",
+      "title": "Grade review",
+      "start": "2026-11-05",
+      "due": "2026-11-05",
+      "tentative": null,
+      "source_id": "src-synthetic-1",
+      "provenance": {
+        "tab_id": "tab-moved-after",
+        "tab_title": "as of Nov 8",
+        "anchor": "I11",
+        "range": "I11:J11",
+        "merged": true,
+        "fill": null,
+        "year_evidence": {
+          "year": 2026,
+          "method": "supplied"
+        },
+        "date_evidence": {
+          "month": 11,
+          "day": 5,
+          "weekday": "THURSDAY",
+          "month_header_anchor": "A7",
+          "day_number_anchor": "I10"
+        }
+      }
+    },
+    {
+      "candidate_key": "c2",
+      "group_key": "m01-nov",
+      "title": "Mix",
+      "start": "2026-11-10",
+      "due": "2026-11-10",
+      "tentative": null,
+      "source_id": null,
+      "provenance": {
+        "tab_id": "tab-moved-after",
+        "tab_title": "as of Nov 8",
+        "anchor": "E15",
+        "range": "E15:F15",
+        "merged": true,
+        "fill": null,
+        "year_evidence": {
+          "year": 2026,
+          "method": "supplied"
+        },
+        "date_evidence": {
+          "month": 11,
+          "day": 10,
+          "weekday": "TUESDAY",
+          "month_header_anchor": "A7",
+          "day_number_anchor": "E14"
+        }
+      }
+    }
+  ],
+  "non_tasks": []
+}
