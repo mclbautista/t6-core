@@ -615,6 +615,8 @@ a term describes behaviour that is decided but not yet built, it says so.
 - **Close**: a person's close of a Concern through Sixto (verb `resolve`). It
   becomes a pending close. Undo (verb `reopen`) cancels it. Over the API both
   follow the verb's role only.
+- **Closer**: a Person who triages Concerns in the Concerns sheet. Access is Google
+  sharing of the sheet; there is no Closer setting in t6.
 - **Concerns sheet export**: a CSV with one row per Concern that is not
   closed (`Open` or `Closing after PSR`), with the actions a Closer may choose
   for it. The API pushes it to the VPS server after each completed 21:00

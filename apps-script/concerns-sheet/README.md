@@ -54,6 +54,6 @@ Do this on the real sheet after the core release and the edge are live, with Cyr
 3. **Undo it:** on that row set Action to Undo close, Submit. After the refresh it is Open again and Last result is "Undone".
 4. **Add a Note:** type a Note on a row (leave Action at Keep), Submit. After the refresh Last result is "Note added".
 5. **Stale-row refusal:** change a Concern in t6 (or from a second browser) after the sheet loaded, then Submit a Close on it from the old copy. Last result is "Changed since your last refresh"; other rows in the same Submit still go through.
-6. **Unsent picks survive a refresh:** set an Action and a Note on two rows, do not Submit, choose `Concerns > Refresh`. Both picks are still there. Then close one of those Concerns elsewhere and refresh: its pick is gone.
+6. **Unsent picks survive a refresh:** set an Action and a Note on two rows, do not Submit, choose `Concerns > Refresh`. Both picks are still there, and each is still judged against the revision it was made on. Then close one of those Concerns elsewhere and refresh: its pick is gone. Last, change a Concern in t6 while a pick on it is unsent, refresh, and Submit: Last result is "Changed since your last refresh".
 7. **Triggers:** `Extensions > Apps Script > Triggers` shows only the on-open trigger, and no `refreshAfterSubmit` trigger is left after the minute has passed.
 8. A Concern whose text starts with `=` shows as text, not a formula.

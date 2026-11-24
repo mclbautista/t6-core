@@ -94,24 +94,24 @@ function indexOf_(header, name) {
   return i;
 }
 
-/** Unsent picks by Concern id: {id: {action, note}} for rows whose Action is not Keep or whose Note is filled. */
+/** Unsent picks by Concern id: {id: {action, note, revision}} (the revision the pick was made against) for rows whose Action is not Keep or whose Note is filled. */
 function unsentPicks_(sheet) {
   var picks = {};
   var last = sheet.getLastRow();
   if (last < 2) return picks;
   var header = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  var id = header.indexOf(ID_COLUMN), action = header.indexOf(ACTION_COLUMN), note = header.indexOf(NOTE_COLUMN);
-  if (id < 0 || action < 0 || note < 0) return picks;
+  var id = header.indexOf(ID_COLUMN), action = header.indexOf(ACTION_COLUMN), note = header.indexOf(NOTE_COLUMN), revision = header.indexOf(REVISION_COLUMN);
+  if (id < 0 || action < 0 || note < 0 || revision < 0) return picks;
   sheet.getRange(2, 1, last - 1, header.length).getValues().forEach(function (row) {
     var a = String(row[action] || KEEP), n = String(row[note] || '');
-    if (row[id] !== '' && (a !== KEEP || n !== '')) picks[String(row[id])] = { action: a, note: n };
+    if (row[id] !== '' && (a !== KEEP || n !== '')) picks[String(row[id])] = { action: a, note: n, revision: String(row[revision]) };
   });
   return picks;
 }
 
 function writeTable_(sheet, table) {
   var header = table[0], data = table.slice(1).filter(function (r) { return r.length === header.length; });
-  var id = indexOf_(header, ID_COLUMN), allowedAt = indexOf_(header, ALLOWED_COLUMN);
+  var id = indexOf_(header, ID_COLUMN), allowedAt = indexOf_(header, ALLOWED_COLUMN), revisionAt = indexOf_(header, REVISION_COLUMN);
   var picks = unsentPicks_(sheet);  // read before anything is cleared; an id missing from the export is dropped here
   var columns = header.concat([ACTION_COLUMN, NOTE_COLUMN]);
   var width = columns.length;
@@ -125,6 +125,8 @@ function writeTable_(sheet, table) {
       var allowed = row[allowedAt].split(', ').filter(String);
       if (allowed.indexOf(KEEP) < 0) allowed.unshift(KEEP);
       var pick = picks[row[id]] || { action: KEEP, note: '' };
+      // A carried pick keeps the revision it was made against, so t6 still calls it stale; a row with no pick takes the fresh one.
+      if (picks[row[id]]) row = row.slice(), row[revisionAt] = pick.revision;
       var action = allowed.indexOf(pick.action) >= 0 ? pick.action : KEEP;  // a pick t6 no longer allows falls back to Keep
       rows.push(row.concat([action, pick.note]));
       validations.push(SpreadsheetApp.newDataValidation().requireValueInList(allowed, true).setAllowInvalid(false).build());

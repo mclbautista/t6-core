@@ -45,6 +45,11 @@ class SheetScriptSignatureTest(unittest.TestCase):
         for text in (*named, ACTIONS[0], SHEET_TIMESTAMP_HEADER, SHEET_SIGNATURE_HEADER):
             self.assertIn(text.lower(), script.lower())
 
+    def test_refresh_carries_the_revision_a_pick_was_made_against(self) -> None:
+        script = (FOLDER / 'Code.gs').read_text(encoding='utf-8')
+        self.assertIn('revision: String(row[revision])', script)  # unsentPicks_ keeps it with the pick
+        self.assertIn('pick.revision', script)  # writeTable_ writes it back instead of the fresh one
+
     def test_repo_holds_no_script_id_or_url(self) -> None:
         for path in FOLDER.iterdir():
             text = path.read_text(encoding='utf-8')

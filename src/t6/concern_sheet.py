@@ -64,6 +64,7 @@ class ConcernsSheetSubmit:
         return {'results': results}
 
     def _row(self, job_id: int, actor: str, concern: str, row: Mapping[str, Any]) -> str:
+        # The check and the writes below are separate transactions; safe enough: one main worker, and each write has an idempotency key.
         with self._registry._transaction() as db:
             current = db.execute('SELECT revision FROM concerns WHERE id = ?', (concern,)).fetchone()
             # A re-delivered job has written under its own keys already: its rows are not judged stale by their own writes.

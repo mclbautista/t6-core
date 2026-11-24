@@ -6,7 +6,7 @@ import urllib.request
 
 from t6.server.app import Request, Response
 from t6.drives.photos import LIMIT as PHOTO_LIMIT
-from t6.server.http import CATALOG_BODY_BYTES, CATALOG_SNAPSHOT_PATH, MAX_BODY_BYTES, PHOTO_ADD_PATH, TAILNET_BODY_LIMITS, make_server
+from t6.server.http import CATALOG_BODY_BYTES, CONCERNS_EXPORT_BODY_BYTES, CONCERNS_EXPORT_PATH, CATALOG_SNAPSHOT_PATH, MAX_BODY_BYTES, PHOTO_ADD_PATH, TAILNET_BODY_LIMITS, make_server
 
 
 class BodyLimitTests(unittest.TestCase):
@@ -48,10 +48,17 @@ class BodyLimitTests(unittest.TestCase):
         encoded = -(-PHOTO_LIMIT // 3) * 4  # base64 of the largest photo
         self.assertGreaterEqual(TAILNET_BODY_LIMITS[PHOTO_ADD_PATH], encoded + 1_000)
         self.assertEqual(TAILNET_BODY_LIMITS[CATALOG_SNAPSHOT_PATH], CATALOG_BODY_BYTES)
-        self.assertEqual(set(TAILNET_BODY_LIMITS), {CATALOG_SNAPSHOT_PATH, PHOTO_ADD_PATH})
+        self.assertEqual(set(TAILNET_BODY_LIMITS), {CATALOG_SNAPSHOT_PATH, PHOTO_ADD_PATH, CONCERNS_EXPORT_PATH})
         base = self.serve(body_limits=TAILNET_BODY_LIMITS)
         self.assertEqual(self.post(base, PHOTO_ADD_PATH, encoded + 500), 200)
         self.assertEqual(self.post(base, '/v1/movement/photo-get', MAX_BODY_BYTES + 1), 413)
+
+    def test_the_tailnet_takes_a_large_concerns_export_only_on_its_path(self) -> None:
+        self.assertEqual(CONCERNS_EXPORT_PATH, '/concerns/export')
+        self.assertEqual(TAILNET_BODY_LIMITS[CONCERNS_EXPORT_PATH], CONCERNS_EXPORT_BODY_BYTES)
+        base = self.serve(body_limits=TAILNET_BODY_LIMITS)
+        self.assertEqual(self.post(base, CONCERNS_EXPORT_PATH, 2_000_000), 200)
+        self.assertEqual(self.post(base, CONCERNS_EXPORT_PATH, CONCERNS_EXPORT_BODY_BYTES + 1), 413)
 
 
 if __name__ == '__main__':
