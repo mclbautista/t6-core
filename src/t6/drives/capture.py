@@ -8,7 +8,7 @@ import os
 import re
 from collections.abc import Mapping
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -37,6 +37,7 @@ def recording_topic(environ: Mapping[str, str] | None = None) -> int | None:
     return int(value) if value else None
 
 
+UNDO_WINDOW_SECONDS = 3600
 _DIRECTION = re.compile(r'(in|out)(?=[\s:\-]|$)[\s:\-]*', re.IGNORECASE)
 _PLACES = ('TABLE', 'CABINET', 'SHELF', 'BOX')
 
@@ -73,6 +74,16 @@ def capture_post(registry: SqliteProjectRegistry, inputs: DriveCaptureInput) -> 
                 return Refused(rule='input', reason='Give a label, serial or Drive')
             if inputs.drive and SqliteDriveStore(registry, within=db).get_drive(inputs.drive) is None:
                 return Refused(rule='drive', reason='Drive not found')
+            if inputs.edit and inputs.drive:
+                return Refused(rule='input', reason='An edit replaces the caption text, not the Drive')
+            if inputs.edit:  # replaces the caption only: any follow-up already given and the one-question allowance stay as they are
+                if data['state'] not in ('pending', 'exception') or data.get('text') == inputs.text:
+                    return Done(result=_result(data))
+                data.update(text=inputs.text, revision=data.get('revision', 0) + 1, state='pending', reason=None, differences=[])
+                db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), inputs.capture))
+                queue.submit('main', 'drive.capture.resolve', f"{inputs.capture}:{data['revision']}",
+                             {'capture': inputs.capture, 'revision': data['revision']}, db=db)
+                return Done(result=_result(data))
             if data['state'] in ('resolved', 'undone', 'ignored') or data['state'] == 'pending' and (
                     data.get('follow_up_drive') == inputs.drive if inputs.drive else not data.get('follow_up_drive') and data.get('follow_up') == inputs.text.strip()):
                 return Done(result=_result(data))
@@ -111,10 +122,17 @@ def capture_post(registry: SqliteProjectRegistry, inputs: DriveCaptureInput) -> 
         return Done(result=_result(data))
 
 
+def _undo_until(data: dict[str, Any]) -> str | None:
+    if data['state'] != 'resolved' or data.get('resolved_at') is None:
+        return None
+    return datetime.fromtimestamp(data['resolved_at'] + UNDO_WINDOW_SECONDS, UTC).isoformat()
+
+
 def _result(data: dict[str, Any]) -> dict[str, Any]:
     return {key: data[key] for key in ('capture', 'state', 'lines', 'differences')} | {'photo_reference': None if data['state'] == 'ignored' else data['capture'], 'message': 'ask for the label' if data['state'] == 'exception' else None,
             'reason': data.get('reason') if data['state'] == 'exception' else None,
-            'may_ask': data['state'] == 'exception' and not data.get('answered')}
+            'may_ask': data['state'] == 'exception' and not data.get('answered'),
+            'undo_until': _undo_until(data)}
 
 
 def list_captures(registry: SqliteProjectRegistry, state: str) -> Outcome:
@@ -230,6 +248,8 @@ class CaptureResolver:
                     _append_event(db, store, drive.id, latest, movement.id)
                 data['lines'].append({'label': drive.label, 'direction': direction, 'person': person})
             data['state'] = 'resolved' if found else 'exception'
+            if found:
+                data['resolved_at'] = self.registry._clock()
             data['reason'] = None if found else 'no_drive_match' if readings else 'unreadable_label'
             db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), capture))
             return _result(data)
@@ -245,6 +265,8 @@ def undo_capture(registry: SqliteProjectRegistry, capture: str) -> Outcome:
         data = json.loads(row[0])
         if data['state'] in ('undone', 'ignored'):
             return Done(result=_result(data))
+        if data['state'] == 'resolved' and data.get('resolved_at') is not None and registry._clock() - data['resolved_at'] > UNDO_WINDOW_SECONDS:
+            return Refused(rule='undo_window', reason='A capture can be undone only within one hour of being resolved')
         store = SqliteDriveStore(registry, within=db)
         active = active_movements(db)
         for original in [m for m in active if m.capture == capture]:

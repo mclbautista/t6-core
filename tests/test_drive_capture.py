@@ -245,6 +245,63 @@ class CaptureTests(DriveReloadFixture):
         self.resolve([{'label': 'Unknown label', 'serial': None, 'confidence': 0.9}])
         self.assertFalse(self.api('capture result', capture=other)['result']['may_ask'])
 
+    def test_edit_of_an_exception_caption_resolves_it_without_using_the_question(self) -> None:
+        reading = [{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}]
+        capture = self.api('capture', **{**self.post, 'text': 'Remote Master 3 Day 8'})['result']['capture']
+        self.resolve(reading)
+        self.assertEqual(self.api('capture result', capture=capture)['result']['reason'], 'missing_direction')
+        edited = self.api('capture', capture=capture, text='OUT Angel', edit=True)['result']
+        self.assertEqual(edited['state'], 'pending')
+        self.assertEqual(self.api('capture', capture=capture, text='OUT Angel', edit=True)['result'], edited)
+        self.assertEqual(len(self.queue.find('drive.capture.resolve')), 2)
+        self.resolve(reading)
+        result = self.api('capture result', capture=capture)['result']
+        self.assertEqual((result['state'], result['lines'][0]['person']), ('resolved', 'Angel'))
+        other = self.api('capture', **{**self.post, 'message_id': 2, 'text': 'Remote Master 3 Day 8'})['result']['capture']
+        self.resolve([])
+        self.api('capture', capture=other, text='Remote Master 3 Day 8 again', edit=True)
+        self.resolve([])
+        self.assertTrue(self.api('capture result', capture=other)['result']['may_ask'])
+
+    def test_edit_of_a_resolved_undone_or_ignored_capture_changes_nothing_and_needs_the_channel(self) -> None:
+        capture = self.api('capture', **self.post)['result']['capture']
+        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
+        resolved = self.api('capture result', capture=capture)['result']
+        self.assertEqual(self.api('capture', capture=capture, text='IN SHELF', edit=True)['result'], resolved)
+        self.api('capture undo', capture=capture)
+        undone = self.api('capture result', capture=capture)['result']
+        self.assertEqual(self.api('capture', capture=capture, text='IN SHELF', edit=True)['result'], undone)
+        self.assertEqual(len(self.queue.find('drive.capture.resolve')), 1)
+        with patch.dict(os.environ, {'T6_DRIVE_RECORDING_CHAT_ID': '-900002'}):
+            refused = self.api('capture', capture=capture, text='IN SHELF', edit=True)
+        self.assertEqual(refused['rule'], 'recording_channel')
+
+    def test_undo_is_refused_an_hour_after_resolution_and_the_result_says_when(self) -> None:
+        now = [1_800_000_000.0]
+        self.registry._clock = lambda: now[0]
+        capture = self.api('capture', **self.post)['result']['capture']
+        self.assertIsNone(self.api('capture result', capture=capture)['result']['undo_until'])
+        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
+        result = self.api('capture result', capture=capture)['result']
+        self.assertEqual(result['undo_until'], '2027-01-15T09:00:00+00:00')
+        now[0] += 3601
+        refused = self.api('capture undo', capture=capture)
+        self.assertEqual((refused['outcome'], refused['rule']), ('refused', 'undo_window'), refused)
+        self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'resolved')
+        now[0] = 1_800_003_600.0
+        undone = self.api('capture undo', capture=capture)['result']
+        self.assertEqual((undone['state'], undone['undo_until']), ('undone', None))
+
+    def test_undo_of_a_capture_resolved_before_the_window_existed_is_allowed(self) -> None:
+        capture = self.api('capture', **self.post)['result']['capture']
+        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
+        with self.registry._transaction() as db:
+            data = json.loads(db.execute('SELECT data FROM drive_captures WHERE id=?', (capture,)).fetchone()[0])
+            data.pop('resolved_at')
+            db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), capture))
+        self.assertIsNone(self.api('capture result', capture=capture)['result']['undo_until'])
+        self.assertEqual(self.api('capture undo', capture=capture)['result']['state'], 'undone')
+
     def test_unreadable_photo_is_exception_and_follow_up_resolves_same_capture(self) -> None:
         capture = self.api('capture', **self.post)['result']['capture']
         self.resolve([])

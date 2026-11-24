@@ -2231,6 +2231,7 @@ class DriveCaptureInput(BaseModel):
     media_type: Literal['image/png', 'image/jpeg', 'image/webp'] = 'image/png'
     capture: str | None = None
     drive: str | None = None  # with `capture`: a Drive ID the custodian picked for an unresolved capture; needs the `drives` permission
+    edit: bool = False  # with `capture` and `text`: the text replaces the caption and a pending or exception capture is read again; not the follow-up answer
 
 
 class DriveCaptureReadInput(BaseModel):
@@ -2252,6 +2253,7 @@ class DriveCaptureOutput(BaseModel):
     message: str | None = None
     reason: Literal['missing_direction', 'unreadable_label', 'no_drive_match'] | None = None  # why an exception needs help
     may_ask: bool = False  # true on the first exception; false once a follow-up answer has been tried
+    undo_until: str | None = None  # ISO datetime the undo window closes (one hour after resolution); null unless resolved, or when resolved before the window was recorded
     practice: bool = True
 
 

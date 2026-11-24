@@ -7,6 +7,8 @@ All notable changes to this project are documented here, following [Keep a Chang
 ### Added
 
 - `drive capture` reads IN and OUT in any case, followed by a space, colon or dash ("IN: SHELF", "in - table", "OUT: Marco", "Out-Marco"). A post that names a Drive but has no IN or OUT is an exception with reason `missing_direction`. A follow-up answer that starts with IN or OUT supplies or replaces the direction, person and place; other follow-up text is a label or serial. The capture result gains `reason` (`missing_direction`, `unreadable_label`, `no_drive_match`) and `may_ask`, true on the first exception and false once a follow-up answer has been tried (#660).
+- `drive capture` with an existing `capture`, new `text` and `edit: true` replaces the caption of a pending or exception capture and reads it again as a new revision, so a fixed caption resolves it. An edit is not the follow-up answer: `may_ask` is unchanged and any follow-up already given is kept. Edits of resolved, undone or ignored captures change nothing and return the current result (#662).
+- `drive capture undo` is refused with rule `undo_window` more than one hour after the capture was resolved. The capture result gains `undo_until`, the ISO datetime the window closes, for resolved captures (null otherwise, and null with no limit for captures resolved before the time was recorded) (#662).
 
 ## [0.6.26] - 2026-11-24
 
