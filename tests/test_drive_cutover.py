@@ -176,10 +176,7 @@ class PracticeTests(DriveReloadFixture):
         credential.write_text(json.dumps({'client_email': key.email, 'private_key': key.private_key,
                                           'token_uri': key.token_uri}))
         http = SheetsHttp()
-        http.payload = {'sheets': [{'properties': {'title': 'SYNTHETIC PROJECT'}, 'data': [{'rowData': [
-            {'values': [{'effectiveValue': {'stringValue': column}} for column in HEADER]},
-            {'values': [{'effectiveValue': {'stringValue': 'Synthetic nightly'}},
-                        {'effectiveValue': {'stringValue': 'SAMPLE-NIGHTLY'}}]}]}]}]}
+        http.tab_rows = {'SYNTHETIC PROJECT': [list(HEADER), ['Synthetic nightly', 'SAMPLE-NIGHTLY']]}
         queue = InternalJobQueue(self.registry)
         job = queue.submit('main', 'drive.reload', 'synthetic-night')
         env = {'T6_DRIVE_PROJECT_SPREADSHEET_ID': 'synthetic-projects',

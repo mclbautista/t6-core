@@ -23,7 +23,7 @@ import json
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -720,6 +720,11 @@ def _date(value: Any) -> date | None:
         return value.date()
     if isinstance(value, date):
         return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        # A Google Sheets serial date (days since 1899-12-30): plausible years 1954 to 2118.
+        if 20000 <= value < 80000:
+            return date(1899, 12, 30) + timedelta(days=int(value))
+        raise ValueError(f"cannot read the date {value!r}")
     month, *rest = re.sub(r"[.,]", " ", str(value)).split() or [""]
     try:
         return datetime.strptime(" ".join([month[:3], *rest]), "%b %d %Y").date()

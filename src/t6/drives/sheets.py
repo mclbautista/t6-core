@@ -39,7 +39,17 @@ class WorkbookSheetSource:
 
 
 class GoogleSheetsSource:
-    """A cached Sheets snapshot using effective values, including typed dates."""
+    """A cached Sheets snapshot read with `values.batchGet`, never the full grid.
+
+    The per-project sheet has hundreds of tabs and millions of empty grid cells, so a
+    grid read (`includeGridData`) returns a response too large for the host. The values
+    API returns only the cells that hold data. Dates arrive as serial numbers
+    (`dateTimeRenderOption=SERIAL_NUMBER`); the importer reads a serial in a date column.
+    """
+
+    TABS_PER_REQUEST = 15
+    MAX_CELLS = 3_000_000  # a guard: a bigger sheet fails the read instead of stalling the host
+    TIME_BUDGET_SECONDS = 180.0
 
     def __init__(self, spreadsheet: str, account: ServiceAccount, http: Http) -> None:
         self.workbook = spreadsheet
@@ -52,7 +62,6 @@ class GoogleSheetsSource:
     def _rows(self) -> dict[str, tuple[tuple[Any, ...], ...]]:
         import json
         import time
-        from datetime import datetime, timedelta
         from urllib.parse import quote, urlencode
         from t6.google.http import GRANT
         form = urlencode({'grant_type': GRANT, 'assertion': self._account.assertion(
@@ -62,31 +71,43 @@ class GoogleSheetsSource:
         answer = json.loads(raw)
         if status != 200 or not answer.get('access_token'):
             raise ValueError(f'Google Sheets sign-in failed ({status})')
-        status, raw = self._http.send('GET', 'https://sheets.googleapis.com/v4/spreadsheets/' +
-                                     quote(self.workbook, safe='') + '?includeGridData=true',
-                                     {'Authorization': 'Bearer ' + answer['access_token']}, b'')
-        answer = json.loads(raw)
-        if status != 200 or not isinstance(answer.get('sheets'), list):
-            raise ValueError(f'Google Sheets read failed ({status})')
-        tabs = {}
-        for sheet in answer['sheets']:
-            rows: list[tuple[Any, ...]] = []
-            for grid in sheet.get('data', []):
-                for row in grid.get('rowData', []):
-                    values = []
-                    for cell in row.get('values', []):
-                        effective = cell.get('effectiveValue', {})
-                        if 'errorValue' in effective:
-                            value: Any = cell.get('formattedValue', '#ERROR!')
-                        else:
-                            value = next(iter(effective.values()), None)
-                        kind = cell.get('effectiveFormat', {}).get('numberFormat', {}).get('type')
-                        if isinstance(value, (int, float)) and kind in ('DATE', 'DATE_TIME', 'TIME'):
-                            value = datetime(1899, 12, 30) + timedelta(days=value)
-                        values.append(value)
-                    rows.append(tuple(values))
-            width = max((len(row) for row in rows), default=0)
-            tabs[sheet['properties']['title']] = tuple(row + (None,) * (width - len(row)) for row in rows)
+        headers = {'Authorization': 'Bearer ' + answer['access_token']}
+        base = 'https://sheets.googleapis.com/v4/spreadsheets/' + quote(self.workbook, safe='')
+
+        def get(url: str) -> dict[str, Any]:
+            status, raw = self._http.send('GET', url, headers, b'')
+            try:
+                body = json.loads(raw)
+            except ValueError:
+                body = {}
+            if status != 200 or not isinstance(body, dict):
+                raise ValueError(f'Google Sheets read failed ({status})')
+            return body
+
+        listing = get(base + '?fields=sheets.properties.title')
+        if not isinstance(listing.get('sheets'), list):
+            raise ValueError('Google Sheets read failed (no tabs)')
+        titles = [sheet['properties']['title'] for sheet in listing['sheets']]
+        tabs: dict[str, tuple[tuple[Any, ...], ...]] = {}
+        deadline = time.monotonic() + self.TIME_BUDGET_SECONDS
+        cells = 0
+        for start in range(0, len(titles), self.TABS_PER_REQUEST):
+            if time.monotonic() > deadline:
+                raise ValueError('Google Sheets read failed (time budget used)')
+            chunk = titles[start:start + self.TABS_PER_REQUEST]
+            ranges = '&'.join('ranges=' + quote("'" + title.replace("'", "''") + "'", safe='') for title in chunk)
+            batch = get(base + '/values:batchGet?majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE'
+                        '&dateTimeRenderOption=SERIAL_NUMBER&' + ranges)
+            found = batch.get('valueRanges')
+            if not isinstance(found, list) or len(found) != len(chunk):
+                raise ValueError('Google Sheets read failed (unexpected answer)')
+            for title, block in zip(chunk, found):
+                rows = [tuple(None if value == '' else value for value in row) for row in block.get('values', [])]
+                width = max((len(row) for row in rows), default=0)
+                cells += sum(len(row) for row in rows)
+                if cells > self.MAX_CELLS:
+                    raise ValueError('Google Sheets read failed (too many cells)')
+                tabs[title] = tuple(row + (None,) * (width - len(row)) for row in rows)
         return tabs
 
 
