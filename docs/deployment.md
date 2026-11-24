@@ -401,3 +401,34 @@ for staff; the adapter has no write scope to change their sharing.
 Until the release that implements ADR 0010 (planned 0.6.27), the deployed 0.6.26 still
 has the old `drive cutover` verb and ignores `T6_DRIVE_LIVE`. Do not run `drive cutover`;
 it is being removed.
+
+## CRM Sheet
+
+The CRM keep-warm feature (spec #705) uses one Google Sheet. It is off until
+`T6_CRM_SHEET_ID` (the Sheet ID) is set on the main worker; with the setting
+absent nothing is read or written. The worker also needs `T6_DATABASE`,
+`T6_NOTION_TOKEN` and `GOOGLE_APPLICATION_CREDENTIALS` (the same service account
+key file as the Drive sheets).
+
+This Sheet is the one place t6 writes to Google Sheets, so share it with the
+service account as **Editor** (the Drive source spreadsheets stay Viewer).
+The Sheet writer signs in with the service account only, with the
+`https://www.googleapis.com/auth/spreadsheets` scope; the Drive reads keep
+`spreadsheets.readonly`. t6 writes values only. Cyril sets up these tabs once
+by hand (netops #185):
+
+- `Log`: people type here. Its Project column has a data-validation dropdown
+  from the list in `Projects!A:A`.
+- `Projects`: hidden. Column A holds one line per open Lead and active Project,
+  `Name · t6p_...`, sorted by name, from row 1 with no header. t6 rewrites the
+  whole column; do not type in it.
+- `History`: written by t6 (#713).
+
+The `Projects` list holds the registered Projects whose Notion Status is in the
+incoming group (Leads, Negotiations, Proposal Made) or is In-Progress or Airing.
+Standby, Archiving, Archived, Lost and unregistered pages are left out. The
+main worker queues one `crm.sheet_sync` job after a `registry.sync` (registration)
+or after a Notion edit of a Project's title or Status. Changes within five
+minutes share one job; the job rebuilds the column from Notion, writing the new
+lines before clearing the rows below, so a failed write leaves the old list and
+is retried (see `queue failed`).
