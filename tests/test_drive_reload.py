@@ -290,6 +290,15 @@ class DriveReloadTests(DriveReloadFixture):
                           'SYN-C': (fuzzy, True), 'SYN-UNBOUND': (unbound, True)})
         self.assertEqual(self.reload()['unmapped_projects'], sorted(names))
 
+    def test_propose_skips_blank_names_and_writes_no_file_unless_asked(self) -> None:
+        self.workbook({'SYNTHETIC SHOW': [HEADER, ['Synthetic a', 'SAMPLE-A']], ' - ': [HEADER, ['Synthetic b', 'SAMPLE-B']]})
+        sources = self.folder / 'sources.json'
+        sources.write_text(json.dumps({'projects': 'synthetic-projects'}))
+        result = self.call('mapping propose', workbook=str(self.path), data_sources=str(sources))
+        self.assertIsInstance(result, Done)
+        self.assertEqual([e['name'] for e in result.result['mapping']], ['SYNTHETIC SHOW'])
+        self.assertEqual(list(self.folder.glob('*mapping*')), [])
+
     def test_mapping_commands_are_available_as_nested_operator_commands(self) -> None:
         import argparse
         from t6.verbs import add_parsers

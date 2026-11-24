@@ -2157,14 +2157,14 @@ class DrivePracticeOutput(BaseModel):
 
 
 class DriveMappingProposeInput(BaseModel):
-    workbook: str
+    workbook: str | None = None  # a workbook path on the API host; none reads the two configured Google spreadsheets
     tracker: str | None = None
-    data_sources: Path
-    file: str
+    data_sources: Path | None = None  # none: the API host's T6_READ_DATA_SOURCES
+    file: Path | None = None  # an optional output file; the result always carries the entries
 
 
 class DriveMappingApplyInput(BaseModel):
-    file: str
+    file: Path  # uploaded by the client, so a local file works through the API
     idempotency_key: str | None = None
     confirm: str | None = None
 
@@ -2183,25 +2183,32 @@ class DriveMappingOutput(DrivePracticeOutput):
 def drive_mapping_propose(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
     from t6.cli import TOKEN_VARIABLE, _read_data_sources
     from t6.drives.mapping import propose_mapping
-    from t6.drives.sheets import WorkbookSheetSource
+    from t6.drives.sheets import SheetSource, WorkbookSheetSource, configured_sources
     from t6.notion.reads import ProjectReader
     from t6.registry import ProjectRefs
     assert isinstance(inputs, DriveMappingProposeInput)
     token = os.environ.get(TOKEN_VARIABLE)
     if _notion_source.get() is None and not token:
         return Refused(rule='config', reason=f'Set {TOKEN_VARIABLE}')
+    data_sources = inputs.data_sources or (Path(os.environ['T6_READ_DATA_SOURCES']) if os.environ.get('T6_READ_DATA_SOURCES') else None)
+    if data_sources is None:
+        return Refused(rule='config', reason='Give data_sources or set T6_READ_DATA_SOURCES')
     try:
         refs = ProjectRefs(_people().registry)
         projects = tuple(refs.identified(project) for project in ProjectReader(
-            _verb_notion_source(open_notion, token or ''), _read_data_sources(inputs.data_sources)['projects']).list())
+            _verb_notion_source(open_notion, token or ''), _read_data_sources(data_sources)['projects']).list())
         registered = {project.t6_id: project for project in projects if project.t6_id}
         for project in _people().registry.list_projects():
             if project.id not in registered:
                 registered[project.id] = Project(page_id=project.id, name='', t6_id=project.id,
                                                   project_code=project.code, rotation=project.rotation.value)
-        mapping = propose_mapping(WorkbookSheetSource(inputs.workbook),
-                                  WorkbookSheetSource(inputs.tracker) if inputs.tracker else None,
-                                  tuple(registered.values()), inputs.file)
+        source: SheetSource
+        tracker: SheetSource | None
+        if inputs.workbook:
+            source, tracker = WorkbookSheetSource(inputs.workbook), WorkbookSheetSource(inputs.tracker) if inputs.tracker else None
+        else:
+            source, tracker = configured_sources(os.environ)
+        mapping = propose_mapping(source, tracker, tuple(registered.values()), inputs.file)
         return Done(result={'mapping': mapping})
     except (OSError, ValueError) as error:
         return Refused(rule='mapping', reason=str(error))
@@ -3419,12 +3426,13 @@ def add_parsers(commands: Any) -> None:
             if 'drive mapping' not in nouns:
                 nouns['drive mapping'] = parser.add_parser('mapping', help='Sheet Project mappings').add_subparsers(dest='drive_mapping_verb', required=True)
             parser = nouns['drive mapping'].add_parser(entry.verb.split()[1], help=entry.description)
-            parser.add_argument('--file', required=True)
             if entry.handler is drive_mapping_propose:
-                parser.add_argument('--workbook', required=True)
+                parser.add_argument('--file', type=Path)
+                parser.add_argument('--workbook')
                 parser.add_argument('--tracker')
-                parser.add_argument('--data-sources', type=Path, required=True)
+                parser.add_argument('--data-sources', type=Path)
             else:
+                parser.add_argument('--file', type=Path, required=True)
                 parser.add_argument('--idempotency-key')
                 parser.add_argument('--confirm')
             parser.set_defaults(registered_verb=entry)

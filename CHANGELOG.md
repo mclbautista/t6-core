@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Fixed
+
+- `drive mapping apply` now works through the API and the `t6` command line: `--file` is a local file that the client uploads, and the preview token no longer depends on the temporary path of the upload, so a confirm matches its preview. `drive mapping propose` takes no output file over the API, reads the two configured Google spreadsheets when no workbook is given, and takes the data sources from `T6_READ_DATA_SOURCES` when none is uploaded. A sheet name that cleans to nothing is skipped by `propose`, and `apply` names it in its refusal (#657).
+
 ## [0.6.26] - 2026-11-24
 
 Fixes the Google Sheets read for `drive reload`, the nightly reload and `drive mapping propose` (#654, PR #655). 0.6.25 read the whole sheet grid, which stalled the host on the per-project sheet (hundreds of tabs, millions of empty cells). The read now takes only the cells that hold data and has size and time limits. No schema change. Nothing is deployed by this release.
