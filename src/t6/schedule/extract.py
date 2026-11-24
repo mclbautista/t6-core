@@ -22,7 +22,7 @@ from t6.schedule.coverage import group_status, read_coverage
 from t6.schedule.dates import DayCell, aligns, block_years, fitting_start_years, weekday_name
 from t6.schedule.grid import Grid, a1, merge_range
 from t6.schedule.layout import DAY_COLUMNS, MonthBlock, find_month_blocks
-from t6.schedule.text import clean_text, is_availability
+from t6.schedule.text import clean_text, is_availability, is_break, tentative_marker
 
 
 Method = Literal["supplied", "inferred_weekday_alignment"]
@@ -57,6 +57,7 @@ def extract_schedule(request: ScheduleRequest) -> ScheduleSnapshot | Unsupported
             candidates.extend(read.candidates)
             non_tasks.extend(read.non_tasks)
             exceptions.extend(read.exceptions)
+        non_tasks.extend(_month_notes(grid, block, key))
         groups.append(
             Group(
                 group_key=key,
@@ -166,6 +167,9 @@ def _read_entries(
                 if is_availability(text):
                     read.non_tasks.append(NonTask(kind="availability", text=text, group_key=key, anchor=anchor))
                     continue
+                if is_break(text):
+                    read.non_tasks.append(NonTask(kind="break", text=text, group_key=key, anchor=anchor))
+                    continue
                 iso = f"{year:04d}-{block.month:02d}-{day:02d}"
                 number_col = col // 2 * 2
                 read.candidates.append(
@@ -175,6 +179,7 @@ def _read_entries(
                         title=text,
                         start=iso,
                         due=iso,
+                        tentative=tentative_marker(text),
                         provenance=Provenance(
                             tab_id=request.source_scope.tab_id,
                             tab_title=request.source_scope.tab_title,
@@ -194,3 +199,16 @@ def _read_entries(
                     )
                 )
     return read
+
+
+def _month_notes(grid: Grid, block: MonthBlock, key: str) -> list[NonTask]:
+    """Column O text below the NOTES label, down to the next month block. Kept as text, never read as tasks."""
+    first = grid.merge_at(block.header_row, 0)
+    top = first.end_row if first else block.header_row + 1
+    last = block.bands[-1].end_row if block.bands else top
+    notes = []
+    for row in range(top, last):
+        text = clean_text(grid.value(row, DAY_COLUMNS))
+        if text and not grid.covered(row, DAY_COLUMNS):
+            notes.append(NonTask(kind="note", text=text, group_key=key, anchor=a1(row, DAY_COLUMNS)))
+    return notes

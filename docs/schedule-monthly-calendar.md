@@ -47,7 +47,8 @@ LLM call, writes nothing and uses no dataframe. Reading the sheet is another tic
   anchor and merge range, the raw fill, the year evidence and the date evidence (month header, day-number cell, weekday).
   `candidate_key` (`c1`, `c2`, ...) is local to the snapshot and says nothing about identity across revisions. Repeated
   titles stay separate candidates.
-- "NA:" cells are listed in `non_tasks` as `availability` and are never candidates. Column O is not read.
+- "NA:" cells are listed in `non_tasks` as `availability` and are never candidates. A cell that is only "BREAK" (optional colon) is a `break` non-task. Column O text below "NOTES" is a `note` non-task per month block (#720).
+- A tentative marker ("(TBC)", "[Tentative]" anywhere, "Tentative:" at the start, any case) is kept as written in `tentative`; the title keeps its text. Any other text, including instruction-like text, is only text: a title, or a note.
 - **Year.** The caller may pass `year`, the year of the first month block; the year rolls over when a later month number is
   lower. Without it, the extractor tries years 2020 to 2035 and uses one only when exactly one year puts every day number on
   its column's weekday. With a supplied year, a block whose weekdays do not fit is held (`weekday_mismatch`).
