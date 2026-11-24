@@ -14,11 +14,14 @@ from uuid import uuid4
 from t6.domain.events import JsonValue
 from t6.drives import Ref
 from t6.drives.caption import parse_caption
+from t6.drives.inbox import _move
 from t6.drives.movements import active_movements, append, custody_event, latest_custody, _append_event
 from t6.drives.debug import DebugNotifier
 from t6.drives.sqlite import SqliteDriveStore
+from t6.drives.shortlist import guesses
 from t6.llm.drive_transmittal import judge_transmittal
 from t6.llm.transport import Provider
+from t6.notion.source import NotionSource
 from t6.worker import WorkerJob
 
 from t6.drives.recording import recording_input
@@ -35,6 +38,15 @@ def recording_chat(environ: Mapping[str, str] | None = None) -> int | None:
 def recording_topic(environ: Mapping[str, str] | None = None) -> int | None:
     value = (os.environ if environ is None else environ).get('T6_DRIVE_RECORDING_TOPIC_ID')
     return int(value) if value else None
+
+
+def _notion_source(environ: Mapping[str, str]) -> NotionSource | None:
+    from t6.notion import MirrorReader, NotionClient, mirror_db_path
+    token = environ.get('T6_NOTION_TOKEN')
+    if not token:
+        return None
+    path = mirror_db_path(environ)
+    return NotionSource(lambda: NotionClient(token), mirror=MirrorReader(path) if path else None)
 
 
 UNDO_WINDOW_SECONDS = 3600
@@ -59,6 +71,7 @@ def capture_post(registry: SqliteProjectRegistry, inputs: DriveCaptureInput) -> 
             if inputs.edit:  # replaces the caption only: any follow-up already given and the one-question allowance stay as they are
                 if not (data['state'] in ('pending', 'exception') or data['state'] == 'resolved' and parse_caption(data['text']).problem) or data.get('text') == inputs.text:
                     return Done(result=_result(data))
+                data.pop('grade', None)
                 data.update(text=inputs.text, revision=data.get('revision', 0) + 1, state='pending', reason=None, differences=[], edited=True, items=[])
                 db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), inputs.capture))
                 queue.submit('main', 'drive.capture.resolve', f"{inputs.capture}:{data['revision']}",
@@ -113,7 +126,7 @@ def _result(data: dict[str, Any]) -> dict[str, Any]:
     return {key: data[key] for key in ('capture', 'state', 'lines', 'differences')} | {
             'items': data.get('items') or [{'text': text, 'state': 'open'} for text in caption.items] if caption else [], 'counts': caption.counts if caption else [],
             'recipient': caption.recipient if caption else None, 'tags': caption.tags if caption else [],
-            'grade': caption.grade if caption else None, 'problem': caption.problem if caption else None,'photo_reference': None if data['state'] == 'ignored' else data['capture'], 'message': 'ask for the label' if data['state'] == 'exception' else None,
+            'grade': data.get('grade', caption.grade) if caption else None, 'problem': caption.problem if caption else None,'photo_reference': None if data['state'] == 'ignored' else data['capture'], 'message': 'ask for the label' if data['state'] == 'exception' else None,
             'reason': data.get('reason') if data['state'] == 'exception' else None,
             'may_ask': data['state'] == 'exception' and not data.get('answered') and data.get('reason') != 'no_photo',
             'undo_until': _undo_until(data)}
@@ -150,10 +163,11 @@ def capture_result(registry: SqliteProjectRegistry, capture: str) -> Outcome:
 
 class CaptureResolver:
     def __init__(self, registry: SqliteProjectRegistry, provider: Provider, *, decisions: Provider | None = None, environ: Mapping[str, str] | None = None,
-                 debug: DebugNotifier | None = None) -> None:
+                 debug: DebugNotifier | None = None, source: NotionSource | None = None) -> None:
         self.registry, self.provider, self.environ = registry, provider, environ
         self.decisions = decisions
         self.debug = debug
+        self.source = source if source is not None else _notion_source(os.environ if environ is None else environ)
 
     def refresh_debug(self, job: WorkerJob) -> JsonValue:
         """`drive.capture.debug`: re-render a Capture's debug message after a change made through the API (undo)."""
@@ -210,8 +224,18 @@ class CaptureResolver:
                 data.pop('follow_up', None)
                 db.execute('UPDATE drive_captures SET data=?, photo=? WHERE id=?', (json.dumps(data), b'', capture))
                 return _result(data)
+            caption = parse_caption(data['text'])
+            store = SqliteDriveStore(self.registry, within=db)
             data.update(state='resolved', resolved_at=self.registry._clock(), reason=None,
-                        items=[{'text': text, 'state': 'open'} for text in parse_caption(data['text']).items])  # every Item waits in the Inbox
+                        items=[{'text': text, 'state': 'open',
+                                'guesses': guesses(db, store, text, caption.direction, caption.tags, self.source, data['sender_telegram_id']) if admitted.photo and not caption.problem and caption.direction else []}
+                               for text in caption.items])
+            for item in data['items']:
+                if item['guesses']:
+                    drive = store.get_drive(item['guesses'][0]['drive'])
+                    assert drive is not None
+                    item.update(drive=drive.id, movement=_move(db, store, data, drive, self.source, to_review=True))
+            data['grade'] = 'thin' if not caption.problem and any(not item['guesses'] for item in data['items']) else caption.grade
             db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), capture))
             return _result(data)
 
@@ -230,7 +254,7 @@ def undo_capture(registry: SqliteProjectRegistry, capture: str) -> Outcome:
             return Refused(rule='undo_window', reason='A capture can be undone only within one hour of being resolved')
         store = SqliteDriveStore(registry, within=db)
         active = active_movements(db)
-        for original in [m for m in active if m.capture == capture]:
+        for original in [m for m in active if m.capture == capture and m.drive is not None]:
             assert original.drive is not None
             previous = latest_custody(db, original.drive, exclude_capture=capture)
             reversal = replace(original, id='t6m_' + uuid4().hex, corrects=original.id,

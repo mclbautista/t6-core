@@ -2387,7 +2387,14 @@ class DriveCaptureLine(BaseModel):
     person: str | None
 
 
+class DriveGuess(BaseModel):
+    drive: str
+    confidence: float
+    reason: str
+
+
 class DriveCaptureItem(BaseModel):
+    guesses: list[DriveGuess] = Field(default_factory=list)
     text: str
     state: Literal['open', 'approved', 'not_a_drive', 'closed']  # open waits in the Inbox; closed is an open Item whose Capture was undone
 
@@ -2432,12 +2439,6 @@ class DriveInboxInput(BaseModel):
     pass
 
 
-class DriveGuess(BaseModel):
-    drive: str
-    confidence: float
-    reason: str
-
-
 class DriveInboxItem(BaseModel):
     capture: str
     item: int  # the Item's place in the Capture, counted from 0; with `capture` it names the Item for `drive approve`
@@ -2446,7 +2447,7 @@ class DriveInboxItem(BaseModel):
     direction: Literal['IN', 'OUT']
     recipient: str | None
     photo_reference: str | None  # the Capture ID when it kept a photo; read the bytes with `drive capture photo`
-    guesses: list[DriveGuess]  # ranked, best first; none until guessing exists
+    guesses: list[DriveGuess]  # ranked, best first
     chat_id: int  # with the topic and message, the link to the post
     topic_id: int | None
     message_id: int
@@ -3020,6 +3021,7 @@ class DriveRef(BaseModel):
 
 
 class MovementItem(BaseModel):
+    to_review: bool = False
     recorder_telegram_id: int | None = None
     shipment_id: str | None = None
     posted_at: str | None = None

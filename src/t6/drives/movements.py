@@ -38,6 +38,7 @@ class Movement:
     recorder_telegram_id: int | None = None
     shipment_id: str | None = None
     posted_at: str | None = None
+    to_review: bool = False
     coordinators: tuple[str, ...] = ()  # the Project's T6 Post Coordinator Person IDs when the Movement was made; never refreshed
 
 
@@ -50,6 +51,10 @@ def list_movements(db: sqlite3.Connection, *, project: str | None = None, drive:
                    person: str | None = None, q: str | None = None, start: date | None = None,
                    end: date | None = None, needs_project: bool = False) -> list[dict[str, Any]]:
     rows = [json.loads(row[0]) for row in db.execute('SELECT data FROM drive_movements ORDER BY rowid')]
+    reviewing = {item.get('movement') for (data,) in db.execute("SELECT data FROM drive_captures WHERE json_extract(data, '$.state')='resolved'")
+                 for item in json.loads(data).get('items', []) if item['state'] == 'open'}
+    for row in rows:
+        row['to_review'] = row.get('to_review', False) and row['id'] in reviewing
     return [row for row in rows if (not project or row['project'] and project in row['project'].values())
             and (not needs_project or not row['project'] and row['drive'] and not db.execute(
                 'SELECT 1 FROM drive_movements WHERE corrects=?', (row['id'],)).fetchone() and not db.execute(
