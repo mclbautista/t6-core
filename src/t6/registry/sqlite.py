@@ -441,6 +441,10 @@ _MIGRATIONS = (
     (62, False, """CREATE TABLE project_stage_history (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL REFERENCES projects(id),
     at REAL NOT NULL, actor TEXT NOT NULL, field TEXT NOT NULL, from_value TEXT, to_value TEXT NOT NULL, event TEXT NOT NULL UNIQUE);
     CREATE INDEX project_stage_history_project ON project_stage_history (project_id, id)"""),
+    # One row per CRM-relevant edit of a Lead, with names as they were shown; feeds the CRM Sheet History tab (t6-core #713).
+    (63, False, """CREATE TABLE crm_edit_history (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL REFERENCES projects(id),
+    at REAL NOT NULL, property TEXT NOT NULL, from_value TEXT NOT NULL, to_value TEXT NOT NULL, actor TEXT NOT NULL, event TEXT NOT NULL,
+    UNIQUE (event, property))"""),
 )
 
 
@@ -480,6 +484,10 @@ def _migrate(db: sqlite3.Connection) -> None:
                 for operation in ("UPDATE", "DELETE"):
                     db.execute(f"CREATE TRIGGER drive_shipment_facts_no_{operation.lower()} BEFORE {operation} ON drive_shipment_facts "
                                "BEGIN SELECT RAISE(ABORT, 'drive shipment facts are append-only'); END")
+            if version == 63:
+                for operation in ("UPDATE", "DELETE"):
+                    db.execute(f"CREATE TRIGGER crm_edit_history_no_{operation.lower()} BEFORE {operation} ON crm_edit_history "
+                               "BEGIN SELECT RAISE(ABORT, 'CRM edit history is append-only'); END")
             if version == 62:
                 for operation in ("UPDATE", "DELETE"):
                     db.execute(f"CREATE TRIGGER project_stage_history_no_{operation.lower()} BEFORE {operation} ON project_stage_history "

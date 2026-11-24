@@ -904,6 +904,21 @@ class WebhookApp:
             if not isinstance(registry, SqliteProjectRegistry):
                 return Response(503, {"error": "Notion edits unavailable"})
             return Response(200, NotionEdits(registry).project_status(steps[1], status, editor, event, editor_id, field, option_id))
+        if len(steps) == 2 and steps[0] == 'notion-crm-edit':
+            if not any(g.registry_sync for g in grants):
+                return Response(403, {'error': 'registry sync not allowed'})
+            if request.method != 'POST':
+                return Response(405)
+            notion_body = _json_object(request.body) or {}
+            label, names, editor, event = notion_body.get('property'), notion_body.get('names'), notion_body.get('editor'), notion_body.get('event')
+            if label not in ('Lead Owner', 'Delegate Producer', 'Line Producer', 'Prod Coor/Supe', 'Studio') or not isinstance(editor, str) or not isinstance(event, str) \
+                    or not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+                return Response(400, {'error': 'invalid CRM edit'})
+            from t6.notion_edits import NotionEdits
+            from t6.registry.sqlite import SqliteProjectRegistry
+            if not isinstance(registry, SqliteProjectRegistry):
+                return Response(503, {'error': 'Notion edits unavailable'})
+            return Response(200, NotionEdits(registry).crm_edit(steps[1], label, names, editor, event))
         if len(steps) == 2 and steps[0] == "notion-projection":
             if not any(g.registry_sync for g in grants):
                 return Response(403, {"error": "registry sync not allowed"})

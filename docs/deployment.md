@@ -422,16 +422,27 @@ by hand (netops #185):
 - `Projects`: hidden. Column A holds one line per open Lead and active Project,
   `Name · t6p_...`, sorted by name, from row 1 with no header. t6 rewrites the
   whole column; do not type in it.
-- `History`: written by t6 (#713).
+- `History`: written by t6 (#713). Row 1 is the header `Date`, `Project`, `What
+  changed`, `From`, `To`, `By`; one row per edit below it, newest first. t6
+  rewrites the whole tab (columns A to F); do not type in it.
 
-The `Projects` list holds the registered Projects whose Notion Status is in the
-incoming group (Leads, Negotiations, Proposal Made) or is In-Progress or Airing.
-Standby, Archiving, Archived, Lost and unregistered pages are left out. The
+The `Projects` list holds the open Leads and the active Projects. A Project with
+a CRM stage in the stage history (#709) is an open Lead unless that stage is
+Lost. Any other registered Project is listed when its Notion Status is in the
+incoming group (Leads, Negotiations, Proposal Made, Onboarding) or is In-Progress
+or Airing. Standby, Archiving, Archived, Lost and unregistered pages are left out. The
 main worker queues one `crm.sheet_sync` job after a `registry.sync` (registration)
 or after a Notion edit of a Project's title or Status. Changes within five
 minutes share one job; the job rebuilds the column from Notion, writing the new
 lines before clearing the rows below, so a failed write leaves the old list and
 is retried (see `queue failed`).
+
+The `History` tab is kept the same way by `crm.history_sync`, queued when a
+Notion edit touches Status, Lead Owner, Delegate Producer, Line Producer,
+Prod Coor/Supe or Studio. Each edit of a Lead is stored once (by Notion event and
+property) in `crm_edit_history`; Contact and Studio names are read from Notion at
+the time of the edit, and By is the Notion editor's name. A Project that is not
+in a CRM stage is ignored. From is blank for a relation t6 has not seen before.
 
 The API also reads the Sheet (`spreadsheets.readonly` scope) when
 `T6_CRM_SHEET_ID` is set. `project crm-links PROJECT` (operator) reads the `Log`
