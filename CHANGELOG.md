@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Changed
+
+- The Approval for `project link-chat` and `project unlink-chat` (the Telegram card "Approval: chat link") now names the Project by its Notion name and code before the Project id, for example `Big Show [ABC123] t6p_...: chat -100, topic 12 (Edit)`. The ids stay in the target. The name is read from the Project's Notion page when the preview is made; if it cannot be read, the code (and, without one, only the id) is shown as before. The topic name was already shown when known.
+
 ## [0.6.27] - 2026-11-24
 
 The Drive web pages release (spec #665). Going live is now the setting `T6_DRIVE_LIVE=true`, read on start (ADR 0010), and the `drive cutover` verb is removed. Adds movement photos, `drive recycle`, the Contacts picker reads and writes, and the latest movement per Project. It also includes the quiet TRANSMITTAL capture work (spec #659) and fixes for `drive mapping apply` and title rows in the tracker. Schema: migration 60 adds `drive_movement_photos`. The API and the main worker need `T6_DRIVE_PHOTO_DIR` (the `t6_photos` volume, netops #176). Do not set `T6_DRIVE_LIVE` before the cutover on 2026-12-03. Nothing is deployed by this release.
