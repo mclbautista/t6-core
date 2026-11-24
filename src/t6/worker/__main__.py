@@ -953,7 +953,7 @@ def main(
                 queue_handlers = {**queue_handlers, 'drive.reminder': reminder.handle}
             if environ.get('T6_CRM_SHEET_ID') and environ.get('T6_CRM_DEFAULT_OWNER_PERSON_ID') and environ.get('T6_NOTION_TOKEN') \
                     and environ.get('T6_NOTION_PROJECTS_DATA_SOURCE'):
-                from t6.crm.config import crm_source
+                from t6.crm.config import crm_roles, crm_source
                 from t6.crm.reminder import KIND as CRM_REMINDER, CrmReminder, read_leads
                 from t6.notion import NotionClient, NotionError, NotionSource
                 from t6.notion.reads import ProjectReader
@@ -963,6 +963,7 @@ def main(
 
                 try:
                     crm_sheet = crm_source(environ)
+                    crm_role_holders = crm_roles(environ)
                 except (OSError, ValueError) as error:
                     print(f"t6.worker: {error}", file=sys.stderr)
                     return 2
@@ -986,7 +987,8 @@ def main(
                 crm_reminder = CrmReminder(crm_people, InternalJobQueue(crm_registry),
                                            GatewayClient(HttpTransport(environ['T6_GATEWAY_URL']), environ['T6_GATEWAY_SECRET']),
                                            crm_sheet, environ['T6_CRM_DEFAULT_OWNER_PERSON_ID'],
-                                           lambda: read_leads(crm_registry, crm_projects.list()), crm_name)
+                                           lambda: read_leads(crm_registry, crm_projects.list()), crm_name,
+                                           roles=crm_role_holders)
                 crm_reminder.schedule()
                 queue_handlers = {**queue_handlers, CRM_REMINDER: crm_reminder.handle}
             def linked_tick() -> None:

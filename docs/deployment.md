@@ -465,3 +465,13 @@ change, restarts the count; a Lead with neither counts from when it was
 registered. A Lead Owner who is not a Person with a Telegram ID is treated as
 blank. Nobody with nothing due gets a message. The Sheet is read at send time,
 so a failed read fails the job and is retried (see `queue failed`).
+
+A `Log` row of Kind `quote` or `billing` with a Remind on date is a reminder from
+that date (Manila) until Done is ticked, whatever the Project's stage, and joins
+the same DM under "Reminders". Quotes go to the Post Producers
+(`T6_CRM_POST_PRODUCER_TELEGRAM_IDS`); billing goes to them, the Accountants
+(`T6_CRM_ACCOUNTANT_TELEGRAM_IDS`) and the Finance Heads
+(`T6_CRM_FINANCE_HEAD_TELEGRAM_IDS`). Each is a comma list of Telegram user IDs,
+not Persons; a holder who is also an active Person gets one DM with everything.
+An unset role gets no reminders, and a non-numeric ID stops the worker at
+startup.
