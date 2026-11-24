@@ -340,6 +340,16 @@ class VerbAPI:
             outcome = refusal or self._typed_read(entry.noun, entry.verb, inputs, seen=seen)
             if isinstance(outcome, Done) and entry.noun in {'project', 'concern', 'jo', 'person', 'camera', 'deliverable', 'meeting-notes', 'external-link', 'studio'} and not self._reads_unmasked(actor):
                 outcome = self._masked_outcome(outcome)
+        elif (entry.noun, entry.verb) in {('contact', 'find'), ('contact', 'create')}:
+            refusal = self.people.authorize(actor, entry.role)
+            if refusal:
+                outcome = refusal
+            elif entry.verb == 'find':
+                outcome = self._contact_find(inputs)
+                if isinstance(outcome, Done) and not self._reads_unmasked(actor):
+                    outcome = self._masked_outcome(outcome)
+            else:
+                outcome = self._contact_create(inputs, actor)
         elif entry.noun == 'approval':
             if self.tap_app is None or self.tap_app._operator is None:
                 outcome = Refused(rule='config', reason='Operator cards are not configured')
@@ -471,6 +481,67 @@ class VerbAPI:
         if self.tap_app:
             self.tap_app.after_verb(entry.noun, entry.verb, outcome)
         return Response(200, outcome.model_dump(mode='json'))
+
+    def _contact_find(self, inputs: Any) -> Any:
+        """A short type-ahead list over the mirror Contacts: names and Telegram handles only."""
+        from t6.notion import NotionError
+        from t6.notion.reads import ContactReader
+        source = self.data_sources.get('contacts')
+        if not source or (not self._has_custom_source() and 'T6_NOTION_TOKEN' not in os.environ):
+            return Refused(rule='config', reason='Contacts are not configured')
+        try:
+            contacts = ContactReader(self.notion_source, source).list()
+        except NotionError as error:
+            return Refused(rule='notion', reason=str(error))
+        needle = ' '.join(inputs.q.split()).casefold()
+        found = [c for c in contacts if c.name.strip() and (not needle or needle in c.name.casefold()
+                                                            or needle.lstrip('@') in (c.telegram_handle or '').casefold())]
+        found.sort(key=lambda c: (not c.name.casefold().startswith(needle), c.name.casefold()))
+        return Done(result={'contacts': [{'page_id': c.page_id, 'name': c.name, 'telegram_handle': c.telegram_handle or None}
+                                         for c in found[:inputs.limit]]})
+
+    def _contact_create(self, inputs: Any, actor: str) -> Any:
+        """Add a Contact to Notion, marked "Added from Drives". Preview first; a name that already exists is refused."""
+        from t6 import verbflow
+        from t6.notion import NotionError
+        from t6.notion.contacts import Contacts
+        from t6.notion.reads import ContactReader
+        from t6.notion.writes import Ambiguous as WriteAmbiguous, Rejected
+        name = ' '.join(inputs.name.split())
+        if not name:
+            return Refused(rule='name', reason='Give a name')
+        handle, phone = (inputs.telegram_handle or '').strip().lstrip('@'), (inputs.phone or '').strip()
+        source = self.data_sources.get('contacts')
+        if not source or (not self._has_custom_source() and 'T6_NOTION_TOKEN' not in os.environ):
+            return Refused(rule='config', reason='Contacts are not configured')
+        request = verbflow.begin(self.people.tokens, 'contact create', actor,
+                                 {'name': name, 'telegram_handle': handle, 'phone': phone}, inputs.idempotency_key, inputs.confirm)
+        if isinstance(request, Refused):
+            return request
+        refresh: str | None = None
+        with self.people.registry._transaction() as db:
+            settled = verbflow.settle(db, self.people.tokens, request)
+            if settled:
+                return settled
+            try:
+                known = {' '.join(c.name.split()).casefold() for c in ContactReader(self.notion_source, source).list()}
+            except NotionError as error:
+                return Refused(rule='notion', reason=str(error))
+            if name.casefold() in known:
+                return Refused(rule='duplicate', reason='A Contact with this name already exists')
+            if not request.nonce:
+                return verbflow.issue(self.people.tokens, request, {'name': name, 'telegram_handle': handle or None,
+                                                                    'phone': phone or None, 'note': 'Added from Drives'})[0]
+            saved = Contacts(self.notion_source, source).create(name, telegram_handle=handle, phone=phone, note='Added from Drives')
+            if isinstance(saved, Rejected):
+                return Refused(rule='notion', reason=str(saved))
+            if isinstance(saved, WriteAmbiguous):
+                return Refused(rule='notion', reason=f'{saved}; check Notion before repeating')
+            refresh = saved.page_id
+            done = verbflow.finish(db, request, {'contact': {'page_id': saved.page_id, 'name': saved.name,
+                                                             'telegram_handle': saved.telegram_handle or None}})
+        self._queue_mirror_refresh(refresh, data_source_key='contacts', data_source_id=source)
+        return done
 
     def _masked_outcome(self, outcome: Done) -> Any:
         if self.privacy_registry is None:

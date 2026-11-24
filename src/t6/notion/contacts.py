@@ -43,7 +43,7 @@ class Contacts:
         )
 
     def create(
-        self, name: str, *, telegram_user_id: int | None = None, telegram_handle: str = "", note: str = ""
+        self, name: str, *, telegram_user_id: int | None = None, telegram_handle: str = "", note: str = "", phone: str = ""
     ) -> Contact | Rejected | Ambiguous:
         """Create a Contact, with `note` as one line in the page body, and return it as saved.
 
@@ -54,6 +54,8 @@ class Contacts:
             values["telegram_user_id"] = str(telegram_user_id)
         if telegram_handle:
             values["telegram_handle"] = telegram_handle
+        if phone:
+            values["contact_number"] = phone
         saved = create_row(self._notion, ContactsRow, self._source, values, to_domain=contact_from_row)
         if isinstance(saved, (Rejected, Ambiguous)) or not note:
             return saved
