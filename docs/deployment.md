@@ -439,3 +439,18 @@ tab and returns the Project's links grouped by kind: `quote`, `billing` and
 `gmail_thread`. Log rows map to a Project only by the `t6p_` ID in the Project
 column; a row with no ID, an unknown ID or no date is reported by the reader and
 never guessed. t6 does not read Notion page bodies.
+
+### Daily CRM DM
+
+At 10:00 Manila the main worker sends each Lead Owner one Telegram DM through
+the gateway with their cold Leads (stage, days since last contact, open
+Concerns, a missing client role or Studio). It is on when `T6_CRM_SHEET_ID`,
+`T6_CRM_DEFAULT_OWNER_PERSON_ID` (an active Person with a Telegram ID; it gets
+Leads with a blank Lead Owner), `T6_GATEWAY_URL`, `T6_GATEWAY_SECRET`,
+`T6_NOTION_TOKEN` and `T6_NOTION_PROJECTS_DATA_SOURCE` are all set, and off
+otherwise. Leads are cold after 28 days (Leads), 7 (Negotiations), 3 (Proposal
+Made) and 2 (Onboarding) without contact. A `Log` row dated later, or a stage
+change, restarts the count; a Lead with neither counts from when it was
+registered. A Lead Owner who is not a Person with a Telegram ID is treated as
+blank. Nobody with nothing due gets a message. The Sheet is read at send time,
+so a failed read fails the job and is retried (see `queue failed`).

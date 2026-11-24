@@ -951,6 +951,44 @@ def main(
                                            environ['T6_DRIVE_CUSTODIAN_PERSON_ID'])
                 reminder.schedule()
                 queue_handlers = {**queue_handlers, 'drive.reminder': reminder.handle}
+            if environ.get('T6_CRM_SHEET_ID') and environ.get('T6_CRM_DEFAULT_OWNER_PERSON_ID') and environ.get('T6_NOTION_TOKEN') \
+                    and environ.get('T6_NOTION_PROJECTS_DATA_SOURCE'):
+                from t6.crm.config import crm_source
+                from t6.crm.reminder import KIND as CRM_REMINDER, CrmReminder, read_leads
+                from t6.notion import NotionClient, NotionError, NotionSource
+                from t6.notion.reads import ProjectReader
+                from t6.person import People
+                from t6.preview import PreviewTokens
+                from t6.worker.internal_queue import InternalJobQueue
+
+                try:
+                    crm_sheet = crm_source(environ)
+                except (OSError, ValueError) as error:
+                    print(f"t6.worker: {error}", file=sys.stderr)
+                    return 2
+                assert crm_sheet is not None
+                crm_registry = SqliteProjectRegistry(environ['T6_DATABASE'])
+                crm_people = People(crm_registry, PreviewTokens('crm-reminder'))
+                crm_projects = ProjectReader(NotionSource(lambda: NotionClient(environ['T6_NOTION_TOKEN'])),
+                                             environ['T6_NOTION_PROJECTS_DATA_SOURCE'])
+                crm_contact_name = linked_chat_person_name(environ)
+
+                def crm_name(person_id: str) -> str | None:
+                    person = crm_people.get(person_id)
+                    page = next((b['page_id'] for b in person['bindings'] if b['active']), None) if person else None
+                    if page is None or crm_contact_name is None:
+                        return None
+                    try:
+                        return crm_contact_name(page)
+                    except NotionError:
+                        return None
+
+                crm_reminder = CrmReminder(crm_people, InternalJobQueue(crm_registry),
+                                           GatewayClient(HttpTransport(environ['T6_GATEWAY_URL']), environ['T6_GATEWAY_SECRET']),
+                                           crm_sheet, environ['T6_CRM_DEFAULT_OWNER_PERSON_ID'],
+                                           lambda: read_leads(crm_registry, crm_projects.list()), crm_name)
+                crm_reminder.schedule()
+                queue_handlers = {**queue_handlers, CRM_REMINDER: crm_reminder.handle}
             def linked_tick() -> None:
                 try:
                     linked.tick()
