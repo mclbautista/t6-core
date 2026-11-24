@@ -4,6 +4,11 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- `contact find`: a short type-ahead list of Contacts (name, Telegram handle) over the Notion mirror, for the Drive web app person picker; needs the `drives` permission, and masks names for a caller that cannot read real names (#668).
+- `contact create`: adds a Contact (name, optional Telegram handle and phone) marked "Added from Drives", preview then confirm; a blank name or an existing name is refused (#668).
+
 ### Changed
 
 - `drive projects` returns `latest_movement` for each Project: the newest movement on any of its Drives, or none, so the Drive web app can sort Projects by it (#667).

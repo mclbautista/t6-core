@@ -21,7 +21,7 @@ from t6.verbs import (
     TranscriptCreateInput, TranscriptGetInput, TranscriptSpeakersInput, TranscriptTranslateInput,
     DriveCaptureInput, DriveCaptureListInput, DriveCaptureReadInput, DriveReloadReportInput,
     DriveMappingProposeInput, DriveMappingApplyInput, DriveProjectsInput, DriveOverdueInput, MovementListInput, MovementCorrectInput,
-    DriveReloadInput, DriveReceiveInput, DriveReleaseInput, DriveReturnInput, DriveRetireInput, DriveAssignInput, DriveUnassignInput,
+    ContactCreateInput, ContactFindInput, DriveReloadInput, DriveReceiveInput, DriveReleaseInput, DriveReturnInput, DriveRetireInput, DriveAssignInput, DriveUnassignInput,
     DriveAddInput, DriveEditInput, DrivePromoteSerialInput, DriveListInput, DriveGetInput, DriveFindInput, DriveCatalogSnapshotInput, DriveCatalogSnapshotsInput, DriveCatalogDiffInput, DriveCatalogAtInput, DriveShipmentsInput, DriveShipmentInput, DriveExceptionsInput,
     MachineEditInput, MachineListInput, MachineSyncInput,
     SwingAssignInput, SwingUnassignInput, SwingReturnInput, SwingOverdueInput,
@@ -191,6 +191,12 @@ class Client:
 
     def movement_correct(self, inputs: MovementCorrectInput) -> Result:
         return self.call('movement', 'correct', inputs)
+
+    def contact_find(self, inputs: ContactFindInput) -> Result:
+        return self.call('contact', 'find', inputs)
+
+    def contact_create(self, inputs: ContactCreateInput) -> Result:
+        return self.call('contact', 'create', inputs)
 
     def drive_reload(self, inputs: DriveReloadInput) -> Result:
         return self.call('drive', 'reload', inputs)
