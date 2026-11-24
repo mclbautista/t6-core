@@ -19,9 +19,9 @@ from t6.schedule.contract import (
     YearEvidence,
 )
 from t6.schedule.coverage import group_status, read_coverage
-from t6.schedule.dates import DayCell, aligns, block_years, fitting_start_years, weekday_name
+from t6.schedule.dates import DayCell, aligns, block_years, fitting_start_years, span_dates, weekday_name
 from t6.schedule.grid import Grid, a1, merge_range
-from t6.schedule.layout import DAY_COLUMNS, MonthBlock, find_month_blocks
+from t6.schedule.layout import DAY_COLUMNS, MonthBlock, day_pairs, find_month_blocks
 from t6.schedule.revision import source_ids, source_revision
 from t6.schedule.text import clean_text, is_availability, is_break, tentative_marker
 
@@ -55,9 +55,10 @@ def extract_schedule(request: ScheduleRequest) -> ScheduleSnapshot | Unsupported
         if year is not None and not exceptions:
             evidence.append(Evidence(kind="year", detail=f"{year} {method}", anchor=block.header_range))
             read = _read_entries(grid, request, block, key, YearEvidence(year=year, method=method), year)
-            candidates.extend(read.candidates)
             non_tasks.extend(read.non_tasks)
             exceptions.extend(read.exceptions)
+            if group_status(exceptions) != "held":  # a held group carries no candidates
+                candidates.extend(read.candidates)
         non_tasks.extend(_month_notes(grid, block, key))
         groups.append(
             Group(
@@ -153,14 +154,15 @@ def _read_entries(
                 if not text or grid.covered(row, col):
                     continue
                 merge = grid.merge_at(row, col)
-                last_col = merge.end_col - 1 if merge else col
                 anchor = a1(row, col)
-                if col // 2 != last_col // 2:
-                    read.exceptions.append(
-                        GroupException(code="span_not_read", detail="entry spans several days", anchor=anchor)
-                    )
-                    continue
-                day = band.days.get(col // 2 * 2)
+                number_col = col // 2 * 2
+                last_col = merge.end_col - 1 if merge else col
+                if col // 2 == last_col // 2:
+                    pairs: range | None = range(col // 2, col // 2 + 1)
+                else:
+                    assert merge is not None
+                    pairs = day_pairs(merge.start_col, merge.end_col)
+                day = band.days.get(number_col)
                 if day is None:
                     read.exceptions.append(
                         GroupException(code="undated_entry", detail="entry sits under a blank day", anchor=anchor)
@@ -172,15 +174,27 @@ def _read_entries(
                 if is_break(text):
                     read.non_tasks.append(NonTask(kind="break", text=text, group_key=key, anchor=anchor))
                     continue
-                iso = f"{year:04d}-{block.month:02d}-{day:02d}"
-                number_col = col // 2 * 2
+                problem = "its ends are not on day boundaries" if pairs is None else None
+                dates = span_dates(year, block.month, band.days, pairs) if pairs is not None else None
+                if dates is not None and dates.problem:
+                    problem = dates.problem
+                if pairs is None or dates is None or dates.start is None or dates.due is None:
+                    assert merge is not None
+                    read.exceptions.append(
+                        GroupException(
+                            code="ambiguous_span",
+                            detail=f"{text!r} merged over {merge_range(merge)}: {problem}",
+                            anchor=merge_range(merge),
+                        )
+                    )
+                    continue
                 read.candidates.append(
                     Candidate(
                         candidate_key="pending",
                         group_key=key,
                         title=text,
-                        start=iso,
-                        due=iso,
+                        start=dates.start.isoformat(),
+                        due=dates.due.isoformat(),
                         tentative=tentative_marker(text),
                         source_id=ids.get((row, col)),
                         provenance=Provenance(

@@ -107,3 +107,11 @@ def _is_numeric(value: object) -> bool:
     if isinstance(value, (int, float)):
         return True
     return isinstance(value, str) and value.strip().isdigit()
+
+
+def day_pairs(first_col: int, end_col: int) -> range | None:
+    """The day pairs (0 is Sunday) covered by columns [first_col, end_col), or None when an end
+    does not sit on a day boundary or the span leaves A:N. Only column geometry is used."""
+    if first_col % 2 or end_col % 2 or not first_col < end_col <= DAY_COLUMNS:
+        return None
+    return range(first_col // 2, end_col // 2)
