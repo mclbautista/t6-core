@@ -2451,6 +2451,7 @@ class DriveGuess(BaseModel):
     drive: str
     confidence: float
     reason: str
+    exact: bool = False  # show a check mark: all confirmed exact-match conditions hold
 
 
 class DriveCaptureItem(BaseModel):
@@ -2547,6 +2548,46 @@ def drive_approve(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome
     token = os.environ.get('T6_NOTION_TOKEN')
     source = _verb_notion_source(open_notion, token or '') if _notion_source.get() is not None or token else None
     return approve(_registry.get(), inputs, source, _actor.get())
+
+
+class DriveMatchesInput(BaseModel):
+    start: str | None = None  # inclusive Manila date, YYYY-MM-DD
+    end: str | None = None  # inclusive Manila date, YYYY-MM-DD
+
+
+class DriveMatchApproval(BaseModel):
+    capture: str
+    item: int
+    outcome: Literal['guess1', 'guess2', 'guess3', 'none', 'typed', 'new', 'not_a_drive']
+    rank: int | None
+    at: str
+    who: str
+
+
+class DriveMatchesOutput(DrivePracticeOutput):
+    total: int
+    counts: dict[str, int]
+    guess1_rate: float  # guess1 approvals / all approvals; zero when empty
+    approvals: list[DriveMatchApproval]
+
+
+def drive_matches(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.drives.learning import matches
+    assert isinstance(inputs, DriveMatchesInput)
+    return matches(_registry.get(), inputs.start, inputs.end)
+
+
+class DriveReferencePhotoOutput(DrivePracticeOutput):
+    drive: str
+    media_type: str
+    size: int
+    photo: str  # base64-encoded Reference photo in the movement photo folder
+
+
+def drive_reference_photo(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.drives.learning import reference_photo
+    assert isinstance(inputs, DriveGetInput)
+    return _photo_call(lambda: reference_photo(_registry.get(), inputs.drive))
 
 
 class DriveCaptureListInput(BaseModel):
@@ -3213,12 +3254,21 @@ class DriveListOutput(DrivePracticeOutput):
     total: int
 
 
+class DriveShortName(BaseModel):
+    text: str
+    project: DriveRef | None
+    confirmations: int
+    last_confirmed: str
+
+
 class DriveGetOutput(DrivePracticeOutput):
     drive: DriveItem
     events: list[DriveEventItem]
     assignments: list[DriveAssignmentItem]
     sources: list[DriveSourceItem]
     deliveries: list[str]
+    short_names: list[DriveShortName] = Field(default_factory=list)
+    reference_photo: str | None = None  # Drive ID for `drive reference-photo`; independent of practice Captures
 
 
 class DriveMatch(DriveItem):
@@ -3397,6 +3447,8 @@ def drive_read(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
             result = drive_reads.get(store, inputs.drive)
             if result is None:
                 return Refused(rule='drive', reason=f'Drive {inputs.drive} not found')
+            from t6.drives.learning import learned
+            result = DriveGetOutput.model_validate({**result.model_dump(), **learned(db, inputs.drive)})
         elif isinstance(inputs, DriveFindInput):
             result = drive_reads.find(store, inputs.serial, inputs.qr_code)
         elif isinstance(inputs, DriveCatalogSnapshotsInput):
@@ -3511,6 +3563,8 @@ VERBS = (
     Verb('drive', 'capture list', 'List captures by state', (), DriveCaptureListInput, DriveCaptureListOutput, 'drives', 'Newest first; default state exception. Each has its text, sender and photo size and type; an ignored capture has no text and no photo. Drive callers only.', drive_capture_list, read_only=True),
     Verb('drive', 'capture photo', 'Read the photo of a capture', (), DriveCaptureReadInput, DriveCapturePhotoOutput, 'drives', 'Returns the kept photo bytes, base64-encoded, to a Drive caller only. Not an MCP tool; never sent to another service.', drive_capture_photo),
     Verb('drive', 'capture result', 'Read a capture outcome', (), DriveCaptureReadInput, DriveCaptureOutput, 'reader', 'Includes Practice and ask-for-label state.', drive_capture_result, read_only=True),
+    Verb('drive', 'matches', 'Summarize Drive matching accuracy', (), DriveMatchesInput, DriveMatchesOutput, 'drives', 'Counts per approval outcome and guess-1 rate (guess1 / all approvals), with who and when. Optional start and end are inclusive Manila dates.', drive_matches, read_only=True),
+    Verb('drive', 'reference-photo', 'Read a Drive Reference photo', (), DriveGetInput, DriveReferencePhotoOutput, 'drives', 'Newest approved Capture photo, base64-encoded, from the movement photo folder. Survives Reload when the Drive ID is preserved.', drive_reference_photo),
     Verb('drive', 'inbox', 'List the Items waiting on approval', (), DriveInboxInput, DriveInboxOutput, 'drives', 'Newest Capture first, each Item in caption order, with its caption, direction, recipient, photo reference and guesses (none yet). Count lines never appear. A Capture whose caption needs IN or OUT, or R: on an OUT, waits for its poster and is left out.', drive_inbox, read_only=True),
     Verb('drive', 'approve', 'Settle one Inbox Item', (), DriveApproveInput, DriveApproveOutput, 'drives', 'Give the Item (capture and item number) and one choice. drive appends the Movement for the Drive given or typed; new creates the Drive and its Movement; not_a_drive closes the Item with no Movement; none leaves it waiting. A repeat of the settling call returns the same result; another choice for a settled Item is refused.', drive_approve),
     Verb('movement', 'correct', 'Append a Movement correction', (), MovementCorrectInput, MovementCorrectOutput, 'drives', 'Preview and confirm a correction; the original Movement and custody events remain.', movement_correct),

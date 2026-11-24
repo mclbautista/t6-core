@@ -37,6 +37,7 @@ def inbox(registry: SqliteProjectRegistry) -> Outcome:
 
 
 def approve(registry: SqliteProjectRegistry, inputs: DriveApproveInput, source: NotionSource | None, actor: str) -> Outcome:
+    stale_photos: list[str] = []
     with registry._transaction() as db:
         row = db.execute('SELECT data FROM drive_captures WHERE id=?', (inputs.capture,)).fetchone()
         data = json.loads(row[0]) if row else None
@@ -58,6 +59,10 @@ def approve(registry: SqliteProjectRegistry, inputs: DriveApproveInput, source: 
                     item['state'] == 'approved' and drive is not None and item.get('drive') == drive.id):
                 return Done(result=_result(inputs, item))
             return Refused(rule='item_settled', reason='Item is already settled')
+        if inputs.choice == 'none' and item.get('last_approval') == 'none':
+            return Done(result=_result(inputs, item))
+        rank = next((n for n, guess in enumerate(item.get('guesses', []), 1) if drive and guess['drive'] == drive.id), None)
+        outcome = f'guess{rank}' if inputs.choice == 'drive' and not inputs.typed and rank else 'typed' if inputs.choice == 'drive' else inputs.choice
         if inputs.choice in ('none', 'not_a_drive') and item.get('drive'):
             original = _movement(json.loads(db.execute('SELECT data FROM drive_movements WHERE id=?', (item['movement'],)).fetchone()[0]))
             correction = replace(original, id='t6m_' + uuid4().hex, corrects=original.id, drive=None, to_review=False, remarks='Guess cleared')
@@ -83,8 +88,16 @@ def approve(registry: SqliteProjectRegistry, inputs: DriveApproveInput, source: 
             if item.get('drive') and item['drive'] != drive.id:
                 _restore(db, store, item['drive'], movement)
             item.update(state='approved', drive=drive.id, movement=movement)
+            from t6.drives.learning import learn
+            stale_photos = learn(db, drive.id, item['text'], movement, inputs.capture, actor, registry._clock())
+        db.execute('INSERT INTO drive_match_approvals (capture, item, outcome, rank, at, who) VALUES (?, ?, ?, ?, ?, ?)',
+                   (inputs.capture, inputs.item, outcome, rank if outcome.startswith('guess') else None, registry._clock(), actor))
+        item['last_approval'] = outcome
         db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), inputs.capture))
-        return Done(result=_result(inputs, item))
+        result = Done(result=_result(inputs, item))
+    from t6.drives.photos import photo_dir, remove_files
+    remove_files(stale_photos, photo_dir())  # after commit: a failed approval keeps the old Reference photo
+    return result
 
 
 def _result(inputs: DriveApproveInput, item: dict[str, Any]) -> dict[str, Any]:
