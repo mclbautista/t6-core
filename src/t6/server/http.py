@@ -20,6 +20,11 @@ CATALOG_SNAPSHOT_PATH = "/v1/drive/catalog-snapshot"
 CATALOG_BODY_BYTES = 16_000_000
 """A Drive scan lists every file (100 to 250 bytes each, so 1 to 2 MB for 8,000), and preview and confirm each send it whole.
 Only the tailnet listener raises the limit for that one path (#549); every other path keeps `MAX_BODY_BYTES`."""
+PHOTO_ADD_PATH = "/v1/movement/photo-add"
+PHOTO_BODY_BYTES = 14_500_000
+"""A movement photo may be 10 MB (t6-core #669), about 14 MB once base64-encoded in the request."""
+TAILNET_BODY_LIMITS = {CATALOG_SNAPSHOT_PATH: CATALOG_BODY_BYTES, PHOTO_ADD_PATH: PHOTO_BODY_BYTES}
+"""The only paths the tailnet listener lets past `MAX_BODY_BYTES`."""
 
 __all__ = ["make_server"]
 

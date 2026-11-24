@@ -28,6 +28,7 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ### Fixed
 
+- The tailnet listener takes a request of up to 14.5 MB on `/v1/movement/photo-add`, so a 10 MB photo (about 14 MB in base64) reaches the verb instead of the 1 MB body limit (#669).
 - The tracker reader no longer reports a title row above the header row (a row with one filled cell, such as the tracker name on the monthly tabs or the tab name on the archive and swing tabs) as an unreadable row. A stray one-cell row below the header is still reported. The first reload in practice mode listed 14 such title rows as exceptions (#658).
 - `drive mapping apply` now works through the API and the `t6` command line: `--file` is a local file that the client uploads, and the preview token no longer depends on the temporary path of the upload, so a confirm matches its preview. `drive mapping propose` takes no output file over the API, reads the two configured Google spreadsheets when no workbook is given, and takes the data sources from `T6_READ_DATA_SOURCES` when none is uploaded. A sheet name that cleans to nothing is skipped by `propose`, and `apply` names it in its refusal (#657).
 
