@@ -23,7 +23,6 @@ from t6.server.llm import service_from_env
 from t6.server.verbs import (
     PrivacyList,
     VerbAPI,
-    closer_telegram_ids,
     read_config_from_env,
     read_data_source_configs_from_env,
     secrets_from_env,
@@ -123,7 +122,7 @@ def main() -> int:
                       translate_enabled=environ.get('T6_TRANSCRIPT_TRANSLATE', '').lower() == 'true',
                       concern_observe_closes=environ.get('T6_CONCERN_OBSERVE_CLOSES', '').strip().lower() in {'1', 'true', 'on', 'yes'},
                       request_log=lambda line: print(line, file=sys.stderr, flush=True),
-                      mirror=mirror, closers=closer_telegram_ids(environ), concerns_export=concerns_export_from_env(environ))
+                      mirror=mirror, concerns_export=concerns_export_from_env(environ))
         autoscan = autoscan_at(environ)
         if autoscan is not None and api.llm_service is not None:
             threading.Thread(target=run_forever, args=(api.autoscan, registry, autoscan), daemon=True).start()

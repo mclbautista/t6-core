@@ -103,7 +103,7 @@ class HistoryTests(unittest.TestCase):
         self.project = result.project.id
         with self.registry._transaction() as db:
             db.execute("INSERT INTO persons VALUES ('t6n_coordinator', 'staff', '[]', '[]', 101, 0, 1)")
-            db.execute("INSERT INTO persons VALUES ('t6n_closer', 'staff', '[]', '[]', 102, 0, 1)")
+            db.execute("INSERT INTO persons VALUES ('t6n_closer', 'staff', '[]', '[]', 102, 1, 1)")
             db.execute("INSERT INTO persons VALUES ('t6n_other', 'staff', '[]', '[]', 103, 0, 1)")
             db.execute("UPDATE projects SET rotation = 'in' WHERE id = ?", (self.project,))
 
@@ -118,7 +118,7 @@ class HistoryTests(unittest.TestCase):
         queue = JobQueue(tmp.name + '/queue')
         return VerbAPI(People(self.registry, PreviewTokens('secret')), queue, {'gateway': 'gateway'}, lambda _: None,
                        WebhookApp(queue, ServerConfig(), registry=self.registry), llm_service=object(),
-                       privacy_registry=Registry(), closers=frozenset({102}))
+                       privacy_registry=Registry())
 
     def run_once(self, api: Any, lines: list[dict[str, str]]) -> str:
         import contextlib
@@ -159,22 +159,15 @@ class HistoryTests(unittest.TestCase):
         self.run_once(api, [{'as_of': '2026-11-16', 'text': 'Older line'}, {'as_of': '2026-11-23', 'text': 'Newer line'}])
         self.assertEqual([line['text'] for line in self.history(api, 101)['result']['lines']], ['Newer line', 'Older line'])
 
-    def test_notes_history_is_for_closers_and_the_projects_coordinators_only(self) -> None:
+    def test_notes_history_is_for_master_brief_persons_and_the_projects_coordinators_only(self) -> None:
         api = self.api()
         self.run_once(api, [{'as_of': '2026-11-23', 'text': 'Waiting on client'}])
-        self.assertEqual(len(self.history(api, 102)['result']['lines']), 1)  # a Closer
+        self.assertEqual(len(self.history(api, 102)['result']['lines']), 1)  # a Person with master_brief on
         self.assertEqual(len(self.history(api, 101)['result']['lines']), 1)  # the Project's coordinator
         refused = self.history(api, 103)
         self.assertEqual((refused['outcome'], refused['rule']), ('refused', 'coordinator'))
         unknown = self.history(api, 102, project=str(T6Id.mint(EntityKind.PROJECT)))
         self.assertEqual((unknown['outcome'], unknown['rule']), ('refused', 'project'))
-
-    def test_the_closer_setting_reads_telegram_ids(self) -> None:
-        from t6.server.verbs import closer_telegram_ids
-        self.assertEqual(closer_telegram_ids({}), frozenset())
-        self.assertEqual(closer_telegram_ids({'T6_CLOSER_TELEGRAM_IDS': ' 11, 22 ,'}), frozenset({11, 22}))
-        with self.assertRaises(ValueError):
-            closer_telegram_ids({'T6_CLOSER_TELEGRAM_IDS': 'abc'})
 
 
 if __name__ == '__main__':

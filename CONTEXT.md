@@ -578,12 +578,12 @@ a term describes behaviour that is decided but not yet built, it says so.
 - **PM Notes history**: every dated line the autoscan has read, one row per
   Project, date and line text, with first seen, last seen and removed (the
   first run the line was absent). It is kept for good; an edited line shows as
-  removed plus a new line. Closers and the Project's coordinators read it
+  removed plus a new line. Persons with `master_brief` on and the Project's
+  coordinators read it
   (verb `project notes-history`).
-- **Close**: a person's close of a Concern through Sixto (verb `resolve`). Only
-  a **Closer** may Close: a Telegram user id on the Closer setting
-  (`T6_CLOSER_TELEGRAM_IDS`); anyone else is refused with `closer`. It becomes
-  a pending close. Undo (verb `reopen`) cancels it; only a Closer may Undo.
+- **Close**: a person's close of a Concern through Sixto (verb `resolve`). It
+  becomes a pending close. Undo (verb `reopen`) cancels it. Over the API both
+  follow the verb's role only.
 - **Concerns sheet export**: a CSV with one row per Concern that is not
   closed (`Open` or `Closing after PSR`), with the actions a Closer may choose
   for it. The API pushes it to the VPS server after each completed 21:00
