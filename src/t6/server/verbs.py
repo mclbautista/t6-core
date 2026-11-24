@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 from pydantic import ValidationError
 
 from t6.frameio.project_folders import LocalFrameioQueue, QueueFrameioWriter
-from t6.person import AUTO_ACTOR, BAY_SCANNER, PERMISSIONS, SERVICES, People, _intend_person_sync
+from t6.person import AUTO_ACTOR, BAY_SCANNER, PERMISSIONS, SERVICES, People
 from t6.privacy import MaskOptions, Registry as PrivacyRegistry, Session, mask_reply
 from t6.server.app import Request, Response, WebhookApp
 from t6.server.queue import MAIN_QUEUE
@@ -720,7 +720,6 @@ class VerbAPI:
                 db.execute('INSERT INTO persons VALUES (?, ?, ?, ?, ?, ?, ?)', (person_id, inputs.kind, '[]', '[]', inputs.telegram_id, 0, 1))
                 db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, ?, 1)", (normalize_page_id(saved.page_id), person_id, now))
                 _audit(db, person_id, 'person_create', actor, now, None, {'page_id': saved.page_id, 'kind': inputs.kind, 'telegram_id': inputs.telegram_id})
-                _intend_person_sync(db, person_id, now)
             person = self.people.get(person_id)
             assert person is not None
             item = {**asdict(saved), 't6_id': person_id, **{field: person[field] for field in ('kind', 'departments', 'roles', 'project_roles', 'shift', 'permissions', 'master_brief', 'active')}}

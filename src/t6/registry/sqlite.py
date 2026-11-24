@@ -427,8 +427,6 @@ _MIGRATIONS = (
     DELETE FROM concern_pm_pending"""),
     # A pending close keeps the settlement its Closer gave; the Concern takes it only when the close is applied.
     (59, False, "ALTER TABLE concern_pending_closes ADD COLUMN settles_id TEXT"),
-    # A Person's T6 ID is shown on its Contacts page; one intent per change of the page (#person-t6-id).
-    (60, False, "CREATE TABLE person_sync_intents (intent_id INTEGER PRIMARY KEY REFERENCES sync_intents(id))"),
 )
 
 
@@ -795,7 +793,7 @@ class SqliteProjectRegistry:
     # -- sync and reconciliation ---------------------------------------------
 
     def undispatched_sync(self) -> tuple[SyncIntent, ...]:
-        return self._intents("done_at IS NULL AND dispatched_at IS NULL AND id NOT IN (SELECT intent_id FROM status_sync_intents) AND id NOT IN (SELECT intent_id FROM jo_sync_intents) AND id NOT IN (SELECT intent_id FROM deliverable_sync_intents) AND id NOT IN (SELECT intent_id FROM person_sync_intents)")
+        return self._intents("done_at IS NULL AND dispatched_at IS NULL AND id NOT IN (SELECT intent_id FROM status_sync_intents) AND id NOT IN (SELECT intent_id FROM jo_sync_intents) AND id NOT IN (SELECT intent_id FROM deliverable_sync_intents)")
 
     def _intents(self, where: str) -> tuple[SyncIntent, ...]:
         with self._transaction() as db:
@@ -837,27 +835,6 @@ class SqliteProjectRegistry:
                     raise RegistryError('Notion page binding conflicts with another entity')
                 if not bound:
                     db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, ?, 1)", (page_id, row[0], self._clock()))
-            if error is not None:
-                db.execute('UPDATE sync_intents SET error=?, error_final=1 WHERE id=?', (error, intent_id))
-            else:
-                db.execute('UPDATE sync_intents SET done_at=?, error=NULL WHERE id=? AND done_at IS NULL', (self._clock(), intent_id))
-            return True
-
-    def undispatched_person_sync(self) -> tuple[SyncIntent, ...]:
-        return self._intents("done_at IS NULL AND dispatched_at IS NULL AND id IN (SELECT intent_id FROM person_sync_intents)")
-
-    def person_sync_state(self, intent_id: int) -> dict[str, Any] | None:
-        with self._transaction() as db:
-            row = db.execute("SELECT p.id, s.done_at FROM sync_intents s JOIN person_sync_intents i ON i.intent_id=s.id JOIN persons p ON p.id=s.project_id WHERE s.id=?", (intent_id,)).fetchone()
-            if not row:
-                return None
-            page = db.execute("SELECT page_id FROM bindings WHERE system='notion' AND project_id=? AND active=1", (row[0],)).fetchone()
-            return {'id': row[0], 'done': row[1] is not None, 'page_id': page[0] if page else None}
-
-    def report_person_sync(self, intent_id: int, *, error: str | None = None) -> bool:
-        with self._transaction() as db:
-            if not db.execute('SELECT 1 FROM person_sync_intents WHERE intent_id=?', (intent_id,)).fetchone():
-                return False
             if error is not None:
                 db.execute('UPDATE sync_intents SET error=?, error_final=1 WHERE id=?', (error, intent_id))
             else:
@@ -930,7 +907,7 @@ class SqliteProjectRegistry:
     ) -> RegisteredProject | None:
         now = self._clock()
         with self._transaction() as db:
-            covered = "project_id = ? AND done_at IS NULL AND revision <= ? AND id NOT IN (SELECT intent_id FROM status_sync_intents) AND id NOT IN (SELECT intent_id FROM jo_sync_intents) AND id NOT IN (SELECT intent_id FROM deliverable_sync_intents) AND id NOT IN (SELECT intent_id FROM person_sync_intents)"
+            covered = "project_id = ? AND done_at IS NULL AND revision <= ? AND id NOT IN (SELECT intent_id FROM status_sync_intents) AND id NOT IN (SELECT intent_id FROM jo_sync_intents) AND id NOT IN (SELECT intent_id FROM deliverable_sync_intents)"
             if ok:
                 db.execute(f"UPDATE sync_intents SET done_at = ? WHERE {covered}", (now, project_id, revision))
             else:

@@ -154,7 +154,6 @@ def configured_handlers(
     token, projects = environ.get("T6_NOTION_TOKEN"), environ.get("T6_NOTION_PROJECTS_DATA_SOURCE")
     job_orders = environ.get("T6_NOTION_JOB_ORDERS_DATA_SOURCE")
     deliverables = environ.get('T6_NOTION_DELIVERABLES_DATA_SOURCE')
-    contacts = environ.get('T6_NOTION_CONTACTS_DATA_SOURCE')
     active_mirror_writer: MirrorWriter | None = None
     active_mirror_ds_ids: tuple[str, ...] = ()
     on_page_written: Callable[[dict[str, Any]], None] | None = None
@@ -175,7 +174,7 @@ def configured_handlers(
 
                 on_page_written = write_through
     notion = None
-    if token and (projects or job_orders or deliverables or contacts):
+    if token and (projects or job_orders or deliverables):
         from t6.notion import NotionClient, NotionSource
 
         notion = NotionSource.from_client(NotionClient(token), on_page_written=on_page_written)
@@ -215,22 +214,6 @@ def configured_handlers(
                     return deliverable_projection.reconcile(job)
                 return result
             handlers['notion.page_changed'] = reconcile_deliverable
-    if notion and contacts:
-        from t6.notion.person_projection import PersonProjection
-        from t6.worker.registry import RegistryClient
-        person_projection = PersonProjection(notion, RegistryClient(api, settings.secret), contacts)
-        handlers.update(person_projection.handlers())
-        before_person = handlers.get('notion.page_changed')
-        if before_person is None:
-            handlers['notion.page_changed'] = person_projection.reconcile
-        else:
-            def reconcile_person(job: WorkerJob) -> JsonValue:
-                assert before_person is not None
-                result = before_person(job)
-                if isinstance(result, dict) and result.get('outcome') in ('not_a_project_page', 'not_a_job_order_page', 'not_a_deliverable_page'):
-                    return person_projection.reconcile(job)
-                return result
-            handlers['notion.page_changed'] = reconcile_person
     if token and active_mirror_writer is not None:
         from t6.notion import NotionClient, NotionSource
 

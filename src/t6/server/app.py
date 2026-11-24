@@ -503,16 +503,13 @@ class WebhookApp:
             deliverable_intents = self._registry.undispatched_deliverable_sync()
             for intent in deliverable_intents:
                 self._inside.submit(MAIN_QUEUE, 'deliverable.sync', f'deliverable.sync:{intent.id}', {'intent_id': intent.id})
-            person_intents = self._registry.undispatched_person_sync()
-            for intent in person_intents:
-                self._inside.submit(MAIN_QUEUE, 'person.sync', f'person.sync:{intent.id}', {'intent_id': intent.id})
             jo_intents = self._registry.undispatched_jo_sync()
             for intent in jo_intents:
                 self._inside.submit(MAIN_QUEUE, JobKind.JO_SYNC.value, f"jo.sync:{intent.id}", {"intent_id": intent.id})
             status_intents = self._registry.undispatched_status_sync()
             for intent in status_intents:
                 self._inside.submit(MAIN_QUEUE, 'project.status_sync', f'project.status_sync:{intent.id}', {'intent_id': intent.id})
-            self._registry.mark_dispatched(intent.id for intent in (*intents, *jo_intents, *status_intents, *deliverable_intents, *person_intents))
+            self._registry.mark_dispatched(intent.id for intent in (*intents, *jo_intents, *status_intents, *deliverable_intents))
         except RegistryUnavailable:
             return
 
@@ -936,34 +933,6 @@ class WebhookApp:
                 return Response(503, {'error': 'Notion edits unavailable'})
             editor_id = observation.get('editor_id')
             return Response(200, NotionEdits(registry).deliverable(steps[1], shown, changed, editor, event, editor_id=editor_id if isinstance(editor_id, str) else None))
-        if len(steps) == 2 and steps[0] == 'notion-person':
-            if not any(g.registry_sync for g in grants):
-                return Response(403, {'error': 'registry sync not allowed'})
-            if request.method != 'POST':
-                return Response(405)
-            observation = _json_object(request.body) or {}
-            shown, changed, editor, event = observation.get('shown'), observation.get('changed'), observation.get('editor'), observation.get('event')
-            if not isinstance(shown, dict) or not isinstance(changed, list) or not all(isinstance(v, str) for v in changed) or not isinstance(editor, str) or not isinstance(event, str):
-                return Response(400, {'error': 'invalid Notion observation'})
-            from t6.notion_edits import NotionEdits
-            from t6.registry.sqlite import SqliteProjectRegistry
-            if not isinstance(registry, SqliteProjectRegistry):
-                return Response(503, {'error': 'Notion edits unavailable'})
-            editor_id = observation.get('editor_id')
-            return Response(200, NotionEdits(registry).person(steps[1], shown, changed, editor, event, editor_id=editor_id if isinstance(editor_id, str) else None))
-        if len(steps) == 2 and steps[0] == 'person-sync':
-            if not any(g.registry_sync for g in grants):
-                return Response(403, {'error': 'registry sync not allowed'})
-            try:
-                intent_id = int(steps[1])
-            except ValueError:
-                return Response(400, {'error': 'invalid intent'})
-            if request.method == 'GET':
-                state = registry.person_sync_state(intent_id)
-                return Response(200, {'state': state}) if state else Response(404)
-            if request.method != 'POST':
-                return Response(405)
-            return Response(200 if registry.report_person_sync(intent_id, error=(_json_object(request.body) or {}).get('error')) else 404, {})
         if len(steps) == 2 and steps[0] == "notion-jo":
             if not any(g.registry_sync for g in grants):
                 return Response(403, {"error": "registry sync not allowed"})

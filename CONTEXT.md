@@ -365,12 +365,6 @@ reuses the Transcript.
 A **Person** (`t6n_`) is someone t6 knows by a Contacts page, with one **kind**:
 staff, freelancer, client or vendor.
 
-A Person's **T6 ID** is shown on its Contacts page in the `T6 ID` property, as a Project's is on the
-Projects page. The registry owns it: the main worker writes it when a Person is added, created, migrated or
-rebound (`person.sync`), and puts back an edit of it in Notion, which is audited as `notion_identity_edit`.
-It needs the `T6 ID` rich text property on the Contacts data source, `t6 admin snapshot`, and
-`T6_NOTION_CONTACTS_DATA_SOURCE` on the main worker.
-
 - **Staff**: works for the studio and has the staff role (below).
 - **Freelancer**: a person who works on Projects for the studio and is not staff.
   A freelancer does not have the staff role.
