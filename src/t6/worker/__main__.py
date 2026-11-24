@@ -957,6 +957,28 @@ def main(
                 except (OSError, URLError, GatewayRejected):
                     pass  # Retry on the next worker poll.
             tick = linked_tick
+        if settings.queue == "main" and environ.get("T6_CRM_SHEET_ID") and environ.get("T6_NOTION_TOKEN"):
+            from t6.crm.sheet_sync import install as install_crm_sheet
+            from t6.notion import NotionClient, NotionError, NotionSource
+            from t6.notion.generated import ProjectsRow
+
+            crm_notion = NotionSource(lambda: NotionClient(environ["T6_NOTION_TOKEN"]))
+
+            def crm_page(page: str) -> tuple[str, str] | None:
+                try:
+                    row = ProjectsRow.from_page(crm_notion.retrieve_page(page))
+                except NotionError as error:
+                    if error.status == 404:
+                        return None
+                    raise
+                return row.name or "", row.status or ""
+
+            try:
+                queue_handlers = install_crm_sheet(queue_handlers, environ, crm_page,
+                                                   status_property=ProjectsRow.notion_id("status") or "")
+            except (OSError, ValueError) as error:
+                print(f"t6.worker: {error}", file=sys.stderr)
+                return 2
         if settings.queue == "main":
             mirror_syncer = mirror_syncer_from_env(environ, writer=shared_mirror_writer)
             if mirror_syncer is not None:
