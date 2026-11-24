@@ -4,10 +4,6 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
-### Added
-
-- A Person's T6 ID (`t6n_...`) is shown in a `T6 ID` property on its Contacts page. The main worker writes it when a Person is added, created, migrated or rebound, and puts back an edit of it in Notion. Schema 60 adds `person_sync_intents`. The property must exist on the Contacts data source and the snapshot be refreshed (`t6 admin snapshot`, then `scripts/generate_models.py`) before the worker can write it; until then `person.sync` jobs are refused with that reason.
-
 ## [0.6.25] - 2026-11-24
 
 Reads and edits for the Drive web app's Projects and Exceptions pages (#649): the Drives of a text-only Project, the list of unresolved captures with their photo, giving a capture a Drive, a Project on a movement correction, and the last reload report. No schema change. Nothing is deployed by this release.
