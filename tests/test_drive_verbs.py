@@ -132,6 +132,48 @@ class DriveVerbTests(unittest.TestCase):
         self.assertEqual(listed[c], [])
         self.assertEqual([(x['label'], x['project']['page_id'], x['project']['text'], x['role']) for x in listed[text_only.id]], [('T', None, 'Invented Show', 'swing')])
 
+    def test_drive_search_matches_partial_project_codes_and_preserves_paging(self) -> None:
+        registered = self.registry.register(actor='setup', idempotency_key='search-project', code='SYN-ORBIT')
+        assert isinstance(registered, Registered)
+        project = registered.project.id
+        for drive in self.drives[:2]:
+            self.write('assign', {'drive': drive, 'project': project, 'label': 'Synthetic assignment', 'role': 'master', 'start': '2026-01-01'})
+        self.write('unassign', {'drive': self.drives[0], 'project': project, 'end': '2026-02-01'})
+        for query, expected in [('oRbI', self.drives[:2]), ('THETIC 2', self.drives[2:]), ('nTh-1', self.drives[1:2])]:
+            with self.subTest(query=query):
+                result = self.read('list', {'q': query})
+                self.assertEqual([d['id'] for d in result['drives']], expected)
+        page = self.read('list', {'q': 'orbit', 'limit': 1, 'offset': 1})
+        self.assertEqual((page['total'], [d['id'] for d in page['drives']]), (2, self.drives[1:2]))
+        self.assertEqual(self.read('list', {'q': 'orbit', 'project': project})['total'], 1)
+
+    def test_holder_is_the_last_release_party_and_list_agrees_with_get(self) -> None:
+        drive, project = self.drives[0], self.projects[0]
+        def check(expected: str | None) -> None:
+            listed = next(d for d in self.read('list')['drives'] if d['id'] == drive)
+            detail = self.read('get', {'drive': drive})['drive']
+            self.assertEqual((listed['holder'], detail['holder']), (expected, expected))
+        check(None)
+        self.write('release', {'drives': [drive], 'project': project, 'party': 'Synthetic borrower',
+                               'party_kind': 'contact', 'on': '2026-11-01'})
+        check('Synthetic borrower')
+        self.write('return', {'drive': drive, 'project': project, 'on': '2026-11-02'})
+        check(None)
+        self.write('release', {'drives': [drive], 'project': project, 'party': CONTACT,
+                               'party_kind': 'contact', 'on': '2026-11-03'})
+        check(CONTACT)
+        self.write('retire', {'drive': drive, 'project': project, 'on': '2026-11-04', 'reason': 'Synthetic damage'})
+        check(None)
+
+    def test_edit_sets_and_clears_the_same_place_returned_by_list_and_get(self) -> None:
+        drive = self.drives[0]
+        for place in ('Synthetic room / drawer 7', ''):
+            self.write('edit', {'drive': drive, 'office_location': place})
+            listed = next(d for d in self.read('list')['drives'] if d['id'] == drive)
+            detail = self.read('get', {'drive': drive})['drive']
+            for item in (listed, detail):
+                self.assertEqual((item['place'], item['office_location']), (place or None, place or None))
+
     def test_drive_list_filters_are_the_inventory_screen_filters_and_combine_with_and(self) -> None:
         self.seed_inventory()
         a, b, c = self.drives

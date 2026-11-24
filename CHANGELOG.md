@@ -6,6 +6,7 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ### Added
 
+- `drive list` searches Assignment Project codes; `drive list` and `drive get` return the custody-log holder and Place, sharing the existing free-text `office_location` with IN, OUT, movement corrections and `drive edit` (#646).
 - Job Orders: the On Hold Status, in the not-started group, so it never counts as processed. `jo list`, `jo get` and `jo find` return `health_name`, one of the six Health values (Closed, Blocked, Delayed, Urgent, Advanced, On Track) read by its words, ignoring emoji; `health_flags` stays until its callers move (#637).
 - `project notes-history`: every dated PM Notes line each autoscan read (first seen, last seen, removed), newest first, for Closers (`T6_CLOSER_TELEGRAM_IDS`) and the Project's coordinators. Migration 57 adds `pm_notes_history` and `concern_autoscan_runs`. Not forward-only (#638).
 - `concern list` returns a second list, `pending`, in both modes: every Concern with a pending close, with every field of an `--open` item plus `close_by`, `close_by_name`, `close_at`, `close_source` (`close` or `done_line`) and `close_quote`. A Concern with a pending close is only in `pending` (#639).

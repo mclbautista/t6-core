@@ -49,6 +49,21 @@ class CaptureTests(DriveReloadFixture):
         self.assertIn('outcome', result, result)
         return dict(result)
 
+    def test_in_with_place_sets_the_drive_place_and_out_clears_it(self) -> None:
+        drive = self.drives()[0]['id']
+        for number, command, expected, holder in (
+                (1, 'IN SHELF', 'SHELF', None),
+                (2, 'OUT Synthetic borrower', None, 'Synthetic borrower'),
+                (3, 'IN CABINET', 'CABINET', None),
+                (4, 'IN', 'CABINET', None)):
+            self.api('capture', **{**self.post, 'message_id': number, 'text': command,
+                                   'posted_at': f'2026-11-24T{10 + number}:30:00+08:00'})
+            self.resolve([{'label': 'Synthetic first', 'serial': 'SAMPLE-FIRST', 'confidence': 0.9}])
+            listed = next(d for d in self.api('list')['result']['drives'] if d['id'] == drive)
+            detail = self.api('get', drive=drive)['result']['drive']
+            for item in (listed, detail):
+                self.assertEqual((item['place'], item['office_location'], item['holder']), (expected, expected, holder))
+
     def test_capture_stores_first_and_repeated_delivery_queues_nothing_new(self) -> None:
         first = self.api('capture', **self.post)
         self.assertEqual(first['outcome'], 'done', first)

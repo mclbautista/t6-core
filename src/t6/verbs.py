@@ -2726,6 +2726,8 @@ class DriveItem(BaseModel):
     qr_code: str | None
     version: str
     status: str
+    holder: str | None
+    place: str | None
 
 
 class DriveEventItem(BaseModel):
@@ -2924,6 +2926,7 @@ def drive_read(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
     from t6.drives.sqlite import SqliteDriveStore
     registry = _people().registry
     result: BaseModel | None
+    project_codes = {p.id: p.code for p in registry.list_projects() if p.code} if isinstance(inputs, DriveListInput) and inputs.q else {}
     with registry._transaction() as db:  # one transaction for the whole read: the store would open one for each Drive's status and Assignments
         store = SqliteDriveStore(registry, within=db)
         if isinstance(inputs, DriveOverdueInput):
@@ -2931,7 +2934,7 @@ def drive_read(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
             from zoneinfo import ZoneInfo
             result = drive_reads.overdue(store, datetime.fromtimestamp(registry._clock(), ZoneInfo('Asia/Manila')).date())
         elif isinstance(inputs, DriveListInput):
-            result = drive_reads.list_drives(store, **inputs.model_dump())
+            result = drive_reads.list_drives(store, **inputs.model_dump(), project_codes=project_codes)
         elif isinstance(inputs, DriveGetInput):
             result = drive_reads.get(store, inputs.drive)
             if result is None:

@@ -176,6 +176,8 @@ class CaptureResolver:
                 append(db, movement)
                 event = custody_event(movement, logged_by)
                 _append_event(db, store, drive.id, event, movement.id)
+                if direction == 'OUT' or place is not None:
+                    store.set_facts(drive.id, {'office_location': place if direction == 'IN' else None})
                 latest = latest_custody(db, drive.id)
                 if latest and latest != event:
                     _append_event(db, store, drive.id, latest, movement.id)

@@ -144,6 +144,8 @@ def correct_movement(registry: SqliteProjectRegistry, tokens: PreviewTokens, mov
         append(db, corrected)
         if corrected.drive:
             _append_event(db, store, corrected.drive, custody_event(corrected, Ref(page_id=actor)), corrected.id)
+            if corrected.direction == 'OUT' or 'place' in changes or corrected.place is not None:
+                store.set_facts(corrected.drive, {'office_location': corrected.place if corrected.direction == 'IN' else None})
         # Corrections replace facts in the effective timeline, but never erase history.
         # Append the resulting custody fact when the corrected event is not the last
         # dated event, or when moving it leaves the original Drive with earlier custody.
