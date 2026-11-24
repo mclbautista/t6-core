@@ -201,7 +201,7 @@ def exceptions(store: DriveStore) -> DriveExceptionsOutput:
                                              for i in store.exceptions()])
 
 
-def project_counts(store: DriveStore) -> list[dict[str, Any]]:
+def project_counts(store: DriveStore, latest: dict[Ref, str] | None = None) -> list[dict[str, Any]]:
     projects: dict[Ref, set[str]] = {}
     statuses = store.statuses()
     for drive in store.list_drives():
@@ -210,7 +210,8 @@ def project_counts(store: DriveStore) -> list[dict[str, Any]]:
                 projects.setdefault(assignment.project, set()).add(drive.id)
     return [{'project': _ref(project).model_dump(), 'total': len(ids),
              'in_house': sum(statuses.get(did) is DriveStatus.IN_CUSTODY for did in ids),
-             'released': sum(statuses.get(did) is DriveStatus.RELEASED for did in ids)}
+             'released': sum(statuses.get(did) is DriveStatus.RELEASED for did in ids),
+             'latest_movement': (latest or {}).get(project)}
             for project, ids in projects.items()]
 
 

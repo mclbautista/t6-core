@@ -5,7 +5,7 @@ import hashlib
 import json
 import sqlite3
 from dataclasses import asdict, dataclass, replace
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -170,6 +170,24 @@ def active_movements(db: sqlite3.Connection) -> list[Movement]:
     undone = {row[0] for row in db.execute("SELECT id FROM drive_captures WHERE json_extract(data, '$.state')='undone'")}
     corrected = {row[0] for row in db.execute('SELECT corrects FROM drive_movements WHERE corrects IS NOT NULL')}
     return [_movement(m) for m in list_movements(db) if m['id'] not in corrected and m['capture'] not in undone]
+
+
+def latest_movement_by_project(db: sqlite3.Connection) -> dict[Ref, str]:
+    """The newest movement time of each Project (a capture's post time, else the dated day), as the movement states it."""
+    best: dict[Ref, tuple[float, str]] = {}
+    for m in active_movements(db):
+        text = m.posted_at or m.on
+        if m.project is None or not text:
+            continue
+        stamp = text if isinstance(text, str) else text.isoformat()
+        try:
+            when = datetime.fromisoformat(stamp)
+        except ValueError:
+            continue
+        key = (when if when.tzinfo else when.replace(tzinfo=timezone.utc)).timestamp()
+        if m.project not in best or key > best[m.project][0]:
+            best[m.project] = (key, stamp)
+    return {project: stamp for project, (_, stamp) in best.items()}
 
 
 def latest_custody(db: sqlite3.Connection, drive_id: str, *, exclude_capture: str | None = None) -> CustodyEvent | None:
