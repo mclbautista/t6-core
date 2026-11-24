@@ -858,7 +858,7 @@ class DriveVerbTests(unittest.TestCase):
         from t6.cli import main
         names = {(e['noun'], e['verb']) for e in catalogue()}
         self.assertTrue({('drive', verb) for verb in ('receive', 'release', 'return', 'retire', 'assign', 'unassign')} <= names)
-        self.assertEqual({e['role'] for e in catalogue() if e['noun'] == 'drive' and not e['read_only']}, {'drives', 'operator', 'gateway'})
+        self.assertEqual({e['role'] for e in catalogue() if e['noun'] == 'drive' and not e['read_only']}, {'drives', 'gateway'})
         out = io.StringIO()
         with patch.dict(os.environ, {'T6_PERSON_ID': 'keeper', 'T6_PREVIEW_SIGNING_KEY': 'test'}), patch('t6.cli._open_registry', return_value=self.registry), client_patch(lambda _: None), redirect_stdout(out):
             status = main(['drive', 'retire', self.drives[0], self.projects[0], '--reason', 'dead'])

@@ -21,7 +21,7 @@ from t6.verbs import (
     TranscriptCreateInput, TranscriptGetInput, TranscriptSpeakersInput, TranscriptTranslateInput,
     DriveCaptureInput, DriveCaptureListInput, DriveCaptureReadInput, DriveReloadReportInput,
     DriveMappingProposeInput, DriveMappingApplyInput, DriveProjectsInput, DriveOverdueInput, MovementListInput, MovementCorrectInput,
-    DriveCutoverInput, DriveReloadInput, DriveReceiveInput, DriveReleaseInput, DriveReturnInput, DriveRetireInput, DriveAssignInput, DriveUnassignInput,
+    DriveReloadInput, DriveReceiveInput, DriveReleaseInput, DriveReturnInput, DriveRetireInput, DriveAssignInput, DriveUnassignInput,
     DriveAddInput, DriveEditInput, DrivePromoteSerialInput, DriveListInput, DriveGetInput, DriveFindInput, DriveCatalogSnapshotInput, DriveCatalogSnapshotsInput, DriveCatalogDiffInput, DriveCatalogAtInput, DriveShipmentsInput, DriveShipmentInput, DriveExceptionsInput,
     MachineEditInput, MachineListInput, MachineSyncInput,
     SwingAssignInput, SwingUnassignInput, SwingReturnInput, SwingOverdueInput,
@@ -191,9 +191,6 @@ class Client:
 
     def movement_correct(self, inputs: MovementCorrectInput) -> Result:
         return self.call('movement', 'correct', inputs)
-
-    def drive_cutover(self, inputs: DriveCutoverInput) -> Result:
-        return self.call('drive', 'cutover', inputs)
 
     def drive_reload(self, inputs: DriveReloadInput) -> Result:
         return self.call('drive', 'reload', inputs)

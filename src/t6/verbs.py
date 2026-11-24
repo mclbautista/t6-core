@@ -2329,10 +2329,6 @@ class DriveReloadInput(BaseModel):
     confirm: str | None = None
 
 
-class DriveCutoverInput(DriveReloadInput):
-    pass
-
-
 class DriveWithoutSerial(BaseModel):
     id: str
     label: str | None
@@ -2363,7 +2359,7 @@ def drive_reload(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
     people = _people()
     from t6.drives.practice import practice_mode
     if not practice_mode(people.registry):
-        return Refused(rule='cutover', reason='Drive reload is disabled after cutover')
+        return Refused(rule='cutover', reason='Drive reload is disabled: the system is live')
     source: SheetSource
     tracker: SheetSource | None
     try:
@@ -2374,8 +2370,7 @@ def drive_reload(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
             source, tracker = configured_sources(os.environ)
         return reload_drives(people.registry, people.tokens, source,
                              tracker=tracker,
-                             actor=_actor.get(), idempotency_key=inputs.idempotency_key, confirm=inputs.confirm,
-                             cutover=isinstance(inputs, DriveCutoverInput))
+                             actor=_actor.get(), idempotency_key=inputs.idempotency_key, confirm=inputs.confirm)
     except (OSError, ValueError) as error:
         return Refused(rule='sheet', reason=str(error))
 
@@ -3121,7 +3116,6 @@ VERBS = (
     Verb('drive', 'capture result', 'Read a capture outcome', (), DriveCaptureReadInput, DriveCaptureOutput, 'reader', 'Includes Practice and ask-for-label state.', drive_capture_result, read_only=True),
     Verb('movement', 'correct', 'Append a Movement correction', (), MovementCorrectInput, MovementCorrectOutput, 'drives', 'Preview and confirm a correction; the original Movement and custody events remain.', movement_correct),
     Verb('movement', 'list', 'Search the Movement log', (), MovementListInput, MovementListOutput, 'reader', 'Filters combine with AND; includes unresolved rows and corrections.', movement_list, read_only=True),
-    Verb('drive', 'cutover', 'Final reload and end Drive practice mode', (), DriveCutoverInput, DriveReloadOutput, 'operator', 'Preview and confirm the final reload; disables nightly and operator reloads.', drive_reload),
     Verb('drive', 'reload', 'Replace Drive data from the per-project sheet', (), DriveReloadInput, DriveReloadOutput, 'drives', 'Preview and confirm a complete reload, preserving accepted serial IDs.', drive_reload),
     Verb('drive', 'receive', 'Receive a Drive into custody', (), DriveReceiveInput, DriveWriteOutput, 'drives', 'Preview and confirm; appends a received event. Refused for a Drive in custody or retired.', drive_write),
     Verb('drive', 'release', 'Release Drives in one shipment', (), DriveReleaseInput, DriveWriteOutput, 'drives', 'Preview and confirm; one released event per Drive, grouped by shipment, with the Drives\' facts kept as they are now. Optional reason and free-text recipient. Refused whole if a Drive is released or retired.', drive_write),
