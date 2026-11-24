@@ -5,6 +5,7 @@ import base64
 import binascii
 import json
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import datetime
@@ -36,6 +37,27 @@ def recording_topic(environ: Mapping[str, str] | None = None) -> int | None:
     return int(value) if value else None
 
 
+_DIRECTION = re.compile(r'(in|out)(?=[\s:\-]|$)[\s:\-]*', re.IGNORECASE)
+_PLACES = ('TABLE', 'CABINET', 'SHELF', 'BOX')
+
+
+def _parse_text(text: str) -> tuple[Literal['IN', 'OUT'] | None, str, Literal['TABLE', 'CABINET', 'SHELF', 'BOX'] | None, str]:
+    """Read a caption or follow-up answer as (direction, person, place, typed label); direction is None without a leading IN/OUT."""
+    command, _, typed = text.strip().replace('|', '\n', 1).partition('\n')
+    typed = typed.strip()
+    start = _DIRECTION.match(command.strip())
+    if start is None:
+        return None, '', None, typed or command.strip()
+    direction: Literal['IN', 'OUT'] = 'IN' if start[1].upper() == 'IN' else 'OUT'
+    tail = command.strip()[start.end():].strip()
+    if direction == 'OUT':
+        return direction, tail, None, typed
+    first, _, rest = tail.partition(' ')
+    if first.upper() in _PLACES:
+        return direction, '', first.upper(), typed or rest.strip()  # type: ignore[return-value]
+    return direction, '', None, typed or tail
+
+
 def capture_post(registry: SqliteProjectRegistry, inputs: DriveCaptureInput) -> Outcome:
     if inputs.capture:
         queue = InternalJobQueue(registry)
@@ -54,7 +76,7 @@ def capture_post(registry: SqliteProjectRegistry, inputs: DriveCaptureInput) -> 
             if data['state'] in ('resolved', 'undone', 'ignored') or data['state'] == 'pending' and (
                     data.get('follow_up_drive') == inputs.drive if inputs.drive else not data.get('follow_up_drive') and data.get('follow_up') == inputs.text.strip()):
                 return Done(result=_result(data))
-            data.update(follow_up=inputs.text.strip(), follow_up_drive=inputs.drive, revision=data.get('revision', 0) + 1, state='pending')
+            data.update(follow_up=inputs.text.strip(), follow_up_drive=inputs.drive, revision=data.get('revision', 0) + 1, state='pending', reason=None, answered=True)
             db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), inputs.capture))
             queue.submit('main', 'drive.capture.resolve', f"{inputs.capture}:{data['revision']}",
                          {'capture': inputs.capture, 'revision': data['revision']}, db=db)
@@ -90,7 +112,9 @@ def capture_post(registry: SqliteProjectRegistry, inputs: DriveCaptureInput) -> 
 
 
 def _result(data: dict[str, Any]) -> dict[str, Any]:
-    return {key: data[key] for key in ('capture', 'state', 'lines', 'differences')} | {'photo_reference': None if data['state'] == 'ignored' else data['capture'], 'message': 'ask for the label' if data['state'] == 'exception' else None}
+    return {key: data[key] for key in ('capture', 'state', 'lines', 'differences')} | {'photo_reference': None if data['state'] == 'ignored' else data['capture'], 'message': 'ask for the label' if data['state'] == 'exception' else None,
+            'reason': data.get('reason') if data['state'] == 'exception' else None,
+            'may_ask': data['state'] == 'exception' and not data.get('answered')}
 
 
 def list_captures(registry: SqliteProjectRegistry, state: str) -> Outcome:
@@ -159,20 +183,13 @@ class CaptureResolver:
             store = SqliteDriveStore(self.registry, within=db)
             drives = store.list_drives()
             found = {}
-            command, _, typed = data['text'].replace('|', '\n', 1).partition('\n')
-            typed = typed.strip()
-            direction: Literal['IN', 'OUT'] = 'IN' if command == 'IN' or command.startswith('IN ') else 'OUT'
-            place: Literal['TABLE', 'CABINET', 'SHELF', 'BOX'] | None = None
-            if direction == 'IN':
-                tail = command[2:].strip()
-                first, _, rest = tail.partition(' ')
-                if first in ('TABLE', 'CABINET', 'SHELF', 'BOX'):
-                    place = first
-                    typed = typed or rest.strip()
-                else:
-                    typed = typed or tail
-            if direction == 'OUT' and (not command.startswith('OUT ') or not command[4:].strip()):
-                data['state'] = 'exception'
+            direction, person, place, typed = _parse_text(data['text'])
+            follow_up = data.get('follow_up') or ''
+            if (answer := _parse_text(follow_up))[0] is not None and not picked:  # an IN/OUT answer replaces the caption's direction
+                direction, person, place, typed = answer[0], answer[1], answer[2], answer[3] or typed
+                follow_up = answer[3]
+            if direction is None or direction == 'OUT' and not person:
+                data['state'], data['reason'] = 'exception', 'missing_direction' if readings or typed or follow_up else 'unreadable_label'
                 db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), capture))
                 return _result(data)
             for item in readings:
@@ -185,13 +202,12 @@ class CaptureResolver:
                         data['differences'].append(f'Photo label {item.label} differs from typed {typed}')
             if picked and (chosen := store.get_drive(picked)) is not None:
                 found[chosen.id] = chosen
-            elif not found and (not readings or data.get('follow_up')):
-                identifier = data.get('follow_up') or typed
+            elif not found and (not readings or follow_up):
+                identifier = follow_up or typed
                 candidates = [d for d in drives if identifier and d.label == identifier]
                 drive = candidates[0] if len(candidates) == 1 else store.find_by_serial(identifier) if identifier else None
                 if drive:
                     found[drive.id] = drive
-            person = command[4:]
             recorder = db.execute('SELECT id FROM persons WHERE telegram_id=?', (data['sender_telegram_id'],)).fetchone()
             logged_by = Ref(page_id=recorder[0]) if recorder else Ref(text=f"telegram:{data['sender_telegram_id']}")
             if direction == 'IN':
@@ -214,6 +230,7 @@ class CaptureResolver:
                     _append_event(db, store, drive.id, latest, movement.id)
                 data['lines'].append({'label': drive.label, 'direction': direction, 'person': person})
             data['state'] = 'resolved' if found else 'exception'
+            data['reason'] = None if found else 'no_drive_match' if readings else 'unreadable_label'
             db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), capture))
             return _result(data)
 

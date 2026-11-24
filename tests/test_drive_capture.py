@@ -188,6 +188,63 @@ class CaptureTests(DriveReloadFixture):
         self.assertEqual({d['label']: d['status'] for d in self.drives()},
                          {'Synthetic first': 'released', 'Synthetic second': 'in custody'})
 
+    def test_tolerant_captions_resolve_direction_place_and_person(self) -> None:
+        drive = self.drives()[0]['id']
+        reading = [{'label': 'Synthetic first', 'serial': 'SAMPLE-FIRST', 'confidence': 0.9}]
+        for number, (text, direction, person, place) in enumerate((
+                ('IN: SHELF', 'IN', None, 'SHELF'), ('in - table', 'IN', None, 'TABLE'),
+                ('OUT: Marco', 'OUT', 'Marco', None), ('Out-Marco', 'OUT', 'Marco', None),
+                ('in', 'IN', None, None), ('IN\nSAMPLE-FIRST', 'IN', None, None)), 1):
+            with self.subTest(text=text):
+                capture = self.api('capture', **{**self.post, 'message_id': number, 'text': text,
+                                                 'posted_at': f'2026-11-24T{10 + number}:30:00+08:00'})['result']['capture']
+                self.resolve(reading)
+                result = self.api('capture result', capture=capture)['result']
+                self.assertEqual(result['state'], 'resolved')
+                self.assertEqual(result['lines'][0]['direction'], direction)
+                if direction == 'OUT':
+                    self.assertEqual(result['lines'][0]['person'], person)
+                self.assertEqual(self.api('get', drive=drive)['result']['drive']['place'], place if direction == 'IN' else None)
+
+    def test_incident_caption_with_readable_label_resolves_as_in(self) -> None:
+        capture = self.api('capture', **{**self.post, 'text': 'IN: Remote Master 3 Day 8'})['result']['capture']
+        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
+        result = self.api('capture result', capture=capture)['result']
+        self.assertEqual(result['state'], 'resolved')
+        self.assertEqual([line['direction'] for line in result['lines']], ['IN'])
+        self.assertEqual([d['status'] for d in self.drives()], ['in custody', 'in custody'])
+
+    def test_missing_direction_asks_once_and_a_direction_answer_resolves(self) -> None:
+        reading = [{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}]
+        for number, (answer, direction) in enumerate((('OUT Angel', 'OUT'), ('in: shelf', 'IN')), 1):
+            with self.subTest(answer=answer):
+                capture = self.api('capture', **{**self.post, 'message_id': number, 'text': 'Remote Master 3 Day 8'})['result']['capture']
+                self.resolve(reading)
+                result = self.api('capture result', capture=capture)['result']
+                self.assertEqual((result['state'], result['reason'], result['may_ask']), ('exception', 'missing_direction', True))
+                self.assertEqual(self.api('capture', capture=capture, text=answer)['result']['state'], 'pending')
+                self.resolve(reading)
+                result = self.api('capture result', capture=capture)['result']
+                self.assertEqual((result['state'], result['reason'], result['may_ask']), ('resolved', None, False))
+                self.assertEqual(result['lines'][0]['direction'], direction)
+
+    def test_reasons_and_no_second_question_after_a_failed_answer(self) -> None:
+        capture = self.api('capture', **self.post)['result']['capture']
+        self.resolve([])
+        result = self.api('capture result', capture=capture)['result']
+        self.assertEqual((result['reason'], result['may_ask']), ('unreadable_label', True))
+        self.api('capture', capture=capture, text='NO-SUCH-DRIVE')
+        self.resolve([])
+        result = self.api('capture result', capture=capture)['result']
+        self.assertEqual((result['state'], result['reason'], result['may_ask']), ('exception', 'unreadable_label', False))
+        other = self.api('capture', **{**self.post, 'message_id': 2})['result']['capture']
+        self.resolve([{'label': 'Unknown label', 'serial': None, 'confidence': 0.9}])
+        result = self.api('capture result', capture=other)['result']
+        self.assertEqual((result['reason'], result['may_ask']), ('no_drive_match', True))
+        self.api('capture', capture=other, text='still wrong')
+        self.resolve([{'label': 'Unknown label', 'serial': None, 'confidence': 0.9}])
+        self.assertFalse(self.api('capture result', capture=other)['result']['may_ask'])
+
     def test_unreadable_photo_is_exception_and_follow_up_resolves_same_capture(self) -> None:
         capture = self.api('capture', **self.post)['result']['capture']
         self.resolve([])

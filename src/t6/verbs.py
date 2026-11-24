@@ -2250,6 +2250,8 @@ class DriveCaptureOutput(BaseModel):
     differences: list[str]
     photo_reference: str | None
     message: str | None = None
+    reason: Literal['missing_direction', 'unreadable_label', 'no_drive_match'] | None = None  # why an exception needs help
+    may_ask: bool = False  # true on the first exception; false once a follow-up answer has been tried
     practice: bool = True
 
 

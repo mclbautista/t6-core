@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- `drive capture` reads IN and OUT in any case, followed by a space, colon or dash ("IN: SHELF", "in - table", "OUT: Marco", "Out-Marco"). A post that names a Drive but has no IN or OUT is an exception with reason `missing_direction`. A follow-up answer that starts with IN or OUT supplies or replaces the direction, person and place; other follow-up text is a label or serial. The capture result gains `reason` (`missing_direction`, `unreadable_label`, `no_drive_match`) and `may_ask`, true on the first exception and false once a follow-up answer has been tried (#660).
+
 ## [0.6.26] - 2026-11-24
 
 Fixes the Google Sheets read for `drive reload`, the nightly reload and `drive mapping propose` (#654, PR #655). 0.6.25 read the whole sheet grid, which stalled the host on the per-project sheet (hundreds of tabs, millions of empty cells). The read now takes only the cells that hold data and has size and time limits. No schema change. Nothing is deployed by this release.
