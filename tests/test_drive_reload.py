@@ -198,6 +198,33 @@ class DriveReloadTests(DriveReloadFixture):
             self.assertEqual(detail['assignments'][0]['project'],
                              {'page_id': None, 'text': 'SYNTHETIC UNMAPPED'})
 
+    def test_text_only_project_text_filters_drive_list_like_a_project_id(self) -> None:
+        self.workbook({'SYNTHETIC TEXT ONLY': [HEADER, ['Synthetic first', 'SAMPLE-FIRST']],
+                       'SYNTHETIC OTHER': [HEADER, ['Synthetic second', 'SAMPLE-SECOND']]})
+        self.reload()
+        listed = self.call('list', project='SYNTHETIC TEXT ONLY').result
+        self.assertEqual([d['serial'] for d in listed['drives']], ['SAMPLE-FIRST'])
+        self.assertEqual(listed['total'], 1)
+        self.assertEqual(self.call('list', project='SYNTHETIC MISSING').result['drives'], [])
+
+    def test_reload_report_is_none_before_a_reload_then_the_last_report(self) -> None:
+        self.assertIsNone(self.call('reload report').result['report'])
+        self.workbook({'SYNTHETIC UNMAPPED': [HEADER, ['Synthetic first', 'SAMPLE-FIRST'], ['Synthetic blank', None]]})
+        done = self.reload('report-one')
+        self.workbook({'SYNTHETIC UNMAPPED': [HEADER, ['Synthetic first', 'SAMPLE-FIRST']], 'SYNTHETIC LATER': [HEADER]})
+        last = self.reload('report-two')
+        report = self.call('reload report').result['report']
+        self.assertEqual(report['unmapped_projects'], last['unmapped_projects'])
+        self.assertEqual(report['drives'], last['drives'])
+        self.assertNotEqual(report['drives'], done['drives'])
+        self.assertIsInstance(report['at'], str)
+        self.assertEqual((report['exceptions'], report['exception_rows']), (0, []))
+        self.workbook({'SYNTHETIC UNMAPPED': [HEADER, ['Synthetic first', 'SAMPLE-FIRST', None, 'BAD CAPACITY', None, 'not a date']]})
+        self.reload('report-three')
+        report = self.call('reload report').result['report']
+        self.assertGreater(report['exceptions'], 0)
+        self.assertEqual(report['exception_rows'], self.call('exceptions').result['exceptions'])
+
     def test_applied_mapping_survives_reopen_and_reloads_with_normalized_names(self) -> None:
         project = self.registry.register(actor='setup', idempotency_key='synthetic-mapping').project.id  # type: ignore[union-attr]
         mapping = self.folder / 'mapping.json'

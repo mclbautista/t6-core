@@ -47,15 +47,20 @@ def capture_post(registry: SqliteProjectRegistry, inputs: DriveCaptureInput) -> 
             if recording_input(data['chat_id'], '', b'', recording_chat_id=recording_chat(),
                                topic_id=data.get('topic_id'), recording_topic_id=recording_topic()) is None:
                 return Refused(rule='recording_channel', reason='Only the configured recording channel is accepted')
-            if not inputs.text.strip():
-                return Refused(rule='input', reason='Give a label or serial')
-            if data['state'] in ('resolved', 'undone', 'ignored') or data['state'] == 'pending' and data.get('follow_up') == inputs.text.strip():
+            if not inputs.drive and not inputs.text.strip():
+                return Refused(rule='input', reason='Give a label, serial or Drive')
+            if inputs.drive and SqliteDriveStore(registry, within=db).get_drive(inputs.drive) is None:
+                return Refused(rule='drive', reason='Drive not found')
+            if data['state'] in ('resolved', 'undone', 'ignored') or data['state'] == 'pending' and (
+                    data.get('follow_up_drive') == inputs.drive if inputs.drive else not data.get('follow_up_drive') and data.get('follow_up') == inputs.text.strip()):
                 return Done(result=_result(data))
-            data.update(follow_up=inputs.text.strip(), revision=data.get('revision', 0) + 1, state='pending')
+            data.update(follow_up=inputs.text.strip(), follow_up_drive=inputs.drive, revision=data.get('revision', 0) + 1, state='pending')
             db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), inputs.capture))
             queue.submit('main', 'drive.capture.resolve', f"{inputs.capture}:{data['revision']}",
                          {'capture': inputs.capture, 'revision': data['revision']}, db=db)
             return Done(result=_result(data))
+    if inputs.drive:
+        return Refused(rule='input', reason='A Drive is only given for an existing capture')
     if any(value is None for value in (inputs.chat_id, inputs.message_id, inputs.sender_telegram_id, inputs.posted_at, inputs.photo)):
         return Refused(rule='input', reason='Give chat, message, sender, post time and photo')
     assert inputs.chat_id is not None and inputs.photo is not None
@@ -88,6 +93,29 @@ def _result(data: dict[str, Any]) -> dict[str, Any]:
     return {key: data[key] for key in ('capture', 'state', 'lines', 'differences')} | {'photo_reference': None if data['state'] == 'ignored' else data['capture'], 'message': 'ask for the label' if data['state'] == 'exception' else None}
 
 
+def list_captures(registry: SqliteProjectRegistry, state: str) -> Outcome:
+    with registry._transaction() as db:
+        found = [(json.loads(row[1]), row[0], row[2]) for row in db.execute('SELECT rowid, data, length(photo) FROM drive_captures')]
+        people = dict(db.execute('SELECT telegram_id, id FROM persons WHERE telegram_id IS NOT NULL'))
+    found = [item for item in found if item[0]['state'] == state]
+    found.sort(key=lambda item: (datetime.fromisoformat(item[0]['posted_at']), item[1]), reverse=True)
+    return Done(result={'captures': [
+        {'capture': data['capture'], 'state': data['state'], 'posted_at': data['posted_at'], 'text': data.get('text'),
+         'sender_telegram_id': data['sender_telegram_id'], 'sender': people.get(data['sender_telegram_id']),
+         'lines': data['lines'], 'differences': data['differences'],
+         'photo': {'size': size, 'media_type': data['media_type']} if size else None}
+        for data, _, size in found]})
+
+
+def capture_photo(registry: SqliteProjectRegistry, capture: str) -> Outcome:
+    with registry._transaction() as db:
+        row = db.execute('SELECT data, photo FROM drive_captures WHERE id=?', (capture,)).fetchone()
+    if row is None or not row[1]:
+        return Refused(rule='capture', reason='Capture or photo not found')
+    return Done(result={'capture': capture, 'media_type': json.loads(row[0])['media_type'], 'size': len(row[1]),
+                        'photo': base64.b64encode(row[1]).decode()})
+
+
 def capture_result(registry: SqliteProjectRegistry, capture: str) -> Outcome:
     with registry._transaction() as db:
         row = db.execute('SELECT data FROM drive_captures WHERE id=?', (capture,)).fetchone()
@@ -112,8 +140,9 @@ class CaptureResolver:
                                        topic_id=data.get('topic_id'), recording_topic_id=recording_topic(self.environ))
             if admitted is None:
                 raise ValueError('Capture no longer belongs to the configured recording channel')
-        reading = read_drive_photo(Image(admitted.photo, ImageType(data['media_type'])), provider=self.provider)
-        verdict = classify_transmittal(admitted.text, bool(admitted.photo), reading.drives, provider=self.decisions) if self.decisions is not None else 'transmittal'
+        picked = data.get('follow_up_drive')  # the custodian chose the Drive: the photo is not read again
+        readings = [] if picked else read_drive_photo(Image(admitted.photo, ImageType(data['media_type'])), provider=self.provider).drives
+        verdict = classify_transmittal(admitted.text, bool(admitted.photo), readings, provider=self.decisions) if self.decisions is not None and not picked else 'transmittal'
         with self.registry._transaction() as db:
             row = db.execute('SELECT data FROM drive_captures WHERE id=?', (capture,)).fetchone()
             if row is None:
@@ -146,7 +175,7 @@ class CaptureResolver:
                 data['state'] = 'exception'
                 db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), capture))
                 return _result(data)
-            for item in reading.drives:
+            for item in readings:
                 candidates = [d for d in drives if item.label and d.label == item.label]
                 drive = candidates[0] if len(candidates) == 1 else store.find_by_serial(item.serial) if item.serial else None
                 if drive:
@@ -154,7 +183,9 @@ class CaptureResolver:
                     typed_drive = store.find_by_serial(typed) if typed else None
                     if typed and item.label and typed != item.label and (typed_drive is None or typed_drive.id != drive.id):
                         data['differences'].append(f'Photo label {item.label} differs from typed {typed}')
-            if not found and (not reading.drives or data.get('follow_up')):
+            if picked and (chosen := store.get_drive(picked)) is not None:
+                found[chosen.id] = chosen
+            elif not found and (not readings or data.get('follow_up')):
                 identifier = data.get('follow_up') or typed
                 candidates = [d for d in drives if identifier and d.label == identifier]
                 drive = candidates[0] if len(candidates) == 1 else store.find_by_serial(identifier) if identifier else None

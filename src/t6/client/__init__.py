@@ -19,7 +19,7 @@ from t6.verbs import (
     VersionAddInput, VersionLockInput, VersionFindInput, VersionGetInput,
     MediaLinkInput, MediaUnlinkInput, TimelineLinkInput, TimelineRestampInput, TimelineListInput, FrameioProjectInput, MediaListInput, MediaMigrateInput,
     TranscriptCreateInput, TranscriptGetInput, TranscriptSpeakersInput, TranscriptTranslateInput,
-    DriveCaptureInput, DriveCaptureReadInput,
+    DriveCaptureInput, DriveCaptureListInput, DriveCaptureReadInput, DriveReloadReportInput,
     DriveMappingProposeInput, DriveMappingApplyInput, DriveProjectsInput, DriveOverdueInput, MovementListInput, MovementCorrectInput,
     DriveCutoverInput, DriveReloadInput, DriveReceiveInput, DriveReleaseInput, DriveReturnInput, DriveRetireInput, DriveAssignInput, DriveUnassignInput,
     DriveAddInput, DriveEditInput, DrivePromoteSerialInput, DriveListInput, DriveGetInput, DriveFindInput, DriveCatalogSnapshotInput, DriveCatalogSnapshotsInput, DriveCatalogDiffInput, DriveCatalogAtInput, DriveShipmentsInput, DriveShipmentInput, DriveExceptionsInput,
@@ -167,6 +167,15 @@ class Client:
 
     def drive_capture_undo(self, inputs: DriveCaptureReadInput) -> Result:
         return self.call('drive', 'capture undo', inputs)
+
+    def drive_capture_list(self, inputs: DriveCaptureListInput) -> Result:
+        return self.call('drive', 'capture list', inputs)
+
+    def drive_capture_photo(self, inputs: DriveCaptureReadInput) -> Result:
+        return self.call('drive', 'capture photo', inputs)
+
+    def drive_reload_report(self, inputs: DriveReloadReportInput) -> Result:
+        return self.call('drive', 'reload report', inputs)
 
     def drive_capture_result(self, inputs: DriveCaptureReadInput) -> Result:
         return self.call('drive', 'capture result', inputs)

@@ -5,13 +5,13 @@ way the Drive web app's inventory screen does, and its filters combine with AND.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
 
 from t6.drives import Assignment, CatalogSnapshot, CustodyEvent, CustodyKind, Drive, DriveStatus, DriveStore, Ownership, Party, Ref, normalize_serial
 from t6.verbs import (DriveCatalogAtOutput, DriveCatalogChange, DriveCatalogDiffOutput, DriveCatalogEntryItem, DriveCatalogSnapshotItem,
                       DriveCatalogSnapshotsOutput, DriveAssignmentItem, DriveEventItem, DriveExceptionItem, DriveExceptionsOutput, DriveFindOutput, DriveGetOutput, DriveItem,
-                      DriveListItem, DriveListOutput, DriveMatch, DriveOverdueItem, DriveOverdueOutput, DriveParty, DriveRef, DriveRelease, DriveShipmentItem, DriveShipmentOutput,
+                      DriveListItem, DriveListOutput, DriveMatch, DriveOverdueItem, DriveOverdueOutput, DriveParty, DriveRef, DriveRelease, DriveReloadReport, DriveReloadReportOutput, DriveShipmentItem, DriveShipmentOutput,
                       DriveShipmentsOutput, DriveSourceItem)
 
 
@@ -85,7 +85,8 @@ def list_drives(store: DriveStore, *, q: str | None = None, serial: str | None =
     matching_projects = {pid for pid, code in (project_codes or {}).items() if needle in code.casefold()} if needle else set()
     project_matches = {d.id for d in drives if matching_projects and any(
         a.project and a.project.page_id in matching_projects for a in store.list_assignments(d.id))}
-    out = {drive.id for drive, _ in store.open_assignments(Ref(page_id=project))} if project else None
+    # A registered Project ID, or the text of a text-only Project.
+    out = {drive.id for ref in (Ref(page_id=project), Ref(text=project)) for drive, _ in store.open_assignments(ref)} if project else None
     kept = [d for d in drives
             if (not needle or d.id in project_matches or any(needle in (value or '').casefold() for value in (d.id, d.serial, d.suspected_serial, d.label, d.description, d.qr_code, d.office_location)))
             and (not place or place in (d.office_location or '').casefold())
@@ -211,6 +212,13 @@ def project_counts(store: DriveStore) -> list[dict[str, Any]]:
              'in_house': sum(statuses.get(did) is DriveStatus.IN_CUSTODY for did in ids),
              'released': sum(statuses.get(did) is DriveStatus.RELEASED for did in ids)}
             for project, ids in projects.items()]
+
+
+def reload_report(store: DriveStore, stored: tuple[float, dict[str, Any]] | None) -> DriveReloadReportOutput:
+    if stored is None:
+        return DriveReloadReportOutput(report=None)
+    return DriveReloadReportOutput(report=DriveReloadReport(
+        **stored[1], at=datetime.fromtimestamp(stored[0], timezone.utc).isoformat(), exception_rows=exceptions(store).exceptions))
 
 
 def overdue(store: DriveStore, today: date) -> DriveOverdueOutput:

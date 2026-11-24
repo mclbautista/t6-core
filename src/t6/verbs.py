@@ -2230,6 +2230,7 @@ class DriveCaptureInput(BaseModel):
     photo: str | None = None  # base64-encoded file bytes
     media_type: Literal['image/png', 'image/jpeg', 'image/webp'] = 'image/png'
     capture: str | None = None
+    drive: str | None = None  # with `capture`: a Drive ID the custodian picked for an unresolved capture; needs the `drives` permission
 
 
 class DriveCaptureReadInput(BaseModel):
@@ -2262,6 +2263,50 @@ def drive_capture_undo(inputs: BaseModel, open_notion: Callable[..., Any]) -> Ou
     from t6.drives.capture import undo_capture
     assert isinstance(inputs, DriveCaptureReadInput)
     return undo_capture(_registry.get(), inputs.capture)
+
+
+class DriveCaptureListInput(BaseModel):
+    state: Literal['exception', 'pending', 'resolved', 'ignored', 'undone'] = 'exception'
+
+
+class DriveCapturePhoto(BaseModel):
+    size: int
+    media_type: str
+
+
+class DriveCaptureListItem(BaseModel):
+    capture: str
+    state: Literal['pending', 'resolved', 'exception', 'undone', 'ignored']
+    posted_at: str
+    text: str | None  # none for an ignored capture: nothing is kept
+    sender_telegram_id: int
+    sender: str | None  # the Person with that Telegram ID, when there is one
+    lines: list[DriveCaptureLine]
+    differences: list[str]
+    photo: DriveCapturePhoto | None  # none for an ignored capture; read the bytes with `drive capture photo`
+
+
+class DriveCaptureListOutput(DrivePracticeOutput):
+    captures: list[DriveCaptureListItem]
+
+
+class DriveCapturePhotoOutput(DrivePracticeOutput):
+    capture: str
+    media_type: str
+    size: int
+    photo: str  # base64-encoded file bytes
+
+
+def drive_capture_list(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.drives.capture import list_captures
+    assert isinstance(inputs, DriveCaptureListInput)
+    return list_captures(_registry.get(), inputs.state)
+
+
+def drive_capture_photo(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.drives.capture import capture_photo
+    assert isinstance(inputs, DriveCaptureReadInput)
+    return capture_photo(_registry.get(), inputs.capture)
 
 
 def drive_capture_result(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
@@ -2358,6 +2403,7 @@ class MovementCorrectInput(BaseModel):
     direction: Literal['IN', 'OUT'] | None = None
     person: str | None = None
     place: Literal['TABLE', 'CABINET', 'SHELF', 'BOX'] | None = None
+    project: str | None = None  # a registered Project ID, or the text of a text-only Project; null clears it
     idempotency_key: str | None = None
     confirm: str | None = None
 
@@ -2374,6 +2420,8 @@ def movement_correct(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outc
     changes = inputs.model_dump(exclude={'movement', 'idempotency_key', 'confirm'}, exclude_unset=True)
     if changes.get('direction', 'IN') is None or not changes:
         return Refused(rule='movement', reason='Give at least one correction; direction must be IN or OUT')
+    if 'project' in changes and changes['project'] is not None and not changes['project'].strip():
+        return Refused(rule='project', reason='Give a Project ID or the text of a Project')
     if changes.get('on'):
         try:
             changes['on'] = IsoDate.fromisoformat(changes['on'])
@@ -2899,6 +2947,19 @@ class DriveExceptionItem(BaseModel):
     detail: str
 
 
+class DriveReloadReportInput(BaseModel):
+    pass
+
+
+class DriveReloadReport(DriveReloadOutput):
+    at: str  # the time of the reload, UTC
+    exception_rows: list[DriveExceptionItem]  # the rows that could not load, as `drive exceptions` lists them
+
+
+class DriveReloadReportOutput(DrivePracticeOutput):
+    report: DriveReloadReport | None  # none when no reload has run
+
+
 class DriveExceptionsOutput(DrivePracticeOutput):
     captures: list[DriveCaptureOutput] = Field(default_factory=list)
     exceptions: list[DriveExceptionItem]
@@ -2963,6 +3024,9 @@ def drive_read(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
                 return Refused(rule='shipment', reason=f'Shipment {inputs.shipment} not found')
         elif isinstance(inputs, DriveShipmentsInput):
             result = drive_reads.shipments(store)
+        elif isinstance(inputs, DriveReloadReportInput):
+            from t6.drives.reload import last_reload_report
+            result = drive_reads.reload_report(store, last_reload_report(db))
         else:
             from t6.drives.capture import _result
             result = drive_reads.exceptions(store)
@@ -3045,6 +3109,8 @@ VERBS = (
     Verb('drive', 'projects', 'Project Drive counts', (), DriveProjectsInput, DriveProjectsOutput, 'reader', 'Distinct Drives per Project with an open Assignment, grouped by derived custody status.', drive_projects, read_only=True),
     Verb('drive', 'capture', 'Store a recording-channel post', (), DriveCaptureInput, DriveCaptureOutput, 'gateway', 'Gateway only; stores first and queues resolution.', drive_capture),
     Verb('drive', 'capture undo', 'Undo a capture', (), DriveCaptureReadInput, DriveCaptureOutput, 'gateway', 'Gateway only; appends reversing entries once.', drive_capture_undo),
+    Verb('drive', 'capture list', 'List captures by state', (), DriveCaptureListInput, DriveCaptureListOutput, 'drives', 'Newest first; default state exception. Each has its text, sender and photo size and type; an ignored capture has no text and no photo. Drive callers only.', drive_capture_list, read_only=True),
+    Verb('drive', 'capture photo', 'Read the photo of a capture', (), DriveCaptureReadInput, DriveCapturePhotoOutput, 'drives', 'Returns the kept photo bytes, base64-encoded, to a Drive caller only. Not an MCP tool; never sent to another service.', drive_capture_photo),
     Verb('drive', 'capture result', 'Read a capture outcome', (), DriveCaptureReadInput, DriveCaptureOutput, 'reader', 'Includes Practice and ask-for-label state.', drive_capture_result, read_only=True),
     Verb('movement', 'correct', 'Append a Movement correction', (), MovementCorrectInput, MovementCorrectOutput, 'drives', 'Preview and confirm a correction; the original Movement and custody events remain.', movement_correct),
     Verb('movement', 'list', 'Search the Movement log', (), MovementListInput, MovementListOutput, 'reader', 'Filters combine with AND; includes unresolved rows and corrections.', movement_list, read_only=True),
@@ -3069,6 +3135,7 @@ VERBS = (
     Verb('drive', 'shipments', 'List Drive shipments', (), DriveShipmentsInput, DriveShipmentsOutput, 'reader', 'One entry for each shipment, in the order first released.', drive_read, read_only=True),
     Verb('drive', 'shipment', 'Show one Drive shipment', (), DriveShipmentInput, DriveShipmentOutput, 'reader', 'The Drives of the shipment with their release events and the recipient. Facts are as they were at release; facts_at_release is false for an earlier shipment, which shows current facts.', drive_read, read_only=True),
     Verb('drive', 'exceptions', 'List the Drive import exceptions', (), DriveExceptionsInput, DriveExceptionsOutput, 'reader', 'Rows the Drive import could not read, kept for review.', drive_read, read_only=True),
+    Verb('drive', 'reload report', 'Read the last Drive reload report', (), DriveReloadReportInput, DriveReloadReportOutput, 'reader', 'The last stored report: counts, unmapped Projects, the rows that could not load, and the time of the reload. Report is none before any reload.', drive_read, read_only=True),
     Verb('drive', 'overdue', 'List T6 Drives OUT for more than 14 days', (), DriveOverdueInput, DriveOverdueOutput, 'reader', 'Last custody event must be a dated release more than 14 Manila days ago; oldest first.', drive_read, read_only=True),
     Verb('swing', 'assign', 'Assign a swing Drive to a Person or Project', (), SwingAssignInput, SwingWriteOutput, 'drives', 'Preview and confirm; adds a swing Assignment, with an optional return date. A Person target needs no Project; --project may be added.', swing_write),
     Verb('swing', 'unassign', 'End a swing Assignment', (), SwingUnassignInput, SwingWriteOutput, 'drives', 'Ends the open swing Assignment and keeps it, with its return date, in history. When several are open, pick by --project, --person or --assignment.', swing_write),
@@ -3212,7 +3279,8 @@ def invoke(entry: Verb, inputs: BaseModel, *, actor: str, people: People,
             return Refused(rule='person', reason='An active replier Person is required')
     refusal = (None if entry.noun in ('approval', 'package', 'abang') and entry.role == 'person' and (person := people.get(actor)) and person['active'] else
                Refused(rule='person', reason='An active Person is required') if entry.noun in ('approval', 'package', 'abang') and entry.role == 'person' else
-               people.authorize(actor, 'reader' if isinstance(inputs, ConcernNoteInput) and inputs.from_reply is not None else entry.role))
+               people.authorize(actor, 'reader' if isinstance(inputs, ConcernNoteInput) and inputs.from_reply is not None else
+                                'drives' if isinstance(inputs, DriveCaptureInput) and inputs.drive is not None else entry.role))
     if refusal:
         return refusal
     if entry.noun == 'person' and entry.verb in ('grant', 'revoke'):
@@ -3498,10 +3566,14 @@ def add_parsers(commands: Any) -> None:
             if entry.handler is drive_capture:
                 parser = parser.add_parser('capture', help=entry.description)
                 nouns['drive capture'] = parser.add_subparsers(dest='drive_capture_verb')
-            elif entry.handler in (drive_capture_undo, drive_capture_result):
+            elif entry.handler in (drive_capture_undo, drive_capture_result, drive_capture_list, drive_capture_photo):
                 parser = nouns['drive capture'].add_parser(entry.verb.split()[1], help=entry.description)
+            elif entry.handler is drive_read and entry.verb == 'reload report':
+                parser = nouns['drive reload'].add_parser('report', help=entry.description)
             else:
                 parser = parser.add_parser(entry.verb, aliases=aliases, help="[verb] " + entry.description)
+                if entry.handler is drive_reload and entry.verb == 'reload':
+                    nouns['drive reload'] = parser.add_subparsers(dest='drive_reload_verb')
         if entry.handler is abang_write:
             parser.add_argument('person' if entry.verb == 'request' else 'candidate' if entry.verb == 'accept' else 'request')
             if entry.verb == 'accept':
