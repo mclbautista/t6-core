@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.27] - 2026-11-24
+
+The Drive web pages release (spec #665). Going live is now the setting `T6_DRIVE_LIVE=true`, read on start (ADR 0010), and the `drive cutover` verb is removed. Adds movement photos, `drive recycle`, the Contacts picker reads and writes, and the latest movement per Project. It also includes the quiet TRANSMITTAL capture work (spec #659) and fixes for `drive mapping apply` and title rows in the tracker. Schema: migration 60 adds `drive_movement_photos`. The API and the main worker need `T6_DRIVE_PHOTO_DIR` (the `t6_photos` volume, netops #176). Do not set `T6_DRIVE_LIVE` before the cutover on 2026-12-03. Nothing is deployed by this release.
+
 ### Added
 
 - `drive capture` reads IN and OUT in any case, followed by a space, colon or dash ("IN: SHELF", "in - table", "OUT: Marco", "Out-Marco"). A post that names a Drive but has no IN or OUT is an exception with reason `missing_direction`. A follow-up answer that starts with IN or OUT supplies or replaces the direction, person and place; other follow-up text is a label or serial. The capture result gains `reason` (`missing_direction`, `unreadable_label`, `no_drive_match`) and `may_ask`, true on the first exception and false once a follow-up answer has been tried (#660).
