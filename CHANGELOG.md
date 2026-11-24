@@ -7,6 +7,11 @@ All notable changes to this project are documented here, following [Keep a Chang
 ### Added
 
 - `drive capture` reads IN and OUT in any case, followed by a space, colon or dash ("IN: SHELF", "in - table", "OUT: Marco", "Out-Marco"). A post that names a Drive but has no IN or OUT is an exception with reason `missing_direction`. A follow-up answer that starts with IN or OUT supplies or replaces the direction, person and place; other follow-up text is a label or serial. The capture result gains `reason` (`missing_direction`, `unreadable_label`, `no_drive_match`) and `may_ask`, true on the first exception and false once a follow-up answer has been tried (#660).
+- `drive capture` accepts a recording-channel post with no photo (the configured chat and topic are still enforced). If Jev keeps it, it becomes an exception with reason `no_photo` (`may_ask` false), listed by `drive capture list` with photo none, and is never sent to the image model (#661).
+
+### Changed
+
+- Jev's transmittal check now runs before the photo read, on the withheld caption and a has-photo flag only (no photo readings). Only an explicit "no" discards the post, without calling the image model; a failure or "maybe" keeps it. Follow-up answers and custodian-picked Drives skip Jev. Prompt tag `drive-transmittal-v1` becomes `drive-transmittal-v2`: a live eval run of v2 is an owner step and must be recorded before the release that contains it. ADR 0009 is amended (#661).
 
 ## [0.6.26] - 2026-11-24
 
