@@ -211,6 +211,61 @@ class CaptureTests(DriveReloadFixture):
                     self.assertEqual(result['lines'][0]['person'], person)
                 self.assertEqual(self.api('get', drive=drive)['result']['drive']['place'], place if direction == 'IN' else None)
 
+    def read_caption(self, text: str, message_id: int = 1) -> dict[str, Any]:
+        return dict(self.api('capture', **{**self.post, 'message_id': message_id, 'text': text})['result'])
+
+    def test_caption_habit_reads_items_counts_recipient_and_tags(self) -> None:
+        for number, (text, direction, items, counts, recipient, tags) in enumerate((
+                ('OUT: SYN7 D21\nR: Marco', 'OUT', ['SYN7 D21'], [], 'Marco', []),
+                ('OUT SYN7 D21\nSYN7 D22\nR: Marco @synthetic_pm', 'OUT', ['SYN7 D21', 'SYN7 D22'], [], 'Marco', ['synthetic_pm']),
+                ('in - RMX D07 (Master 02 and 03)', 'IN', ['RMX D07 (Master 02 and 03)'], [], None, []),
+                ('IN:\nLSB\n48 FD @synthetic_pm @synthetic_two', 'IN', ['LSB'], [{'count': 48, 'kind': 'FD'}], None, ['synthetic_pm', 'synthetic_two']),
+                ('OUT\n50 Portable drives\nR: Synthetic Studio', 'OUT', [], [{'count': 50, 'kind': 'Portable drives'}], 'Synthetic Studio', []),
+                ('Out - SYN HD #97\n14 SYN D03\nr: Marco', 'OUT', ['SYN HD #97', '14 SYN D03'], [], 'Marco', []),
+                ('IN SYN9 D01\n\n  SYN9 D02  \n12 FD\n20 Flash drives', 'IN', ['SYN9 D01', 'SYN9 D02'],
+                 [{'count': 12, 'kind': 'FD'}, {'count': 20, 'kind': 'Flash drives'}], None, []))):
+            with self.subTest(text=text):
+                result = self.read_caption(text, number)
+                self.assertEqual(result['items'], [dict(text=t, state='open') for t in items])
+                self.assertEqual((result['counts'], result['recipient'], result['tags']), (counts, recipient, tags))
+                self.assertEqual((result['grade'], result['problem']), ('complete', None))
+
+    def test_caption_without_direction_or_recipient_is_a_problem(self) -> None:
+        for number, (text, problem) in enumerate((
+                ('SYN7 D21\nR: Marco', 'missing_direction'), ('SYN7 D21', 'missing_direction'),
+                ('OUT SYN7 D21', 'missing_recipient'), ('OUT\n48 FD', 'missing_recipient'),
+                ('OUT', 'missing_recipient')), 1):
+            with self.subTest(text=text):
+                result = self.read_caption(text, number)
+                self.assertEqual((result['grade'], result['problem']), ('problem', problem))
+
+    def test_caption_without_an_item_or_count_line_is_thin_and_in_needs_no_recipient(self) -> None:
+        for number, text in enumerate(('IN', 'in:', 'OUT:\nR: Marco @synthetic_pm'), 1):
+            with self.subTest(text=text):
+                result = self.read_caption(text, number)
+                self.assertEqual((result['items'], result['counts'], result['grade'], result['problem']), ([], [], 'thin', None))
+        self.assertEqual(self.read_caption('IN SYN7 D21', 10)['grade'], 'complete')
+
+    def test_editing_a_caption_reads_it_again_and_can_change_the_grade(self) -> None:
+        capture = self.read_caption('SYN7 D21\nR: Marco')['capture']
+        self.assertEqual(self.api('capture result', capture=capture)['result']['problem'], 'missing_direction')
+        for text, grade, problem in (('OUT SYN7 D21', 'problem', 'missing_recipient'), ('OUT SYN7 D21\nR: Marco', 'complete', None)):
+            edited = self.api('capture', capture=capture, text=text, edit=True)['result']
+            self.assertEqual((edited['grade'], edited['problem']), (grade, problem))
+            self.assertEqual(self.api('capture result', capture=capture)['result']['grade'], grade)
+
+    def test_the_r_line_names_the_person_an_out_is_released_to(self) -> None:
+        capture = self.read_caption('OUT SYN7 D21\nR: Marco')['capture']
+        self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])
+        result = self.api('capture result', capture=capture)['result']
+        self.assertEqual((result['state'], result['lines'][0]['person']), ('resolved', 'Marco'))
+
+    def test_an_ignored_capture_keeps_no_caption_reading(self) -> None:
+        capture = self.read_caption('OUT SYN7 D21\nR: Marco')['capture']
+        self.resolve([], 'no')
+        result = self.api('capture result', capture=capture)['result']
+        self.assertEqual((result['state'], result['items'], result['grade'], result['problem']), ('ignored', [], None, None))
+
     def test_incident_caption_with_readable_label_resolves_as_in(self) -> None:
         capture = self.api('capture', **{**self.post, 'text': 'IN: Remote Master 3 Day 8'})['result']['capture']
         self.resolve([{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}])

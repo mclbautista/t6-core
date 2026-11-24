@@ -5,7 +5,6 @@ import base64
 import binascii
 import json
 import os
-import re
 import time
 from collections.abc import Mapping
 from dataclasses import replace
@@ -15,6 +14,7 @@ from uuid import uuid4
 
 from t6.domain.events import JsonValue
 from t6.drives import Ref
+from t6.drives.caption import DIRECTION, parse_caption
 from t6.drives.movements import Movement, active_movements, append, custody_event, latest_custody, _append_event
 from t6.drives.debug import DebugNotifier
 from t6.drives.sqlite import SqliteDriveStore
@@ -40,7 +40,6 @@ def recording_topic(environ: Mapping[str, str] | None = None) -> int | None:
 
 
 UNDO_WINDOW_SECONDS = 3600
-_DIRECTION = re.compile(r'(in|out)(?=[\s:\-]|$)[\s:\-]*', re.IGNORECASE)
 _PLACES = ('TABLE', 'CABINET', 'SHELF', 'BOX')
 
 
@@ -48,7 +47,7 @@ def _parse_text(text: str) -> tuple[Literal['IN', 'OUT'] | None, str, Literal['T
     """Read a caption or follow-up answer as (direction, person, place, typed label); direction is None without a leading IN/OUT."""
     command, _, typed = text.strip().replace('|', '\n', 1).partition('\n')
     typed = typed.strip()
-    start = _DIRECTION.match(command.strip())
+    start = DIRECTION.match(command.strip())
     if start is None:
         return None, '', None, typed or command.strip()
     direction: Literal['IN', 'OUT'] = 'IN' if start[1].upper() == 'IN' else 'OUT'
@@ -131,7 +130,11 @@ def _undo_until(data: dict[str, Any]) -> str | None:
 
 
 def _result(data: dict[str, Any]) -> dict[str, Any]:
-    return {key: data[key] for key in ('capture', 'state', 'lines', 'differences')} | {'photo_reference': None if data['state'] == 'ignored' else data['capture'], 'message': 'ask for the label' if data['state'] == 'exception' else None,
+    caption = parse_caption(data['text']) if data['state'] != 'ignored' and 'text' in data else None  # an ignored capture keeps no caption
+    return {key: data[key] for key in ('capture', 'state', 'lines', 'differences')} | {
+            'items': [{'text': text, 'state': 'open'} for text in caption.items] if caption else [], 'counts': caption.counts if caption else [],
+            'recipient': caption.recipient if caption else None, 'tags': caption.tags if caption else [],
+            'grade': caption.grade if caption else None, 'problem': caption.problem if caption else None,'photo_reference': None if data['state'] == 'ignored' else data['capture'], 'message': 'ask for the label' if data['state'] == 'exception' else None,
             'reason': data.get('reason') if data['state'] == 'exception' else None,
             'may_ask': data['state'] == 'exception' and not data.get('answered') and data.get('reason') != 'no_photo',
             'undo_until': _undo_until(data)}
@@ -244,6 +247,8 @@ class CaptureResolver:
             if (answer := _parse_text(follow_up))[0] is not None and not picked:  # an IN/OUT answer replaces the caption's direction
                 direction, person, place, typed = answer[0], answer[1], answer[2], answer[3] or typed
                 follow_up = answer[3]
+            if direction == 'OUT' and (recipient := parse_caption(data['text']).recipient) and not answer[0]:  # an `R:` line names the recipient
+                person = recipient
             if self.debug is not None:
                 data.setdefault('debug', {})['parsed'] = {'direction': direction, 'person': person or None, 'place': place}
             if not admitted.photo and not picked and not data.get('follow_up'):  # any answer lets a text-only Capture go on
