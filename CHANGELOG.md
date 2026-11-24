@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.24] - 2026-11-24
+
+The Drive web app can search by Project code and show who has each Drive and where it is (#646), and the API gains the Concerns rollout and JO Health (spec #635). The schema moves from 55 to 59 (additive migrations, none forward-only: 0.6.23 still opens it). Breaking: `concern snooze` is gone (see Removed). Nothing is deployed by this release.
+
 ### Added
 
 - `drive list` searches Assignment Project codes; `drive list` and `drive get` return the custody-log holder and Place, sharing the existing free-text `office_location` with IN, OUT, movement corrections and `drive edit` (#646).
