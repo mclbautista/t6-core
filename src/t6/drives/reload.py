@@ -77,6 +77,9 @@ def reload_drives(registry: SqliteProjectRegistry, tokens: PreviewTokens, source
         matched = sum(m.drive is not None for m in movements)
         db.execute('INSERT OR IGNORE INTO drive_serial_ids SELECT serial, id FROM drives WHERE serial IS NOT NULL')
         drives = store.list_drives()
+        stale_photos += [row[0] for row in db.execute('SELECT path FROM drive_reference_photos WHERE drive_id NOT IN (SELECT id FROM drives)')]
+        for table in ('drive_short_names', 'drive_reference_photos'):
+            db.execute(f'DELETE FROM {table} WHERE drive_id NOT IN (SELECT id FROM drives)')
         statuses = [store.status(d.id) for d in drives]
         report: dict[str, Any] = {'movements_read': len(movements), 'movements_matched': matched, 'movements_unmatched': len(movements) - matched,
                                   'rows_read': result.imported + len(result.review) + tracker_rows + len(movements), 'drives': len(drives),

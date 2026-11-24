@@ -63,27 +63,33 @@ def _movement_exists(db: sqlite3.Connection, movement: str) -> bool:
     return db.execute("SELECT 1 FROM drive_movements WHERE id=?", (movement,)).fetchone() is not None
 
 
+def store_file(folder: Path, key: str, data: bytes, media_type: str) -> tuple[str, str]:
+    """Atomically store photo bytes in the shared movement/reference photo folder."""
+    digest = hashlib.sha256(data).hexdigest()
+    relative = f"{key[-2:]}/{key}-{digest[:12]}.{EXTENSIONS[media_type]}"
+    final = folder / relative
+    final.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=final.parent, suffix=".tmp", delete=False) as tmp:
+        tmp.write(data)
+    temporary = Path(tmp.name)
+    try:
+        os.chmod(temporary, 0o600)
+        temporary.replace(final)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return relative, digest
+
+
 def add_photo(registry: SqliteProjectRegistry, movement: str, data: bytes, media_type: str, *, actor: str,
               folder: Path | None) -> dict[str, Any]:
     """Store or replace the photo of a movement. The old file is removed after the new one is saved."""
     if folder is None:
         raise PhotoError("config", f"Set {PHOTO_VARIABLE}")
-    digest = hashlib.sha256(data).hexdigest()
-    relative = f"{movement[-2:]}/{movement}-{digest[:12]}.{EXTENSIONS[media_type]}"
-    final = folder / relative
     old: str | None = None
     with registry._transaction() as db:
         if not _movement_exists(db, movement):
             raise PhotoError("movement", "Movement not found")
-        final.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(dir=final.parent, suffix=".tmp", delete=False) as tmp:
-            tmp.write(data)
-        temporary = Path(tmp.name)
-        try:
-            os.chmod(temporary, 0o600)
-            temporary.replace(final)
-        finally:
-            temporary.unlink(missing_ok=True)
+        relative, digest = store_file(folder, movement, data, media_type)
         row = db.execute("SELECT path FROM drive_movement_photos WHERE movement_id=?", (movement,)).fetchone()
         old = row[0] if row else None
         db.execute("INSERT OR REPLACE INTO drive_movement_photos (movement_id, path, media_type, size, sha256, added_by, at) "

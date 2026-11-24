@@ -449,6 +449,13 @@ _MIGRATIONS = (
     (64, False, """CREATE TABLE crm_snooze (person_id TEXT PRIMARY KEY REFERENCES persons(id), until TEXT NOT NULL, set_at REAL NOT NULL)"""),
     # What the Concerns sheet last showed for a Concern: the result of its latest Submit, and the job that wrote it (t6-core #735).
     (65, False, """CREATE TABLE concern_sheet_results (concern_id TEXT PRIMARY KEY REFERENCES concerns(id), result TEXT NOT NULL, job_id INTEGER NOT NULL, at REAL NOT NULL)"""),
+    # Custodian-confirmed names and reference photos survive Reload for preserved Drive IDs (#726).
+    (66, False, """CREATE TABLE drive_short_names (text TEXT NOT NULL, drive_id TEXT NOT NULL, project TEXT,
+    confirmations INTEGER NOT NULL, last_confirmed REAL NOT NULL, PRIMARY KEY (text, drive_id));
+    CREATE TABLE drive_reference_photos (drive_id TEXT PRIMARY KEY, path TEXT NOT NULL, media_type TEXT NOT NULL,
+    size INTEGER NOT NULL, sha256 TEXT NOT NULL, added_by TEXT NOT NULL, at REAL NOT NULL);
+    CREATE TABLE drive_match_approvals (id INTEGER PRIMARY KEY AUTOINCREMENT, capture TEXT NOT NULL, item INTEGER NOT NULL,
+    outcome TEXT NOT NULL, rank INTEGER, at REAL NOT NULL, who TEXT NOT NULL)"""),
 )
 
 

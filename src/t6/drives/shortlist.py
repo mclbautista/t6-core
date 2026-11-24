@@ -1,6 +1,7 @@
 """Plain-code, direction-filtered candidates for a recording Item."""
 from __future__ import annotations
 
+import json
 import sqlite3
 from typing import Any
 
@@ -53,18 +54,23 @@ def guesses(db: sqlite3.Connection, store: SqliteDriveStore, text: str, directio
             except Exception:
                 pass
         names[ref] = forms
+    short_names: dict[str, list[tuple[str, int]]] = {}
+    for name, drive, project, count in db.execute('SELECT text, drive_id, project, confirmations FROM drive_short_names'):
+        short_names.setdefault(drive, []).append((name, count))
+        if project:
+            names.setdefault(Ref(**json.loads(project)), []).append(name)
     scores = {ref: max((wratio(wanted, normal.text(name)) for name in forms), default=0.0) for ref, forms in names.items()}
     strong = {ref for person in tagged if len(coordinated.get(person, set())) == 1 for ref in coordinated[person]}
     projects = {ref: 1.0 for ref in strong} if strong else {ref: score for ref, score in scores.items() if score >= 0.6}
     weak = {ref for person in tagged for ref in coordinated.get(person, set())}
     status = DriveStatus.RELEASED if direction == 'IN' else DriveStatus.IN_CUSTODY
     active = {m.id for m in active_movements(db)}
-    ranked = []
+    ranked: list[tuple[float, bool, bool, float, dict[str, Any]]] = []
     for drive in store.list_drives():
         if store.status(drive.id) != status:
             continue
         project_score = max((projects.get(a.project, 0.0) for a in uses[drive.id] if a.project), default=0.0)
-        label_score = wratio(wanted, normal.text(drive.label or ''))
+        label_score = max(wratio(wanted, normal.text(name)) for name in [drive.label or '', *[name for name, _ in short_names.get(drive.id, [])]])
         if projects and not project_score or not projects and label_score < 0.6:
             continue
         score = project_score if projects else label_score
@@ -78,7 +84,15 @@ def guesses(db: sqlite3.Connection, store: SqliteDriveStore, text: str, directio
         if holder:
             reason += '; last released to poster or tagged Person'
         ranked.append((score, any(a.project in weak for a in uses[drive.id]), holder, label_score,
-                       {'drive': drive.id, 'confidence': min(score, 0.9), 'reason': reason}))
+                       {'drive': drive.id, 'confidence': min(score, 0.9), 'reason': reason, 'exact': False}))
     ranked.sort(key=lambda g: (-g[0], -g[1], -g[2], -g[3]))
     shortlist = ranked[:6]
+    shared = [g for g in shortlist if (drive := store.get_drive(g[4]['drive'])) is not None
+              and (text == drive.label or any(text == name for name, _ in short_names.get(drive.id, [])))]
+    if len(shared) == 1:
+        guess = shared[0][4]
+        if any(name == text and count >= 3 for name, count in short_names.get(guess['drive'], [])) and db.execute(
+                'SELECT 1 FROM drive_reference_photos WHERE drive_id=?', (guess['drive'],)).fetchone():
+            guess.update(confidence=0.95, exact=True, reason='Confirmed exact match; unique in shortlist; direction fits; Reference photo')
+    shortlist.sort(key=lambda g: not g[4]['exact'])
     return [g[4] for g in shortlist[:3]]

@@ -98,6 +98,10 @@ Modelled in `t6.drives`.
 - **Guess**: a ranked candidate Drive for an Item, with a confidence and a
   one-line reason. Guess 1 records a Movement at once, marked **to review** until
   the custodian approves it; a different pick or None appends a correction.
+- **Short name**: an Item's text learned as a name for a Drive and its Project,
+  with the number of custodian confirmations and the last confirmation time.
+- **Reference photo**: the newest approved Capture photo of a Drive. A later
+  text-only Approval keeps the existing Reference photo.
 - **Count line**: a caption line that is only a number and a kind ("48 FD", "50
   Portable drives"). It is kept on the Capture and is never an Item.
 - **Inbox**: the Items waiting on the custodian's Approval. Every Item of a kept
@@ -116,7 +120,9 @@ Modelled in `t6.drives`.
   QR labels are not used for recording.
 - **Reload**: a complete replacement of Drive data from the source sheets,
   including Assignments, custody events, shipments, the Movement log,
-  exceptions and Captures, preserving each accepted serial's Drive ID.
+  exceptions and Captures, preserving each accepted serial's Drive ID. Short
+  names and Reference photos stay only for preserved Drive IDs; the accuracy
+  log spans Reloads.
 - **Reload report**: the account of a Reload's rows read, Drives, Project uses,
   matched and unmatched movements, exceptions and unmatched Project names.
 - **Practice mode**: the period before Cutover when recordings are practice
