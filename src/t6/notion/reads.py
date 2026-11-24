@@ -169,6 +169,11 @@ class StudioReader:
             names += [row.name or "", *row.aliases]
         return tuple(names)
 
+    def titles(self, *, freshness: Freshness = "mirror") -> dict[str, str]:
+        """Each live Studio's name by page ID."""
+        pages = self._notion.query_data_source(self._source, freshness=freshness)
+        return {page["id"]: StudiosRow.from_page(page).name or "" for page in pages if is_live(page)}
+
 
 class DeliverableReader:
     def __init__(self, source: NotionSource | NotionClient, data_source_id: str) -> None:

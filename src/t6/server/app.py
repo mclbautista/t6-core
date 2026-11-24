@@ -965,6 +965,22 @@ class WebhookApp:
             if not isinstance(registry, SqliteProjectRegistry):
                 return Response(503, {"error": "Notion edits unavailable"})
             return Response(200, NotionEdits(registry).project_status(steps[1], status, editor, event, editor_id, field, option_id))
+        if len(steps) == 2 and steps[0] == 'notion-crm-edit':
+            if not any(g.registry_sync for g in grants):
+                return Response(403, {'error': 'registry sync not allowed'})
+            if request.method != 'POST':
+                return Response(405)
+            notion_body = _json_object(request.body) or {}
+            label, names, editor, event = notion_body.get('property'), notion_body.get('names'), notion_body.get('editor'), notion_body.get('event')
+            from t6.notion.projection import CRM_RELATIONS
+            if label not in {name for _, name in CRM_RELATIONS} or not isinstance(editor, str) or not isinstance(event, str) \
+                    or not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+                return Response(400, {'error': 'invalid CRM edit'})
+            from t6.notion_edits import NotionEdits
+            from t6.registry.sqlite import SqliteProjectRegistry
+            if not isinstance(registry, SqliteProjectRegistry):
+                return Response(503, {'error': 'Notion edits unavailable'})
+            return Response(200, NotionEdits(registry).crm_edit(steps[1], label, names, editor, event))
         if len(steps) == 2 and steps[0] == "notion-projection":
             if not any(g.registry_sync for g in grants):
                 return Response(403, {"error": "registry sync not allowed"})
@@ -1162,6 +1178,20 @@ class WebhookApp:
             return Response(403, {"error": "registry sync not allowed"})
         if body is None:
             return Response(400, {"error": "body is not a JSON object"})
+        if steps[2] == "register":
+            event, status, option_id, relations = body.get("event"), body.get("status"), body.get("option_id"), body.get("relations") or {}
+            if not isinstance(event, str) or not event or not all(v is None or isinstance(v, str) for v in (status, option_id)):
+                return Response(400, {"error": "event is required; status and option_id are strings or null"})
+            if not isinstance(relations, dict) or not all(isinstance(names, list) and all(isinstance(n, str) for n in names) for names in relations.values()):
+                return Response(400, {"error": "relations are lists of names by label"})
+            from t6.notion.projection import CRM_RELATIONS
+            if not set(relations) <= {label for _, label in CRM_RELATIONS}:
+                return Response(400, {"error": "relations are lists of names by label"})
+            from t6.notion_edits import NotionEdits
+            from t6.registry.sqlite import SqliteProjectRegistry
+            if not isinstance(registry, SqliteProjectRegistry):
+                return Response(503, {"error": "Notion edits unavailable"})
+            return Response(200, NotionEdits(registry).register_created_page(steps[1], event, status, option_id, syncer.actor, relations))
         if steps[2] == "sync":
             revision, ok, attempt = body.get("revision"), body.get("ok"), body.get("attempt", 1)
             if not (isinstance(revision, int) and isinstance(ok, bool) and isinstance(attempt, int)):
@@ -1209,7 +1239,7 @@ class WebhookApp:
 
 
 _REGISTRY_CHANGES = frozenset({"code", "rotation", "bindings"})
-_REGISTRY_SYNC_ROUTES = frozenset({("projects", "sync"), ("pages", "observed"), ("pages", "reconcile")})
+_REGISTRY_SYNC_ROUTES = frozenset({("projects", "sync"), ("pages", "observed"), ("pages", "reconcile"), ("pages", "register")})
 
 
 def _card_body(card: Card) -> dict[str, JsonValue]:

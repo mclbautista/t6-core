@@ -25,7 +25,11 @@ registry owns are shown in Notion by asynchronous sync. They are displays
 there, not inputs: editing them in Notion never creates or changes identity.
 
 The registry never infers or merges identity from a code or a name. A Project
-exists because someone registered it.
+exists because someone registered it. Creating a page in the Projects data
+source counts as that registration: the `page.created` event registers it as a
+Lead (out of rotation, no code), keyed by the event ID so a replay registers
+once (#710). A page that already exists is never registered because it was
+edited or looked at; it still needs an explicit registration.
 
 ## Consequences
 

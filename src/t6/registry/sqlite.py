@@ -441,8 +441,14 @@ _MIGRATIONS = (
     (62, False, """CREATE TABLE project_stage_history (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL REFERENCES projects(id),
     at REAL NOT NULL, actor TEXT NOT NULL, field TEXT NOT NULL, from_value TEXT, to_value TEXT NOT NULL, event TEXT NOT NULL UNIQUE);
     CREATE INDEX project_stage_history_project ON project_stage_history (project_id, id)"""),
+    # One row per CRM-relevant edit of a Lead, with names as they were shown; feeds the CRM Sheet History tab (t6-core #713).
+    (63, False, """CREATE TABLE crm_edit_history (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL REFERENCES projects(id),
+    at REAL NOT NULL, property TEXT NOT NULL, from_value TEXT NOT NULL, to_value TEXT NOT NULL, actor TEXT NOT NULL, event TEXT NOT NULL,
+    UNIQUE (event, property))"""),
+    # A person's CRM snooze: the last snoozed day (Manila); one row per person, deleted on unsnooze (t6-core #716).
+    (64, False, """CREATE TABLE crm_snooze (person_id TEXT PRIMARY KEY REFERENCES persons(id), until TEXT NOT NULL, set_at REAL NOT NULL)"""),
     # What the Concerns sheet last showed for a Concern: the result of its latest Submit, and the job that wrote it (t6-core #735).
-    (63, False, """CREATE TABLE concern_sheet_results (concern_id TEXT PRIMARY KEY REFERENCES concerns(id), result TEXT NOT NULL, job_id INTEGER NOT NULL, at REAL NOT NULL)"""),
+    (65, False, """CREATE TABLE concern_sheet_results (concern_id TEXT PRIMARY KEY REFERENCES concerns(id), result TEXT NOT NULL, job_id INTEGER NOT NULL, at REAL NOT NULL)"""),
 )
 
 
@@ -482,6 +488,10 @@ def _migrate(db: sqlite3.Connection) -> None:
                 for operation in ("UPDATE", "DELETE"):
                     db.execute(f"CREATE TRIGGER drive_shipment_facts_no_{operation.lower()} BEFORE {operation} ON drive_shipment_facts "
                                "BEGIN SELECT RAISE(ABORT, 'drive shipment facts are append-only'); END")
+            if version == 63:
+                for operation in ("UPDATE", "DELETE"):
+                    db.execute(f"CREATE TRIGGER crm_edit_history_no_{operation.lower()} BEFORE {operation} ON crm_edit_history "
+                               "BEGIN SELECT RAISE(ABORT, 'CRM edit history is append-only'); END")
             if version == 62:
                 for operation in ("UPDATE", "DELETE"):
                     db.execute(f"CREATE TRIGGER project_stage_history_no_{operation.lower()} BEFORE {operation} ON project_stage_history "
@@ -1076,6 +1086,13 @@ def _code_held(db: sqlite3.Connection, code: str, form: str, project_id: str) ->
         return None
     in_rotation = any(row[1] == Rotation.IN.value for row in rows)
     return CodeHeld(code, tuple(row[0] for row in rows), "in_rotation" if in_rotation else "unclassified")
+
+
+def latest_stages(db: sqlite3.Connection, project_id: str | None = None) -> dict[str, tuple[str, float]]:
+    """Project ID to its newest stage history row (label, time), for every Project or for one."""
+    where, args = ('WHERE project_id = ? ', (project_id,)) if project_id is not None else ('', ())
+    rows = db.execute(f'SELECT project_id, to_value, at FROM project_stage_history WHERE id IN (SELECT MAX(id) FROM project_stage_history {where}GROUP BY project_id)', args)
+    return {str(row[0]): (str(row[1]), float(row[2])) for row in rows}
 
 
 def _audit(

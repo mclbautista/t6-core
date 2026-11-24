@@ -14,7 +14,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
-from t6.domain import Project
+from t6.domain import CrmStage, Project
 from t6.domain.dateformats import MANILA
 
 __all__ = [
@@ -83,6 +83,21 @@ def status_gate(status: object) -> StatusGroup | None:
     if key in _INCOMING:
         return StatusGroup.INCOMING
     return None
+
+
+def crm_stage(recorded: str | None, status: object) -> CrmStage | None:
+    """A Project's current CRM stage: the newest recorded stage, else the one its Notion Status names.
+
+    A recorded label that is no CRM stage (In-Progress) means the CRM part has ended, whatever the Status says.
+    """
+    if recorded is not None:
+        return next((stage for stage in CrmStage if stage.value == recorded), None)
+    return next((stage for stage in CrmStage if status_key(stage.value) == status_key(status)), None)
+
+
+def is_lead(stage: CrmStage | None) -> bool:
+    """A Lead is a Project in a CRM stage other than Lost."""
+    return stage is not None and stage is not CrmStage.LOST
 
 
 def is_snapshotted(status: object) -> bool:

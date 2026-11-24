@@ -174,7 +174,7 @@ class EdgeReachTests(Reach, SyncTestCase):
     def test_an_unbound_notion_page_is_not_offered_to_the_operator_chat(self) -> None:
         page = self.page(name="Some Show")
         self.edge_queue.submit("main", "notion.page_changed", "notion:event:e1",
-                               {"page_id": page, "updated_properties": [], "event_id": "e1", "event_type": "page.created"})
+                               {"page_id": page, "updated_properties": [], "event_id": "e1", "event_type": "page.properties_updated"})
         self.assertEqual(self.drain_main(T6_GATEWAY_URL=GATEWAY_URL, T6_GATEWAY_SECRET="g", T6_REVIEW_CHAT="-100", T6_OPERATOR_IDS="123"), 1)
         (item,) = self.items()
         self.assertEqual(item["kind"], "unbound_page")  # still recorded for the review list

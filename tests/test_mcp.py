@@ -118,7 +118,7 @@ class MCPTests(unittest.TestCase):
 
     def test_every_reader_verb_is_read_only_except_the_written_exception(self) -> None:
         from t6.verbs import VERBS
-        written_exception = {('jo', 'format')}  # formats a draft and writes nothing, but is a local helper with no API read
+        written_exception = {('jo', 'format'), ('crm', 'snooze'), ('crm', 'unsnooze')}  # jo format writes nothing but has no API read; the CRM snooze verbs write the caller's own snooze
         unmarked = {(v.noun, v.verb) for v in VERBS if v.role == 'reader' and not v.read_only}
         self.assertEqual(unmarked, written_exception)
 
