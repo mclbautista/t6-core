@@ -677,6 +677,46 @@ class ClientTests(VerbAPITests):
         status, _ = self.request('/v1/jo/format', {'file': str(path)})
         self.assertEqual(status, 422)
 
+    def test_mapping_apply_previews_and_confirms_through_the_client_with_a_local_file(self) -> None:
+        import json as jsonlib
+        from pathlib import Path
+        from t6.client import Client
+        from t6.verbs import Done, DriveMappingApplyInput, Preview
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO person_permissions VALUES (?, 'drives')", (self.actor,))
+        project = self.registry.register(actor='setup', idempotency_key='synthetic-mapping-api')
+        assert isinstance(project, Registered)
+        path = Path(self.tmp.name) / 'mapping.json'
+        path.write_text(jsonlib.dumps([{'name': 'SYNTHETIC SHOW', 'project': project.project.id, 'certain': True},
+                                       {'name': 'SYNTHETIC OTHER', 'project': None, 'certain': False}]))
+        client = Client('http://127.0.0.1:%s' % self.server.server_port, 'operator-secret')
+        inputs = DriveMappingApplyInput(file=path, idempotency_key='map-api-1')
+        preview = client.drive_mapping_apply(inputs)
+        self.assertIsInstance(preview, Preview)
+        assert isinstance(preview, Preview)
+        # The API stores the upload under a new temporary path on every call: the token must not depend on it.
+        done = client.drive_mapping_apply(DriveMappingApplyInput(file=path, idempotency_key='map-api-1', confirm=preview.token))
+        self.assertIsInstance(done, Done)
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM drive_project_mapping').fetchone()[0], 1)
+
+    def test_mapping_apply_names_a_blank_entry_and_propose_needs_no_output_file(self) -> None:
+        import json as jsonlib
+        from pathlib import Path
+        from t6.client import Client
+        from t6.verbs import DriveMappingApplyInput, DriveMappingProposeInput, Refused
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO person_permissions VALUES (?, 'drives')", (self.actor,))
+        path = Path(self.tmp.name) / 'blank.json'
+        path.write_text(jsonlib.dumps([{'name': ' - ', 'project': None, 'certain': False}]))
+        client = Client('http://127.0.0.1:%s' % self.server.server_port, 'operator-secret')
+        refused = client.drive_mapping_apply(DriveMappingApplyInput(file=path, idempotency_key='map-blank'))
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, 'mapping')
+        self.assertIn("' - '", refused.reason)
+        self.assertNotIn('output', DriveMappingProposeInput.model_json_schema().get('required', []))
+        self.assertFalse({'file', 'data_sources', 'workbook'} & set(DriveMappingProposeInput.model_json_schema().get('required', [])))
+
     def test_cli_and_health_use_http(self) -> None:
         import io
         from contextlib import redirect_stdout

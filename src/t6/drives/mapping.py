@@ -46,11 +46,11 @@ def project_names(source: SheetSource, tracker: SheetSource | None = None) -> se
 
 
 def propose_mapping(source: SheetSource, tracker: SheetSource | None, projects: tuple[Project, ...],
-                    file: str) -> list[dict[str, object]]:
+                    file: str | Path | None = None) -> list[dict[str, object]]:
     lookup = Lookup(Index(projects=projects))
     policy = Policy(llm=False)
     entries: list[dict[str, object]] = []
-    for name in sorted(project_names(source, tracker)):
+    for name in sorted(n for n in project_names(source, tracker) if project_key(n)):  # a name that cleans to nothing is no Project
         ranked = lookup.project(None, name=name).candidates
         exact = [candidate for candidate in ranked if candidate.score == 1.0]
         candidate = ranked[0].entity if ranked else None
@@ -67,7 +67,8 @@ def propose_mapping(source: SheetSource, tracker: SheetSource | None, projects: 
                 certain = ranked[0].score >= policy.fuzzy_accept and round(ranked[0].score - runner_up, 6) >= policy.margin
         entries.append(MappingEntry(name=name, project=candidate.t6_id if candidate else None,
                                      certain=certain, project_name=candidate.name if candidate else None).model_dump())
-    Path(file).write_text(json.dumps(entries, indent=2) + '\n')
+    if file is not None:
+        Path(file).write_text(json.dumps(entries, indent=2) + '\n')
     return entries
 
 
@@ -80,19 +81,19 @@ def project_ref(name: str, mapping: dict[str, str]) -> Ref:
     return Ref(page_id=project) if project else Ref(text=name)
 
 
-def apply_mapping(registry: SqliteProjectRegistry, tokens: PreviewTokens, file: str, *,
+def apply_mapping(registry: SqliteProjectRegistry, tokens: PreviewTokens, file: str | Path, *,
                   actor: str, idempotency_key: str | None, confirm: str | None) -> Outcome:
     entries: list[MappingEntry] = TypeAdapter(list[MappingEntry]).validate_json(Path(file).read_text())
     checked: dict[str, str | None] = {}
     for entry in entries:
         key = project_key(entry.name)
         if not key:
-            return Refused(rule='mapping', reason='A sheet Project name must not be blank')
+            return Refused(rule='mapping', reason=f'A sheet Project name must not be blank: {entry.name!r}')
         if key in checked and checked[key] != entry.project:
             return Refused(rule='mapping', reason=f'Conflicting mappings for {entry.name}')
         checked[key] = entry.project
     request = verbflow.begin(tokens, 'drive mapping apply', actor,
-                             {'file': str(Path(file).resolve()), 'mapping': checked}, idempotency_key, confirm)
+                             {'mapping': checked}, idempotency_key, confirm)
     if isinstance(request, Refused):
         return request
     with registry._transaction() as db:
