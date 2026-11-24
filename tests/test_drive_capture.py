@@ -241,7 +241,7 @@ class CaptureTests(DriveReloadFixture):
         self.api('capture', capture=capture, text='NO-SUCH-DRIVE')
         self.resolve([])
         result = self.api('capture result', capture=capture)['result']
-        self.assertEqual((result['state'], result['reason'], result['may_ask']), ('exception', 'unreadable_label', False))
+        self.assertEqual((result['state'], result['reason'], result['may_ask']), ('exception', 'no_drive_match', False))  # a label was typed but matches no Drive
         other = self.api('capture', **{**self.post, 'message_id': 2})['result']['capture']
         self.resolve([{'label': 'Unknown label', 'serial': None, 'confidence': 0.9}])
         result = self.api('capture result', capture=other)['result']
@@ -249,6 +249,24 @@ class CaptureTests(DriveReloadFixture):
         self.api('capture', capture=other, text='still wrong')
         self.resolve([{'label': 'Unknown label', 'serial': None, 'confidence': 0.9}])
         self.assertFalse(self.api('capture result', capture=other)['result']['may_ask'])
+
+    def test_out_without_person_asks_for_direction_and_a_typed_unmatched_label_is_no_drive_match(self) -> None:
+        capture = self.api('capture', **{**self.post, 'text': 'OUT:'})['result']['capture']
+        self.resolve([])
+        result = self.api('capture result', capture=capture)['result']
+        self.assertEqual((result['reason'], result['may_ask']), ('missing_direction', True))
+        other = self.api('capture', **{**self.post, 'message_id': 2, 'text': 'IN: SHELF Unknown typed'})['result']['capture']
+        self.resolve([])
+        self.assertEqual(self.api('capture result', capture=other)['result']['reason'], 'no_drive_match')
+
+    def test_direction_answer_on_a_text_only_capture_is_not_no_photo_again(self) -> None:
+        text_only = {k: v for k, v in self.post.items() if k != 'photo'}
+        capture = self.api('capture', **text_only)['result']['capture']
+        self.resolve([], 'match')
+        self.assertEqual(self.api('capture result', capture=capture)['result']['reason'], 'no_photo')
+        self.api('capture', capture=capture, text='IN')
+        self.resolve([], 'match')
+        self.assertEqual(self.api('capture result', capture=capture)['result']['reason'], 'unreadable_label')
 
     def test_edit_of_an_exception_caption_resolves_it_without_using_the_question(self) -> None:
         reading = [{'label': 'Synthetic first', 'serial': None, 'confidence': 0.9}]

@@ -246,12 +246,12 @@ class CaptureResolver:
                 follow_up = answer[3]
             if self.debug is not None:
                 data.setdefault('debug', {})['parsed'] = {'direction': direction, 'person': person or None, 'place': place}
-            if not admitted.photo and not picked and not follow_up:
+            if not admitted.photo and not picked and not data.get('follow_up'):  # any answer lets a text-only Capture go on
                 data['state'], data['reason'] = 'exception', 'no_photo'
                 db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), capture))
                 return _result(data)
             if direction is None or direction == 'OUT' and not person:
-                data['state'], data['reason'] = 'exception', 'missing_direction' if readings or typed or follow_up else 'unreadable_label'
+                data['state'], data['reason'] = 'exception', 'missing_direction' if direction == 'OUT' or readings or typed or follow_up else 'unreadable_label'
                 db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), capture))
                 return _result(data)
             for item in readings:
@@ -294,7 +294,7 @@ class CaptureResolver:
             data['state'] = 'resolved' if found else 'exception'
             if found:
                 data['resolved_at'] = self.registry._clock()
-            data['reason'] = None if found else 'no_drive_match' if readings else 'unreadable_label'
+            data['reason'] = None if found else 'no_drive_match' if readings or follow_up or typed else 'unreadable_label'
             db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), capture))
             return _result(data)
 
