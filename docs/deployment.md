@@ -345,6 +345,19 @@ A person who changes a Booking event in Google Calendar changes the Booking, thr
 
 Workers can also poll internal jobs by setting `T6_DATABASE` to the local t6 SQLite database path. The worker polls that job table and its configured VPS queue in turn, and looks at the job table every 0.25 s while it waits between polls; the database must be shared with internal job submitters. Back up the database before upgrading. The main worker also requires `T6_GATEWAY_URL` and `T6_GATEWAY_SECRET` for linked-chat subscriptions and pulls; the secret must authenticate the `t6core` module. It reconciles subscriptions on startup and each worker poll, and retries gateway failures on a later poll. It stores message IDs and flags, and member IDs and presence, but no message content. The main worker with `T6_DATABASE` also handles `frameio.share_viewed`: route the Frame.io `share.viewed` webhook (`/webhook/frameio/shares`) to the `main` queue. The job carries the webhook body; a view of a share recorded on a Delivery writes one Activity entry per event, and any other share is dropped. The Frame.io worker never opens the t6 database.
 
+## CRM Sheet
+
+The API and main worker read the CRM Google Sheet when `T6_CRM_SHEET_ID` is set
+(the Sheet ID stays outside this repository). It needs `GOOGLE_APPLICATION_CREDENTIALS`
+and the Sheet shared with the service account. Unset, every CRM feature is off
+and nothing errors. Reads use the `spreadsheets.readonly` scope.
+
+`project crm-links PROJECT` (operator) reads the `Log` tab and returns the
+Project's links grouped by kind: `quote`, `billing` and `gmail_thread`. Log rows
+map to a Project only by the `t6p_` ID in the Project column; a row with no ID,
+an unknown ID or no date is reported by the reader and never guessed. t6 does
+not read Notion page bodies.
+
 ## Drive sheets, practice and cutover
 
 The API and main worker share these settings (keys only; credentials and sheet IDs
