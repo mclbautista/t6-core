@@ -102,9 +102,10 @@ Modelled in `t6.drives`.
   matched and unmatched movements, exceptions and unmatched Project names.
 - **Practice mode**: the period before Cutover when recordings are practice
   records, reads and replies say "Practice", and the next Reload wipes them.
-- **Cutover**: the switch to t6 as the only Drive record: one final Reload,
-  the end of Practice mode, source sheets made read-only, and no further
-  Reloads.
+- **Cutover**: the one-way switch to t6 as the only Drive record, made by the
+  deployment setting `T6_DRIVE_LIVE=true` (ADR 0010): the end of Practice mode,
+  no further Reloads, and the source sheets made read-only by the custodian. The
+  last Reload before the deploy is the final load; starting reloads nothing.
 - **Place**: a Drive's in-office storage location: TABLE, CABINET, SHELF, BOX,
   or none when unrecorded. An editor taking a Drive is an OUT, even when the
   editor stays in the office.
