@@ -584,6 +584,11 @@ a term describes behaviour that is decided but not yet built, it says so.
   a **Closer** may Close: a Telegram user id on the Closer setting
   (`T6_CLOSER_TELEGRAM_IDS`); anyone else is refused with `closer`. It becomes
   a pending close. Undo (verb `reopen`) cancels it; only a Closer may Undo.
+- **Concerns sheet export**: a CSV with one row per Concern that is not
+  closed (`Open` or `Closing after PSR`), with the actions a Closer may choose
+  for it. The API pushes it to the VPS server after each completed 21:00
+  autoscan, and the server serves the latest file only to the read token.
+  Spec #732.
 - **Done line**: a dated line that says a Concern is finished (the scan's
   `settles`). It becomes a pending close. It replaces "announce".
 - **Pending close**: a Close or Done line waiting for the next Monday 21:00

@@ -31,7 +31,10 @@ import hashlib
 import hmac
 import json
 import logging
+import os
+import secrets
 import time
+from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import parse_qs, urlsplit
 
@@ -82,6 +85,11 @@ NOTION_PAGE_EVENTS = frozenset({"page.properties_updated", "page.created", "page
 """Notion events that queue a `notion.page_changed` job. The event only says a
 page changed; the worker reads the page's current state."""
 
+CONCERNS_EXPORT_PUSH_PATH = "/concerns/export"
+"""Tailnet: the API pushes the Concerns export here (bearer secret)."""
+CONCERNS_EXPORT_READ_PATH = "/concerns/export.csv"
+"""Public, in edge mode: serves the export to the read token. Everything else about it is 404."""
+
 __all__ = ["Grant", "Request", "Response", "ServerConfig", "WebhookApp"]
 
 
@@ -109,6 +117,9 @@ class Request:
 class Response:
     status: int
     body: Mapping[str, JsonValue] = field(default_factory=dict)
+    raw: bytes | None = None
+    """Bytes to send as they are, with `content_type`, instead of the JSON `body`."""
+    content_type: str = "application/json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +157,12 @@ class ServerConfig:
     operator_ids: tuple[int, ...] = ()
     """Telegram user IDs allowed to tap operator cards. The first one receives the cards."""
     operator_ttl_seconds: float = 7 * 24 * 3600.0
+    concerns_export_push_secret: str = ""
+    """The bearer secret of the tailnet push of the Concerns export (`PUT /concerns/export`). Empty turns the push off (503)."""
+    concerns_export_read_token: str = ""
+    """The token the public `GET /concerns/export.csv` needs in `X-T6-Read-Token`. Empty turns the read off (404)."""
+    concerns_export_file: str = "t6-concerns-export.csv"
+    """Where the latest export is stored; in the server's data volume."""
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str]) -> ServerConfig:
@@ -187,6 +204,9 @@ class ServerConfig:
             grants=tuple(grants),
             operator_ids=operator_ids(environ),
             operator_ttl_seconds=float(environ.get("T6_OPERATOR_TTL_SECONDS") or 7 * 24 * 3600.0),
+            concerns_export_push_secret=environ.get("T6_CONCERNS_EXPORT_PUSH_SECRET", ""),
+            concerns_export_read_token=environ.get("T6_CONCERNS_EXPORT_READ_TOKEN", ""),
+            concerns_export_file=environ.get("T6_CONCERNS_EXPORT_FILE") or "t6-concerns-export.csv",
             review_quiet_seconds=_positive_seconds(environ, "T6_REVIEW_QUIET_SECONDS", REVIEW_QUIET_SECONDS),
             review_loop_allowance_seconds=_positive_seconds(
                 environ, "T6_REVIEW_LOOP_ALLOWANCE_SECONDS", REVIEW_LOOP_ALLOWANCE_SECONDS
@@ -263,6 +283,8 @@ class WebhookApp:
                 return Response(200) if request.method == "GET" else Response(405)
             if path == "/frameio/callback":
                 return self._frameio_callback(request)
+            if path == CONCERNS_EXPORT_READ_PATH:
+                return self._concerns_export_read(request)
             route = next((r for r in self._config.edge_routes if r.path == path), None)
             return self._edge_webhook(request, route) if route else Response(404)
         if path == "/frameio/callback":
@@ -412,6 +434,8 @@ class WebhookApp:
                 return self._queue_route(parts.path[len("/queue/") :], parts.query, request)
             if parts.path == "/review/timers":
                 return self._review_timer(request)
+            if parts.path == CONCERNS_EXPORT_PUSH_PATH:
+                return self._concerns_export_push(request)
             return Response(404)
         if parts.path == "/tap":
             return self._tap(request)
@@ -426,6 +450,41 @@ class WebhookApp:
         if parts.path == "/review/timers":
             return self._review_timer(request)
         return Response(404)
+
+    def _concerns_export_push(self, request: Request) -> Response:
+        """Store the Concerns export the API pushed (#734), replacing the last one in one step."""
+        secret = self._config.concerns_export_push_secret
+        if not secret:
+            return Response(503, {"error": "concerns export push not configured"})
+        if not _same(secret, _bearer(request)):
+            return Response(401, {"error": "bad secret"})
+        if request.method != "PUT":
+            return Response(405)
+        if not request.body:
+            return Response(400, {"error": "empty export"})
+        target = Path(self._config.concerns_export_file)
+        temporary = target.with_name(f".{target.name}.{secrets.token_hex(4)}.tmp")
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(temporary, "wb") as handle:
+                handle.write(request.body)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, target)
+        except OSError:
+            temporary.unlink(missing_ok=True)
+            return Response(500, {"error": "could not store the export"})
+        return Response(200, {"bytes": len(request.body)})
+
+    def _concerns_export_read(self, request: Request) -> Response:
+        """The latest export, only for the read token; every other case is the same 404 as an unknown path."""
+        if request.method != "GET" or not _same(self._config.concerns_export_read_token, request.header("x-t6-read-token")):
+            return Response(404)
+        try:
+            data = Path(self._config.concerns_export_file).read_bytes()
+        except OSError:
+            return Response(404)
+        return Response(200, raw=data, content_type="text/csv; charset=utf-8")
 
     def _review_timer(self, request: Request) -> Response:
         """Start or restart the quiet timer for one (Frame.io file, commenting user)."""
