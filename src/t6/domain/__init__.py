@@ -30,6 +30,7 @@ __all__ = [
     "SERIES_PROJECT_TYPES",
     "Camera",
     "Contact",
+    "CrmStage",
     "Deliverable",
     "Department",
     "Episode",
@@ -162,6 +163,9 @@ class Project(NotionEntity):
     director_ids: tuple[str, ...] = field(default=(), compare=False)
     cinematographer_ids: tuple[str, ...] = field(default=(), compare=False)
     prod_coor_supe_ids: tuple[str, ...] = field(default=(), compare=False)
+    lead_owner_ids: tuple[str, ...] = field(default=(), compare=False)
+    delegate_producer_ids: tuple[str, ...] = field(default=(), compare=False)
+    line_producer_ids: tuple[str, ...] = field(default=(), compare=False)
     last_edited: dt.datetime | None = field(default=None, compare=False)
     """When Notion last saved the page, as Notion reports it."""
 
@@ -209,6 +213,19 @@ class Deliverable(NotionEntity):
     status: str | None = field(default=None, compare=False)
     deliverable_class: str | None = field(default=None, compare=False)
     playdate: dt.date | dt.datetime | None = field(default=None, compare=False)
+
+
+class CrmStage(StrEnum):
+    """The CRM stages of a Lead. Each value is the stage's label in the Notion Project Status.
+
+    `t6.notion.named` keys them by Notion option ID, so a renamed option is still found.
+    """
+
+    LEADS = "Leads"
+    NEGOTIATIONS = "Negotiations"
+    PROPOSAL_MADE = "Proposal Made"
+    ONBOARDING = "Onboarding"
+    LOST = "Lost"
 
 
 class JobOrderStatus(StrEnum):

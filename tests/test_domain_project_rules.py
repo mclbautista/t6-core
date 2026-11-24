@@ -36,6 +36,7 @@ class StatusGateTests(unittest.TestCase):
             "🌱 Leads": StatusGroup.INCOMING,
             "Lead": StatusGroup.INCOMING,
             "  Negotiations ": StatusGroup.INCOMING,
+            "🤝 Onboarding": StatusGroup.INCOMING,
             "Proposal  Made": StatusGroup.INCOMING,
             "Archived": None,
             "Lost": None,
@@ -94,7 +95,7 @@ class DateFlagTests(unittest.TestCase):
         )
 
     def test_incoming_flags_an_overdue_or_near_playdate_never_a_blank_one(self) -> None:
-        for status in ("Leads", "Lead", "Negotiations", "Proposal made"):
+        for status in ("Leads", "Lead", "Negotiations", "Proposal made", "Onboarding"):
             with self.subTest(status=status):
                 self.assertEqual(date_flags(project(status), TODAY), ())
                 self.assertEqual(

@@ -477,9 +477,8 @@ ADMIN, then any other Department A to Z, then none) and the alias `TO` for
 words, ignoring emoji, case and spaces.
 
 - **Status gate**: In-Progress, In-Progress TVC and Airing are *in progress*;
-  Standby and Archiving are *on hold*; Leads, Lead, Negotiations and Proposal
-  Made are *incoming* (to refine later with the CRM). Any other Status is
-  dropped. Archived and Lost are never snapshotted.
+  Standby and Archiving are *on hold*; Leads, Lead, Negotiations, Proposal
+  Made and Onboarding are *incoming* (see CRM). Any other Status is dropped. Archived and Lost are never snapshotted.
 - **Date flags**: In-Progress and TVC flag a blank or overdue Playdate and
   Submission Deadline; Airing flags blank ones only; Standby none; Archiving a
   blank or overdue Archival Deadline; Incoming an overdue Playdate or one less
@@ -491,6 +490,29 @@ words, ignoring emoji, case and spaces.
   Incoming, other, blank.
 - **Code display**: the code in capitals, or "CODE (Name)" when several
   Projects share it; the name when there is no code.
+
+## CRM
+
+The Leads side of a Project, before it is In-Progress (spec #705).
+
+- **Lead**: a Project in a CRM stage other than Lost. It is a Project, not a
+  separate record.
+- **CRM stage**: Leads, Negotiations, Proposal Made, Onboarding or Lost
+  (`t6.domain.CrmStage`). The t6 database owns it; the Notion Status shows it.
+  The stage options are read and written by their saved Notion option ID (the
+  `projects` `named_options` in the schema snapshot), so a renamed option is
+  still found. Nothing blocks a move: any stage to any other, Lost from any
+  stage, Lost back to Leads reopens. In-Progress ends the CRM part.
+- **Stage history**: one append-only row per change (who, when, from, to), in
+  `project_stage_history`. The newest row is the current stage; the days in
+  stage count from its time. A change by a known Person is accepted and shows
+  in Activity as from and to; an unknown editor is flagged as before.
+- **Lead Owner**: the Person named in the Project's Lead Owner relation.
+- **Lead contact**: a client person on the Project: its Delegate Producer, Line
+  Producer or Prod Coor/Supe.
+
+`lead list` reads the open Leads with stage, Lead Owner, Studio, the Lead
+contacts and days in stage.
 
 ## Fleet
 
