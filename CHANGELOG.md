@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.26] - 2026-11-24
+
+Fixes the Google Sheets read for `drive reload`, the nightly reload and `drive mapping propose` (#654, PR #655). 0.6.25 read the whole sheet grid, which stalled the host on the per-project sheet (hundreds of tabs, millions of empty cells). The read now takes only the cells that hold data and has size and time limits. No schema change. Nothing is deployed by this release.
+
 ### Fixed
 
 - The Google Sheets reader for `drive reload`, the nightly reload and the mapping proposal read the whole grid (`includeGridData`). On a sheet with hundreds of tabs and millions of empty cells that returned a response big enough to stall the host. It now reads only the cells that hold data, with `values.batchGet` (15 tabs per request, serial dates), and fails the read when a sheet has more than 3,000,000 cells, takes more than 180 seconds, or a response is larger than 64 MiB. The importer reads a serial number in a date column as a date (#654).
