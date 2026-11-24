@@ -13,7 +13,7 @@ from collections.abc import Callable
 from t6.server.queue import MAIN_QUEUE, JobQueue
 from t6.worker.internal_queue import InternalJobQueue
 
-SYNC_KINDS = frozenset({"registry.sync", "deliverable.sync", "jo.sync", "project.status_sync"})
+SYNC_KINDS = frozenset({"registry.sync", "deliverable.sync", "jo.sync", "project.status_sync", "person.sync"})
 """The kinds of `main` job the API starts for the Notion projections."""
 
 

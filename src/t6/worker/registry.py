@@ -120,6 +120,16 @@ class RegistryClient:
     def observe_deliverable(self, page_id: str, shown: Mapping[str, str | None], changed: list[str], editor: str, event: str, *, editor_id: str | None = None) -> dict[str, Any]:
         return self._call('POST', f'/registry/notion-deliverable/{page_id}', {'shown': dict(shown), 'changed': changed, 'editor': editor, 'event': event, 'editor_id': editor_id}) or {}
 
+    def person_sync_state(self, intent_id: int) -> dict[str, Any] | None:
+        answer = self._call('GET', f'/registry/person-sync/{intent_id}')
+        return None if answer is None else answer['state']
+
+    def report_person_sync(self, intent_id: int, *, error: str | None = None) -> None:
+        self._call('POST', f'/registry/person-sync/{intent_id}', {'error': error})
+
+    def observe_person(self, page_id: str, shown: Mapping[str, str | None], changed: list[str], editor: str, event: str, *, editor_id: str | None = None) -> dict[str, Any]:
+        return self._call('POST', f'/registry/notion-person/{page_id}', {'shown': dict(shown), 'changed': changed, 'editor': editor, 'event': event, 'editor_id': editor_id}) or {}
+
     def observe_job_order(self, page_id: str, shown: Mapping[str, str | None], changed: list[str], editor: str, event: str, *, editor_id: str | None = None) -> dict[str, Any]:
         return self._call("POST", f"/registry/notion-jo/{page_id}", {"shown": dict(shown), "changed": changed, "editor": editor, "event": event, "editor_id": editor_id}) or {}
 
