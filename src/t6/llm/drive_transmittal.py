@@ -37,13 +37,31 @@ TRANSMITTAL: Task[TransmittalInput, CandidateDecisions] = Task(
 )
 
 
-def classify_transmittal(
-    text: str, has_photo: bool, *, provider: Provider,
-    timeout: float = DEFAULT_TIMEOUT,
-) -> Literal['transmittal', 'not_transmittal']:
+@dataclasses.dataclass(frozen=True)
+class Judgement:
+    """Jev's answer with what the debug topic shows: probabilities, model and latency; `failed` names why there was no answer."""
+
+    verdict: Literal['transmittal', 'not_transmittal']
+    choice: str | None = None
+    probabilities: dict[str, float] | None = None
+    model: str | None = None
+    latency_ms: int | None = None
+    failed: str | None = None
+
+
+def judge_transmittal(text: str, has_photo: bool, *, provider: Provider, timeout: float = DEFAULT_TIMEOUT) -> Judgement:
     """Only an explicit negative discards a post; failed or uncertain decisions keep it."""
     post = TransmittalInput(withhold(text), has_photo)
     result = run(TRANSMITTAL, post, provider=provider, timeout=timeout)
     if isinstance(result, Failed):
-        return 'transmittal'
-    return 'not_transmittal' if result.value.answers['c0'].choice == 'no' else 'transmittal'
+        return Judgement('transmittal', model=result.trace.model, latency_ms=result.trace.latency_ms, failed=result.reason)
+    answer = result.value.answers['c0']
+    return Judgement('not_transmittal' if answer.choice == 'no' else 'transmittal', answer.choice,
+                     answer.probabilities.model_dump(), result.trace.model, result.trace.latency_ms)
+
+
+def classify_transmittal(
+    text: str, has_photo: bool, *, provider: Provider,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> Literal['transmittal', 'not_transmittal']:
+    return judge_transmittal(text, has_photo, provider=provider, timeout=timeout).verdict

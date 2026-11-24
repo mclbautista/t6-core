@@ -36,6 +36,8 @@ class CaptureTests(DriveReloadFixture):
         self.addCleanup(self.server.server_close)
         self.addCleanup(thread.join)
         self.addCleanup(self.server.shutdown)
+        self.sent: list[tuple[str, dict[str, Any]]] = []
+        self.gateway_down = False
         self.post: dict[str, Any] = dict(chat_id=-900001, message_id=1, sender_telegram_id=900010,
                          posted_at='2026-11-24T10:30:00+08:00', text='OUT Synthetic borrower',
                          photo=base64.b64encode(photo(str(self.folder)).data).decode())
@@ -780,3 +782,101 @@ class CaptureTests(DriveReloadFixture):
         self.api('capture', **{**self.post, 'photo': base64.b64encode(image.read_bytes()).decode()})
         self.resolve([])
         self.assertEqual(self.fake.calls[1].messages[-1]['image'].media_type.value, 'image/jpeg')
+
+    # The debug topic, against a fake gateway transport (this class is the transport).
+    DEBUG_CHAT, DEBUG_TOPIC = -1004352220086, 632
+
+    def send(self, method: str, path: str, headers: Any, body: bytes) -> tuple[int, dict[str, Any]]:
+        if self.gateway_down:
+            return 500, {'detail': 'down'}
+        message = json.loads(body)
+        self.sent.append((path, message))
+        return 202, {'message_ref': message.get('message_ref', 41)}
+
+    def run_debug(self, enabled: bool = True, readings: str = 'Synthetic first', text: str = 'OUT Synthetic borrower password: hunter2') -> str:
+        from t6.drives.capture import CaptureResolver
+        from t6.drives.debug import DebugNotifier
+        from t6.worker import Worker
+        from t6.worker.gateway import GatewayClient
+        from t6.worker.internal_queue import InternalQueueClient
+        capture = self.api('capture', **{**self.post, 'text': text})['result']['capture']
+        self.fake.decisions({'model': 'synthetic-jev', 'answers': {'c0': {'type': 'choice', 'choice': 'match',
+                             'probabilities': {'match': 0.9, 'maybe': 0.1, 'no': 0}}}})
+        self.fake.reply(json.dumps({'drives': [{'label': readings, 'serial': None, 'confidence': 0.9}]}))
+        notifier = DebugNotifier(self.registry, GatewayClient(self, 'secret'), self.DEBUG_CHAT, self.DEBUG_TOPIC, lambda: enabled)
+        self.resolver = CaptureResolver(self.registry, self.fake, decisions=self.fake, debug=notifier)
+        self.worker = Worker(InternalQueueClient(self.queue), 'main', {'drive.capture.resolve': self.resolver.handle,
+                                                                      'drive.capture.debug': self.resolver.refresh_debug})
+        self.assertTrue(self.worker.run_once())
+        return str(capture)
+
+    def test_one_notify_then_edits_of_the_same_message_with_the_whole_story(self) -> None:
+        self.run_debug()
+        self.assertEqual([path for path, _ in self.sent][0], '/notify')
+        self.assertEqual({path for path, _ in self.sent[1:]}, {'/edit'})
+        self.assertEqual(len([1 for path, _ in self.sent if path == '/notify']), 1)
+        first, last = self.sent[0][1], self.sent[-1][1]
+        self.assertEqual((first['to'], first['topic'], first['buttons']), (self.DEBUG_CHAT, self.DEBUG_TOPIC, []))
+        self.assertEqual(last['message_ref'], 41)
+        text = last['text']
+        for expected in ('✅ resolved', 'Telegram 900010', 'https://t.me/c/900001/1', 'OUT Synthetic borrower', 'match 0.90 maybe 0.10 no 0.00',
+                         'synthetic-jev', 'Synthetic first', 'direction OUT, person Synthetic borrower', 'Matched drives: Synthetic first',
+                         'State: resolved', 'Undo until:'):
+            self.assertIn(expected, text)
+        self.assertNotIn('hunter2', text)
+        self.assertNotIn('photo', {key for _, message in self.sent for key in message})
+
+    def test_switch_off_sends_nothing(self) -> None:
+        capture = self.run_debug(enabled=False)
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'resolved')
+
+    def test_a_failing_gateway_never_changes_the_capture(self) -> None:
+        self.gateway_down = True
+        with self.assertLogs('t6.drives.debug', 'ERROR'):
+            capture = self.run_debug()
+        self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'resolved')
+
+    def test_undo_through_the_api_queues_one_job_that_refreshes_the_message(self) -> None:
+        capture = self.run_debug()
+        before = len(self.sent)
+        self.api('capture undo', capture=capture)
+        self.api('capture undo', capture=capture)
+        self.assertEqual(len(self.queue.find('drive.capture.debug')), 1)
+        self.assertTrue(self.worker.run_once())
+        self.assertEqual(len(self.sent), before + 1)
+        self.assertIn('⚠️ undone', self.sent[-1][1]['text'])
+
+    def test_unreadable_photo_and_a_failed_jev_show_the_exception_and_the_error(self) -> None:
+        from t6.drives.capture import CaptureResolver
+        from t6.drives.debug import DebugNotifier
+        from t6.llm.testing import FakeProvider
+        from t6.worker import Worker
+        from t6.worker.gateway import GatewayClient
+        from t6.worker.internal_queue import InternalQueueClient
+        self.api('capture', **self.post)
+        jev = FakeProvider()
+        jev.timeout()
+        self.fake.reply(json.dumps({'drives': []}))
+        notifier = DebugNotifier(self.registry, GatewayClient(self, 'secret'), self.DEBUG_CHAT, None, lambda: True)
+        resolver = CaptureResolver(self.registry, self.fake, decisions=jev, debug=notifier)
+        Worker(InternalQueueClient(self.queue), 'main', {'drive.capture.resolve': resolver.handle}).run_once()
+        self.assertIn('⛔ error', self.sent[-1][1]['text'])
+        self.assertIn('Jev failed: timeout', self.sent[-1][1]['text'])
+        self.assertIn('reason unreadable_label', self.sent[-1][1]['text'])
+        self.assertNotIn('topic', self.sent[0][1])
+
+    def test_switch_defaults_to_practice_mode_and_needs_a_chat(self) -> None:
+        from t6.worker.__main__ import debug_notifier
+        env = {'T6_GATEWAY_URL': 'https://synthetic.invalid', 'T6_GATEWAY_SECRET': 's', 'T6_DRIVE_DEBUG_CHAT_ID': '-1004352220086'}
+        notifier = debug_notifier(env, self.registry)
+        assert notifier is not None
+        self.assertTrue(notifier.enabled())
+        with self.registry._transaction() as db:
+            db.execute('UPDATE drive_practice SET practice=0 WHERE id=1')
+        self.assertFalse(notifier.enabled())
+        on = debug_notifier({**env, 'T6_DRIVE_DEBUG': 'on'}, self.registry)
+        assert on is not None
+        self.assertTrue(on.enabled())
+        self.assertIsNone(debug_notifier({**env, 'T6_DRIVE_DEBUG': 'off'}, self.registry))
+        self.assertIsNone(debug_notifier({k: v for k, v in env.items() if k != 'T6_DRIVE_DEBUG_CHAT_ID'}, self.registry))

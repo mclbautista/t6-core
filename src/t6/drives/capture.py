@@ -6,6 +6,7 @@ import binascii
 import json
 import os
 import re
+import time
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -15,9 +16,10 @@ from uuid import uuid4
 from t6.domain.events import JsonValue
 from t6.drives import Ref
 from t6.drives.movements import Movement, active_movements, append, custody_event, latest_custody, _append_event
+from t6.drives.debug import DebugNotifier
 from t6.drives.sqlite import SqliteDriveStore
 from t6.llm.drive_photo import read_drive_photo
-from t6.llm.drive_transmittal import classify_transmittal
+from t6.llm.drive_transmittal import judge_transmittal
 from t6.llm.transport import Image, ImageType, Provider
 from t6.worker import WorkerJob
 
@@ -165,12 +167,34 @@ def capture_result(registry: SqliteProjectRegistry, capture: str) -> Outcome:
 
 
 class CaptureResolver:
-    def __init__(self, registry: SqliteProjectRegistry, provider: Provider, *, decisions: Provider | None = None, environ: Mapping[str, str] | None = None) -> None:
+    def __init__(self, registry: SqliteProjectRegistry, provider: Provider, *, decisions: Provider | None = None, environ: Mapping[str, str] | None = None,
+                 debug: DebugNotifier | None = None) -> None:
         self.registry, self.provider, self.environ = registry, provider, environ
         self.decisions = decisions
+        self.debug = debug
+
+    def refresh_debug(self, job: WorkerJob) -> JsonValue:
+        """`drive.capture.debug`: re-render a Capture's debug message after a change made through the API (undo)."""
+        if self.debug is not None:
+            self.debug.update(str(job.payload['capture']), None)
+        return None
+
+    def _note(self, capture: str, caption: str, facts: dict[str, Any] | None = None, error: str | None = None) -> None:
+        if self.debug is not None:
+            self.debug.update(capture, caption, facts, error)
 
     def handle(self, job: WorkerJob) -> JsonValue:
-        capture = str(job.payload['capture'])
+        capture, seen = str(job.payload['capture']), dict[str, str]()
+        try:
+            result = self._handle(job, capture, seen)
+        except Exception as error:
+            self._note(capture, seen.get('caption', ''), error=f'{type(error).__name__}: {error}')
+            raise
+        if 'caption' in seen:
+            self._note(capture, seen['caption'])
+        return result
+
+    def _handle(self, job: WorkerJob, capture: str, seen: dict[str, str]) -> JsonValue:
         with self.registry._transaction() as db:
             row = db.execute('SELECT data, photo FROM drive_captures WHERE id=?', (capture,)).fetchone()
             if row is None:
@@ -182,10 +206,23 @@ class CaptureResolver:
                                        topic_id=data.get('topic_id'), recording_topic_id=recording_topic(self.environ))
             if admitted is None:
                 raise ValueError('Capture no longer belongs to the configured recording channel')
+        seen['caption'] = admitted.text
+        self._note(capture, admitted.text, {'errors': [], 'parsed': None, 'photo': None})
         picked = data.get('follow_up_drive')  # the custodian chose the Drive: the photo is not read again
         # Jev runs once, first, on the withheld caption and has-photo flag; follow-ups, picks and caption edits skip it.
-        verdict = classify_transmittal(admitted.text, bool(admitted.photo), provider=self.decisions) if self.decisions is not None and not picked and not data.get('answered') and not data.get('edited') else 'transmittal'
-        readings = [] if picked or verdict == 'not_transmittal' or not admitted.photo else read_drive_photo(Image(admitted.photo, ImageType(data['media_type'])), provider=self.provider).drives
+        judged = judge_transmittal(admitted.text, bool(admitted.photo), provider=self.decisions) if self.decisions is not None and not picked and not data.get('answered') and not data.get('edited') else None
+        verdict = judged.verdict if judged else 'transmittal'
+        if judged:
+            self._note(capture, admitted.text, {'jev': {'choice': judged.choice, 'probabilities': judged.probabilities, 'model': judged.model,
+                                                        'ms': judged.latency_ms, 'failed': judged.failed}}, f'Jev failed: {judged.failed}' if judged.failed else None)
+        readings: list[Any] = []
+        if not (picked or verdict == 'not_transmittal' or not admitted.photo):
+            started = time.monotonic()
+            read = read_drive_photo(Image(admitted.photo, ImageType(data['media_type'])), provider=self.provider)
+            readings = read.drives
+            self._note(capture, admitted.text, {'photo': {'readings': [{'label': r.label, 'serial': r.serial, 'confidence': r.confidence} for r in readings],
+                                                         'model': read.trace.model, 'ms': read.trace.latency_ms or round((time.monotonic() - started) * 1000)}},
+                       f'Photo read failed: {read.reason}' if read.reason not in ('', 'unreadable') else None)
         with self.registry._transaction() as db:
             row = db.execute('SELECT data FROM drive_captures WHERE id=?', (capture,)).fetchone()
             if row is None:
@@ -207,6 +244,8 @@ class CaptureResolver:
             if (answer := _parse_text(follow_up))[0] is not None and not picked:  # an IN/OUT answer replaces the caption's direction
                 direction, person, place, typed = answer[0], answer[1], answer[2], answer[3] or typed
                 follow_up = answer[3]
+            if self.debug is not None:
+                data.setdefault('debug', {})['parsed'] = {'direction': direction, 'person': person or None, 'place': place}
             if not admitted.photo and not picked and not follow_up:
                 data['state'], data['reason'] = 'exception', 'no_photo'
                 db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), capture))
@@ -288,4 +327,6 @@ def undo_capture(registry: SqliteProjectRegistry, capture: str) -> Outcome:
                 db.execute('INSERT INTO drive_status_resets VALUES (last_insert_rowid())')
         data['state'] = 'undone'
         db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), capture))
+        if data.get('debug', {}).get('message_ref') is not None:  # the worker keeps the debug message current
+            InternalJobQueue(registry).submit('main', 'drive.capture.debug', f'{capture}:undone', {'capture': capture}, db=db)
         return Done(result=_result(data))
