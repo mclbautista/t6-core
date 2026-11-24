@@ -92,6 +92,11 @@ Modelled in `t6.drives`.
   with its chat and message IDs, sender Telegram user ID, post time, text and
   photo. A Capture may be text-only (no photo); Jev keeps it as an exception
   with reason `no_photo`. It is the source of the Movements resolved from that post.
+- **Item**: one named line of a Capture's caption (a short name such as "MC7 D21"
+  or a label), on the first line after IN/OUT or on a following line. It is read as
+  written: "RM D07 (Master 02 and 03)" is one Item.
+- **Count line**: a caption line that is only a number and a kind ("48 FD", "50
+  Portable drives"). It is kept on the Capture and is never an Item.
 - **Recording channel**: TRANSMITTAL, configured by Telegram chat ID plus topic ID
   (the whole chat when no topic is configured),
   whose drive posts are recording input under [ADR 0009](docs/adr/0009-recording-channel.md).

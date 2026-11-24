@@ -2319,6 +2319,16 @@ class DriveCaptureLine(BaseModel):
     person: str | None
 
 
+class DriveCaptureItem(BaseModel):
+    text: str
+    state: Literal['open']
+
+
+class DriveCaptureCount(BaseModel):
+    count: int
+    kind: str
+
+
 class DriveCaptureOutput(BaseModel):
     capture: str
     state: Literal['pending', 'resolved', 'exception', 'undone', 'ignored']
@@ -2328,6 +2338,12 @@ class DriveCaptureOutput(BaseModel):
     message: str | None = None
     reason: Literal['missing_direction', 'unreadable_label', 'no_drive_match', 'no_photo'] | None = None  # why an exception needs help
     may_ask: bool = False  # true on the first exception; false once a follow-up answer has been tried
+    items: list[DriveCaptureItem] = Field(default_factory=list)
+    counts: list[DriveCaptureCount] = Field(default_factory=list)
+    recipient: str | None = None  # the `R:` line of the caption
+    tags: list[str] = Field(default_factory=list)  # @tags without the @
+    grade: Literal['complete', 'thin', 'problem'] | None = None  # none for an ignored capture
+    problem: Literal['missing_direction', 'missing_recipient'] | None = None
     undo_until: str | None = None  # ISO datetime the undo window closes (one hour after resolution); null unless resolved, or when resolved before the window was recorded
     practice: bool = True
 
