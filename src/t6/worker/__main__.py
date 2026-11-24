@@ -589,6 +589,29 @@ def review_coordinators(environ: Mapping[str, str], links: MediaLinks) -> Callab
     return ReviewCoordinators(links, ProjectReader(source, projects), ContactReader(source, contacts))
 
 
+def linked_chat_person_name(environ: Mapping[str, str]) -> Callable[[str], str | None] | None:
+    """Resolve a Person's Notion page ID to their Contact name when `T6_NOTION_TOKEN` is set."""
+    token = environ.get("T6_NOTION_TOKEN")
+    if not token:
+        return None
+    from t6.notion import MirrorReader, NotionClient, NotionSource, mirror_db_path
+    from t6.notion.reads import ContactReader
+
+    path, mirror = mirror_db_path(environ), None
+    if path is not None:
+        configs = mirror_data_sources_from_env(environ)
+        mirror = MirrorReader(
+            path,
+            max_age_seconds={cfg.id: cfg.max_age_seconds for cfg in configs.values()},
+            enabled_data_sources=[cfg.id for cfg in configs.values()],
+        )
+    reader = ContactReader(
+        NotionSource(lambda: NotionClient(token), mirror=mirror),
+        environ.get("T6_NOTION_CONTACTS_DATA_SOURCE") or "",
+    )
+    return lambda page_id: reader.get(page_id).name
+
+
 def review_media_links(environ: Mapping[str, str], registry: MediaLinks) -> MediaLinks:
     """Where the review message reads Media locations: the t6 database when `T6_DATABASE` is set.
 
@@ -866,7 +889,14 @@ def main(
                 raise RuntimeError('Abang nudge needs a configured gateway')
             def unavailable_subscriptions(job: WorkerJob) -> bool:
                 raise RuntimeError('Chat subscriptions need a configured gateway')
-            queue_handlers = {**queue_handlers, "abang_nudge": unavailable_abang_nudge, "chat_subscriptions": unavailable_subscriptions}
+            def unavailable_chat_link_notice(job: WorkerJob) -> bool:
+                raise RuntimeError('Chat link notice needs a configured gateway')
+            queue_handlers = {
+                **queue_handlers,
+                "abang_nudge": unavailable_abang_nudge,
+                "chat_subscriptions": unavailable_subscriptions,
+                "chat_link_notice": unavailable_chat_link_notice,
+            }
         if settings.queue == 'main' and environ.get('T6_DATABASE'):
             from t6.drives.practice import apply_live_setting
             from t6.registry.sqlite import SqliteProjectRegistry
@@ -892,8 +922,18 @@ def main(
             from t6.worker.gateway import GatewayRejected
             from urllib.error import URLError
 
-            linked = LinkedChats(SqliteProjectRegistry(environ["T6_DATABASE"]), GatewayClient(HttpTransport(environ["T6_GATEWAY_URL"]), environ["T6_GATEWAY_SECRET"]), operator_ids(environ))
-            queue_handlers = {**queue_handlers, "abang_nudge": linked.nudge, "chat_subscriptions": linked.replace_subscriptions}
+            linked = LinkedChats(
+                SqliteProjectRegistry(environ["T6_DATABASE"]),
+                GatewayClient(HttpTransport(environ["T6_GATEWAY_URL"]), environ["T6_GATEWAY_SECRET"]),
+                operator_ids(environ),
+                person_name=linked_chat_person_name(environ),
+            )
+            queue_handlers = {
+                **queue_handlers,
+                "abang_nudge": linked.nudge,
+                "chat_subscriptions": linked.replace_subscriptions,
+                "chat_link_notice": linked.chat_link_notice,
+            }
             if environ.get('T6_DRIVE_CUSTODIAN_PERSON_ID'):
                 from t6.drives.reminder import MorningReminder
                 from t6.person import People

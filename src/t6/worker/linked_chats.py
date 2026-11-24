@@ -1,23 +1,31 @@
 """Pull linked-chat facts without persisting message content or raw updates."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 import json
 import secrets
 from html import escape
 
 from t6.abang import record
-
+from t6.chat_link import format_decision_notice
 from t6.registry.sqlite import SqliteProjectRegistry
 from t6.worker.gateway import GatewayClient
 from t6.worker.client import WorkerJob
 
 
 class LinkedChats:
-    def __init__(self, registry: SqliteProjectRegistry, gateway: GatewayClient, operators: tuple[int, ...] = ()) -> None:
+    def __init__(
+        self,
+        registry: SqliteProjectRegistry,
+        gateway: GatewayClient,
+        operators: tuple[int, ...] = (),
+        person_name: Callable[[str], str | None] | None = None,
+    ) -> None:
         self.registry = registry
         self.gateway = gateway
         self.operators = operators
+        self.person_name = person_name
         self._subscriptions: list[dict[str, int | None]] | None = None
 
     def tick(self) -> None:
@@ -180,6 +188,54 @@ class LinkedChats:
             text = f'Abang request {request} has had no file for 3 days.' + (f' Note: {escape(note)}' if note else '')
             self.gateway.notify(coordinator, text, [], 'abang:nudge:' + request)
             return True
+
+    def _person_label(self, db: Any, person_id: str) -> str:
+        row = db.execute(
+            "SELECT page_id FROM bindings WHERE system = 'notion' AND project_id = ? AND active = 1",
+            (person_id,),
+        ).fetchone()
+        if row and self.person_name:
+            try:
+                name = (self.person_name(row[0]) or '').strip()
+            except Exception:
+                name = ''
+            if name:
+                return name
+        return person_id
+
+    def chat_link_notice(self, job: WorkerJob) -> bool:
+        """Post one decision line in the chat and topic being linked when a `chat link` Approval is decided."""
+        payload = job.payload
+        approval_id = payload.get('approval_id')
+        action = payload.get('action')
+        decision = payload.get('decision')
+        chat = payload.get('chat')
+        topic = payload.get('topic')
+        label = payload.get('label')
+        decided_by = payload.get('decided_by')
+        reason = payload.get('reason')
+        if (
+            not isinstance(approval_id, str) or not approval_id.strip()
+            or not isinstance(action, str) or action not in ('link-chat', 'unlink-chat')
+            or not isinstance(decision, str) or decision not in ('grant', 'deny')
+            or type(chat) is not int or chat == 0
+            or (topic is not None and (type(topic) is not int or topic <= 0))
+            or not isinstance(label, str) or not label.strip()
+            or (decision == 'deny' and (not isinstance(decided_by, str) or not decided_by.strip()))
+            or (reason is not None and not isinstance(reason, str))
+        ):
+            raise ValueError('Invalid chat link notice payload')
+        denier: str | None = None
+        if decision == 'deny':
+            assert isinstance(decided_by, str)
+            with self.registry._transaction() as db:
+                denier = self._person_label(db, decided_by)
+        text = format_decision_notice(action, decision, label, denier=denier, reason=reason)
+        ref = self.gateway.notify(chat, text, [], f'chat-link-decision:{approval_id}', topic)
+        if decision == 'grant' and action == 'link-chat' and topic is not None:
+            with self.registry._transaction() as db:
+                self._track(db, ref, chat, topic)
+        return True
 
     def track_send(self, ref: int, chat: int, topic: int | None) -> None:
         with self.registry._transaction() as db:

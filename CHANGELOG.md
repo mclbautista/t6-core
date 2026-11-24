@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- When a `chat link` Approval is granted or denied (via card tap or CLI), the main worker posts one HTML-escaped line in the chat and topic being linked: `Linked to Name [CODE]`, `Unlinked from Name [CODE]`, or `Link to Name [CODE] was not approved by <denier>` / `Unlink from Name [CODE] was not approved by <denier>` (with `: <reason>` when a reason is given, falling back to the Project id when neither name nor code is present, and to the Person id when the denier's Notion name is unavailable) (#687).
+
 ### Changed
 
 - The Approval for `project link-chat` and `project unlink-chat` (the Telegram card "Approval: chat link") now names the Project by its Notion name and code before the Project id, for example `Big Show [ABC123] t6p_...: chat -100, topic 12 (Edit)`. The ids stay in the target. The name is read from the Project's Notion page when the preview is made; if it cannot be read, the code (and, without one, only the id) is shown as before. The topic name was already shown when known.

@@ -538,6 +538,82 @@ class WorkerStartTests(unittest.TestCase):
         handlers = configured_handlers(environ, WorkerSettings.from_env(environ), self.transport)
         self.assertIn("registry.sync", handlers["main"])
 
+    def test_main_registers_chat_link_notice_with_and_without_gateway(self) -> None:
+        from t6.worker import __main__ as worker_main
+
+        db_path = Path(self.directory.name) / "t6.sqlite3"
+        registry = SqliteProjectRegistry(db_path)
+        person = "t6n_" + "a" * 32
+        with registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES (?, 'staff', '[]', '[]', 42, 0, 1)", (person,))
+            db.execute("INSERT INTO bindings (system, page_id, project_id, bound_at, active) VALUES ('notion', ?, ?, 'now', 1)", ("c" * 32, person))
+        inside = InternalJobQueue(registry)
+        inside.submit(
+            "main",
+            "chat_link_notice",
+            "chat_link_notice:t6a_1",
+            {
+                "approval_id": "t6a_1",
+                "action": "link-chat",
+                "decision": "deny",
+                "chat": -100,
+                "topic": 12,
+                "label": "Big Show [ABC123]",
+                "decided_by": person,
+                "reason": "Wrong topic",
+            },
+        )
+
+        captured: dict[str, Any] = {}
+
+        def fake_serve(worker: Any, stop: Any, poll_seconds: float, tick: Any = None, **kwargs: Any) -> None:
+            captured["worker"] = worker
+            stop.set()
+
+        env_no_gw = {**self.ENVIRON, "T6_DATABASE": str(db_path), "T6_API_URL": API_URL}
+        with patch.object(worker_main, "serve", side_effect=fake_serve):
+            rc = main(env_no_gw, transport=self.transport)
+        self.assertEqual(rc, 0)
+        self.assertIn("chat_link_notice", captured["worker"]._handlers)
+        with self.assertRaisesRegex(RuntimeError, "gateway"):
+            captured["worker"]._handlers["chat_link_notice"](WorkerJob(1, "main", "chat_link_notice", "k", {}, "tok", 1))
+
+        gateway = FakeNotify()
+
+        def transport_for(url: str, *rest: Any, **named: Any) -> Any:
+            return gateway if url == GATEWAY_URL else self.transport
+
+        class FakeNotionClient:
+            def __init__(self, token: str) -> None:
+                self.token = token
+
+            def retrieve_page(self, page_id: str) -> dict[str, Any]:
+                return {
+                    "id": page_id,
+                    "properties": {"Name": {"type": "title", "title": [{"plain_text": "Ada"}]}},
+                }
+
+        env_gw = {
+            **env_no_gw,
+            "T6_GATEWAY_URL": GATEWAY_URL,
+            "T6_GATEWAY_SECRET": "g",
+            "T6_REVIEW_CHAT": "-100",
+            "T6_NOTION_TOKEN": "fake-token",
+        }
+        with (
+            patch("t6.worker.__main__.HttpTransport", side_effect=transport_for),
+            patch("t6.notion.NotionClient", FakeNotionClient),
+            patch.object(worker_main, "serve", side_effect=fake_serve),
+        ):
+            rc2 = main(env_gw, transport=self.transport)
+        self.assertEqual(rc2, 0)
+        self.assertTrue(captured["worker"].run_internal_once())
+        (sent,) = gateway.sent.values()
+        self.assertEqual(sent["to"], -100)
+        self.assertEqual(sent["topic"], 12)
+        self.assertEqual(sent["text"], "Link to Big Show [ABC123] was not approved by Ada: Wrong topic")
+        self.assertEqual(sent["idempotency_key"], "chat-link-decision:t6a_1")
+
 
 if __name__ == "__main__":
     unittest.main()
