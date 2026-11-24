@@ -11,6 +11,7 @@ from t6.notion.schema import load_snapshot
 from t6.preview import PreviewTokens
 from t6.person import NOTION_ACTOR, People
 from t6.registry import normalize_page_id
+from t6.registry import PageAlreadyBound, Registered
 from t6.registry.sqlite import SqliteProjectRegistry, _audit, _close_review, _open_review
 from t6.verbs import Done, Preview, Refused
 
@@ -162,6 +163,33 @@ class NotionEdits:
                        summary=f'CRM stage {before or "none"} to {to}, set in Notion by {editor}')
             _close_review(db, 'notion_project_status', page, now)
             db.execute("INSERT INTO notion_last_seen VALUES (?, 'project_status', ?) ON CONFLICT(page_id, property) DO UPDATE SET value=excluded.value", (page, json.dumps(status)))
+
+    def register_created_page(self, page: str, event: str, status: str | None, option_id: str | None, actor: str) -> dict[str, Any]:
+        """Register a newly created Projects page as a Lead: out of rotation, no code, the Status it shows as its first stage.
+
+        The event ID is the idempotency key, so a replayed event registers once. Creating the
+        page is the explicit registration ADR 0001 asks for.
+        """
+        page = normalize_page_id(page)
+        key = 'notion:event:' + event
+        registered = self.registry.register(actor=actor, idempotency_key=key, notion_page_id=page)
+        if isinstance(registered, PageAlreadyBound):
+            return {'outcome': 'already_bound'}
+        if not isinstance(registered, Registered):
+            return {'outcome': 'refused'}
+        project_id = registered.project.id
+        stage = self._crm_stage(status, option_id)
+        if registered.created:
+            now = self.registry._clock()
+            with self.registry._transaction() as db:
+                if stage is not None:
+                    db.execute('INSERT INTO project_stage_history (project_id, at, actor, field, from_value, to_value, event) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                               (project_id, now, actor, 'crm_stage', None, stage.value, 'notion:' + event + ':created'))
+                    _audit(db, project_id, 'crm_stage_changed', actor, now, {'crm_stage': None}, {'crm_stage': stage.value},
+                           summary=f'CRM stage none to {stage.value}, page created in Notion')
+                # The Status shown now is the baseline, so reading it later is not an edit.
+                db.execute("INSERT INTO notion_last_seen VALUES (?, 'project_status', ?) ON CONFLICT(page_id, property) DO UPDATE SET value=excluded.value", (page, json.dumps(status)))
+        return {'outcome': 'registered' if registered.created else 'replayed', 'project_id': project_id}
 
     def project_status(self, page: str, status: str | None, editor: str, event: str, editor_id: str | None, field: str = "status", option_id: str | None = None) -> dict[str, Any]:
         from t6.project_writes import ProjectWrites

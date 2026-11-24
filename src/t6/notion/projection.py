@@ -156,10 +156,29 @@ class ProjectProjection:
             prop: JSON = next((p for p in properties.values() if unquote(str(p.get('id', ''))) == unquote(str(prop_id))), {})
             if outcome != 'unbound' and isinstance(updated, list) and updated and any(unquote(str(item)) == unquote(str(prop_id)) for item in updated) and prop:
                 self._registry.observe_project_status(page_id, codec.select(prop), editor, str(job.payload.get('event_id') or job.dedupe_key), editor_id, field, (prop.get('select') or {}).get('id'))
+        if outcome == "unbound" and job.payload.get("event_type") == "page.created":
+            return {"outcome": self._register_lead(job, page)}
         if outcome == "unbound" and self._offer is not None:
             heading = next((p for p in properties.values() if p.get("type") == "title"), None)
             self._offer(page_id, codec.title(heading) or "")
         return {"outcome": outcome}
+
+    def _register_lead(self, job: WorkerJob, page: JSON) -> str:
+        """A new Projects page is a Lead: register it, and give a blank Status the value Leads."""
+        page_id = str(job.payload["page_id"])
+        status = ProjectsRow.from_page(page).status
+        option_id = ((page.get("properties") or {}).get(ProjectsProperties.STATUS) or {}).get("select", {}).get("id") if status else None
+        refusal: Refused | None = None
+        if not status:
+            try:
+                status = live_option_name(self._notion.retrieve_data_source(self._projects, freshness="live"), ProjectsRow.notion_id("status") or "Status", "Leads")
+                self._notion.update_page(page_id, {"properties": {ProjectsRow.notion_id("status"): {"select": {"name": status}}}})
+            except ValueError as error:
+                status, refusal = None, Refused(str(error))
+        outcome = self._registry.register_created_page(page_id, str(job.payload.get("event_id") or job.dedupe_key), status, option_id)
+        if refusal is not None:
+            raise refusal  # registered, but the Status default failed: show the job as failed
+        return outcome
 
 
 def _gone(page: JSON) -> bool:

@@ -48,6 +48,7 @@ LIVE_READ_ALLOWLIST: dict[tuple[str, str, str], str] = {
     ("notion/schema.py", "_audit_projects", "query_data_source"): "Audit live Projects pages against registry during schema check.",
     ("notion/projection.py", "ProjectProjection.sync_status", "retrieve_page"): "Check current Notion status baseline before projecting status change.",
     ("notion/projection.py", "ProjectProjection.sync_status", "retrieve_data_source"): "Resolve live Status select option name before projecting status.",
+    ("notion/projection.py", "ProjectProjection._register_lead", "retrieve_data_source"): "Resolve live Leads Status option name before defaulting a new page's blank Status.",
     ("notion/projection.py", "ProjectProjection.sync", "retrieve_page"): "Read live Project page before projecting T6 ID, Code and Rotation.",
     ("notion/projection.py", "ProjectProjection.reconcile", "retrieve_page"): "Reconcile live Notion page state for notion.page_changed event.",
     ("notion/jo_projection.py", "JobOrderProjection.reconcile", "retrieve_page"): "Reconcile live Job Order page state for notion.page_changed event.",
