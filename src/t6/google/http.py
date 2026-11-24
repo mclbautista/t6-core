@@ -28,6 +28,9 @@ class Http(Protocol):
     def send(self, method: str, url: str, headers: Mapping[str, str], body: bytes) -> tuple[int, bytes]: ...
 
 
+MAX_RESPONSE_BYTES = 64 * 1024 * 1024  # a guard against a response that would stall the host
+
+
 class UrllibHttp:
     """The real transport. Tests use `FakeHttp` instead."""
 
@@ -35,7 +38,10 @@ class UrllibHttp:
         request = urllib.request.Request(url, data=body or None, headers=dict(headers), method=method)
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
-                return int(response.status), bytes(response.read())
+                data = bytes(response.read(MAX_RESPONSE_BYTES + 1))
+                if len(data) > MAX_RESPONSE_BYTES:
+                    raise ValueError('Google response is too large')
+                return int(response.status), data
         except urllib.error.HTTPError as error:
             return int(error.code), bytes(error.read())
 
