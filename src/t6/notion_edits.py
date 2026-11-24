@@ -160,8 +160,34 @@ class NotionEdits:
             if added:
                 _audit(db, project_id, 'crm_stage_changed', actor, now, {'crm_stage': before}, {'crm_stage': to},
                        summary=f'CRM stage {before or "none"} to {to}, set in Notion by {editor}')
+                db.execute('INSERT OR IGNORE INTO crm_edit_history (project_id, at, property, from_value, to_value, actor, event) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                           (project_id, now, 'Status', before or '', to, editor, 'notion:' + event))
             _close_review(db, 'notion_project_status', page, now)
             db.execute("INSERT INTO notion_last_seen VALUES (?, 'project_status', ?) ON CONFLICT(page_id, property) DO UPDATE SET value=excluded.value", (page, json.dumps(status)))
+
+    def crm_edit(self, page: str, label: str, names: list[str], editor: str, event: str) -> dict[str, Any]:
+        """Keep one History row for an edit of a Lead's relation (shown by name): once per event, and only while the Project is a Lead."""
+        page = normalize_page_id(page)
+        project = self.registry.get_by_page(page)
+        if project is None:
+            return {'outcome': 'unbound'}
+        key = 'crm_' + label
+        with self.registry._transaction() as db:
+            last = db.execute('SELECT to_value FROM project_stage_history WHERE project_id = ? ORDER BY id DESC LIMIT 1', (project.id,)).fetchone()
+            seen = db.execute("SELECT value FROM notion_last_seen WHERE page_id = ? AND property = 'project_status'", (page,)).fetchone()
+        shown = str(last[0]) if last else (json.loads(seen[0]) if seen else None)
+        if shown is None or self._crm_stage(str(shown), None) is None:
+            return {'outcome': 'not_a_lead'}
+        now = self.registry._clock()
+        with self.registry._transaction() as db:
+            row = db.execute('SELECT value FROM notion_last_seen WHERE page_id = ? AND property = ?', (page, key)).fetchone()
+            old = [str(name) for name in json.loads(row[0])] if row else []
+            if old == names:
+                return {'outcome': 'unchanged'}
+            db.execute('INSERT OR IGNORE INTO crm_edit_history (project_id, at, property, from_value, to_value, actor, event) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                       (project.id, now, label, ', '.join(old), ', '.join(names), editor, 'notion:' + event))
+            db.execute('INSERT INTO notion_last_seen VALUES (?, ?, ?) ON CONFLICT(page_id, property) DO UPDATE SET value=excluded.value', (page, key, json.dumps(names)))
+        return {'outcome': 'recorded'}
 
     def project_status(self, page: str, status: str | None, editor: str, event: str, editor_id: str | None, field: str = "status", option_id: str | None = None) -> dict[str, Any]:
         from t6.project_writes import ProjectWrites

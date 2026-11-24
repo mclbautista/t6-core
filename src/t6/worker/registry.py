@@ -129,5 +129,8 @@ class RegistryClient:
     def observe_project_status(self, page_id: str, status: str | None, editor: str, event: str, editor_id: str | None, field: str = "status", option_id: str | None = None) -> dict[str, Any]:
         return self._call("POST", f"/registry/notion-project-status/{page_id}", {"status": status, "editor": editor, "event": event, "editor_id": editor_id, "field": field, "option_id": option_id}) or {}
 
+    def observe_crm_edit(self, page_id: str, label: str, names: list[str], editor: str, event: str) -> dict[str, Any]:
+        return self._call('POST', f'/registry/notion-crm-edit/{page_id}', {'property': label, 'names': names, 'editor': editor, 'event': event}) or {}
+
     def observe_project_dates(self, page_id: str, dates: Mapping[str, str | None], coordinators: list[str]) -> dict[str, Any]:
         return self._call('POST', f'/registry/notion-project-dates/{page_id}', {'dates': dict(dates), 'coordinators': coordinators}) or {}

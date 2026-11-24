@@ -47,6 +47,17 @@ class GoogleSheetWriter:
                        '?valueInputOption=RAW')
         self._send('POST', f'{name}!A{len(values) + 1}:A:clear', token, {})
 
+    def replace_rows(self, tab: str, rows: Sequence[Sequence[str]]) -> None:
+        """Put `rows` from A1, then clear the rows below, like `replace_column`. Every row has the same width."""
+        if not rows:
+            raise ValueError('replace_rows needs at least a header row')
+        token = self._token()
+        name = "'" + tab.replace("'", "''") + "'"
+        last = chr(ord('A') + len(rows[0]) - 1)
+        self._send('PUT', f'{name}!A1:{last}{len(rows)}', token, {'majorDimension': 'ROWS', 'values': [list(row) for row in rows]},
+                   '?valueInputOption=RAW')
+        self._send('POST', f'{name}!A{len(rows) + 1}:{last}:clear', token, {})
+
 
 def configured_writer(environ: Mapping[str, str]) -> GoogleSheetWriter | None:
     """None (the CRM Sheet feature is off) unless the Sheet ID and the service account key file are both set."""
