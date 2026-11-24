@@ -10,7 +10,8 @@ plus push delivery of the `/project` command.
 
 | Step | Done by |
 | --- | --- |
-| Notice an unclassified Project | core (`notion.page_changed` reconcile, `POST /operator/offers`). A page no Project owns is recorded as a review item only: the worker does not offer it to the chat (#548), and Notion edits that are flagged send no message either |
+| Register a new Project as a Lead | core's main worker. A new Projects page (`page.created`) is registered with no card: out of rotation, no code, a T6 ID, and a blank Status set to Leads (#710). A page created with another Status keeps it |
+| Notice an unclassified Project | core (`notion.page_changed` reconcile, `POST /operator/offers`). An older page no Project owns, seen on an edit rather than its creation, is recorded as a review item only: the worker does not offer it to the chat (#548), and Notion edits that are flagged send no message either |
 | Keep the pending action, its token and expiry | core (`T6_OPERATOR_DB`) |
 | Send the card, edit it later | core's main worker, through the gateway |
 | Carry the tap to core | gateway (push delivery to `POST /tap`) |
