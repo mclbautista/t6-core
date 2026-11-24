@@ -846,6 +846,11 @@ def main(
             def unavailable_subscriptions(job: WorkerJob) -> bool:
                 raise RuntimeError('Chat subscriptions need a configured gateway')
             queue_handlers = {**queue_handlers, "abang_nudge": unavailable_abang_nudge, "chat_subscriptions": unavailable_subscriptions}
+        if settings.queue == 'main' and environ.get('T6_DATABASE'):
+            from t6.drives.practice import apply_live_setting
+            from t6.registry.sqlite import SqliteProjectRegistry
+
+            apply_live_setting(SqliteProjectRegistry(environ['T6_DATABASE']), environ)  # ADR 0010: before the nightly reload is scheduled
         if settings.queue == 'main' and environ.get('T6_DATABASE') and environ.get('T6_DRIVE_PROJECT_SPREADSHEET_ID'):
             from t6.drives.nightly import NightlyReload
             from t6.preview import PreviewTokens
