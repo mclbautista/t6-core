@@ -145,11 +145,19 @@
       "type": "array"
     },
     "merges": {
-      "items": {
-        "$ref": "#/$defs/Merge"
-      },
-      "title": "Merges",
-      "type": "array"
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/Merge"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Merges"
     },
     "fills": {
       "items": {

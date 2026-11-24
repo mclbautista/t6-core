@@ -7,6 +7,7 @@ from typing import Literal
 from t6.schedule.contract import (
     Candidate,
     DateEvidence,
+    DayState,
     Diagnostic,
     Evidence,
     Group,
@@ -18,10 +19,10 @@ from t6.schedule.contract import (
     UnsupportedLayout,
     YearEvidence,
 )
-from t6.schedule.coverage import group_status, read_coverage
-from t6.schedule.dates import DayCell, aligns, block_years, fitting_start_years, weekday_name
+from t6.schedule.coverage import group_status, read_coverage, unread_days, with_source_uncertainty
+from t6.schedule.dates import DayCell, aligns, block_years, fitting_start_years, make_date, weekday_name
 from t6.schedule.grid import Grid, a1, merge_range
-from t6.schedule.layout import DAY_COLUMNS, MonthBlock, find_month_blocks
+from t6.schedule.layout import DAY_COLUMNS, LEFT_COLUMNS, MonthBlock, find_month_blocks
 from t6.schedule.text import clean_text, is_availability
 
 
@@ -33,6 +34,10 @@ def extract_schedule(request: ScheduleRequest) -> ScheduleSnapshot | Unsupported
     scope = request.source_scope
     if grid.row_count == 0:
         return _unsupported(request, "empty_tab", "The tab has no cells.")
+    coverage = read_coverage(request, grid)
+    if request.merges is None:
+        # Month headers are recognised by their merges, so none can be told apart: nothing is read, nothing is unsupported.
+        return ScheduleSnapshot(source_scope=scope, source_revision=request.source_revision, coverage=coverage, groups=[])
     blocks = find_month_blocks(grid)
     if not blocks:
         return _unsupported(
@@ -51,12 +56,17 @@ def extract_schedule(request: ScheduleRequest) -> ScheduleSnapshot | Unsupported
         year = years.get(block.index)
         exceptions = [block.problem] if block.problem else list(year_exceptions.get(block.index, []))
         evidence: list[Evidence] = []
+        days = _blank_and_invalid_days(grid, block, year)
+        if block.problem is None:
+            exceptions.extend(_invalid_day_exceptions(days))
         if year is not None and not exceptions:
             evidence.append(Evidence(kind="year", detail=f"{year} {method}", anchor=block.header_range))
             read = _read_entries(grid, request, block, key, YearEvidence(year=year, method=method), year)
             candidates.extend(read.candidates)
             non_tasks.extend(read.non_tasks)
             exceptions.extend(read.exceptions)
+            days = _mark_unread(days, read.unread)
+        exceptions = with_source_uncertainty(exceptions, coverage)
         groups.append(
             Group(
                 group_key=key,
@@ -66,13 +76,14 @@ def extract_schedule(request: ScheduleRequest) -> ScheduleSnapshot | Unsupported
                 year=year,
                 evidence=evidence,
                 exceptions=exceptions,
+                days=unread_days(days, coverage),
             )
         )
     numbered = [c.model_copy(update={"candidate_key": f"c{n}"}) for n, c in enumerate(candidates, 1)]
     return ScheduleSnapshot(
         source_scope=scope,
         source_revision=request.source_revision,
-        coverage=read_coverage(request, grid),
+        coverage=coverage,
         groups=groups,
         candidates=numbered,
         non_tasks=non_tasks,
@@ -132,11 +143,49 @@ def _resolve_years(
     return {}, {b.index: [hold] for b in readable}, inferred
 
 
+def _blank_and_invalid_days(grid: Grid, block: MonthBlock, year: int | None) -> list[DayState]:
+    """One state per day-number cell: `unread` until its entries are read, `blank` outside the month."""
+    if block.problem is not None:
+        if block.problem.code == "invalid_day_number":
+            return [DayState(anchor=block.problem.anchor or block.header_range, state="invalid")]
+        return []
+    days: list[DayState] = []
+    for band in block.bands:
+        for col in LEFT_COLUMNS:
+            anchor = a1(band.number_row, col)
+            day = band.days.get(col)
+            if day is not None:
+                made = make_date(year, block.month, day) if year is not None else None
+                days.append(DayState(anchor=anchor, state="unread", day=day, date=made.isoformat() if made else None))
+            elif clean_text(grid.value(band.number_row, col)):
+                days.append(DayState(anchor=anchor, state="invalid"))
+            else:
+                days.append(DayState(anchor=anchor, state="blank"))
+    return days
+
+
+def _invalid_day_exceptions(days: list[DayState]) -> list[GroupException]:
+    return [
+        GroupException(code="invalid_day_number", detail="not a day of the month", anchor=d.anchor)
+        for d in days
+        if d.state == "invalid"
+    ]
+
+
+def _mark_unread(days: list[DayState], unread: set[str]) -> list[DayState]:
+    """Entries were read for the group: a numbered day is `read` unless one of its entries was not."""
+    return [
+        d.model_copy(update={"state": "unread" if d.anchor in unread else "read"}) if d.state == "unread" else d
+        for d in days
+    ]
+
+
 class _Read:
     def __init__(self) -> None:
         self.candidates: list[Candidate] = []
         self.non_tasks: list[NonTask] = []
         self.exceptions: list[GroupException] = []
+        self.unread: set[str] = set()  # day-number anchors of days with an entry that was not read
 
 
 def _read_entries(
@@ -156,6 +205,7 @@ def _read_entries(
                     read.exceptions.append(
                         GroupException(code="span_not_read", detail="entry spans several days", anchor=anchor)
                     )
+                    read.unread.update(a1(band.number_row, pair * 2) for pair in range(col // 2, last_col // 2 + 1))
                     continue
                 day = band.days.get(col // 2 * 2)
                 if day is None:

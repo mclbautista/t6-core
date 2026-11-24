@@ -152,6 +152,7 @@ class UnsupportedLayoutTests(unittest.TestCase):
             {
                 "source_scope": {"document_id": "doc-synthetic", "tab_id": "tab-2"},
                 "cells": [["Task", "Start", "End"], ["Grade review", "2026-11-03", "2026-11-04"]],
+                "merges": [],
             }
         )
         result = extract_schedule(request)

@@ -70,7 +70,7 @@
     },
     "Coverage": {
       "additionalProperties": false,
-      "description": "How much of the tab was read. Incomplete is never evidence of absence.",
+      "description": "How much of the tab was read, against its full extent. Incomplete is never evidence of absence.\n\n`read_range` and `total_range` are A1 ranges from A1 (`total_range` is null when the tab's size was not\nreported). `status` is complete exactly when `reasons` is empty.",
       "properties": {
         "status": {
           "enum": [
@@ -113,6 +113,43 @@
           ],
           "default": null,
           "title": "Columns Total"
+        },
+        "read_range": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Read Range"
+        },
+        "total_range": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total Range"
+        },
+        "reasons": {
+          "items": {
+            "enum": [
+              "rows_short",
+              "columns_short",
+              "extent_unknown",
+              "merges_missing"
+            ],
+            "type": "string"
+          },
+          "title": "Reasons",
+          "type": "array"
         }
       },
       "required": [
@@ -159,6 +196,57 @@
         "day_number_anchor"
       ],
       "title": "DateEvidence",
+      "type": "object"
+    },
+    "DayState": {
+      "additionalProperties": false,
+      "description": "What was read at one day-number cell. Only `read` lets an empty day mean \"no task here\".\n\n`blank` is a day-number cell with no number (outside the month), `unread` a day whose entries were not read\n(a hold, an unread span or an incomplete source), `invalid` a day-number cell that is not a day.",
+      "properties": {
+        "anchor": {
+          "title": "Anchor",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "read",
+            "blank",
+            "unread",
+            "invalid"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "day": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Day"
+        },
+        "date": {
+          "anyOf": [
+            {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Date"
+        }
+      },
+      "required": [
+        "anchor",
+        "state"
+      ],
+      "title": "DayState",
       "type": "object"
     },
     "Diagnostic": {
@@ -270,6 +358,13 @@
             "$ref": "#/$defs/GroupException"
           },
           "title": "Exceptions",
+          "type": "array"
+        },
+        "days": {
+          "items": {
+            "$ref": "#/$defs/DayState"
+          },
+          "title": "Days",
           "type": "array"
         }
       },

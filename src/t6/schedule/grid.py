@@ -45,7 +45,7 @@ class Grid:
     def from_request(cls, request: ScheduleRequest) -> Grid:
         return cls(
             values=tuple(tuple(row) for row in request.cells),
-            merges=tuple(request.merges),
+            merges=tuple(request.merges or ()),
             fills={(f.row, f.col): f.color for f in request.fills},
         )
 

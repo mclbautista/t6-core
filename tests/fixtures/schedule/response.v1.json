@@ -13,7 +13,10 @@
     "rows_read": 29,
     "columns_read": 15,
     "rows_total": 29,
-    "columns_total": 15
+    "columns_total": 15,
+    "read_range": "A1:O29",
+    "total_range": "A1:O29",
+    "reasons": []
   },
   "groups": [
     {
@@ -29,7 +32,219 @@
           "anchor": "A7:N8"
         }
       ],
-      "exceptions": []
+      "exceptions": [],
+      "days": [
+        {
+          "anchor": "A10",
+          "state": "read",
+          "day": 1,
+          "date": "2026-11-01"
+        },
+        {
+          "anchor": "C10",
+          "state": "read",
+          "day": 2,
+          "date": "2026-11-02"
+        },
+        {
+          "anchor": "E10",
+          "state": "read",
+          "day": 3,
+          "date": "2026-11-03"
+        },
+        {
+          "anchor": "G10",
+          "state": "read",
+          "day": 4,
+          "date": "2026-11-04"
+        },
+        {
+          "anchor": "I10",
+          "state": "read",
+          "day": 5,
+          "date": "2026-11-05"
+        },
+        {
+          "anchor": "K10",
+          "state": "read",
+          "day": 6,
+          "date": "2026-11-06"
+        },
+        {
+          "anchor": "M10",
+          "state": "read",
+          "day": 7,
+          "date": "2026-11-07"
+        },
+        {
+          "anchor": "A14",
+          "state": "read",
+          "day": 8,
+          "date": "2026-11-08"
+        },
+        {
+          "anchor": "C14",
+          "state": "read",
+          "day": 9,
+          "date": "2026-11-09"
+        },
+        {
+          "anchor": "E14",
+          "state": "read",
+          "day": 10,
+          "date": "2026-11-10"
+        },
+        {
+          "anchor": "G14",
+          "state": "read",
+          "day": 11,
+          "date": "2026-11-11"
+        },
+        {
+          "anchor": "I14",
+          "state": "read",
+          "day": 12,
+          "date": "2026-11-12"
+        },
+        {
+          "anchor": "K14",
+          "state": "read",
+          "day": 13,
+          "date": "2026-11-13"
+        },
+        {
+          "anchor": "M14",
+          "state": "read",
+          "day": 14,
+          "date": "2026-11-14"
+        },
+        {
+          "anchor": "A19",
+          "state": "read",
+          "day": 15,
+          "date": "2026-11-15"
+        },
+        {
+          "anchor": "C19",
+          "state": "read",
+          "day": 16,
+          "date": "2026-11-16"
+        },
+        {
+          "anchor": "E19",
+          "state": "read",
+          "day": 17,
+          "date": "2026-11-17"
+        },
+        {
+          "anchor": "G19",
+          "state": "read",
+          "day": 18,
+          "date": "2026-11-18"
+        },
+        {
+          "anchor": "I19",
+          "state": "read",
+          "day": 19,
+          "date": "2026-11-19"
+        },
+        {
+          "anchor": "K19",
+          "state": "read",
+          "day": 20,
+          "date": "2026-11-20"
+        },
+        {
+          "anchor": "M19",
+          "state": "read",
+          "day": 21,
+          "date": "2026-11-21"
+        },
+        {
+          "anchor": "A25",
+          "state": "read",
+          "day": 22,
+          "date": "2026-11-22"
+        },
+        {
+          "anchor": "C25",
+          "state": "read",
+          "day": 23,
+          "date": "2026-11-23"
+        },
+        {
+          "anchor": "E25",
+          "state": "read",
+          "day": 24,
+          "date": "2026-11-24"
+        },
+        {
+          "anchor": "G25",
+          "state": "read",
+          "day": 25,
+          "date": "2026-11-25"
+        },
+        {
+          "anchor": "I25",
+          "state": "read",
+          "day": 26,
+          "date": "2026-11-26"
+        },
+        {
+          "anchor": "K25",
+          "state": "read",
+          "day": 27,
+          "date": "2026-11-27"
+        },
+        {
+          "anchor": "M25",
+          "state": "read",
+          "day": 28,
+          "date": "2026-11-28"
+        },
+        {
+          "anchor": "A29",
+          "state": "read",
+          "day": 29,
+          "date": "2026-11-29"
+        },
+        {
+          "anchor": "C29",
+          "state": "read",
+          "day": 30,
+          "date": "2026-11-30"
+        },
+        {
+          "anchor": "E29",
+          "state": "blank",
+          "day": null,
+          "date": null
+        },
+        {
+          "anchor": "G29",
+          "state": "blank",
+          "day": null,
+          "date": null
+        },
+        {
+          "anchor": "I29",
+          "state": "blank",
+          "day": null,
+          "date": null
+        },
+        {
+          "anchor": "K29",
+          "state": "blank",
+          "day": null,
+          "date": null
+        },
+        {
+          "anchor": "M29",
+          "state": "blank",
+          "day": null,
+          "date": null
+        }
+      ]
     }
   ],
   "candidates": [

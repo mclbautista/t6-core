@@ -61,8 +61,26 @@ LLM call, writes nothing and uses no dataframe. Reading the sheet is another tic
 - **Unsupported layout.** A tab with no month header merged across A:N returns `result: unsupported_layout` with a
   `diagnostic` (`empty_tab` or `no_month_header`) and no candidates.
 
+## Coverage (#719)
+
+- **Held and incomplete are different.** A *held* group has a problem confined to it (`invalid_header`,
+  `invalid_day_number`, `ambiguous_year`, `weekday_mismatch`); it carries no candidates and the other groups still read.
+  An *incomplete source* is whole-source uncertainty: `coverage.status` is `incomplete` and every group that is not
+  held becomes `incomplete` with an `unread_region` exception. Held groups stay held.
+- **Read coverage.** `coverage` gives `read_range` and `total_range` (A1 ranges from A1), the row and column counts, and
+  `reasons`: `rows_short` or `columns_short` (fewer than the tab's reported size), `extent_unknown` (the request left out
+  `rows_total` or `columns_total`) and `merges_missing` (`merges` is null). `status` is `complete` only with no reasons, so
+  a short first chunk is never taken for the whole tab. With no merge list nothing is read: the snapshot has no groups and
+  no candidates. An empty `merges` list means the tab has none, and it is an unsupported layout.
+- **Day states.** Each group lists its day-number cells as `days`: `read` (its entries were read, so no candidate there
+  means no task), `blank` (no number, outside the month), `unread` (a hold, an unread span, or an incomplete source) or
+  `invalid` (not a day number). Only `read` means "no task here".
+- **Absence.** `t6.schedule.coverage.standing(snapshot, group_key, day=None)` is the one question a planner asks before it
+  treats a missing candidate as gone. `read` says the group (or ISO day) was read. `held`, `incomplete` and
+  `not_in_snapshot` say it was not, so a candidate seen in an earlier revision is unknown, never deleted.
+
 ## Not yet read
 
-Multi-day spans and date holds (#718), coverage statuses (#719), tentative markers, notes and breaks (#720), the revision
+Multi-day spans and date holds (#718), tentative markers, notes and breaks (#720), the revision
 fingerprint and moved cells (#721), and the Google read and API verb (#722). The contract already has fields for them
 (`tentative`, `source_id`, `source_revision`, `non_tasks`, the exception codes).

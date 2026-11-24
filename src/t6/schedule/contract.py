@@ -22,6 +22,8 @@ LAYOUT_VERSION: Final = "monthly-calendar/v1"
 CellValue = str | int | float | None
 IsoDate = Annotated[str, StringConstraints(pattern=r"^\d{4}-\d{2}-\d{2}$")]
 GroupStatus = Literal["complete", "held", "incomplete"]
+CoverageReason = Literal["rows_short", "columns_short", "extent_unknown", "merges_missing"]
+DayStateKind = Literal["read", "blank", "unread", "invalid"]
 
 # A hold or an unread part of a group. The first four are raised by #717; the rest are
 # defined for the tickets that detect them (#718 spans and year, #719 coverage).
@@ -82,7 +84,7 @@ class ScheduleRequest(_Model):
     source_scope: SourceScope
     source_revision: str | None = None
     cells: list[list[CellValue]]
-    merges: list[Merge] = Field(default_factory=list)
+    merges: list[Merge] | None = None  # None: no merge list was read. An empty list: the tab has no merges.
     fills: list[CellFill] = Field(default_factory=list)
     rows_total: int | None = Field(default=None, ge=0)
     columns_total: int | None = Field(default=None, ge=0)
@@ -90,13 +92,26 @@ class ScheduleRequest(_Model):
 
 
 class Coverage(_Model):
-    """How much of the tab was read. Incomplete is never evidence of absence."""
+    """How much of the tab was read, against its full extent. Incomplete is never evidence of absence.
+
+    `read_range` and `total_range` are A1 ranges from A1 (`total_range` is null when the tab's size was not
+    reported). `status` is complete exactly when `reasons` is empty.
+    """
 
     status: Literal["complete", "incomplete"]
     rows_read: int = Field(ge=0)
     columns_read: int = Field(ge=0)
     rows_total: int | None = None
     columns_total: int | None = None
+    read_range: str | None = None
+    total_range: str | None = None
+    reasons: list[CoverageReason] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _status_matches_reasons(self) -> Coverage:
+        if (self.status == "complete") == bool(self.reasons):
+            raise ValueError("coverage is complete exactly when it has no reasons")
+        return self
 
 
 class Evidence(_Model):
@@ -111,6 +126,19 @@ class GroupException(_Model):
     anchor: str | None = None
 
 
+class DayState(_Model):
+    """What was read at one day-number cell. Only `read` lets an empty day mean "no task here".
+
+    `blank` is a day-number cell with no number (outside the month), `unread` a day whose entries were not read
+    (a hold, an unread span or an incomplete source), `invalid` a day-number cell that is not a day.
+    """
+
+    anchor: str
+    state: DayStateKind
+    day: int | None = None
+    date: IsoDate | None = None
+
+
 class Group(_Model):
     """A larger part of the tab, processed on its own: one month block."""
 
@@ -121,6 +149,7 @@ class Group(_Model):
     year: int | None = None
     evidence: list[Evidence] = Field(default_factory=list)
     exceptions: list[GroupException] = Field(default_factory=list)
+    days: list[DayState] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _status_matches_exceptions(self) -> Group:
