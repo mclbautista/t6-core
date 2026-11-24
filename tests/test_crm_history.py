@@ -76,6 +76,24 @@ class HistoryTests(SyncTestCase):
         self.assertEqual(edits.crm_edit(page, 'Studio', ['Acme'], 'Ada', 'e3')['outcome'], 'not_a_lead')
         self.assertEqual([row[0] for row in self.history()], ['Status', 'Status'])
 
+    def test_a_status_edit_to_a_non_crm_status_is_a_history_row_from_the_current_stage(self) -> None:
+        page, _ = self.lead('Negotiations')
+        edits = NotionEdits(self.registry)
+        edits.project_status(page, 'Standby', 'Ada', 'e2', 'user-1')
+        edits.project_status(page, 'Standby', 'Ada', 'e2', 'user-1')  # a replay adds nothing
+        self.assertEqual(self.history(), [('Status', '', 'Negotiations', 'Ada'), ('Status', 'Negotiations', 'Standby', 'Ada')])
+        other = self.page()
+        self.new('OTHER', page=other)  # never a Lead: no row
+        edits.project_status(other, 'Standby', 'Ada', 'e3', 'user-1')
+        self.assertEqual(len(self.history()), 2)
+
+    def test_registration_records_the_relation_names_so_the_first_edit_has_a_from(self) -> None:
+        page = '00000000000040008000000000000099'
+        edits = NotionEdits(self.registry)
+        edits.register_created_page(page, 'e0', 'Leads', None, 'main-worker', {'Lead Owner': ['Bea'], 'Studio': ['Acme']})
+        edits.crm_edit(page, 'Lead Owner', ['Bea', 'Cy'], 'Ada', 'e1')
+        self.assertEqual(self.history(), [('Lead Owner', 'Bea', 'Bea, Cy', 'Ada')])
+
     def test_a_stage_change_is_a_status_row_with_from_and_to(self) -> None:
         page, _ = self.lead()
         NotionEdits(self.registry).project_status(page, 'Onboarding', 'Ada', 'e1', 'user-1')
@@ -176,6 +194,14 @@ class SheetTests(unittest.TestCase):
         ProjectDropdown(self.registry, lambda p: pages.get(p), self.book).handle(job())
         self.assertEqual(self.book.writes, [('Projects', sorted(
             [f'{name} · {ids[name]}' for name in ('Moved On', 'Plain Lead', 'Ended')], key=str.casefold))])
+
+    def test_a_project_past_the_crm_is_not_an_open_lead_whatever_a_stale_status_says(self) -> None:
+        from t6.crm.sheet_sync import ProjectDropdown
+        page, project = self.register(1)
+        with self.registry._transaction() as db:
+            db.execute("INSERT INTO project_stage_history (project_id, at, actor, field, from_value, to_value, event) VALUES (?, 1, 'x', 'crm_stage', 'Leads', 'In-Progress', 'e1')", (project,))
+        ProjectDropdown(self.registry, lambda p: ('Stale', 'Leads'), self.book).handle(job())
+        self.assertEqual(self.book.writes, [('Projects', [])])
 
 
 class TriggerTests(unittest.TestCase):

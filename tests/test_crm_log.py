@@ -100,12 +100,11 @@ class DerivedTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
-    def test_off_without_the_setting_and_a_clear_error_without_credentials(self) -> None:
+    def test_off_without_the_setting_or_without_credentials(self) -> None:
         from t6.crm.config import crm_source
         self.assertIsNone(crm_source({}))
         self.assertIsNone(crm_source({'T6_CRM_SHEET_ID': '  '}))
-        with self.assertRaisesRegex(ValueError, 'GOOGLE_APPLICATION_CREDENTIALS'):
-            crm_source({'T6_CRM_SHEET_ID': 'synthetic'})
+        self.assertIsNone(crm_source({'T6_CRM_SHEET_ID': 'synthetic'}))  # the worker warns at startup
 
     def test_sheet_source_reads_with_the_readonly_scope(self) -> None:
         from t6.crm.config import crm_source

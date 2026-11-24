@@ -1419,20 +1419,18 @@ class VerbAPI:
                 cameras = get_cameras(notion, self.data_sources['cameras'], page_id=inputs.page_id)
                 return Done(result={'cameras': [{'page_id': c['id'], 'name': c['name'] or '', 'tags': c['tags']} for c in cameras]})
             if noun == 'lead':
-                from t6.domain import CrmStage
+                from t6.registry.sqlite import latest_stages
                 from t6.verbs import LeadListOutput, LeadRead
                 now = self.people.registry._clock()
                 with self.people.registry._transaction() as db:
-                    current = {str(row[0]): (str(row[1]), float(row[2])) for row in db.execute(
-                        'SELECT project_id, to_value, at FROM project_stage_history WHERE id IN (SELECT MAX(id) FROM project_stage_history GROUP BY project_id)')}
+                    current = latest_stages(db)
                 leads: list[LeadRead] = []
                 for project in batch_project_results(ProjectReader(notion, self.data_sources['projects']).list()):
-                    stage, at = current.get(project.t6_id or '', (None, None))
-                    if stage is None:
-                        stage = next((m.value for m in CrmStage if project_rules.status_key(m.value) == project_rules.status_key(project.status)), None)
-                    if stage is None or stage not in CrmStage.__members__.values() or stage == CrmStage.LOST:
+                    recorded, at = current.get(project.t6_id or '', (None, None))
+                    stage = project_rules.crm_stage(recorded, project.status)
+                    if stage is None or not project_rules.is_lead(stage):
                         continue
-                    leads.append(LeadRead(project_id=project.t6_id or project.page_id, page_id=project.page_id, name=project.name, stage=stage,
+                    leads.append(LeadRead(project_id=project.t6_id or project.page_id, page_id=project.page_id, name=project.name, stage=stage.value,
                                           lead_owner_ids=list(project.lead_owner_ids), studio_id=project.studio_id,
                                           delegate_producer_ids=list(project.delegate_producer_ids), line_producer_ids=list(project.line_producer_ids),
                                           prod_coor_supe_ids=list(project.prod_coor_supe_ids), days_in_stage=None if at is None else int((now - at) // 86400)))

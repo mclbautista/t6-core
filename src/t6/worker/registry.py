@@ -88,9 +88,11 @@ class RegistryClient:
         )
         return "" if answer is None else str(answer["outcome"])
 
-    def register_created_page(self, page_id: str, event: str, status: str | None, option_id: str | None) -> str:
+    def register_created_page(self, page_id: str, event: str, status: str | None, option_id: str | None,
+                              relations: dict[str, list[str]] | None = None) -> str:
         """Register the Projects page a `page.created` event named as a Lead. Returns the outcome."""
-        answer = self._call("POST", f"/registry/pages/{page_id}/register", {"event": event, "status": status, "option_id": option_id})
+        answer = self._call("POST", f"/registry/pages/{page_id}/register",
+                            {"event": event, "status": status, "option_id": option_id, "relations": relations or {}})
         return "" if answer is None else str(answer["outcome"])
 
     def deliverable_sync_state(self, intent_id: int) -> dict[str, Any] | None:

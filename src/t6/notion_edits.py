@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 from t6.domain import CrmStage
+from t6.domain.project_rules import crm_stage, is_lead
 from t6.job_order import JobOrderStore
 from t6.notion import named
 from t6.notion.schema import load_snapshot
@@ -12,7 +13,7 @@ from t6.preview import PreviewTokens
 from t6.person import NOTION_ACTOR, People
 from t6.registry import normalize_page_id
 from t6.registry import PageAlreadyBound, Registered
-from t6.registry.sqlite import SqliteProjectRegistry, _audit, _close_review, _open_review
+from t6.registry.sqlite import SqliteProjectRegistry, _audit, _close_review, _open_review, latest_stages
 from t6.verbs import Done, Preview, Refused
 
 
@@ -154,8 +155,8 @@ class NotionEdits:
         """Record a CRM stage change by a known Person: history, audit, Activity. Never blocked, never synced back."""
         now = self.registry._clock()
         with self.registry._transaction() as db:
-            last = db.execute('SELECT to_value FROM project_stage_history WHERE project_id = ? ORDER BY id DESC LIMIT 1', (project_id,)).fetchone()
-            before = str(last[0]) if last else (str(old) if old else None)
+            recorded = latest_stages(db, project_id).get(project_id)
+            before = recorded[0] if recorded else (str(old) if old else None)
             added = db.execute('INSERT OR IGNORE INTO project_stage_history (project_id, at, actor, field, from_value, to_value, event) VALUES (?, ?, ?, ?, ?, ?, ?)',
                                (project_id, now, actor, 'crm_stage', before, to, 'notion:' + event)).rowcount
             if added:
@@ -166,11 +167,22 @@ class NotionEdits:
             _close_review(db, 'notion_project_status', page, now)
             db.execute("INSERT INTO notion_last_seen VALUES (?, 'project_status', ?) ON CONFLICT(page_id, property) DO UPDATE SET value=excluded.value", (page, json.dumps(status)))
 
-    def register_created_page(self, page: str, event: str, status: str | None, option_id: str | None, actor: str) -> dict[str, Any]:
+    def _record_lead_status(self, project_id: str, status: str, editor: str, event: str, old: Any) -> None:
+        """A Lead's Status edit to a non-CRM status (Standby, Archiving, Airing...) is one History row: From the current stage, To the Status."""
+        with self.registry._transaction() as db:
+            recorded = latest_stages(db, project_id).get(project_id)
+            stage = crm_stage(recorded[0] if recorded else None, old)
+            if stage is not None and is_lead(stage):
+                db.execute('INSERT OR IGNORE INTO crm_edit_history (project_id, at, property, from_value, to_value, actor, event) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                           (project_id, self.registry._clock(), 'Status', stage.value, status, editor, 'notion:' + event))
+
+    def register_created_page(self, page: str, event: str, status: str | None, option_id: str | None, actor: str,
+                               relations: dict[str, list[str]] | None = None) -> dict[str, Any]:
         """Register a newly created Projects page as a Lead: out of rotation, no code, the Status it shows as its first stage.
 
         The event ID is the idempotency key, so a replayed event registers once. Creating the
-        page is the explicit registration ADR 0001 asks for.
+        page is the explicit registration ADR 0001 asks for. `relations` are the names the Lead relations show now (by label):
+        like the Status, they are the baseline, so the first edit has a real From.
         """
         page = normalize_page_id(page)
         key = 'notion:event:' + event
@@ -191,6 +203,8 @@ class NotionEdits:
                            summary=f'CRM stage none to {stage.value}, page created in Notion')
                 # The Status shown now is the baseline, so reading it later is not an edit.
                 db.execute("INSERT INTO notion_last_seen VALUES (?, 'project_status', ?) ON CONFLICT(page_id, property) DO UPDATE SET value=excluded.value", (page, json.dumps(status)))
+                for label, names in (relations or {}).items():
+                    db.execute('INSERT INTO notion_last_seen VALUES (?, ?, ?) ON CONFLICT(page_id, property) DO UPDATE SET value=excluded.value', (page, 'crm_' + label, json.dumps(names)))
         return {'outcome': 'registered' if registered.created else 'replayed', 'project_id': project_id}
 
     def crm_edit(self, page: str, label: str, names: list[str], editor: str, event: str) -> dict[str, Any]:
@@ -201,10 +215,9 @@ class NotionEdits:
             return {'outcome': 'unbound'}
         key = 'crm_' + label
         with self.registry._transaction() as db:
-            last = db.execute('SELECT to_value FROM project_stage_history WHERE project_id = ? ORDER BY id DESC LIMIT 1', (project.id,)).fetchone()
+            recorded = latest_stages(db, project.id).get(project.id)
             seen = db.execute("SELECT value FROM notion_last_seen WHERE page_id = ? AND property = 'project_status'", (page,)).fetchone()
-        shown = str(last[0]) if last else (json.loads(seen[0]) if seen else None)
-        if shown is None or self._crm_stage(str(shown), None) is None:
+        if not is_lead(crm_stage(recorded[0] if recorded else None, json.loads(seen[0]) if seen else None)):
             return {'outcome': 'not_a_lead'}
         now = self.registry._clock()
         with self.registry._transaction() as db:
@@ -239,13 +252,15 @@ class NotionEdits:
             stage = self._crm_stage(status, option_id)
             if stage is None and normalized in ('inprogress', 'inprogresstvc'):
                 with self.registry._transaction() as db:
-                    last = db.execute('SELECT to_value FROM project_stage_history WHERE project_id = ? ORDER BY id DESC LIMIT 1', (project.id,)).fetchone()
-                if (last and last[0] in CrmStage.__members__.values()) or (not last and old and self._crm_stage(str(old), None)):
+                    recorded = latest_stages(db, project.id).get(project.id)
+                if crm_stage(recorded[0] if recorded else None, old) is not None:
                     self._record_stage(page, project.id, status, 'In-Progress', editor, actor, event, old)
                     return {'outcome': 'accepted'}
             elif stage is not None:
                 self._record_stage(page, project.id, status, stage.value, editor, actor, event, old)
                 return {'outcome': 'accepted'}
+        if field == 'status' and status and self._crm_stage(status, option_id) is None:
+            self._record_lead_status(project.id, status, editor, event, old)
         verb = ('resume' if normalized in ('inprogress', 'inprogresstvc', 'airing') else 'hold' if normalized in ('standby', 'archiving') else 'archive' if normalized == 'archived' else None) if field == 'status' else None
         result: Any = Refused(rule='project_' + field, reason=f'No matching Project {property_name} verb')
         if verb:

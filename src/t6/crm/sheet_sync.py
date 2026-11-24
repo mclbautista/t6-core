@@ -11,10 +11,10 @@ from datetime import datetime
 from typing import Any, Protocol
 from urllib.parse import unquote
 
-from t6.domain import CrmStage
-from t6.domain.dateformats import MANILA
+from t6.domain.studio_time import MANILA
 from t6.domain.events import JsonValue
-from t6.domain.project_rules import StatusGroup, status_gate
+from t6.domain.project_rules import StatusGroup, crm_stage, is_lead, status_gate
+from t6.registry.sqlite import latest_stages
 from t6.worker import WorkerJob
 from t6.worker.internal_queue import InternalJobQueue
 from t6.worker.runner import Handler
@@ -25,8 +25,6 @@ HISTORY_KIND = 'crm.history_sync'
 HISTORY_TAB = 'History'
 HISTORY_HEADER = ('Date', 'Project', 'What changed', 'From', 'To', 'By')
 WINDOW_SECONDS = 300
-_OPEN = {StatusGroup.INCOMING, StatusGroup.IN_PROGRESS}
-"""Open Leads are the incoming group (Leads, Negotiations, Proposal Made); active Projects are In-Progress and Airing."""
 
 
 class ColumnWriter(Protocol):
@@ -40,8 +38,8 @@ class RowWriter(Protocol):
 class ProjectDropdown:
     """`read_page` gives a Project page's (name, status), or None when it cannot be read.
 
-    An open Lead is a Project whose CRM stage (the newest stage history row) is not Lost. A Project with no CRM stage
-    recorded, or past it, is open by its Notion Status.
+    Lists each open Lead (a CRM stage other than Lost, see `t6.domain.project_rules.crm_stage`) and each active Project
+    (In-Progress or Airing by its Notion Status, its CRM part ended).
     """
 
     def __init__(self, registry: Any, read_page: Callable[[str], tuple[str, str] | None], writer: ColumnWriter) -> None:
@@ -49,15 +47,14 @@ class ProjectDropdown:
 
     def lines(self) -> list[str]:
         with self._registry._transaction() as db:
-            stages = {str(row[0]): str(row[1]) for row in db.execute(
-                'SELECT project_id, to_value FROM project_stage_history WHERE id IN (SELECT MAX(id) FROM project_stage_history GROUP BY project_id)')}
+            stages = latest_stages(db)
         found = []
         for project in self._registry.list_projects():
-            page = next((b.page_id for b in project.bindings if b.system == 'notion' and b.active and b.available), None)
+            page = project.notion_page
             shown = None if page is None else self._read_page(page)
-            stage = stages.get(project.id)
-            open_ = stage != CrmStage.LOST if stage in CrmStage.__members__.values() else shown is not None and status_gate(shown[1]) in _OPEN
-            if shown is not None and open_:
+            recorded = stages[project.id][0] if project.id in stages else None
+            if shown is not None and (is_lead(crm_stage(recorded, shown[1])) or
+                                      (recorded != 'Lost' and status_gate(shown[1]) is StatusGroup.IN_PROGRESS)):
                 found.append(f'{shown[0].strip() or "(untitled)"} · {project.id}')
         return sorted(found, key=str.casefold)
 
@@ -79,7 +76,7 @@ class EditHistory:
         names: dict[str, str] = {}
         for project_id in {str(edit[1]) for edit in edits}:
             project = self._registry.get(project_id)
-            page = None if project is None else next((b.page_id for b in project.bindings if b.system == 'notion' and b.active and b.available), None)
+            page = None if project is None else project.notion_page
             shown = None if page is None else self._read_page(page)
             names[project_id] = (shown[0].strip() if shown else '') or project_id
         return [[datetime.fromtimestamp(at, MANILA).strftime('%Y-%m-%d %H:%M'), names[project_id], what, before, after, by]
@@ -141,7 +138,8 @@ def install(handlers: Mapping[str, Handler], environ: Mapping[str, str],
     from t6.registry.sqlite import SqliteProjectRegistry
     registry = SqliteProjectRegistry(environ['T6_DATABASE'])
     from t6.notion.generated import ProjectsRow
-    history_properties = [str(ProjectsRow.notion_id(field)) for field in ('status', 'lead_owner', 'delegate_producer', 'line_producer', 'prod_coor_supe', 'studio')]
+    from t6.notion.projection import CRM_RELATIONS
+    history_properties = [str(ProjectsRow.notion_id(field)) for field in ('status', *(field for field, _ in CRM_RELATIONS))]
     trigger = SheetSyncTrigger(InternalJobQueue(registry), status_property=status_property, history_properties=history_properties)
     wrapped = {kind: trigger.wrap(handler, kind) for kind, handler in handlers.items()
                if kind in ('registry.sync', 'notion.page_changed')}

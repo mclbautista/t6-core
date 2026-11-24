@@ -63,6 +63,17 @@ class LeadRegistrationTests(SyncTestCase):
         self.assertEqual(len(self.projects()), 1)
         self.assertEqual(self.stages(), [('Leads',)])
 
+    def test_the_relations_a_page_is_created_with_are_the_baseline_for_its_first_edit(self) -> None:
+        self.notion.add_option(PROJECTS, 'Status', '🧲 Leads')
+        studio = str(self.notion.add_page(PROJECTS, project_properties(name='Acme'), page_id='0d' * 16)['id'])
+        page = str(self.notion.add_page(PROJECTS, project_properties(name='New Show', studio_id=studio), page_id='0e' * 16)['id'])
+        self.webhook(page, kind='page.created')
+        self.drain()
+        edits = NotionEdits(self.registry)
+        self.assertEqual(edits.crm_edit(page, 'Studio', ['Acme', 'Beta'], 'Ada', 'e1')['outcome'], 'recorded')
+        with self.registry._transaction() as db:
+            self.assertEqual(db.execute('SELECT from_value, to_value FROM crm_edit_history').fetchall(), [('Acme', 'Acme, Beta')])
+
     def test_an_edit_of_an_unregistered_page_does_not_register_it(self) -> None:
         page = str(self.notion.add_page(PROJECTS, project_properties(name='Old Show'), page_id='0b' * 16)['id'])
         self.webhook(page)

@@ -3,6 +3,8 @@ import json
 import threading
 import unittest
 from datetime import date, datetime
+from contextlib import redirect_stderr
+from io import StringIO
 from typing import Any
 from unittest.mock import patch
 
@@ -15,7 +17,8 @@ from t6.ids import EntityKind, T6Id
 from t6.person import People
 from t6.preview import PreviewTokens
 from t6.registry import Registered
-from t6.worker import Worker
+from t6.worker import Worker, WorkerJob
+from t6.worker.runner import Refused
 from t6.worker.gateway import GatewayClient
 from t6.worker.internal_queue import InternalJobQueue, InternalQueueClient
 from test_crm_log import FakeSheet, row
@@ -136,12 +139,12 @@ class CrmReminderTests(unittest.TestCase):
         self.assertEqual(list(self.sent()), [700000003])
         self.assertEqual(self.sent()[700000003].count(' — Leads, 61 days'), 2)
 
-    def test_missing_client_role_and_studio_are_named(self) -> None:
+    def test_missing_lead_contact_and_studio_are_named(self) -> None:
         self.lead('Bare', CrmStage.LEADS, '2026-10-01', role=False, studio=False)
         self.lead('NoStudio', CrmStage.LEADS, '2026-10-01', studio=False)
         self.run_day()
         text = self.sent()[700000001]
-        self.assertIn('Bare — Leads, 61 days since last contact\n  Missing: client role, Studio', text)
+        self.assertIn('Bare — Leads, 61 days since last contact\n  Missing: Lead contact, Studio', text)
         self.assertIn('NoStudio — Leads, 61 days since last contact\n  Missing: Studio', text)
 
     def test_many_concerns_are_capped(self) -> None:
@@ -230,6 +233,44 @@ class CrmReminderTests(unittest.TestCase):
         self.run_day()
         self.assertEqual(self.gateway.calls, [])
 
+    def job(self) -> WorkerJob:
+        return WorkerJob(1, 'main', 'crm.reminder', '2026-12-01', {}, 't', 1)
+
+    def test_an_unreachable_recipient_does_not_stop_the_others_and_the_job_then_fails_naming_them(self) -> None:
+        self.person('cyril2', 0)
+        self.reminder.default_owner = 'cyril2'
+        self.lead('Blank', CrmStage.LEADS, '2026-10-01', ())
+        self.lead('Mine', CrmStage.LEADS, '2026-10-01')
+        with self.assertRaisesRegex(Refused, 'cyril2'):
+            self.reminder.handle(self.job())
+        self.assertEqual(list(self.sent()), [700000001])
+        with self.assertRaises(Refused):
+            self.reminder.handle(self.job())  # a retry keeps the same idempotency keys, so the gateway drops a repeat
+        self.assertEqual({call['idempotency_key'] for call in self.gateway.calls}, {'crm-dm:ada:2026-12-01'})
+
+    def test_a_reminder_names_a_project_that_is_no_longer_a_lead_and_falls_back_to_the_id(self) -> None:
+        running = self.lead('Running', CrmStage.LEADS, '2026-11-30')
+        unread = self.lead('Unread', CrmStage.LEADS, '2026-11-30')
+        self.projects.clear()  # both are past the CRM now
+        self.reminder.project_name = {running: 'Running Show'}.get
+        self.reminders(CrmRoles(frozenset({700000002}), frozenset(), frozenset()))
+        self.log += [row(datetime(2026, 11, 1), f'Running \u00b7 {running}', 'quote', None, datetime(2026, 11, 20)),
+                     row(datetime(2026, 11, 1), f'Unread \u00b7 {unread}', 'quote', None, datetime(2026, 11, 21))]
+        self.run_day()
+        self.assertEqual(self.sent(), {700000002: f'Hi,\nReminders\nQuote due 2026-11-20: Running Show, note\nQuote due 2026-11-21: {unread}, note'})
+
+    def test_a_snoozed_billing_holder_does_not_give_the_post_producer_a_second_copy(self) -> None:
+        from t6.crm.snooze import Snoozes
+        self.person('pat', 700000011)
+        self.person('fin', 700000012)
+        project = self.lead('Q', CrmStage.LEADS, '2026-11-30', ())
+        self.reminders(CrmRoles(frozenset({700000011}), frozenset(), frozenset({700000012})))
+        self.log.append(row(datetime(2026, 11, 1), f'Q \u00b7 {project}', 'billing', None, datetime(2026, 11, 20)))
+        Snoozes(self.registry).snooze('fin', '2026-12-05')
+        digest = self.reminder.digest(TODAY)
+        self.assertEqual(list(digest), ['pat'])
+        self.assertEqual([item.lines for item in digest['pat']], [(f'Billing due 2026-11-20: Q, note',)])
+
 
 class CrmRolesTests(unittest.TestCase):
     def test_roles_read_telegram_ids(self) -> None:
@@ -267,7 +308,7 @@ class ReadLeadsTests(unittest.TestCase):
             Project(page_id='unregistered', name='Unregistered', status='Leads'),
         ]
         found_leads = read_leads(registry, projects)
-        self.assertEqual([(lead.name, lead.stage, lead.owner_ids, lead.has_client_role, lead.has_studio) for lead in found_leads], [
+        self.assertEqual([(lead.name, lead.stage, lead.owner_ids, lead.has_lead_contact, lead.has_studio) for lead in found_leads], [
             ('Moved', CrmStage.ONBOARDING, (str(ada),), True, True),
             ('From Status', CrmStage.PROPOSAL_MADE, (), False, False)])
 
@@ -296,3 +337,41 @@ class StartupTests(unittest.TestCase):
             for _ in range(2):
                 self.assertEqual(main(env, {'main': {}}, stop=stop), 0)
         self.assertEqual(len(InternalJobQueue(registry).find('crm.reminder')), 1)
+
+    def worker_env(self, owner: str) -> tuple[dict[str, str], Any]:
+        import tempfile
+        from pathlib import Path
+        from t6.registry.sqlite import SqliteProjectRegistry
+        from test_worker_main import ENVIRON
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        registry = SqliteProjectRegistry(Path(folder.name) / 't6.sqlite')
+        with registry._transaction() as db:
+            db.execute("INSERT INTO persons VALUES ('mute', 'staff', '[]', '[]', NULL, 0, 1)")
+        return {**ENVIRON, 'T6_DATABASE': str(Path(folder.name) / 't6.sqlite'), 'T6_API_URL': 'https://synthetic.invalid',
+                'T6_GATEWAY_URL': 'https://synthetic.invalid', 'T6_GATEWAY_SECRET': 'synthetic-secret',
+                'T6_NOTION_TOKEN': 'synthetic', 'T6_NOTION_PROJECTS_DATA_SOURCE': 'synthetic-projects',
+                'T6_CRM_SHEET_ID': 'synthetic-crm', 'T6_CRM_DEFAULT_OWNER_PERSON_ID': owner}, registry
+
+    def test_a_default_owner_who_cannot_be_messaged_stops_the_worker_at_startup(self) -> None:
+        from t6.worker.__main__ import main
+        stop = threading.Event()
+        stop.set()
+        for owner in ('nobody', 'mute'):
+            env, _ = self.worker_env(owner)
+            err = StringIO()
+            with patch('t6.crm.config.crm_source', lambda _: FakeSheet([])), redirect_stderr(err):
+                self.assertEqual(main(env, {'main': {}}, stop=stop), 2, owner)
+            self.assertIn('T6_CRM_DEFAULT_OWNER_PERSON_ID', err.getvalue())
+
+    def test_a_sheet_without_a_key_turns_the_features_off_with_a_warning(self) -> None:
+        from t6.worker.__main__ import main
+        stop = threading.Event()
+        stop.set()
+        env, registry = self.worker_env('mute')
+        err = StringIO()
+        with redirect_stderr(err):
+            self.assertEqual(main(env, {'main': {}}, stop=stop), 0)
+        self.assertIn('GOOGLE_APPLICATION_CREDENTIALS', err.getvalue())
+        self.assertEqual(InternalJobQueue(registry).find('crm.reminder'), [])
+

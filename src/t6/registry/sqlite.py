@@ -1086,6 +1086,13 @@ def _code_held(db: sqlite3.Connection, code: str, form: str, project_id: str) ->
     return CodeHeld(code, tuple(row[0] for row in rows), "in_rotation" if in_rotation else "unclassified")
 
 
+def latest_stages(db: sqlite3.Connection, project_id: str | None = None) -> dict[str, tuple[str, float]]:
+    """Project ID to its newest stage history row (label, time), for every Project or for one."""
+    where, args = ('WHERE project_id = ? ', (project_id,)) if project_id is not None else ('', ())
+    rows = db.execute(f'SELECT project_id, to_value, at FROM project_stage_history WHERE id IN (SELECT MAX(id) FROM project_stage_history {where}GROUP BY project_id)', args)
+    return {str(row[0]): (str(row[1]), float(row[2])) for row in rows}
+
+
 def _audit(
     db: sqlite3.Connection, project_id: str, action: str, actor: str, at: float, before: _Values | None, after: _Values, *, summary: str | None = None
 ) -> None:

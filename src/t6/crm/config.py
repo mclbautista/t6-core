@@ -12,15 +12,22 @@ SHEET_VARIABLE = 'T6_CRM_SHEET_ID'
 
 
 def crm_source(environ: Mapping[str, str]) -> SheetSource | None:
-    """The CRM Sheet, or None when `T6_CRM_SHEET_ID` is unset (every CRM feature is then off)."""
+    """The CRM Sheet, or None when `T6_CRM_SHEET_ID` or the service account key file is unset (every CRM feature is then off)."""
     from t6.google.http import ServiceAccount, UrllibHttp
     sheet = (environ.get(SHEET_VARIABLE) or '').strip()
     if not sheet:
         return None
     if not environ.get(CREDENTIAL_VARIABLE):
-        raise ValueError(f'Set {CREDENTIAL_VARIABLE} to read the CRM Sheet')
+        return None
     account = ServiceAccount.from_json(Path(environ[CREDENTIAL_VARIABLE]).read_text(encoding='utf-8'))
     return GoogleSheetsSource(sheet, account, UrllibHttp())
+
+
+def missing_key_warning(environ: Mapping[str, str]) -> str | None:
+    """The startup warning for a CRM Sheet that is set but cannot be opened because the service account key is not."""
+    if (environ.get(SHEET_VARIABLE) or '').strip() and not environ.get(CREDENTIAL_VARIABLE):
+        return f'{SHEET_VARIABLE} is set but {CREDENTIAL_VARIABLE} is not, so the CRM features are off'
+    return None
 
 
 @dataclass(frozen=True)

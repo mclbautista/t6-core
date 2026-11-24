@@ -19,10 +19,11 @@ from t6.crm.log import CrmLog, StageChange, due_reminders, read_log
 from t6.crm.snooze import Snoozes
 from t6.domain import CrmStage, Project
 from t6.domain.events import JsonValue
-from t6.domain.project_rules import status_key
+from t6.domain.project_rules import crm_stage, is_lead
 from t6.domain.studio_time import MANILA
 from t6.drives.sheets import SheetSource
 from t6.person import People
+from t6.registry.sqlite import latest_stages
 from t6.worker import WorkerJob
 from t6.worker.gateway import GatewayClient
 from t6.worker.internal_queue import InternalJobQueue
@@ -45,7 +46,7 @@ class LeadFacts:
     name: str
     stage: CrmStage
     owner_ids: tuple[str, ...]  # Person IDs; empty when the Lead Owner is blank or maps to no Person
-    has_client_role: bool  # a Delegate Producer, Line Producer or Prod Coor/Supe is set
+    has_lead_contact: bool  # a Delegate Producer, Line Producer or Prod Coor/Supe is set
     has_studio: bool
 
 
@@ -62,17 +63,14 @@ Digest = dict[str, list[Item]]
 def read_leads(registry: Any, projects: Sequence[Project]) -> list[LeadFacts]:
     """The open CRM Leads among `projects`. The stage is the newest stage history row, else the Notion Status."""
     with registry._transaction() as db:
-        current = {str(row[0]): str(row[1]) for row in db.execute(
-            'SELECT project_id, to_value FROM project_stage_history WHERE id IN (SELECT MAX(id) FROM project_stage_history GROUP BY project_id)')}
+        current = latest_stages(db)
     leads = []
     for project in projects:
         project_id = registry.bound_entity('notion', project.page_id)
         if project_id is None:
             continue
-        label = current.get(project_id)
-        stage = next((s for s in CrmStage if (label is not None and s.value == label) or
-                      (label is None and status_key(s.value) == status_key(project.status))), None)
-        if stage is None or stage is CrmStage.LOST:
+        stage = crm_stage(current[project_id][0] if project_id in current else None, project.status)
+        if stage is None or not is_lead(stage):
             continue
         owners = (registry.bound_entity('notion', page) for page in project.lead_owner_ids)
         leads.append(LeadFacts(project_id, project.name or '(untitled)', stage, tuple(o for o in owners if o is not None),
@@ -83,21 +81,24 @@ def read_leads(registry: Any, projects: Sequence[Project]) -> list[LeadFacts]:
 
 def stage_changes(registry: Any) -> StageChange:
     """Each Project's last stage change as a Manila day; a Project with none counts from its registration."""
+    with registry._transaction() as db:
+        changed = {str(row[0]): float(row[1]) for row in db.execute('SELECT project_id, MAX(at) FROM project_stage_history GROUP BY project_id')}
+        registered = {str(row[0]): float(row[1]) for row in db.execute('SELECT id, created_at FROM projects WHERE created_at IS NOT NULL')}
+
     def last(project_id: str) -> date | None:
-        with registry._transaction() as db:
-            row = db.execute('SELECT MAX(at) FROM project_stage_history WHERE project_id = ?', (project_id,)).fetchone()
-            row = row if row and row[0] is not None else db.execute('SELECT created_at FROM projects WHERE id = ?', (project_id,)).fetchone()
-        return None if row is None or row[0] is None else datetime.fromtimestamp(float(row[0]), MANILA).date()
+        moment = changed.get(project_id, registered.get(project_id))
+        return None if moment is None else datetime.fromtimestamp(moment, MANILA).date()
     return last
 
 
 class CrmReminder:
     def __init__(self, people: People, queue: InternalJobQueue, gateway: GatewayClient, source: SheetSource, default_owner: str,
                  leads: Callable[[], Sequence[LeadFacts]], name_of: Callable[[str], str | None], *,
-                 roles: CrmRoles = CrmRoles(), clock: Callable[[], float] = time.time) -> None:
+                 roles: CrmRoles = CrmRoles(), project_name: Callable[[str], str | None] = lambda _: None,
+                 clock: Callable[[], float] = time.time) -> None:
         self.people, self.queue, self.gateway, self.source, self.default_owner = people, queue, gateway, source, default_owner
         self.leads, self.name_of, self.clock = leads, name_of, clock
-        self.roles = roles
+        self.roles, self.project_name = roles, project_name
         self.registry = people.registry
         self.concerns = ConcernStore(self.registry, people.tokens)
 
@@ -149,7 +150,7 @@ class CrmReminder:
                 continue
             note = f'{self.name_of(person) or "a colleague"} (snoozed until {snoozed[person].isoformat()})'
             for target in [p for p in producers if p != person] or [self.default_owner]:
-                for item in items:
+                for item in (i for i in items if target == person or not any(i is held for held in digest.get(target, ()))):
                     covering.setdefault((target, id(item)), (item, []))[1].append(note)
         for (target, _), (item, notes) in covering.items():
             rerouted.setdefault(target, []).append(Item(item.section, (*item.lines, f'  Covering for {", ".join(notes)}')))
@@ -157,15 +158,15 @@ class CrmReminder:
 
     def _recipient(self, telegram: int) -> str:
         """The active Person holding this Telegram ID, so one DM covers all their items; else `tg:<id>`."""
-        with self.registry._transaction() as db:
-            row = db.execute('SELECT id FROM persons WHERE telegram_id = ? AND active = 1', (telegram,)).fetchone()
-        return str(row[0]) if row else f'{TELEGRAM_PREFIX}{telegram}'
+        return self.people.by_telegram(telegram) or f'{TELEGRAM_PREFIX}{telegram}'
 
     def _add_reminders(self, digest: Digest, log: CrmLog, today: date, names: dict[str, str]) -> None:
         """Due quote rows go to the Post Producer, billing rows to the Post Producer, Accountant and Finance Head."""
         for row in sorted(due_reminders(log, today), key=lambda r: (r.remind_on or today, r.project_id)):
+            if row.project_id not in names:  # no longer a Lead: read its name, else show its ID
+                names[row.project_id] = self.project_name(row.project_id) or row.project_id
             holders = self.roles.quote if row.kind == 'quote' else self.roles.billing
-            line = f'{row.kind.title()} due {row.remind_on}: {names.get(row.project_id, row.project_id)}, {row.note or "no note"}'
+            line = f'{row.kind.title()} due {row.remind_on}: {names[row.project_id]}, {row.note or "no note"}'
             item = Item('reminders', (f'{line} {row.link}' if row.link else line,))
             for recipient in dict.fromkeys(self._recipient(t) for t in sorted(holders)):
                 digest.setdefault(recipient, []).append(item)
@@ -176,7 +177,7 @@ class CrmReminder:
         lines.extend(f'  Concern: {concern["text"]}' for concern in concerns[:CONCERNS_SHOWN])
         if len(concerns) > CONCERNS_SHOWN:
             lines.append(f'  and {len(concerns) - CONCERNS_SHOWN} more open Concerns')
-        missing = [label for label, present in (('client role', lead.has_client_role), ('Studio', lead.has_studio)) if not present]
+        missing = [label for label, present in (('Lead contact', lead.has_lead_contact), ('Studio', lead.has_studio)) if not present]
         if missing:
             lines.append(f'  Missing: {", ".join(missing)}')
         return tuple(lines)
@@ -198,9 +199,13 @@ class CrmReminder:
             self.schedule(today)
             return {'skipped': 'obsolete date'}
         digest = self.digest(today)
+        skipped = []
         for person_id, items in digest.items():
             telegram = self._telegram(person_id)
             if telegram is None:
-                raise Refused('CRM DM recipient must be an active Person with a Telegram ID')
+                skipped.append(person_id)  # the others still get theirs; a retry keeps the same keys
+                continue
             self.gateway.notify(telegram, self.compose(person_id, items), [], f'crm-dm:{person_id}:{today.isoformat()}')
+        if skipped:
+            raise Refused(f'CRM DM not sent to {", ".join(skipped)}: each recipient must be an active Person with a Telegram ID')
         return {'recipients': len(digest), 'items': sum(len(items) for items in digest.values())}

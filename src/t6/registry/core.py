@@ -120,6 +120,11 @@ class RegisteredProject:
     sync_error: str | None = None
     """Why the last sync attempt failed, while a sync is pending or failed."""
 
+    @property
+    def notion_page(self) -> str | None:
+        """The page ID of its active, reachable Notion page."""
+        return next((b.page_id for b in self.bindings if b.system == 'notion' and b.active and b.available), None)
+
 
 @dataclass(frozen=True, slots=True)
 class AuditEntry:
