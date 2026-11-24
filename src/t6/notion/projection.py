@@ -116,6 +116,17 @@ class ProjectProjection:
         self._registry.report_sync(project_id, revision, ok=True)
         return {"synced": revision, "page": page}
 
+    def _page_name(self, page_id: str) -> str:
+        """A related Contact or Studio page's title, never its ID."""
+        try:
+            related = self._notion.retrieve_page(page_id)
+        except NotionError as error:
+            if error.status != 404:
+                raise
+            return '(unavailable)'
+        title = next((p for p in (related.get('properties') or {}).values() if p.get('type') == 'title'), None)
+        return (codec.title(title) or '').strip() or '(untitled)'
+
     def reconcile(self, job: WorkerJob) -> JsonValue:
         page_id = str(job.payload["page_id"])
         try:
@@ -156,10 +167,43 @@ class ProjectProjection:
             prop: JSON = next((p for p in properties.values() if unquote(str(p.get('id', ''))) == unquote(str(prop_id))), {})
             if outcome != 'unbound' and isinstance(updated, list) and updated and any(unquote(str(item)) == unquote(str(prop_id)) for item in updated) and prop:
                 self._registry.observe_project_status(page_id, codec.select(prop), editor, str(job.payload.get('event_id') or job.dedupe_key), editor_id, field, (prop.get('select') or {}).get('id'))
+        if outcome != 'unbound' and isinstance(updated, list) and updated:
+            row = ProjectsRow.from_page(page)
+            event = str(job.payload.get('event_id') or job.dedupe_key)
+            for field, label in CRM_RELATIONS:
+                if any(unquote(str(item)) == unquote(str(ProjectsRow.notion_id(field))) for item in updated):
+                    names = [self._page_name(related) for related in getattr(row, field)]
+                    self._registry.observe_crm_edit(page_id, label, names, editor, event)
+        if outcome == "unbound" and job.payload.get("event_type") == "page.created":
+            return {"outcome": self._register_lead(job, page)}
         if outcome == "unbound" and self._offer is not None:
             heading = next((p for p in properties.values() if p.get("type") == "title"), None)
             self._offer(page_id, codec.title(heading) or "")
         return {"outcome": outcome}
+
+    def _register_lead(self, job: WorkerJob, page: JSON) -> str:
+        """A new Projects page is a Lead: register it, and give a blank Status the value Leads."""
+        page_id = str(job.payload["page_id"])
+        row = ProjectsRow.from_page(page)
+        status = row.status
+        option_id = ((page.get("properties") or {}).get(ProjectsProperties.STATUS) or {}).get("select", {}).get("id") if status else None
+        refusal: Refused | None = None
+        if not status:
+            try:
+                status = live_option_name(self._notion.retrieve_data_source(self._projects, freshness="live"), ProjectsRow.notion_id("status") or "Status", "Leads")
+                self._notion.update_page(page_id, {"properties": {ProjectsRow.notion_id("status"): {"select": {"name": status}}}})
+            except ValueError as error:
+                status, refusal = None, Refused(str(error))
+        relations = {label: [self._page_name(related) for related in getattr(row, field)] for field, label in CRM_RELATIONS if getattr(row, field)}
+        outcome = self._registry.register_created_page(page_id, str(job.payload.get("event_id") or job.dedupe_key), status, option_id, relations)
+        if refusal is not None:
+            raise refusal  # registered, but the Status default failed: show the job as failed
+        return outcome
+
+
+CRM_RELATIONS: Final = (('lead_owner', 'Lead Owner'), ('delegate_producer', 'Delegate Producer'), ('line_producer', 'Line Producer'),
+                         ('prod_coor_supe', 'Prod Coor/Supe'), ('studio', 'Studio'))
+"""The Lead relations whose edits go to the CRM Sheet History tab (#713), as `ProjectsRow` field and History label."""
 
 
 def _gone(page: JSON) -> bool:

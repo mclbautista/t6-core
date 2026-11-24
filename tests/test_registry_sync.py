@@ -297,7 +297,7 @@ class ReconciliationTests(SyncTestCase):
         self.new("ABC", "in")  # same code, different Project: never merged by code
         self.drain()
         intents = len(self.registry.pending_sync())
-        self.webhook(page, "page.created")
+        self.webhook(page, "page.undeleted")
         self.webhook(page)
         self.drain()
         (item,) = self.items()

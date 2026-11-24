@@ -529,6 +529,13 @@ The Leads side of a Project, before it is In-Progress (spec #705).
 - **Lead contact**: a client person on the Project: its Delegate Producer, Line
   Producer or Prod Coor/Supe.
 
+- **Default owner**: the Person named by `T6_CRM_DEFAULT_OWNER_PERSON_ID`. A Lead
+  with a blank Lead Owner, or one who cannot be messaged, goes to them, and they
+  take a snoozed person's items when no Post Producer can.
+
+- **Snooze**: a person pauses their own CRM DMs through a date (Manila, inclusive,
+  at most 30 days). Their items go to the Post Producers, then the default owner.
+
 `lead list` reads the open Leads with stage, Lead Owner, Studio, the Lead
 contacts and days in stage.
 
