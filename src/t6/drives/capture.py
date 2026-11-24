@@ -94,13 +94,13 @@ def capture_post(registry: SqliteProjectRegistry, inputs: DriveCaptureInput) -> 
             return Done(result=_result(data))
     if inputs.drive:
         return Refused(rule='input', reason='A Drive is only given for an existing capture')
-    if any(value is None for value in (inputs.chat_id, inputs.message_id, inputs.sender_telegram_id, inputs.posted_at, inputs.photo)):
-        return Refused(rule='input', reason='Give chat, message, sender, post time and photo')
-    assert inputs.chat_id is not None and inputs.photo is not None
+    if any(value is None for value in (inputs.chat_id, inputs.message_id, inputs.sender_telegram_id, inputs.posted_at)) or not (inputs.photo or inputs.text.strip()):
+        return Refused(rule='input', reason='Give chat, message, sender, post time and a photo or text')
+    assert inputs.chat_id is not None
     try:
         configured = recording_chat()
         topic = recording_topic()
-        photo = base64.b64decode(inputs.photo, validate=True)
+        photo = base64.b64decode(inputs.photo, validate=True) if inputs.photo else b''  # a text-only post has no photo
     except (ValueError, binascii.Error):
         return Refused(rule='input', reason='Invalid recording channel configuration or base64 photo')
     admitted = recording_input(inputs.chat_id, inputs.text, photo, recording_chat_id=configured,
@@ -131,7 +131,7 @@ def _undo_until(data: dict[str, Any]) -> str | None:
 def _result(data: dict[str, Any]) -> dict[str, Any]:
     return {key: data[key] for key in ('capture', 'state', 'lines', 'differences')} | {'photo_reference': None if data['state'] == 'ignored' else data['capture'], 'message': 'ask for the label' if data['state'] == 'exception' else None,
             'reason': data.get('reason') if data['state'] == 'exception' else None,
-            'may_ask': data['state'] == 'exception' and not data.get('answered'),
+            'may_ask': data['state'] == 'exception' and not data.get('answered') and data.get('reason') != 'no_photo',
             'undo_until': _undo_until(data)}
 
 
@@ -183,8 +183,9 @@ class CaptureResolver:
             if admitted is None:
                 raise ValueError('Capture no longer belongs to the configured recording channel')
         picked = data.get('follow_up_drive')  # the custodian chose the Drive: the photo is not read again
-        readings = [] if picked else read_drive_photo(Image(admitted.photo, ImageType(data['media_type'])), provider=self.provider).drives
-        verdict = classify_transmittal(admitted.text, bool(admitted.photo), readings, provider=self.decisions) if self.decisions is not None and not picked else 'transmittal'
+        # Jev runs once, first, on the withheld caption and has-photo flag; follow-ups and picks skip it.
+        verdict = classify_transmittal(admitted.text, bool(admitted.photo), provider=self.decisions) if self.decisions is not None and not picked and not data.get('answered') else 'transmittal'
+        readings = [] if picked or verdict == 'not_transmittal' or not admitted.photo else read_drive_photo(Image(admitted.photo, ImageType(data['media_type'])), provider=self.provider).drives
         with self.registry._transaction() as db:
             row = db.execute('SELECT data FROM drive_captures WHERE id=?', (capture,)).fetchone()
             if row is None:
@@ -206,6 +207,10 @@ class CaptureResolver:
             if (answer := _parse_text(follow_up))[0] is not None and not picked:  # an IN/OUT answer replaces the caption's direction
                 direction, person, place, typed = answer[0], answer[1], answer[2], answer[3] or typed
                 follow_up = answer[3]
+            if not admitted.photo and not picked and not follow_up:
+                data['state'], data['reason'] = 'exception', 'no_photo'
+                db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), capture))
+                return _result(data)
             if direction is None or direction == 'OUT' and not person:
                 data['state'], data['reason'] = 'exception', 'missing_direction' if readings or typed or follow_up else 'unreadable_label'
                 db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), capture))

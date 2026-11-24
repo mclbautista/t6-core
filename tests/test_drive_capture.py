@@ -84,10 +84,14 @@ class CaptureTests(DriveReloadFixture):
         from t6.drives.capture import CaptureResolver
         from t6.worker import Worker
         from t6.worker.internal_queue import InternalQueueClient
-        self.fake.reply(json.dumps({'drives': readings}))
-        self.fake.decisions({'model': 'synthetic-jev', 'answers': {'c0': {
-            'type': 'choice', 'choice': choice,
-            'probabilities': {'match': 1 if choice == 'match' else 0, 'maybe': 0, 'no': 1 if choice == 'no' else 0}}}})
+        with self.registry._transaction() as db:  # Jev runs only on a first resolution, never on a follow-up answer
+            first = any(not json.loads(row[0]).get('answered') for row in db.execute("SELECT data FROM drive_captures") if json.loads(row[0])['state'] == 'pending')
+        if first:
+            self.fake.decisions({'model': 'synthetic-jev', 'answers': {'c0': {
+                'type': 'choice', 'choice': choice,
+                'probabilities': {'match': 1 if choice == 'match' else 0, 'maybe': 0, 'no': 1 if choice == 'no' else 0}}}})
+        if choice != 'no':
+            self.fake.reply(json.dumps({'drives': readings}))
         resolver = CaptureResolver(self.registry, self.fake, decisions=self.fake)
         worker = Worker(InternalQueueClient(self.queue), 'main', {'drive.capture.resolve': resolver.handle})
         self.assertTrue(worker.run_once())
@@ -148,7 +152,6 @@ class CaptureTests(DriveReloadFixture):
                         assert isinstance(request, DecisionsRequest)
                         self.assertEqual(request.state, {
                             'text': 'OUT Synthetic borrower', 'has_photo': 'true',
-                            'labels_and_serials': json.dumps([{'label': 'Synthetic first', 'serial': 'SAMPLE-FIRST'}] if matched else []),
                         })
 
     def test_two_photo_drives_make_two_movements_and_one_shipment(self) -> None:
@@ -318,6 +321,70 @@ class CaptureTests(DriveReloadFixture):
         self.assertEqual(resolved['state'], 'resolved')
         self.assertEqual(resolved['lines'], [dict(label='Synthetic first', direction='OUT', person='Synthetic borrower')])
         self.assertEqual(self.api('capture', capture=capture, text='SAMPLE-FIRST')['result'], resolved)
+
+    def test_jev_runs_before_the_photo_read_and_a_no_never_reaches_the_image_model(self) -> None:
+        from t6.drives.capture import CaptureResolver
+        from t6.llm.transport import DecisionsRequest
+        from t6.worker import Worker
+        from t6.worker.internal_queue import InternalQueueClient
+        capture = self.api('capture', **{**self.post, 'text': 'Synthetic lunch photo'})['result']['capture']
+        self.fake.decisions({'model': 'synthetic-jev', 'answers': {'c0': {
+            'type': 'choice', 'choice': 'no', 'probabilities': {'match': 0, 'maybe': 0, 'no': 1}}}})
+        resolver = CaptureResolver(self.registry, self.fake, decisions=self.fake)
+        self.assertTrue(Worker(InternalQueueClient(self.queue), 'main', {'drive.capture.resolve': resolver.handle}).run_once())
+        (call,) = self.fake.calls  # only Jev was called; the image model never was
+        assert isinstance(call.request, DecisionsRequest)
+        self.assertEqual(call.request.state, {'text': 'Synthetic lunch photo', 'has_photo': 'true'})
+        self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'ignored')
+        with self.registry._transaction() as db:
+            row = db.execute('SELECT data, photo FROM drive_captures WHERE id=?', (capture,)).fetchone()
+        self.assertEqual((row[1], 'text' in json.loads(row[0])), (b'', False))
+
+    def test_text_only_post_is_accepted_and_becomes_no_photo_exception_without_an_image_read(self) -> None:
+        text_only = {k: v for k, v in self.post.items() if k != 'photo'}
+        self.assertEqual(self.api('capture', **{**text_only, 'chat_id': -900002})['rule'], 'recording_channel')
+        capture = self.api('capture', **text_only)['result']['capture']
+        self.resolve([], 'match')
+        self.assertEqual(len(self.fake.calls), 1)  # Jev only
+        self.assertEqual(self.fake.calls[0].request.state['has_photo'], 'false')  # type: ignore[union-attr]
+        result = self.api('capture result', capture=capture)['result']
+        self.assertEqual((result['state'], result['reason'], result['may_ask']), ('exception', 'no_photo', False))
+        (row,) = self.api('capture list', 'synthetic-keeper-secret')['result']['captures']
+        self.assertEqual((row['capture'], row['text'], row['photo']), (capture, 'OUT Synthetic borrower', None))
+
+    def test_text_only_post_ignored_when_jev_says_no_and_empty_post_refused(self) -> None:
+        text_only = {k: v for k, v in self.post.items() if k != 'photo'}
+        capture = self.api('capture', **{**text_only, 'text': 'Synthetic chatter'})['result']['capture']
+        self.resolve([], 'no')
+        self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'ignored')
+        self.assertEqual(self.api('capture', **{**text_only, 'message_id': 9, 'text': ''})['rule'], 'input')
+
+    def test_follow_up_answers_and_custodian_picks_skip_jev(self) -> None:
+        from t6.drives.capture import CaptureResolver
+        from t6.worker import Worker
+        from t6.worker.internal_queue import InternalQueueClient
+        capture = self.api('capture', **self.post)['result']['capture']
+        self.resolve([])
+        before = len(self.fake.calls)
+        self.api('capture', capture=capture, text='Synthetic first')
+        self.fake.reply(json.dumps({'drives': []}))
+        decisions = FakeProvider()  # nothing queued: a Jev call would fail the run
+        resolver = CaptureResolver(self.registry, self.fake, decisions=decisions)
+        self.assertTrue(Worker(InternalQueueClient(self.queue), 'main', {'drive.capture.resolve': resolver.handle}).run_once())
+        self.assertEqual(decisions.calls, [])
+        self.assertEqual(len(self.fake.calls), before + 1)  # the photo is read again for a label answer
+        self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'resolved')
+
+    def test_no_jev_provider_keeps_the_post(self) -> None:
+        from t6.drives.capture import CaptureResolver
+        from t6.worker import Worker
+        from t6.worker.internal_queue import InternalQueueClient
+        text_only = {k: v for k, v in self.post.items() if k != 'photo'}
+        capture = self.api('capture', **text_only)['result']['capture']
+        resolver = CaptureResolver(self.registry, self.fake)
+        self.assertTrue(Worker(InternalQueueClient(self.queue), 'main', {'drive.capture.resolve': resolver.handle}).run_once())
+        self.assertEqual(self.api('capture result', capture=capture)['result']['reason'], 'no_photo')
+        self.assertEqual(self.fake.calls, [])
 
     def test_capture_list_shows_unresolved_captures_with_text_and_photo_access(self) -> None:
         keeper = 'synthetic-keeper-secret'
@@ -676,4 +743,4 @@ class CaptureTests(DriveReloadFixture):
         image.write_bytes(b'\xff\xd8\xffsynthetic-jpeg-bytes')
         self.api('capture', **{**self.post, 'photo': base64.b64encode(image.read_bytes()).decode()})
         self.resolve([])
-        self.assertEqual(self.fake.calls[0].messages[-1]['image'].media_type.value, 'image/jpeg')
+        self.assertEqual(self.fake.calls[1].messages[-1]['image'].media_type.value, 'image/jpeg')

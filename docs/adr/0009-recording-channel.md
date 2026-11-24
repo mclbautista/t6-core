@@ -41,3 +41,24 @@ chatter. QR labels and QR scanning are not used for recording.
 - The existing ADR 0007 guard tests in `tests/test_linked_chats.py` and
   `tests/test_concern.py` remain in force. Linked-chat fact ingestion is
   unchanged, including for TRANSMITTAL: recording goes through the capture verb.
+
+## Amendment: Jev first, text-only posts and the debug topic (#659)
+
+Date: 2026-11-24. Source: [spec #659](https://github.com/mclbautista/t6-core/issues/659).
+
+- On a recording-channel post that has passed the gateway's local check, Jev
+  (the transmittal check) runs **before** the photo read. Its input is the
+  withheld caption and a has-photo flag, never photo readings. Only an
+  explicit "no" discards the post (state ignored, text and photo deleted, the
+  image model never called); a failure or "maybe" keeps it. Follow-up answers,
+  custodian-picked Drives and caption edits skip Jev. With no Jev provider
+  configured the post is kept.
+- A **text-only** post (no photo) in the configured chat and topic is a
+  Capture. If Jev keeps it, it is an exception with reason `no_photo`. It is
+  never sent to the image model. Recording a movement from a text-only post
+  without the custodian is out of scope.
+- The gateway's **debug topic** copies withheld captions to a Telegram topic.
+  They are not stored in t6.
+- Prompt answers and undo replies are verb input from the poster or a
+  custodian, like any other recording-channel input.
+
