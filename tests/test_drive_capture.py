@@ -84,8 +84,8 @@ class CaptureTests(DriveReloadFixture):
         from t6.drives.capture import CaptureResolver
         from t6.worker import Worker
         from t6.worker.internal_queue import InternalQueueClient
-        with self.registry._transaction() as db:  # Jev runs only on a first resolution, never on a follow-up answer
-            first = any(not json.loads(row[0]).get('answered') for row in db.execute("SELECT data FROM drive_captures") if json.loads(row[0])['state'] == 'pending')
+        with self.registry._transaction() as db:  # Jev runs only on a first resolution, never on a follow-up answer or a caption edit
+            first = any(not json.loads(row[0]).get('answered') and not json.loads(row[0]).get('edited') for row in db.execute("SELECT data FROM drive_captures") if json.loads(row[0])['state'] == 'pending')
         if first:
             self.fake.decisions({'model': 'synthetic-jev', 'answers': {'c0': {
                 'type': 'choice', 'choice': choice,
@@ -374,6 +374,42 @@ class CaptureTests(DriveReloadFixture):
         self.assertEqual(decisions.calls, [])
         self.assertEqual(len(self.fake.calls), before + 1)  # the photo is read again for a label answer
         self.assertEqual(self.api('capture result', capture=capture)['result']['state'], 'resolved')
+
+    def test_caption_edit_never_calls_jev_and_keeps_may_ask(self) -> None:
+        from t6.drives.capture import CaptureResolver
+        from t6.worker import Worker
+        from t6.worker.internal_queue import InternalQueueClient
+        capture = self.api('capture', **{**self.post, 'text': 'Remote Master 3 Day 8'})['result']['capture']
+        self.resolve([])
+        self.assertTrue(self.api('capture result', capture=capture)['result']['may_ask'])
+        self.api('capture', capture=capture, text='Remote Master 3 Day 8 again', edit=True)
+        self.fake.reply(json.dumps({'drives': []}))
+        decisions = FakeProvider()  # nothing queued: a Jev call would fail the run
+        resolver = CaptureResolver(self.registry, self.fake, decisions=decisions)
+        self.assertTrue(Worker(InternalQueueClient(self.queue), 'main', {'drive.capture.resolve': resolver.handle}).run_once())
+        self.assertEqual(decisions.calls, [])
+        result = self.api('capture result', capture=capture)['result']
+        self.assertEqual((result['state'], result['may_ask']), ('exception', True))
+
+    def test_edit_of_a_text_only_no_photo_capture_stays_no_photo_without_any_read(self) -> None:
+        from t6.drives.capture import CaptureResolver
+        from t6.worker import Worker
+        from t6.worker.internal_queue import InternalQueueClient
+        text_only = {k: v for k, v in self.post.items() if k != 'photo'}
+        capture = self.api('capture', **text_only)['result']['capture']
+        self.resolve([], 'match')
+        self.assertEqual(self.api('capture result', capture=capture)['result']['reason'], 'no_photo')
+        before = len(self.fake.calls)
+        edited = self.api('capture', capture=capture, text='OUT Someone else', edit=True)['result']
+        self.assertEqual(edited['state'], 'pending')
+        decisions = FakeProvider()
+        resolver = CaptureResolver(self.registry, self.fake, decisions=decisions)
+        self.assertTrue(Worker(InternalQueueClient(self.queue), 'main', {'drive.capture.resolve': resolver.handle}).run_once())
+        self.assertEqual((decisions.calls, len(self.fake.calls)), ([], before))
+        result = self.api('capture result', capture=capture)['result']
+        self.assertEqual((result['state'], result['reason'], result['may_ask']), ('exception', 'no_photo', False))
+        (row,) = self.api('capture list', 'synthetic-keeper-secret')['result']['captures']
+        self.assertEqual((row['text'], row['photo']), ('OUT Someone else', None))
 
     def test_no_jev_provider_keeps_the_post(self) -> None:
         from t6.drives.capture import CaptureResolver

@@ -79,7 +79,7 @@ def capture_post(registry: SqliteProjectRegistry, inputs: DriveCaptureInput) -> 
             if inputs.edit:  # replaces the caption only: any follow-up already given and the one-question allowance stay as they are
                 if data['state'] not in ('pending', 'exception') or data.get('text') == inputs.text:
                     return Done(result=_result(data))
-                data.update(text=inputs.text, revision=data.get('revision', 0) + 1, state='pending', reason=None, differences=[])
+                data.update(text=inputs.text, revision=data.get('revision', 0) + 1, state='pending', reason=None, differences=[], edited=True)
                 db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), inputs.capture))
                 queue.submit('main', 'drive.capture.resolve', f"{inputs.capture}:{data['revision']}",
                              {'capture': inputs.capture, 'revision': data['revision']}, db=db)
@@ -183,8 +183,8 @@ class CaptureResolver:
             if admitted is None:
                 raise ValueError('Capture no longer belongs to the configured recording channel')
         picked = data.get('follow_up_drive')  # the custodian chose the Drive: the photo is not read again
-        # Jev runs once, first, on the withheld caption and has-photo flag; follow-ups and picks skip it.
-        verdict = classify_transmittal(admitted.text, bool(admitted.photo), provider=self.decisions) if self.decisions is not None and not picked and not data.get('answered') else 'transmittal'
+        # Jev runs once, first, on the withheld caption and has-photo flag; follow-ups, picks and caption edits skip it.
+        verdict = classify_transmittal(admitted.text, bool(admitted.photo), provider=self.decisions) if self.decisions is not None and not picked and not data.get('answered') and not data.get('edited') else 'transmittal'
         readings = [] if picked or verdict == 'not_transmittal' or not admitted.photo else read_drive_photo(Image(admitted.photo, ImageType(data['media_type'])), provider=self.provider).drives
         with self.registry._transaction() as db:
             row = db.execute('SELECT data FROM drive_captures WHERE id=?', (capture,)).fetchone()
