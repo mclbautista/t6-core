@@ -156,6 +156,38 @@ class VerbAPI:
         self.request_log(request_line(path, seen.get('identity'), response, time.monotonic() - started, self.routes, reason_code=seen.get('reason_code')))
         return response
 
+    def _last_privacy_rebuild(self) -> dict[str, JsonValue] | None:
+        from t6.domain.studio_time import MANILA
+
+        with self.people.registry._transaction() as db:
+            row = db.execute(
+                "SELECT state, result, created_at, run_at FROM internal_jobs "
+                "WHERE kind = ? AND state IN ('done', 'failed', 'dead') ORDER BY id DESC LIMIT 1",
+                (JobKind.PRIVACY_REGISTRY_REBUILD.value,),
+            ).fetchone()
+        if row is None:
+            return None
+        state, raw_result, created_at, run_at = row
+        at_ts = max(float(created_at), float(run_at))
+        status: JsonValue = 'ok' if state == 'done' else 'failed'
+        value: JsonValue = None
+        if raw_result:
+            try:
+                parsed = json.loads(str(raw_result))
+            except ValueError:
+                value = str(raw_result)
+            else:
+                if isinstance(parsed, dict) and 'status' in parsed:
+                    status = parsed['status']
+                    value = parsed.get('value')
+                else:
+                    value = parsed
+        return {
+            'at': datetime.fromtimestamp(at_ts, MANILA).isoformat(),
+            'status': status,
+            'result': value,
+        }
+
     def _handle(self, request: Request, seen: dict[str, str]) -> Response:
         path = urlsplit(request.path).path
         if path == '/health':
@@ -165,8 +197,11 @@ class VerbAPI:
                 schema = db.execute('SELECT MAX(version) FROM schema_version').fetchone()[0]
             with self.queue._transaction() as db:
                 jobs = dict(db.execute('SELECT state, COUNT(*) FROM jobs GROUP BY state').fetchall())
+            privacy_status: JsonValue = None
+            if self.privacy_list is not None:
+                privacy_status = {**self.privacy_list.status(), 'last_rebuild': self._last_privacy_rebuild()}
             report: dict[str, JsonValue] = {'version': version('t6'), 'schema_version': schema, 'jobs': jobs,
-                                            'privacy_registry': self.privacy_list.status() if self.privacy_list else None}
+                                            'privacy_registry': privacy_status}
             auth = request.header('authorization')
             supplied = auth[7:] if auth.lower().startswith('bearer ') else ''
             if supplied and any(hmac.compare_digest(secret, supplied) for secret in self.secrets):
@@ -859,7 +894,7 @@ class VerbAPI:
                     if saved.page_id:
                         audit('meeting_note_create', saved.page_id)
                         self._queue_mirror_refresh(saved.page_id, data_source_key='meeting_notes', data_source_id=source)
-                    return Ambiguous(candidates=[{'pending': True, 'reason': str(saved), 'page_id': saved.page_id}])
+                    return Ambiguous(candidates=[{'pending': True, 'reason': saved.reason, 'page_id': saved.page_id, 'mismatched': list(saved.mismatched)}])
                 audit('meeting_note_create', saved.page_id)
                 self._queue_mirror_refresh(saved.page_id, data_source_key='meeting_notes', data_source_id=source)
                 return done(saved)
@@ -882,6 +917,8 @@ class VerbAPI:
                 return Refused(rule='input', reason='Not a Meeting Notes page')
             note = note_from_page(page)
             if verb == 'mark-sent':
+                if page.get('in_trash') or page.get('archived'):
+                    return Refused(rule='sent', reason='The note is in the trash')
                 if note.sent_at is not None:
                     return done(note)
                 when = inputs.at or datetime.now(timezone(timedelta(hours=8)))
@@ -890,7 +927,7 @@ class VerbAPI:
                     return Refused(rule='notion', reason=str(saved))
                 if isinstance(saved, WriteAmbiguous):
                     self._queue_mirror_refresh(note.page_id, data_source_key='meeting_notes', data_source_id=source)
-                    return Ambiguous(candidates=[{'pending': True, 'reason': str(saved), 'page_id': note.page_id}])
+                    return Ambiguous(candidates=[{'pending': True, 'reason': saved.reason, 'page_id': note.page_id, 'mismatched': list(saved.mismatched)}])
                 audit('meeting_note_sent', note.page_id)
                 self._queue_mirror_refresh(note.page_id, data_source_key='meeting_notes', data_source_id=source)
                 return done(saved)
@@ -1892,10 +1929,20 @@ def service_permissions_from_env(environ: Mapping[str, str]) -> dict[str, frozen
     return grants
 
 
+def _read_privacy_names_with_format(path: str) -> tuple[PrivacyRegistry, str]:
+    """Load `privacy_registry.json` and report whether it uses the legacy array format or the object format."""
+    with open(path, encoding='utf-8') as file:
+        return parse_privacy_registry_with_format(json.load(file))
+
+
 def _read_privacy_names(path: str) -> PrivacyRegistry:
     """Load `privacy_registry.json`: `{"people": [...], "projects": [...], "ids": [...]}`; the old array of names still loads."""
-    with open(path, encoding='utf-8') as file:
-        return parse_privacy_registry(json.load(file))
+    return _read_privacy_names_with_format(path)[0]
+
+
+def parse_privacy_registry_with_format(names: Any) -> tuple[PrivacyRegistry, str]:
+    registry = parse_privacy_registry(names)
+    return registry, 'legacy format' if isinstance(names, list) else 'object'
 
 
 def parse_privacy_registry(names: Any) -> PrivacyRegistry:
@@ -1928,6 +1975,9 @@ def parse_privacy_registry(names: Any) -> PrivacyRegistry:
     return PrivacyRegistry(people=people, projects=projects, ids=texts(names.get('ids', [])))
 
 
+LEGACY_FORMAT_WARNING = 't6.server: privacy registry uses legacy array format; rebuild it with `t6 admin privacy-registry`'
+
+
 class PrivacyList:
     """The client-name file of masked reads, read again when it changes (no restart).
 
@@ -1936,13 +1986,22 @@ class PrivacyList:
     """
 
     def __init__(self, path: str, registry: PrivacyRegistry, log: Callable[[str], None] | None = None,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time, *, format: str | None = None) -> None:
         self.path, self._registry, self._log, self._clock = path, registry, log, clock
         self._lock = threading.Lock()
         self._seen: tuple[int, int] | None = None  # (mtime_ns, size) of the file last tried
         self._loaded: tuple[int, int] | None = None  # the same, of the list in use
         self._failed = False
-        self._names = len(registry.people) + len(registry.projects)
+        if format is None:
+            try:
+                _, detected = _read_privacy_names_with_format(self.path)
+            except (OSError, ValueError):
+                detected = 'legacy format' if (not registry.projects and not registry.ids and registry.people) else 'object'
+            self._format = detected
+        else:
+            self._format = format
+        if self._format == 'legacy format' and self._log is not None:
+            self._log(LEGACY_FORMAT_WARNING)
         try:
             self._seen = self._loaded = self._stamp()
         except OSError:
@@ -1964,8 +2023,11 @@ class PrivacyList:
                 self._seen = stamp
                 if stamp is not None:
                     try:
-                        self._registry = _read_privacy_names(self.path)
-                        self._loaded, self._failed, self._names = stamp, False, len(self._registry.people) + len(self._registry.projects)
+                        registry, fmt = _read_privacy_names_with_format(self.path)
+                        self._registry, self._format = registry, fmt
+                        self._loaded, self._failed = stamp, False
+                        if fmt == 'legacy format' and self._log is not None:
+                            self._log(LEGACY_FORMAT_WARNING)
                         return self._registry
                     except (OSError, ValueError) as error:  # JSONDecodeError is a ValueError
                         failure = type(error).__name__
@@ -1975,11 +2037,17 @@ class PrivacyList:
             return self._registry
 
     def status(self) -> dict[str, Any]:
-        """How many names are in use, how old the file they came from is, and whether a later file was refused."""
+        """How many people and projects are in use, the file format, its age, and whether a later file was refused."""
         self.current()
         with self._lock:
             age = None if self._loaded is None else max(0, round(self._clock() - self._loaded[0] / 1e9))
-            return {'names': self._names, 'age_seconds': age, 'reload_failed': self._failed}
+            return {
+                'people': len(self._registry.people),
+                'projects': len(self._registry.projects),
+                'format': self._format,
+                'age_seconds': age,
+                'reload_failed': self._failed,
+            }
 
 
 def read_data_source_configs_from_env(environ: Mapping[str, str]) -> dict[str, DataSourceConfig]:

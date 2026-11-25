@@ -210,3 +210,53 @@ class OrdinaryPersonNameTests(unittest.TestCase):
     def test_a_person_name_that_is_no_word_is_still_refused(self) -> None:
         schema = {'type': 'object', 'properties': {'summary': {'type': 'string', 'description': 'not for Zqxa Vor'}}, 'required': ['summary']}
         self.assertEqual(self.call(schema)['reason'], 'Unresolved registered names in the output schema')
+
+
+class OrdinaryTitlePersonTests(unittest.TestCase):
+    """Person-filed titles and lowercase ordinary names/aliases never mask or refuse ordinary words (#700)."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        registry = SqliteProjectRegistry(tmp.name + '/registry')
+        self.fake = FakeProvider()
+        names = Registry(
+            people=[
+                Person('Song for You and Me from Day session'),
+                Person('for'),
+                Person('Jane Doe', aliases=('and', 'session')),
+                Person('Viva'),
+            ],
+            projects=[],
+        )
+        service = LLMService({'fake': self.fake}, 'fake', names)
+        people = People(registry, PreviewTokens('test'), {'reports': frozenset({'llm'})})
+        self.api = VerbAPI(people, None, {'secret': 'reports'}, lambda *args: None, llm_service=service)
+
+    def run_llm(self, *, preset: str = 'strict', input_text: str = 'plain', reply: str = '{"summary":"ok"}',
+                template: str = 'Summarize for Day and session from you: {input}') -> Any:
+        self.fake.reply(reply)
+        body = {'task_name': 'summary', 'prompt_template': template, 'output_schema': SCHEMA,
+                'input_text': input_text, 'masking_preset': preset}
+        return self.api(Request('POST', '/v1/llm/run', {'Authorization': 'Bearer secret'}, json.dumps(body).encode())).body
+
+    def test_ordinary_words_from_person_title_and_aliases_stay_readable_and_do_not_leak(self) -> None:
+        for preset in ('names', 'strict'):
+            with self.subTest(preset=preset):
+                res = self.run_llm(
+                    preset=preset,
+                    input_text='and And for For from From Day session Session',
+                    reply='{"summary":"and for from Day session"}',
+                )
+                self.assertEqual(res['outcome'], 'done', res)
+                self.assertEqual(res['result']['output'], {'summary': 'and for from Day session'})
+                self.assertIn('and And for For from From Day session Session', self.fake.calls[-1].messages[-1]['content'])
+
+    def test_real_one_word_person_name_is_still_masked_and_refused_on_leak(self) -> None:
+        res_ok = self.run_llm(input_text='Viva joined', reply='{"summary":"[person 1] joined"}')
+        self.assertEqual(res_ok['outcome'], 'done')
+        self.assertEqual(res_ok['result']['output'], {'summary': 'Viva joined'})
+        self.assertNotIn('Viva', self.fake.calls[-1].messages[-1]['content'])
+
+        res_leak = self.run_llm(input_text='plain', reply='{"summary":"Viva"}')
+        self.assertEqual((res_leak['outcome'], res_leak['rule'], res_leak['failure']), ('refused', 'masking', 'leak'))

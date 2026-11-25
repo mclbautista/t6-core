@@ -30,7 +30,7 @@ health hold held issue issues item items keep late launch lead leads lock locked
 meetings miss missed missing move moved moves need needed needs note notes ok okay open order pass
 pending plan planned plans post pass problem problems proceed progress project projects push pushed put
 question questions ready receive received release released remain remains remaining request requested
-resolve resolved review reviewed risk risks run running schedule scheduled send sent set share shared
+resolve resolved review reviewed risk risks run running schedule scheduled send sent session set share shared
 shift shifted show shown slip slipped stage start started status step steps stop stopped submit
 submitted submission team tell testing time timeline today tomorrow track tracking turn update updated
 upcoming wait waiting want week weeks work working yesterday

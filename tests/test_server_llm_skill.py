@@ -441,6 +441,9 @@ Prompt.
         sdir = self.skills_dir / 't'
         _write(sdir / 'scripts' / 't.py', "import json\nprint(json.dumps({'x': 'y'}))\n")
         _write(sdir / 'SKILL.md', "---\nname: t\nt6:\n  tools:\n    - name: t\n      script: scripts/t.py\n---\nGo.\n")
+        logs: list[str] = []
+        service = LLMService({'fake': self.fake}, 'fake', self.privacy, skills_dir=self.skills_dir, log=logs.append)
+        api = VerbAPI(self.api.people, None, {'secret': 'reports'}, lambda *args: None, llm_service=service)
         self.fake.tool_call('t', {})
         with mock.patch.object(
             Session,
@@ -448,11 +451,68 @@ Prompt.
             autospec=True,
             side_effect=lambda _self, val: [Leak('', 'Jane Doe')] if val == '{"x": "y"}' else [],
         ):
-            res = self.call({**self.body, 'skill': 't', 'output_schema': SUMMARY_SCHEMA})
+            res = api(Request('POST', '/v1/llm/run', {'Authorization': 'Bearer secret'}, json.dumps({**self.body, 'skill': 't', 'output_schema': SUMMARY_SCHEMA}).encode())).body
         self.assertEqual((res['outcome'], res['rule'], res['failure']), ('refused', 'masking', 'leak'))
+        self.assertEqual(logs, ['t6.server: llm task=skill-summary refused rule=masking failure=leak path=<root> word=Jane Doe'])
+        self.assertNotIn('Jane Doe', json.dumps(res))
+        self.assertNotIn('<root>', json.dumps(res))
         audit = self.audit()
         self.assertEqual((audit['outcome'], audit['refused_rule'], audit['failure']), ('refused', 'masking', 'leak'))
         self.assertEqual((audit['skill'], audit['turns'], len(audit['script_runs'])), ('t', 1, 1))
+        self.assertNotIn('Jane Doe', json.dumps(audit))
+        self.assertNotIn('<root>', json.dumps(audit))
+
+    def test_tool_argument_and_pre_hook_error_leaks_log_path_and_word(self) -> None:
+        sdir = self.skills_dir / 'leak_paths'
+        _write(sdir / 'scripts' / 'pre.py', "import sys\nsys.stderr.write('pre boom')\nsys.exit(2)\n")
+        _write(sdir / 'scripts' / 'ping.py', "print('{}')\n")
+        _write(
+            sdir / 'SKILL.md',
+            """---
+name: leak-paths
+t6:
+  pre:
+    - name: check
+      script: scripts/pre.py
+      on_error: return_to_model
+  tools:
+    - name: ping
+      script: scripts/ping.py
+---
+Go.
+""",
+        )
+        logs: list[str] = []
+        service = LLMService({'fake': self.fake}, 'fake', self.privacy, skills_dir=self.skills_dir, log=logs.append)
+        api = VerbAPI(self.api.people, None, {'secret': 'reports'}, lambda *args: None, llm_service=service)
+
+        # Tool argument leak logs task, argument field path, and leaked word.
+        _write(sdir / 'scripts' / 'pre.py', "import json, sys\nprint(json.dumps(json.load(sys.stdin)))\n")
+        self.fake.tool_call('ping', {'who': 'Jane Doe'})
+        res_arg = api(Request('POST', '/v1/llm/run', {'Authorization': 'Bearer secret'}, json.dumps({**self.body, 'skill': 'leak_paths', 'output_schema': SUMMARY_SCHEMA}).encode())).body
+        self.assertEqual((res_arg['outcome'], res_arg['rule'], res_arg['failure']), ('refused', 'masking', 'leak'))
+        self.assertEqual(logs, ['t6.server: llm task=skill-summary refused rule=masking failure=leak path=who word=Jane Doe'])
+        self.assertNotIn('Jane Doe', json.dumps(res_arg))
+        self.assertNotIn('who', json.dumps(res_arg))
+        self.assertNotIn('Jane Doe', json.dumps(self.audit()))
+        self.assertNotIn('who', json.dumps(self.audit()))
+
+        # Pre-hook error leak logs task, path, and leaked word.
+        logs.clear()
+        _write(sdir / 'scripts' / 'pre.py', "import sys\nsys.stderr.write('pre boom')\nsys.exit(2)\n")
+        with mock.patch.object(
+            Session,
+            'leaks',
+            autospec=True,
+            side_effect=lambda _self, val: [Leak('', 'Jane Doe')] if isinstance(val, str) and 'pre boom' in val else [],
+        ):
+            res_pre = api(Request('POST', '/v1/llm/run', {'Authorization': 'Bearer secret'}, json.dumps({**self.body, 'skill': 'leak_paths', 'output_schema': SUMMARY_SCHEMA}).encode())).body
+        self.assertEqual((res_pre['outcome'], res_pre['rule'], res_pre['failure']), ('refused', 'masking', 'leak'))
+        self.assertEqual(logs, ['t6.server: llm task=skill-summary refused rule=masking failure=leak path=<root> word=Jane Doe'])
+        self.assertNotIn('Jane Doe', json.dumps(res_pre))
+        self.assertNotIn('<root>', json.dumps(res_pre))
+        self.assertNotIn('Jane Doe', json.dumps(self.audit()))
+        self.assertNotIn('<root>', json.dumps(self.audit()))
 
     def test_client_llm_run_model_compatibility(self) -> None:
         req = LLMRunInput(task_name='t', prompt_template='Q: {input}', input_text='Jane Doe', masking_preset='names', skill='s')

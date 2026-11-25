@@ -38,6 +38,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import unquote
 
 import httpx
 
@@ -51,6 +52,7 @@ from t6.notion.sync import NotionClient
 JSON = dict[str, Any]
 
 _PAGE = re.compile(r"^/v1/pages/(?P<id>[^/]+)$")
+_PAGE_PROPERTY = re.compile(r"^/v1/pages/(?P<id>[^/]+)/properties/(?P<prop_id>.+)$")
 _DATA_SOURCE = re.compile(r"^/v1/data_sources/(?P<id>[^/]+)$")
 _CHILDREN = re.compile(r"^/v1/blocks/(?P<id>[^/]+)/children$")
 _QUERY = re.compile(r"^/v1/data_sources/(?P<id>[^/]+)/query$")
@@ -297,8 +299,14 @@ class FakeNotion:
         body: JSON = json.loads(request.content) if request.content else {}
         if request.method == "GET" and path.startswith("/v1/users/"):
             return self._get(self._users, path.removeprefix("/v1/users/"))
+        if request.method == "GET" and (match := _PAGE_PROPERTY.match(path)):
+            return self._get_page_property(
+                self._page_key(unquote(match["id"])),
+                unquote(match["prop_id"]),
+                request.url.params,
+            )
         if request.method == "GET" and (match := _PAGE.match(path)):
-            return self._get(self._pages, self._page_key(match["id"]))
+            return self._get_page(self._page_key(match["id"]))
         if request.method == "PATCH" and (match := _PAGE.match(path)):
             return self._update_page(self._page_key(match["id"]), body)
         if request.method == "POST" and path == "/v1/pages":
@@ -319,6 +327,103 @@ class FakeNotion:
             return _error(404, "object_not_found", f"Could not find object {object_id}.")
         return httpx.Response(200, json=store[object_id])
 
+    @staticmethod
+    def _serialize_page(page: JSON) -> JSON:
+        serialized = copy.deepcopy(page)
+        properties = serialized.get("properties")
+        if isinstance(properties, dict):
+            for prop in properties.values():
+                if not isinstance(prop, dict):
+                    continue
+                kind = prop.get("type")
+                if kind not in ("relation", "people"):
+                    if isinstance(prop.get("relation"), list):
+                        kind = "relation"
+                    elif isinstance(prop.get("people"), list):
+                        kind = "people"
+                if kind in ("relation", "people"):
+                    items = list(prop.get(kind) or [])
+                    prop["has_more"] = len(items) > 25
+                    prop[kind] = items[:25]
+        return serialized
+
+    def _get_page(self, page_id: str) -> httpx.Response:
+        if page_id not in self._pages:
+            return _error(404, "object_not_found", f"Could not find object {page_id}.")
+        return httpx.Response(200, json=self._serialize_page(self._pages[page_id]))
+
+    def _get_page_property(self, page_id: str, property_id: str, params: httpx.QueryParams) -> httpx.Response:
+        if page_id not in self._pages:
+            return _error(404, "object_not_found", f"Could not find page {page_id}.")
+        page = self._pages[page_id]
+        target = unquote(property_id)
+        properties: JSON = page.get("properties") or {}
+        found_name: str | None = None
+        found_prop: JSON | None = None
+        for name, prop in properties.items():
+            if not isinstance(prop, dict):
+                continue
+            prop_id = prop.get("id")
+            if (prop_id and unquote(str(prop_id)) == target) or name == target:
+                found_name = name
+                found_prop = prop
+                break
+        if found_prop is None:
+            ds_id = (page.get("parent") or {}).get("data_source_id")
+            schema = (self._data_sources.get(ds_id) or {}).get("properties", {}) if ds_id else {}
+            for name, schema_prop in schema.items():
+                if (schema_prop.get("id") and unquote(str(schema_prop["id"])) == target) or name == target:
+                    kind = schema_prop.get("type")
+                    if kind in ("relation", "people"):
+                        return httpx.Response(
+                            200,
+                            json={"object": "list", "results": [], "next_cursor": None, "has_more": False},
+                        )
+                    return httpx.Response(
+                        200,
+                        json={"object": "property_item", "type": kind, "id": schema_prop.get("id", property_id), kind: None},
+                    )
+            return _error(404, "object_not_found", f"Could not find property {property_id}.")
+        kind = found_prop.get("type")
+        if kind not in ("relation", "people"):
+            if isinstance(found_prop.get("relation"), list):
+                kind = "relation"
+            elif isinstance(found_prop.get("people"), list):
+                kind = "people"
+        prop_id_value = found_prop.get("id") or found_name or property_id
+        if kind in ("relation", "people"):
+            items = list(found_prop.get(kind) or [])
+            size = max(1, min(25, int(params.get("page_size", 25))))
+            start = int(params.get("start_cursor") or 0)
+            more = start + size < len(items)
+            results = [
+                {
+                    "object": "property_item",
+                    "type": kind,
+                    "id": prop_id_value,
+                    kind: copy.deepcopy(item),
+                }
+                for item in items[start : start + size]
+            ]
+            return httpx.Response(
+                200,
+                json={
+                    "object": "list",
+                    "results": results,
+                    "next_cursor": str(start + size) if more else None,
+                    "has_more": more,
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "object": "property_item",
+                "type": kind,
+                "id": prop_id_value,
+                kind: copy.deepcopy(found_prop.get(kind)),
+            },
+        )
+
     def _create_page(self, body: JSON) -> httpx.Response:
         parent = body.get("parent") or {}
         data_source_id = parent.get("data_source_id")
@@ -328,7 +433,7 @@ class FakeNotion:
         if isinstance(properties, httpx.Response):
             return properties
         page = self.add_page(data_source_id, properties)
-        return httpx.Response(200, json=page)
+        return httpx.Response(200, json=self._serialize_page(page))
 
     def _update_page(self, page_id: str, body: JSON) -> httpx.Response:
         if page_id not in self._pages:
@@ -342,7 +447,7 @@ class FakeNotion:
             if flag in body:
                 page[flag] = bool(body[flag])
         page["last_edited_time"] = self._now_iso()
-        return httpx.Response(200, json=page)
+        return httpx.Response(200, json=self._serialize_page(page))
 
     def block_children(self, block_id: str) -> list[JSON]:
         """The child blocks of a page or block, in order, as stored."""
@@ -450,7 +555,7 @@ class FakeNotion:
         ]
         size = max(1, min(100, int(body.get("page_size", 100))))
         start = int(body.get("start_cursor") or 0)
-        chunk = rows[start : start + size]
+        chunk = [self._serialize_page(page) for page in rows[start : start + size]]
         more = start + size < len(rows)
         return httpx.Response(
             200,

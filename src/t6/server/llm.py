@@ -4,6 +4,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import sys
 import time
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import replace
@@ -24,7 +25,7 @@ from t6.llm.result import Reason, ScriptRun, Tokens
 from t6.llm.skill import Skill, SkillError, run_script
 from t6.llm.task import assistant_tool_message, execute_tool_call, mask_for_model
 from t6.llm.transport import Choice, Completion, DecisionsRequest, Message, OpenAIChat, Provider, ProviderError, ProviderTimeout, RateLimited, ToolSpec
-from t6.privacy import FIXED_TEXT, STRICT, Person, Project, Registry, Session, Unresolved, pseudonymize, withhold
+from t6.privacy import FIXED_TEXT, STRICT, Leak, Person, Project, Registry, Session, Unresolved, pseudonymize, withhold
 from t6.verbs import Done, LLMDecideInput, LLMDecideOutput, LLMFilterInput, LLMFilterOutput, LLMRunInput, LLMRunOutput, Refused
 
 
@@ -111,7 +112,8 @@ class LLMService:
                  skills_dir: str | Path | None = None,
                  allowed_script_env: Mapping[str, str] | None = None,
                  blocked_script_env: Sequence[str] = (),
-                 tasks: Mapping[str, str] | None = None) -> None:
+                 tasks: Mapping[str, str] | None = None,
+                 log: Callable[[str], None] | None = None) -> None:
         if default not in providers or type(require_zdr) is not bool or type(max_bytes) is not int or max_bytes < 1:
             raise ValueError('Invalid LLM policy')
         if skills_dir is not None and (not isinstance(skills_dir, (str, Path)) or not str(skills_dir).strip()):
@@ -130,6 +132,11 @@ class LLMService:
         self.skills_dir: Path | None = Path(skills_dir).resolve() if skills_dir is not None else None
         self.allowed_script_env: dict[str, str] | None = dict(allowed_script_env) if allowed_script_env is not None else None
         self.blocked_script_env: tuple[str, ...] = tuple(blocked_script_env)
+        self._log: Callable[[str], None] = (lambda line: print(line, file=sys.stderr, flush=True)) if log is None else log
+
+    def _log_leak(self, task_name: str, leak: Leak) -> None:
+        path = leak.path or '<root>'
+        self._log(f't6.server: llm task={task_name} refused rule=masking failure=leak path={path} word={leak.name}')
 
     @property
     def registry(self) -> Registry:
@@ -487,7 +494,8 @@ class LLMService:
         pre_notes: list[Message] = []
         for hook_name, raw_error in raw_pre_errors:
             safe_error = mask_for_model(raw_error, session)
-            if session.leaks(safe_error):
+            if leaks := session.leaks(safe_error):
+                self._log_leak(inputs.task_name, leaks[0])
                 return Refused(rule='masking', reason='Unresolved registered names in pre-hook error', failure='leak')
             pre_notes.append({'role': 'user', 'content': json.dumps({'pre_error': hook_name, 'error': safe_error}, ensure_ascii=False)})
         prompt = inputs.prompt_template.replace('{input}', masked.text)
@@ -548,6 +556,8 @@ class LLMService:
                         meta['script_runs'] = list(script_runs)
                     if tool_outcome.failure_reason is not None:
                         if tool_outcome.failure_reason == 'leak':
+                            if tool_outcome.leak is not None:
+                                self._log_leak(inputs.task_name, tool_outcome.leak)
                             return Refused(rule='masking', reason='Tool call or output contains unmasked registered names', failure='leak')
                         return self._run_result(
                             output=None, model=last_model, provider=name, prompt_hash=prompt_hash, schema_hash=schema_hash,
@@ -580,7 +590,8 @@ class LLMService:
         if failure is None:
             try:
                 validator.validate(data)
-                if session.leaks(data):
+                if leaks := session.leaks(data):
+                    self._log_leak(inputs.task_name, leaks[0])
                     return Refused(rule='masking', reason='Output contains unmasked registered names', failure='leak')
                 if inputs.restore == 'per_field':
                     masked_output = data

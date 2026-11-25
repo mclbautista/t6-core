@@ -153,6 +153,52 @@ class OptionTests(unittest.TestCase):
         self.assertEqual(pseudonymize("will Will", registry, (), always)[0].text, "[person 1] [person 1]")
         self.assertEqual(pseudonymize("will Will", registry, (), careful)[0].text, "will [person 1]")
 
+    def test_ordinary_words_in_person_titles_and_lowercase_aliases_are_never_masked(self) -> None:
+        from t6.privacy import FIXED_TEXT, Session
+
+        registry = Registry(
+            people=[
+                Person("Song for You and Me from Day session"),
+                Person("for"),
+                Person("Jane Doe", aliases=("and", "session")),
+                Person("Viva"),
+            ]
+        )
+        text = "for For and And from From Day day session Session and Viva"
+        for options in (NAMES, STRICT):
+            with self.subTest(options=options):
+                masked, session = pseudonymize(text, registry, (), options)
+                self.assertEqual(masked.text, "for For and And from From Day day session Session and [person 1]")
+                self.assertEqual(session.leaks("for For and And from From Day day session Session"), [])
+                self.assertEqual([leak.name for leak in session.leaks("Viva")], ["Viva"])
+        fixed = Session(registry, options=FIXED_TEXT)
+        self.assertEqual(fixed.leaks("for For and And from From Day day session Session"), [])
+        self.assertEqual([leak.name for leak in fixed.leaks("Viva")], ["Viva"])
+
+    def test_lowercase_extra_ordinary_name_word_and_code_never_mask_lowercase(self) -> None:
+        registry = Registry(people=[Person("dario will")], projects=[Project("Harbour", code="so")])
+        masked, session = pseudonymize("will Will WILL so So SO", registry, (), STRICT)
+        self.assertEqual(masked.text, "will [person 1] [person 1] so [project 1] [project 1]")
+        self.assertEqual(session.leaks("will so"), [])
+
+    def test_input_masking_leak_check_and_fixed_text_share_one_term_builder(self) -> None:
+        from unittest import mock
+        from t6.privacy import FIXED_TEXT, Session
+        from t6.privacy import masking
+
+        registry = Registry(
+            people=[Person("Song for You and Me from Day session"), Person("Viva")],
+            projects=[Project("Harbour", code="SO")],
+            ids=("c-known",),
+        )
+        with mock.patch("t6.privacy.masking._terms", wraps=masking._terms) as spy:
+            strict_session = Session(registry, (), STRICT)
+            self.assertEqual(spy.call_count, 1)
+            self.assertEqual(strict_session._matcher.kinds, strict_session._finder.kinds)
+            fixed_session = Session(registry, (), FIXED_TEXT)
+            self.assertEqual(spy.call_count, 2)
+            self.assertEqual(fixed_session._matcher.kinds, fixed_session._finder.kinds)
+
 
 class FailClosedTests(unittest.TestCase):
     def test_restore_fails_closed_on_an_unknown_placeholder_in_both_presets(self) -> None:
