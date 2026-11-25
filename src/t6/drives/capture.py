@@ -267,16 +267,22 @@ class CaptureResolver:
         assert caption.direction is not None
         with self.registry._transaction() as db:
             store = SqliteDriveStore(self.registry, within=db)
-            shortlist = guesses(db, store, text, caption.direction, caption.tags, self.source, data['sender_telegram_id'])
+            try:
+                shortlist = guesses(db, store, text, caption.direction, caption.tags, self.source, data['sender_telegram_id'])
+            except ImportError:
+                shortlist = []
+                failure = 'lookup_unavailable'
+            else:
+                failure = 'empty_shortlist' if not shortlist else 'no_provider'
             entries = [{'letter': chr(65 + n), **guess} for n, guess in enumerate(shortlist)]
             match: dict[str, Any] = {'item': text, 'shortlist': entries, 'thumbnails': [], 'guesses': [],
                                      'exact_checks': [], 'model': None, 'ms': None, 'cost': None,
-                                     'failed': 'empty_shortlist' if not shortlist else 'no_provider'}
+                                     'failed': failure}
             if not shortlist or self.provider is None:
                 return [], match
             try:
                 image = shrink_photo(photo)
-            except (OSError, ValueError):
+            except (ImportError, OSError, ValueError):
                 match['failed'] = 'invalid_photo'
                 return [], match
             thumbnails, letters = [], []
