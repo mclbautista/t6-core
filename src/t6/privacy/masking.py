@@ -211,7 +211,7 @@ def _terms(registry: Registry, options: MaskOptions) -> list[_Term]:
                 # In a fixed text an ordinary word is never a name, a person's included.
                 if readable and is_ordinary(stripped):
                     continue
-                if " " not in stripped and stripped.islower() and stripped.casefold() in (PLAIN_WORDS | COMMON_WORDS):
+                if " " not in stripped and stripped.islower() and stripped.casefold() in _PLAIN_NAME_WORDS:
                     continue
                 if len(stripped) >= (2 if options.skip_trivial and name != person.name else 1):
                     add(_Term("person", name))

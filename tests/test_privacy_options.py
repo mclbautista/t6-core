@@ -181,6 +181,16 @@ class OptionTests(unittest.TestCase):
         self.assertEqual(masked.text, "will [person 1] [person 1] so [project 1] [project 1]")
         self.assertEqual(session.leaks("will so"), [])
 
+    def test_lowercase_alias_that_is_also_a_given_name_stays_masked(self) -> None:
+        # "mark", "may" and "will" are plain words and given names (EXTRA_ORDINARY): as a lowercase
+        # one-word alias they still mask, as before #700.
+        for alias in ("mark", "may", "will"):
+            with self.subTest(alias=alias):
+                registry = Registry(people=[Person("Jane Doe", aliases=(alias,))])
+                masked, session = pseudonymize(f"{alias.capitalize()} called", registry, (), NAMES)
+                self.assertEqual(masked.text, "[person 1] called")
+                self.assertEqual([leak.name for leak in session.leaks(alias.capitalize())], [alias.capitalize()])
+
     def test_input_masking_leak_check_and_fixed_text_share_one_term_builder(self) -> None:
         from unittest import mock
         from t6.privacy import FIXED_TEXT, Session
