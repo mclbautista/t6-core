@@ -197,6 +197,8 @@ class CaptureResolver:
         return result
 
     def _handle(self, job: WorkerJob, capture: str, seen: dict[str, str]) -> JsonValue:
+        from t6.drives.notifications import dm_target, queue_item
+        notify = dm_target(self.registry, os.environ if self.environ is None else self.environ) is not None
         with self.registry._transaction() as db:
             row = db.execute('SELECT data, photo FROM drive_captures WHERE id=?', (capture,)).fetchone()
             if row is None:
@@ -255,6 +257,9 @@ class CaptureResolver:
                 data.setdefault('debug', {})['matches'] = matches
             data['grade'] = 'thin' if not caption.problem and any(not item['guesses'] for item in items) else caption.grade
             db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), capture))
+            if not caption.problem and notify:
+                for number, _ in enumerate(items):
+                    queue_item(self.registry, capture, number, 'resolved', db=db)
             return _result(data)
 
     def _match_item(self, data: dict[str, Any], text: str, photo: bytes) -> tuple[list[dict[str, Any]], dict[str, Any]]:
