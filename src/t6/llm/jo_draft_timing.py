@@ -11,7 +11,7 @@ It prints, for each call, the time, model, tokens and cost (OpenRouter
 the three together. The output holds no prompt or reply text. A live run uses
 the operator's keys; tests use ``FakeProvider`` only.
 
-    python -m t6.llm.jo_draft_timing LINES.json --config llm.json --privacy-registry privacy_registry.json
+    python scripts/jo_draft_timing.py LINES.json --config llm.json --privacy-registry privacy_registry.json
 
 ``LINES.json`` is a list of ``{"line": "...", "candidates": [{"task": "...", "purpose": "...", "mode": "..."}]}``
 (real text; it is masked here, and never printed). The config is the API's
@@ -22,18 +22,13 @@ and ``decisions_by_task`` maps each Jev task tag to its own Decisions entry
 
 from __future__ import annotations
 
-import argparse
 import dataclasses
-import json
-import os
 import statistics
-import sys
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from t6.llm.config import LLMConfig, decisions_from
 from t6.llm.decisions import CandidateDecisions, candidate_key
 from t6.llm.policy import DataPolicy
 from t6.llm.result import Failed, Trace
@@ -181,48 +176,3 @@ def summarize(rows: Sequence[Sequence[Timing]]) -> dict[str, Any]:
     totals = [sum(t.ms for t in row) for row in rows]
     summary["all_three"] = {**stats(totals), "cost_usd": cost_of([t for row in rows for t in row])}
     return summary
-
-
-def _registry(path: str | None) -> Registry:
-    from t6.server.verbs import _read_privacy_names
-
-    if not path:
-        raise SystemExit("give --privacy-registry or set T6_READ_PRIVACY_REGISTRY: only masked text is sent")
-    return _read_privacy_names(path)
-
-
-def _providers(config: Mapping[str, Any], env: Mapping[str, str]) -> tuple[Provider, Provider, Provider]:
-    llm = LLMConfig.from_mapping(config["llm"])
-    per_task = config.get("decisions_by_task") or {}
-
-    def jev(tag: str) -> Provider:
-        entry = per_task.get(tag, config.get("decisions"))
-        if entry is None:
-            raise SystemExit(f"no decisions entry for {tag}: add decisions_by_task.{tag} or decisions")
-        return decisions_from(entry, env)
-
-    return jev(MATCH_TAG), jev(LOOKUPS_TAG), llm.provider_for(HAIKU_TAG, env=env)
-
-
-def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m t6.llm.jo_draft_timing", description=__doc__.split("\n\n")[0] if __doc__ else None)
-    parser.add_argument("lines", help="JSON file: [{line, candidates: [{task, purpose, mode}]}]")
-    parser.add_argument("--config", default=None, help="the LLM config JSON (default: $T6_LLM_CONFIG)")
-    parser.add_argument("--privacy-registry", default=None, help="privacy_registry.json (default: $T6_READ_PRIVACY_REGISTRY)")
-    args = parser.parse_args(argv)
-    source = os.environ if env is None else env
-    config_path = args.config or source.get("T6_LLM_CONFIG")
-    if not config_path:
-        raise SystemExit("give --config or set T6_LLM_CONFIG")
-    with open(config_path, encoding="utf-8") as file:
-        config = json.load(file)
-    with open(args.lines, encoding="utf-8") as file:
-        lines = json.load(file)
-    registry = _registry(args.privacy_registry or source.get("T6_READ_PRIVACY_REGISTRY"))
-    jev_match, jev_lookups, haiku = _providers(config, source)
-    print(json.dumps(summarize(measure(lines, registry, jev_match=jev_match, jev_lookups=jev_lookups, haiku=haiku)), indent=2))
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
