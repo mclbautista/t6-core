@@ -37,14 +37,18 @@ class GatewayClient:
         buttons: Sequence[Sequence[Mapping[str, str]]],
         key: str,
         topic: int | None = None,
+        *, photo: str | None = None,
     ) -> int:
         """Queue a message with inline buttons. Returns the gateway's reference for it.
 
         `topic` is a forum topic's ID. Leave it out for a chat with no topics or for General.
+        `photo` is optional base64 file bytes; the text becomes its caption.
         """
         body: dict[str, Any] = {"to": chat, "text": text, "format": "html", "buttons": buttons, "idempotency_key": key}
         if topic is not None:
             body["topic"] = topic
+        if photo is not None:
+            body["photo"] = photo
         return int(self._call("POST", "/notify", body)["message_ref"])
 
     def edit(self, message_ref: int, text: str, buttons: Sequence[Sequence[Mapping[str, str]]], key: str) -> int:

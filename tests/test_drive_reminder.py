@@ -61,7 +61,8 @@ class DriveReminderTests(DriveReloadFixture):
         queue = InternalJobQueue(self.registry, clock=lambda: self.now[0])
         gateway = Gateway()
         reminder = MorningReminder(People(self.registry, PreviewTokens('test')), queue,
-                                   GatewayClient(gateway, 'synthetic-secret'), 'synthetic-keeper', clock=lambda: self.now[0])
+                                   GatewayClient(gateway, 'synthetic-secret'), 'synthetic-keeper', clock=lambda: self.now[0],
+                                   environ={'T6_DRIVE_DM_CHAT_ID': '700000001'})
         worker = Worker(InternalQueueClient(queue), 'main', {'drive.reminder': reminder.handle})
         self.queue, self.gateway, self.reminder, self.worker = queue, gateway, reminder, worker
 

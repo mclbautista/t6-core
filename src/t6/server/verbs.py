@@ -1731,8 +1731,6 @@ class VerbAPI:
             return Response(403, {'error': 'only the gateway may push taps'})
         if request.method != 'POST':
             return Response(405)
-        if self.tap_app is None:
-            return Response(503, {'error': 'tap service not configured'})
         try:
             telegram_id = int(request.header('x-telegram-user-id'))
             body = json.loads(request.body)
@@ -1741,6 +1739,21 @@ class VerbAPI:
                 raise ValueError('Telegram identity does not match payload')
         except (ValueError, UnicodeDecodeError):
             return Response(400, {'error': 'invalid Telegram identity or body'})
+        if isinstance(body.get('data'), str) and body['data'].startswith('drive:'):
+            from t6.drives.notifications import tap_inputs
+            with self.people.registry._transaction() as db:
+                keeper = db.execute('SELECT id FROM persons WHERE telegram_id=? AND active=1', (telegram_id,)).fetchone()
+            if keeper is None or keeper[0] != os.environ.get('T6_DRIVE_CUSTODIAN_PERSON_ID') or self.people.authorize(keeper[0], 'drives'):
+                return Response(200, {'outcome': 'rejected'})
+            drive_values = tap_inputs(self.people.registry, body['data'])
+            if drive_values is None:
+                return Response(200, {'outcome': 'rejected'})
+            if body['data'].endswith(':type'):
+                return Response(200, {'outcome': 'needs_person', 'reason': 'Type a Drive label or serial',
+                                      'verb': 'drive approve', 'inputs': drive_values})
+            return self._dispatch(self.routes['/v1/drive/approve'], drive_values, keeper[0])
+        if self.tap_app is None:
+            return Response(503, {'error': 'tap service not configured'})
         with self.people.registry._transaction() as db:
             person = db.execute('SELECT id FROM persons WHERE telegram_id = ? AND active = 1', (telegram_id,)).fetchone()
         if person is None:

@@ -412,6 +412,10 @@ def configured_handlers(
                                    environ=environ, debug=debug_notifier(environ, capture_registry))
         handlers['drive.capture.resolve'] = resolver.handle
         handlers['drive.capture.debug'] = resolver.refresh_debug
+        if gateway_url and gateway_secret:
+            from t6.drives.notifications import ItemNotifier, KIND
+            notifications = ItemNotifier(capture_registry, GatewayClient(HttpTransport(gateway_url), gateway_secret), environ)
+            handlers[KIND] = notifications.handle
     return {"main": handlers} if handlers else {}
 
 
@@ -1023,7 +1027,7 @@ def main(
                 "chat_link_notice": linked.chat_link_notice,
                 "chat_link_reminder": linked.remind_chat_link,
             }
-            if environ.get('T6_DRIVE_CUSTODIAN_PERSON_ID'):
+            if environ.get('T6_DRIVE_CUSTODIAN_PERSON_ID') or environ.get('T6_DRIVE_DM_CHAT_ID'):
                 from t6.drives.reminder import MorningReminder
                 from t6.person import People
                 from t6.preview import PreviewTokens
@@ -1033,7 +1037,7 @@ def main(
                 reminder = MorningReminder(People(reminder_registry, PreviewTokens('drive-reminder')),
                                            InternalJobQueue(reminder_registry),
                                            GatewayClient(HttpTransport(environ['T6_GATEWAY_URL']), environ['T6_GATEWAY_SECRET']),
-                                           environ['T6_DRIVE_CUSTODIAN_PERSON_ID'])
+                                           environ.get('T6_DRIVE_CUSTODIAN_PERSON_ID', ''), environ=environ)
                 reminder.schedule()
                 queue_handlers = {**queue_handlers, 'drive.reminder': reminder.handle}
             if environ.get('T6_CRM_SHEET_ID') and environ.get('T6_CRM_DEFAULT_OWNER_PERSON_ID') and environ.get('T6_NOTION_TOKEN') \
