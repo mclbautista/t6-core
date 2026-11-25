@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- `python -m t6.llm.jo_draft_timing` (#792, spec #791): times the three model calls of `jo draft` on real one-line requests before they are built in: Jev match over up to 12 past Job Orders (`jo-draft-match-v1`), Jev lookups (`jo-draft-lookups-v1`) and one Haiku turn (`jo-draft-haiku-v1`). Only masked text with credentials withheld is sent, under tags that map to their own provider keys (`llm.tasks` for Haiku, `decisions_by_task` for Jev, `decisions` as the fallback). It prints per-call time, model, tokens and cost (`unknown` when the provider gave none) and the median and worst case of each call and of the three together, with no prompt or reply text. A live run uses the operator's keys.
+
 ## [0.6.28] - 2026-11-25
 
 The Concerns sheet release (spec #732, #734 to #737), with the CRM keep-warm DM (spec #705), the schedule snapshot (spec #694) and the Drive Inbox on top. The Concerns sheet is a Google Sheets working view for Closers: the API exports the open Concerns as a CSV after the 21:00 autoscan, and a signed Sheet Submit applies Concern rows through the queue. The Telegram Closer list is gone, so `T6_CLOSER_TELEGRAM_IDS` is no longer read. The database moves forward through migrations 61 to 66 (schema 66: one job row, then the CRM stage and edit history, the CRM snooze, the Concerns sheet results and the Drive short names; all additive, none forward-only), so deploy by the usual path with a backup first; the Apps Script for the sheet is in the repository and is installed by hand.
