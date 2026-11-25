@@ -94,6 +94,10 @@ def approve(registry: SqliteProjectRegistry, inputs: DriveApproveInput, source: 
                    (inputs.capture, inputs.item, outcome, rank if outcome.startswith('guess') else None, registry._clock(), actor))
         item['last_approval'] = outcome
         db.execute('UPDATE drive_captures SET data=? WHERE id=?', (json.dumps(data), inputs.capture))
+        if item.get('dm_message_ref') is not None:
+            from t6.drives.notifications import queue_item
+            version = str(db.execute('SELECT last_insert_rowid()').fetchone()[0])
+            queue_item(registry, inputs.capture, inputs.item, version, db=db)
         result = Done(result=_result(inputs, item))
     from t6.drives.photos import photo_dir, remove_files
     remove_files(stale_photos, photo_dir())  # after commit: a failed approval keeps the old Reference photo

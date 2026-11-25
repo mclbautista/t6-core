@@ -386,15 +386,45 @@ reading, and startup restores the schedule without duplicating it. A failed read
 keeps the previous load; inspect `queue failed` for the failure. The nightly job
 uses the same preview/confirm reload workflow.
 
-For the daily Drive reminder, set `T6_DRIVE_CUSTODIAN_PERSON_ID` on the main
-worker to the registered custodian Person's ID. That Person must be active and
-have a Telegram ID for direct messages. The worker uses `T6_DATABASE`,
+For custodian Item messages and the daily Drive reminder, set
+`T6_DRIVE_DM_CHAT_ID` and optional `T6_DRIVE_DM_TOPIC_ID` on the main worker
+to the DMs and bots test channel topic during Practice. An unset chat ID sends
+nothing during Practice. Set `T6_DRIVE_CUSTODIAN_PERSON_ID` on the API and main
+worker to the registered custodian Person's ID for button authorization and,
+after Cutover, private delivery. That Person must be active and have a positive
+Telegram ID; the Practice target is ignored after Cutover. The worker uses `T6_DATABASE`,
 `T6_GATEWAY_URL` and `T6_GATEWAY_SECRET`; sheet settings are not required.
 It queues `drive.reminder` at 08:00 in `Asia/Manila`, once per date, and restores
 the schedule on startup. A late startup runs today's reminder; obsolete dates
 are skipped. Each run queues the next morning even if delivery fails.
 The gateway notification key is `drive-reminder:YYYY-MM-DD`, so delivery retries
-use the same key. With no overdue Drives it sends nothing.
+use the same key. The same message includes unfinished Inbox Items (including
+Items cleared with None); with neither overdue Drives nor unfinished Items it
+sends nothing. Practice messages say "Practice".
+
+Each resolved Capture queues one `drive.item.notify` job per Item; Count lines
+and captions still needing a fix send no custodian message. The worker sends
+`/notify` with the post link, caption, optional `photo` (base64 file bytes), and
+buttons, using `drive-item:<capture>:<item>` as the idempotency key. The Item
+keeps the returned `dm_message_ref`. Approval queues an edit through `/edit`
+using that reference, showing the outcome and removing buttons. For photo
+messages the gateway must edit the caption. No new database migration is
+needed: the reference and edit digest live on the Item in Capture JSON.
+
+Each button uses the gateway's existing `text` and `payload` envelope.
+The compact payload is `drive:<capture UUID hex>:<zero-based item>:<choice>`;
+choices are `g1`, `g2`, `g3`, `new`, `skip`, `type` and `none`. The gateway forwards
+these to the API's existing authenticated `POST /tap`, with its matching
+`X-Telegram-User-Id` and `from.id`. Only the configured active custodian with
+`drives` permission is accepted. Picks dispatch the existing `drive approve`
+verb. `type` returns `needs_person`, `verb: "drive approve"` and `inputs` naming
+the Capture, Item and `choice: "drive"`; the gateway collects a label or serial
+and submits those inputs plus `typed` to `/v1/drive/approve` on behalf of the
+custodian. Telegram prompting and photo rendering belong to the gateway repo.
+
+`T6_DRIVE_AUTO_APPROVE` is independent of `T6_DRIVE_LIVE` and defaults off.
+Setting it to `true`, `1` or `yes` suppresses the DM for an exact 0.95 guess only.
+It leaves the Item in Inbox, open and pre-picked, until the custodian approves.
 
 `drive overdue` is a reader verb returning the same oldest-first rows: Drive ID,
 label, accepted serial, person, release date and days out. Only T6-owned Drives
