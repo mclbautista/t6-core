@@ -6,7 +6,6 @@ import io
 import json
 from typing import Literal
 
-from PIL import Image as PILImage, ImageOps
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from t6.llm.policy import DataPolicy
@@ -52,6 +51,8 @@ class MatchInput:
 
 def shrink_photo(data: bytes, long_side: int = 1600) -> Image:
     """Orient, bound and re-encode image pixels, omitting original metadata."""
+    from PIL import Image as PILImage, ImageOps
+
     with PILImage.open(io.BytesIO(data)) as original:
         image = ImageOps.exif_transpose(original).convert('RGB')
         image.thumbnail((long_side, long_side))

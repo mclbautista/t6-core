@@ -4,6 +4,7 @@ from typing import Any
 import base64
 import io
 import os
+import sys
 from unittest.mock import patch
 
 from PIL import Image as PILImage
@@ -65,6 +66,19 @@ class DrivePhotoMatchTests(guess_tests.DriveGuessFixture):
         output = io.BytesIO()
         PILImage.new('RGB', size, color).save(output, format='PNG')
         return base64.b64encode(output.getvalue()).decode()
+
+    def test_vision_without_pillow_keeps_item_waiting_without_a_guess_or_movement(self) -> None:
+        self.workbook({'SYNTHETIC SHOW': [HEADER, ['SYN D01', 'SAMPLE-01']]})
+        self.reload()
+        self.fake.reply('{"guesses": [{"letter": "A", "confidence": 0.8, "reason": "Same box"}], "label_text": null}')
+        with patch.dict(sys.modules, {'PIL': None}):
+            result = self.capture('OUT SYN D01\nR: Synthetic recipient')
+        self.assertEqual(result['state'], 'resolved')
+        self.assertEqual((result['items'][0]['state'], result['items'][0]['guesses']), ('open', []))
+        self.assertEqual([(i['capture'], i['guesses']) for i in self.inbox()], [(result['capture'], [])])
+        self.assertEqual(self.movements(), [])
+        self.assertEqual(self.inventory()['SYN D01']['status'], 'in custody')
+        self.assertEqual(self.fake.calls, [])
 
     def teach_reference(self, drive: str, text: str, color: str = 'blue', times: int = 1) -> None:
         for _ in range(times):
@@ -186,6 +200,25 @@ class DrivePhotoMatchTests(guess_tests.DriveGuessFixture):
             self.assertIn(expected, text)
         self.assertNotIn('image/jpeg', text)
         self.assertEqual(self.movements()[0]['to_review'], True)
+
+    def test_vision_without_lookup_keeps_item_waiting_and_explains_the_empty_shortlist(self) -> None:
+        from t6.drives.debug import DebugNotifier
+        from t6.worker.gateway import GatewayClient
+        self.workbook({'SYNTHETIC SHOW': [HEADER, ['SYN D01', 'SAMPLE-01']]})
+        self.reload()
+        self.sent = []
+        self.notifier = DebugNotifier(self.registry, GatewayClient(self, 'synthetic'), -900002, 12, lambda: True)
+        self.fake.reply('{"guesses": [{"letter": "A", "confidence": 0.8, "reason": "Same box"}], "label_text": null}')
+        with patch.dict(sys.modules, {'rapidfuzz': None}):
+            result = self.capture('OUT SYN D01\nR: Synthetic recipient')
+        self.assertEqual((result['state'], result['grade']), ('resolved', 'thin'))
+        self.assertEqual((result['items'][0]['state'], result['items'][0]['guesses']), ('open', []))
+        self.assertEqual([(i['capture'], i['guesses']) for i in self.inbox()], [(result['capture'], [])])
+        self.assertEqual(self.movements(), [])
+        self.assertEqual(self.inventory()['SYN D01']['status'], 'in custody')
+        self.assertEqual(self.fake.calls, [])
+        self.assertIn('Shortlist: none', self.sent[-1]['text'])
+        self.assertIn('Photo match failed: lookup_unavailable', self.sent[-1]['text'])
 
     def test_vision_boundary_rechecks_chat_topic_and_missing_configuration(self) -> None:
         self.workbook({'SYNTHETIC SHOW': [HEADER, ['SYN D01', 'SAMPLE-01']]})
