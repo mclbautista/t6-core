@@ -89,6 +89,7 @@ Reads and edits for the Drive web app's Projects and Exceptions pages (#649): th
 
 ### Added
 
+- Verb `jo draft` (#794, spec #791, operator; `Client.jo_draft`): drafts a Job Order from one line, `<Project Code> <task words>[, for <Name>]`, with no model yet. It resolves the Project, takes the next number (highest in the Project's Job Orders plus one, stepped up while `jo find` shows it taken), finds the assignee's Telegram handle, adds the standing cc, and returns the formatter's text, findings, a number note and a run report (time per step; no JO text or names). Writes nothing and is not on the MCP server. Department, Purpose and the other fields are `(?)` until the Jev and Haiku tickets land. Documented in `docs/api-read-verbs.md`.
 - `drive list` takes the text of a text-only Project in `project`, and lists the Drives with an open Assignment to that text, as it does for a registered Project ID (#649).
 - `drive capture list` (Drive callers only): captures by state (`exception` by default, or `pending`, `resolved`, `ignored`, `undone`), newest first, each with its text, sender and photo size and type. An ignored capture has no text and no photo. `drive capture photo` (Drive callers only, not an MCP tool) returns the kept photo; no photo goes to any other service (#649).
 - `drive capture` with a `capture` takes a `drive` ID (Drive callers only): the custodian gives an unresolved capture a Drive, and it resolves as a normal Movement without a new photo read (#649).

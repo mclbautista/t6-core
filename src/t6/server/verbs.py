@@ -369,6 +369,8 @@ class VerbAPI:
         if (entry.noun, entry.verb) in {('transcript', 'create'), ('transcript', 'speakers'), ('transcript', 'translate')}:
             refusal = self.people.authorize(actor, entry.role)
             outcome = refusal or self._transcripts().request(entry.verb, inputs, actor, translate_enabled=self.translate_enabled)
+        elif (entry.noun, entry.verb) == ('jo', 'draft'):
+            outcome = self.people.authorize(actor, entry.role) or self._jo_draft(inputs, seen)
         elif (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'notes'), ('project', 'notes-history'), ('project', 'flags'), ('project', 'resolve'), ('lead', 'list'), ('concern', 'list'), ('concern', 'get'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'candidates'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find'), ('version', 'get')}:
             refusal = self.people.authorize(actor, entry.role)
             if not refusal and (entry.noun, entry.verb) == ('project', 'notes-history') and not self._master_brief(actor) and actor not in self._coordinators(inputs.project):
@@ -1244,6 +1246,67 @@ class VerbAPI:
             return set()
         project = read.result['project']
         return set(project.post_coordinator_ids) | {r['person_id'] for r in project.project_roles if r['role'].casefold() in ('coordinator', 'post coordinator', 'post-coordinator')}
+
+    def _jo_draft(self, inputs: Any, seen: dict[str, str] | None) -> Any:
+        """`jo draft`: the Project, its next JO number, the assignee and the standing cc, laid out by the formatter."""
+        from datetime import date, datetime
+        from t6.domain.studio_time import MANILA
+        from t6.jo_draft import Steps, build_draft, next_number, parse_line
+        from t6.verbs import JoFindInput, JoListInput, PersonFindInput, PersonGetInput, ProjectResolveInput, StandingCcInput
+
+        def read(noun: str, verb: str, request: Any) -> Any:
+            return self._typed_read(noun, verb, request, seen=seen)
+
+        try:
+            today = date.fromisoformat(inputs.date) if inputs.date else datetime.fromtimestamp(self.people.registry._clock(), MANILA).date()
+        except ValueError:
+            return Refused(rule='input', reason='date must be YYYY-MM-DD')
+        line = parse_line(inputs.line)
+        if line is None:
+            return Refused(rule='input', reason='Give a line: a Project Code, then the task')
+        steps = Steps()
+
+        def bundle() -> Any:
+            resolved = read('project', 'resolve', ProjectResolveInput(text=line.code))
+            if not isinstance(resolved, Done):
+                return resolved
+            project = resolved.result['match']
+            if project is None:
+                return Refused(rule='project', reason=f'No Project has the code {line.code}')
+            assigned = None
+            if line.assignee is None:
+                return Refused(rule='person', reason='Say who it is for, as "for <Name>"')
+            found = read('person', 'find', PersonFindInput(mention=line.assignee, prefer_telegram=True))
+            if not isinstance(found, Done):
+                return found
+            assigned = found.result['match']
+            if assigned is None:
+                return Refused(rule='person', reason=f'No Contact matches {line.assignee}')
+            ref = project.get('t6_id') or project['page_id']
+            orders = read('jo', 'list', JoListInput(project=ref))
+            if not isinstance(orders, Done):
+                return orders
+
+            def taken(number: int) -> bool:
+                match = read('jo', 'find', JoFindInput(project=ref, number=str(number)))
+                return isinstance(match, Done) and bool(match.result['job_orders'])
+
+            number, note = next_number([(o.get('number'), o.get('department')) for o in orders.result['job_orders']], taken)
+            cc = read('standing-cc', '', StandingCcInput())
+            cc_ref = cc.result['standing_cc'] if isinstance(cc, Done) else None
+            cc_contact = read('person', 'get', PersonGetInput(person_id=cc_ref)) if cc_ref else None
+            cc_handle = cc_contact.result['person'].get('telegram_handle') if isinstance(cc_contact, Done) else None
+            return project, assigned, number, note, cc_handle
+
+        gathered = steps.run('bundle', bundle)
+        if not isinstance(gathered, tuple):
+            return gathered
+        project, assigned, number, note, cc_handle = gathered
+        text, findings = steps.run('formatter', lambda: build_draft(
+            line=line, project_code=project.get('project_code') or line.code.upper(), project_title=project['name'],
+            number=number, assigned_handle=assigned.get('telegram_handle'), cc_handle=cc_handle, today=today))
+        return Done(result={'text': text, 'findings': findings, 'number_note': note, 'copied_from': None,
+                            'questions': [], 'report': steps.report()})
 
     def _typed_read(self, noun: str, verb: str, inputs: Any, seen: dict[str, str] | None = None) -> Any:
         def refuse(rule: str, reason: str, code: str) -> Refused:

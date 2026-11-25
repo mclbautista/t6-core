@@ -29,7 +29,7 @@ from t6.verbs import (
     DeliverableDeliverInput, PackagePrepareInput, PackageCheckInput, PackageHandoffInput, PackageAcceptInput, PackageRejectInput, PackageListInput, PackageGetInput, QueueDismissInput, QueueFailedInput,
     ApprovalRequestInput, ApprovalGrantInput, ApprovalDenyInput,
     ConcernScanInput, ConcernObserveInput, ConcernCountsInput, ConcernListInput, ConcernChangesInput, ConcernForMessageInput, ConcernRecordMessageInput, ConcernGetInput, ConcernRaiseInput, ConcernNoteInput, ConcernResolveInput, ConcernReopenInput,
-    JoListInput, JoFindInput, DeliverableListInput, DeliverableCandidatesInput, FloorReadInput, DeliverableGetInput, DeliverableDefineInput, DeliverableEditInput, DeliverableRebindInput, DeliverableMissInput, DeliverableDelayInput, MilestoneRecordInput, MeetingNotesListInput, MeetingNotesCreateInput, MeetingNotesAppendInput, MeetingNotesTrashInput, MeetingNotesMarkSentInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, ProjectNotesInput, ProjectNotesHistoryInput, ProjectFlagsInput, StandingCcInput, TextWithholdInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
+    JoListInput, JoFindInput, JoDraftInput, DeliverableListInput, DeliverableCandidatesInput, FloorReadInput, DeliverableGetInput, DeliverableDefineInput, DeliverableEditInput, DeliverableRebindInput, DeliverableMissInput, DeliverableDelayInput, MilestoneRecordInput, MeetingNotesListInput, MeetingNotesCreateInput, MeetingNotesAppendInput, MeetingNotesTrashInput, MeetingNotesMarkSentInput, ProjectListInput, StudioNoticesInput, ExternalLinkFindInput, PersonListInput, ProjectGetInput, ProjectNotesInput, ProjectNotesHistoryInput, ProjectFlagsInput, StandingCcInput, TextWithholdInput, ActivityInput, CameraEnrichInput, CameraGetInput, DepartmentsInput,
     JoSubmitInput, JoCloseInput, JoBlockInput, JoUnblockInput, JoDelayInput, JoCancelInput,
     JoAssignInput, JoFormatInput, JoGetInput, JoNoteInput, JoRaiseInput, JoReassignInput,
     LLMDecideInput, LLMFilterInput, LLMRunInput, PersonAddInput, PersonCreateInput, PersonFindInput,
@@ -467,6 +467,9 @@ class Client:
 
     def jo_list(self, inputs: JoListInput) -> Result:
         return self.call('jo', 'list', inputs)
+
+    def jo_draft(self, inputs: JoDraftInput) -> Result:
+        return self.call('jo', 'draft', inputs)
 
     def jo_find(self, inputs: JoFindInput) -> Result:
         return self.call('jo', 'find', inputs)
