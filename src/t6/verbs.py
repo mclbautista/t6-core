@@ -3282,9 +3282,9 @@ class DriveFindOutput(DrivePracticeOutput):
 
 
 class DriveCatalogSnapshotInput(BaseModel):
-    """A dated scan of a Drive's contents. Each scan is kept as the changes since the one before it."""
+    """A timed scan of a Drive's contents. Each scan is kept as the changes since the one before it."""
     drive: str
-    captured_on: str  # the day of the scan, YYYY-MM-DD; later than the Drive's last scan
+    captured_on: str  # ISO 8601 timestamp with UTC offset (or YYYY-MM-DD as start of day in Manila); later than the Drive's last scan
     root_path: str = '/'  # what was scanned, such as the volume name
     entries: list[dict[str, Any]]  # each: path (relative, forward slashes), kind (file or dir), and for a file size_bytes, optional mtime and checksum
     idempotency_key: str | None = None
@@ -3316,7 +3316,7 @@ class DriveCatalogDiffInput(BaseModel):
 
 class DriveCatalogAtInput(BaseModel):
     drive: str
-    on: str  # a day, YYYY-MM-DD: the tree as of the latest scan on or before it
+    on: str  # a day (YYYY-MM-DD, up to end of day in Manila) or ISO 8601 timestamp with UTC offset
     prefix: str | None = None  # only the paths under this folder
 
 
@@ -3460,11 +3460,12 @@ def drive_read(inputs: BaseModel, open_notion: Callable[..., Any]) -> Outcome:
             if result is None:
                 return Refused(rule='snapshot', reason=f'Drive {inputs.drive} has no snapshot {inputs.snapshot}')
         elif isinstance(inputs, DriveCatalogAtInput):
+            from t6.drives import parse_catalog_time
             try:
-                day = IsoDate.fromisoformat(inputs.on)
-            except ValueError:
-                return Refused(rule='input', reason='on must be a date as YYYY-MM-DD')
-            result = drive_reads.catalog_at(store, inputs.drive, day, inputs.prefix)
+                at = parse_catalog_time(inputs.on, end_of_day=True)
+            except (TypeError, ValueError):
+                return Refused(rule='input', reason='on must be a date as YYYY-MM-DD or an ISO 8601 timestamp with UTC offset')
+            result = drive_reads.catalog_at(store, inputs.drive, at, inputs.prefix)
             if result is None:
                 return Refused(rule='snapshot', reason=f'Drive {inputs.drive} had no scan by {inputs.on}')
         elif isinstance(inputs, DriveShipmentInput):
@@ -3585,10 +3586,10 @@ VERBS = (
     Verb('drive', 'add', 'Register a Drive', (), DriveAddInput, DriveFactsOutput, 'drives', 'Preview and confirm; a serial already recorded is refused, naming the Drive that holds it.', drive_fact_write),
     Verb('drive', 'edit', 'Correct the facts of a Drive', (), DriveEditInput, DriveFactsOutput, 'drives', 'Preview and confirm; changes only the facts named, and an empty value clears one. expected_version (from drive get or list) refuses the edit if the Drive changed since. Custody events and Assignments are not touched.', drive_fact_write),
     Verb('drive', 'promote-serial', 'Accept the suspected serial of a Drive', (), DrivePromoteSerialInput, DriveFactsOutput, 'drives', 'Preview and confirm; the suspected serial becomes the accepted one, only if no other Drive holds it.', drive_fact_write),
-    Verb('drive', 'catalog-snapshot', 'Record a dated scan of a Drive\'s contents', (), DriveCatalogSnapshotInput, DriveCatalogSnapshotOutput, 'drives', 'Preview and confirm; send the whole manifest both times (the token binds it). Only what changed since the Drive\'s last scan is kept, and the preview counts added, modified and removed paths. A scan must be dated after the last one. A scan can be large (about 8,000 files is 1 to 2 MB), so this verb accepts a request up to 16 MB on the tailnet listener only.', drive_fact_write),
-    Verb('drive', 'catalog-snapshots', 'List the scans of a Drive', (), DriveCatalogSnapshotsInput, DriveCatalogSnapshotsOutput, 'reader', 'Oldest first, each with its date, entry count and total bytes.', drive_read, read_only=True),
+    Verb('drive', 'catalog-snapshot', 'Record a timed scan of a Drive\'s contents', (), DriveCatalogSnapshotInput, DriveCatalogSnapshotOutput, 'drives', 'Preview and confirm; send the whole manifest both times (the token binds it). Only what changed since the Drive\'s last scan is kept, and the preview counts added, modified and removed paths. A scan carries a date, time and UTC offset (a bare YYYY-MM-DD means the start of that day in Manila) and must be after the last one. A scan can be large (about 8,000 files is 1 to 2 MB), so this verb accepts a request up to 16 MB on the tailnet listener only.', drive_fact_write),
+    Verb('drive', 'catalog-snapshots', 'List the scans of a Drive', (), DriveCatalogSnapshotsInput, DriveCatalogSnapshotsOutput, 'reader', 'Oldest first, each with its timestamp, entry count and total bytes.', drive_read, read_only=True),
     Verb('drive', 'catalog-diff', 'Show what one scan of a Drive changed', (), DriveCatalogDiffInput, DriveCatalogDiffOutput, 'reader', 'The paths added, modified or removed by the snapshot, in path order.', drive_read, read_only=True),
-    Verb('drive', 'catalog-at', 'Show what a Drive held on a day', (), DriveCatalogAtInput, DriveCatalogAtOutput, 'reader', 'The whole tree as of the latest scan dated on or before the day, in path order; prefix limits it to one folder. Refused when the Drive had no scan by then.', drive_read, read_only=True),
+    Verb('drive', 'catalog-at', 'Show what a Drive held on a day or at a time', (), DriveCatalogAtInput, DriveCatalogAtOutput, 'reader', 'The whole tree as of the latest scan at or before the time (a bare date means the end of that day in Manila), in path order; prefix limits it to one folder. Refused when the Drive had no scan by then.', drive_read, read_only=True),
     Verb('drive', 'list', 'List Drives with their custody status', (), DriveListInput, DriveListOutput, 'reader', 'Filters (q, serial, needs_review, project, status, office_location) combine with AND; optional limit and offset page the result and total gives the count before paging. project is a T6 Project ID with an open Assignment. Each Drive carries its version and open Assignments.', drive_read, read_only=True),
     Verb('drive', 'get', 'Show one Drive', (), DriveGetInput, DriveGetOutput, 'reader', 'Facts, status, custody events in append order, numbered Assignments, source rows and linked Deliveries.', drive_read, read_only=True),
     Verb('drive', 'find', 'Find Drives by serial', (), DriveFindInput, DriveFindOutput, 'reader', 'Give a serial or a qr_code. A serial matches an accepted or a suspected one, in any spelling; a QR code matches in any case.', drive_read, read_only=True),

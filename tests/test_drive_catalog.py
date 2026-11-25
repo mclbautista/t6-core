@@ -4,8 +4,9 @@ These tests are written against the DriveStore interface. `test_drive_database` 
 so the in-memory fake and the durable store give the same answers.
 """
 import unittest
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
+from t6.domain.studio_time import MANILA
 from t6.drives import (
     CatalogDiffEntry,
     CatalogEntry,
@@ -33,6 +34,10 @@ def folder(path: str) -> CatalogEntry:
 
 
 DAY1, DAY2, DAY3, DAY4 = date(2026, 3, 1), date(2026, 3, 10), date(2026, 3, 20), date(2026, 4, 1)
+
+
+def manila(day: date, hour: int = 0, minute: int = 0, second: int = 0) -> datetime:
+    return datetime(day.year, day.month, day.day, hour, minute, second, tzinfo=MANILA)
 
 
 class ShelfFactsTests(unittest.TestCase):
@@ -77,16 +82,16 @@ class CatalogTests(unittest.TestCase):
         self.store = make_store()
         self.drive = self.store.add_drive(Drive(label='Synthetic 1')).id
 
-    def record(self, on: date, entries: list[CatalogEntry], root: str = 'Volume') -> tuple[CatalogSnapshot, tuple[CatalogDiffEntry, ...]]:
+    def record(self, on: date | datetime, entries: list[CatalogEntry], root: str = 'Volume') -> tuple[CatalogSnapshot, tuple[CatalogDiffEntry, ...]]:
         return self.store.record_catalog(self.drive, on, root, entries, 1000.0)
 
-    def paths(self, on: date) -> list[str] | None:
+    def paths(self, on: date | datetime) -> list[str] | None:
         found = self.store.contents_at(self.drive, on)
         return None if found is None else [entry.path for entry in found.entries]
 
     def test_the_first_snapshot_stores_every_entry_as_added(self) -> None:
         snapshot, diff = self.record(DAY1, [file('Show A/clip1.mov', 100), folder('Show A'), file('notes.txt', 5)])
-        self.assertEqual((snapshot.drive_id, snapshot.captured_on, snapshot.parent_snapshot_id, snapshot.root_path), (self.drive, DAY1, None, 'Volume'))
+        self.assertEqual((snapshot.drive_id, snapshot.captured_on, snapshot.parent_snapshot_id, snapshot.root_path), (self.drive, manila(DAY1), None, 'Volume'))
         self.assertEqual((snapshot.entry_count, snapshot.total_bytes), (3, 105))
         self.assertEqual([(d.path, d.change) for d in diff], [('Show A', 'added'), ('Show A/clip1.mov', 'added'), ('notes.txt', 'added')])
 
@@ -100,6 +105,38 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual((second.entry_count, second.total_bytes), (4, 650))
         stored = sum(len(self.store.catalog_diff(self.drive, s.id) or ()) for s in self.store.catalog_snapshots(self.drive))
         self.assertEqual(stored, 4 + 3)  # not 4 + 4: the unchanged entries are not copied
+
+    def test_several_scans_on_one_day_are_kept_in_time_order_with_chained_diffs(self) -> None:
+        t1 = manila(DAY1, 9, 0)
+        t2 = manila(DAY1, 14, 30)
+        t3 = datetime(2026, 3, 1, 10, 15, tzinfo=timezone.utc)  # 18:15+08:00
+        s1, d1 = self.record(t1, [file('a.txt', 1)])
+        s2, d2 = self.record(t2, [file('a.txt', 1), file('b.txt', 2)])
+        s3, d3 = self.record(t3, [file('a.txt', 10), file('b.txt', 2)])
+        self.assertEqual([(d.path, d.change) for d in d1], [('a.txt', 'added')])
+        self.assertEqual([(d.path, d.change) for d in d2], [('b.txt', 'added')])
+        self.assertEqual([(d.path, d.change) for d in d3], [('a.txt', 'modified')])
+        self.assertEqual((s2.parent_snapshot_id, s3.parent_snapshot_id), (s1.id, s2.id))
+        listed = self.store.catalog_snapshots(self.drive)
+        self.assertEqual([s.id for s in listed], [s1.id, s2.id, s3.id])
+        self.assertEqual([s.captured_on for s in listed], [t1, t2, t3])
+        at_day1 = self.store.contents_at(self.drive, DAY1)
+        assert at_day1 is not None
+        self.assertEqual(at_day1.snapshot.id, s3.id)  # end of DAY1 includes 18:15+08:00
+        self.assertEqual({e.path: e.size_bytes for e in at_day1.entries}, {'a.txt': 10, 'b.txt': 2})
+        at_midday = self.store.contents_at(self.drive, manila(DAY1, 15, 0))
+        assert at_midday is not None
+        self.assertEqual(at_midday.snapshot.id, s2.id)
+        self.assertEqual({e.path: e.size_bytes for e in at_midday.entries}, {'a.txt': 1, 'b.txt': 2})
+
+    def test_a_bare_date_is_start_of_day_before_timed_scans_and_end_of_day_for_contents_at(self) -> None:
+        bare, _ = self.record(DAY1, [file('a.txt', 1)])
+        later, _ = self.record(manila(DAY1, 0, 1), [file('a.txt', 1), file('b.txt', 2)])
+        self.assertEqual(bare.captured_on, manila(DAY1, 0, 0))
+        self.assertEqual(later.parent_snapshot_id, bare.id)
+        found = self.store.contents_at(self.drive, DAY1)
+        assert found is not None
+        self.assertEqual(found.snapshot.id, later.id)
 
     def test_an_unchanged_scan_is_recorded_with_no_diff(self) -> None:
         self.record(DAY1, [file('a.txt')])
@@ -125,10 +162,10 @@ class CatalogTests(unittest.TestCase):
         at_day2 = self.store.contents_at(self.drive, DAY2)
         assert at_day2 is not None
         self.assertEqual({e.path: e.size_bytes for e in at_day2.entries}, {'a.txt': 1, 'b.txt': 22, 'c.txt': 3})
-        self.assertEqual(at_day2.snapshot.captured_on, DAY2)
+        self.assertEqual(at_day2.snapshot.captured_on, manila(DAY2))
         before_third = self.store.contents_at(self.drive, date(2026, 3, 19))
         assert before_third is not None
-        self.assertEqual(before_third.snapshot.captured_on, DAY2)
+        self.assertEqual(before_third.snapshot.captured_on, manila(DAY2))
 
     def test_a_removed_file_that_comes_back_is_added_again(self) -> None:
         self.record(DAY1, [file('a.txt')])
@@ -142,7 +179,7 @@ class CatalogTests(unittest.TestCase):
         self.record(DAY1, [file('a')])
         self.record(DAY2, [file('a'), file('b')])
         listed = self.store.catalog_snapshots(self.drive)
-        self.assertEqual([s.captured_on for s in listed], [DAY1, DAY2])
+        self.assertEqual([s.captured_on for s in listed], [manila(DAY1), manila(DAY2)])
         self.assertEqual(listed[1].parent_snapshot_id, listed[0].id)
         self.assertIsNone(self.store.catalog_diff(self.drive, 'snap_nothere'))
 
@@ -157,11 +194,19 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(self.store.catalog_diff(other, self.store.catalog_snapshots(self.drive)[0].id), None)
 
     def test_a_scan_dated_on_or_before_the_latest_is_refused(self) -> None:
-        self.record(DAY2, [file('a')])
-        for on in (DAY1, DAY2):
-            with self.assertRaises(CatalogOutOfOrder):
+        self.record(manila(DAY2, 14, 30), [file('a')])
+        same_utc = datetime(2026, 3, 10, 6, 30, tzinfo=timezone.utc)
+        earlier_offset = datetime(2026, 3, 10, 1, 0, tzinfo=timezone(timedelta(hours=-5)))  # 14:00+08:00
+        for on in (DAY1, DAY2, manila(DAY2, 14, 30), same_utc, earlier_offset):
+            with self.subTest(on=on), self.assertRaises(CatalogOutOfOrder):
                 self.record(on, [file('a')])
         self.assertEqual(len(self.store.catalog_snapshots(self.drive)), 1)
+
+    def test_a_naive_timestamp_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            self.record(datetime(2026, 3, 1, 14, 30), [file('a')])
+        with self.assertRaises(ValueError):
+            self.store.contents_at(self.drive, datetime(2026, 3, 1, 14, 30))
 
     def test_an_unknown_drive_is_refused(self) -> None:
         with self.assertRaises(UnknownDrive):

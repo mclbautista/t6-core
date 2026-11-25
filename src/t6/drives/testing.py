@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -37,6 +37,7 @@ from t6.drives import (
     normalize_qr_code,
     normalize_serial,
     open_duplicate,
+    parse_catalog_time,
 )
 
 
@@ -98,7 +99,7 @@ class InMemoryDriveStore:
             return None
         return next((drive for drive in self._drives.values() if code and drive.qr_code == code), None)
 
-    def record_catalog(self, drive_id: str, captured_on: date, root_path: str, entries: Sequence[CatalogEntry], created_at: float
+    def record_catalog(self, drive_id: str, captured_on: date | datetime, root_path: str, entries: Sequence[CatalogEntry], created_at: float
                        ) -> tuple[CatalogSnapshot, tuple[CatalogDiffEntry, ...]]:
         self._drive(drive_id)
         history = self._catalog[drive_id]
@@ -114,9 +115,10 @@ class InMemoryDriveStore:
         self._drive(drive_id)
         return next((diff for snapshot, diff in self._catalog[drive_id] if snapshot.id == snapshot_id), None)
 
-    def contents_at(self, drive_id: str, on: date) -> CatalogContents | None:
+    def contents_at(self, drive_id: str, on: date | datetime) -> CatalogContents | None:
         self._drive(drive_id)
-        history = [item for item in self._catalog[drive_id] if item[0].captured_on <= on]
+        cutoff = parse_catalog_time(on, end_of_day=True)
+        history = [item for item in self._catalog[drive_id] if item[0].captured_on <= cutoff]
         if not history:
             return None
         tree = fold_catalog(diff for _, diff in history)

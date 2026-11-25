@@ -456,6 +456,16 @@ _MIGRATIONS = (
     size INTEGER NOT NULL, sha256 TEXT NOT NULL, added_by TEXT NOT NULL, at REAL NOT NULL);
     CREATE TABLE drive_match_approvals (id INTEGER PRIMARY KEY AUTOINCREMENT, capture TEXT NOT NULL, item INTEGER NOT NULL,
     outcome TEXT NOT NULL, rank INTEGER, at REAL NOT NULL, who TEXT NOT NULL)"""),
+    # Catalog scans carry a timestamp and several scans per Drive per day are kept (#764).
+    (67, False, """CREATE TABLE drive_catalog_snapshots_new (
+        id TEXT PRIMARY KEY, drive_id TEXT NOT NULL REFERENCES drives(id), captured_on TEXT NOT NULL, parent_snapshot_id TEXT,
+        root_path TEXT NOT NULL, entry_count INTEGER NOT NULL, total_bytes INTEGER NOT NULL, created_at REAL NOT NULL
+    );
+    INSERT INTO drive_catalog_snapshots_new (id, drive_id, captured_on, parent_snapshot_id, root_path, entry_count, total_bytes, created_at)
+        SELECT id, drive_id, captured_on, parent_snapshot_id, root_path, entry_count, total_bytes, created_at FROM drive_catalog_snapshots;
+    DROP TABLE drive_catalog_snapshots;
+    ALTER TABLE drive_catalog_snapshots_new RENAME TO drive_catalog_snapshots;
+    CREATE INDEX drive_catalog_snapshots_by_drive ON drive_catalog_snapshots (drive_id, captured_on)"""),
 )
 
 

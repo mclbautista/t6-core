@@ -18,10 +18,11 @@ import json
 import re
 from uuid import uuid4
 from dataclasses import asdict, dataclass, field
-from datetime import date
+from datetime import date, datetime, time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Iterable, Literal, Protocol, Sequence
 
+from t6.domain.studio_time import MANILA
 from t6.vocabulary import DRIVE_ROLES
 
 if TYPE_CHECKING:
@@ -60,6 +61,7 @@ __all__ = [
     "normalize_serial",
     "open_duplicate",
     "parse_capacity_tb",
+    "parse_catalog_time",
     "shipment_manifest",
 ]
 
@@ -67,6 +69,7 @@ _QR_CODE = re.compile(r"[A-Z0-9_-]{2,64}")
 _NOTE = re.compile(r"\([^)]*\)|\[[^\]]*\]")
 _SPACES = re.compile(r"\s+")
 _SIZE = re.compile(r"(\d+(?:\.\d+)?)\s*(TB|T|GB|G)(?![A-Z])", re.IGNORECASE)
+_BARE_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _GB_PER_TB = 1000
 
 
@@ -438,12 +441,36 @@ class DuplicateQrCode(ValueError):
 class CatalogOutOfOrder(ValueError):
     """A catalog snapshot dated on or before the Drive's latest one.
 
-    Each snapshot is stored as the changes since the one before it, so scans are recorded in date order.
+    Each snapshot is stored as the changes since the one before it, so scans are recorded in time order.
     """
 
-    def __init__(self, captured_on: date, latest: date) -> None:
+    def __init__(self, captured_on: date | datetime, latest: date | datetime) -> None:
         super().__init__(f"a catalog scan must be dated after the latest one ({latest.isoformat()}), not {captured_on.isoformat()}")
         self.captured_on, self.latest = captured_on, latest
+
+
+def parse_catalog_time(value: str | date | datetime, *, end_of_day: bool = False) -> datetime:
+    """Parse or normalize a catalog scan timestamp (or bare date in Manila).
+
+    A bare date (`YYYY-MM-DD` or `date`) becomes the start of that day in Manila (`00:00:00+08:00`), or the end of
+    that day (`23:59:59.999999+08:00`) when `end_of_day=True` (for `contents_at`). An ISO 8601 datetime without a
+    UTC offset is refused with `ValueError`.
+    """
+    if isinstance(value, datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("catalog timestamp must include a UTC offset")
+        return value.astimezone(MANILA)
+    if isinstance(value, date):
+        return datetime.combine(value, time.max if end_of_day else time.min, MANILA)
+    if isinstance(value, str):
+        if _BARE_DATE.fullmatch(value):
+            day = date.fromisoformat(value)
+            return datetime.combine(day, time.max if end_of_day else time.min, MANILA)
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("catalog timestamp must include a UTC offset")
+        return parsed.astimezone(MANILA)
+    raise TypeError(f"expected date, datetime or ISO string, not {type(value).__name__}")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -493,14 +520,14 @@ class CatalogDiffEntry:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CatalogSnapshot:
-    """One dated scan of a Drive. Its entries are not stored whole: see `CatalogDiffEntry`.
+    """One timed scan of a Drive. Its entries are not stored whole: see `CatalogDiffEntry`.
 
     `entry_count` and `total_bytes` describe the whole tree as of this scan, not just the changes.
     """
 
     id: str
     drive_id: str
-    captured_on: date
+    captured_on: datetime
     parent_snapshot_id: str | None
     root_path: str
     entry_count: int
@@ -510,7 +537,7 @@ class CatalogSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class CatalogContents:
-    """What a Drive held on a date: the scan in effect that day and the whole tree as of it, in path order."""
+    """What a Drive held at a time: the scan in effect then and the whole tree as of it, in path order."""
 
     snapshot: CatalogSnapshot
     entries: tuple[CatalogEntry, ...]
@@ -556,17 +583,18 @@ def fold_catalog(diffs: Iterable[Iterable[CatalogDiffEntry]]) -> dict[str, Catal
     return tree
 
 
-def new_catalog_snapshot(drive_id: str, history: Sequence[tuple[CatalogSnapshot, Sequence[CatalogDiffEntry]]], captured_on: date, root_path: str,
+def new_catalog_snapshot(drive_id: str, history: Sequence[tuple[CatalogSnapshot, Sequence[CatalogDiffEntry]]], captured_on: date | datetime, root_path: str,
                          entries: Sequence[CatalogEntry], created_at: float) -> tuple[CatalogSnapshot, tuple[CatalogDiffEntry, ...]]:
     """The snapshot and the changes a new scan adds to a Drive's `history` (oldest first).
 
     Raises CatalogOutOfOrder when the scan is not dated after the latest one.
     """
+    moment = parse_catalog_time(captured_on)
     latest = history[-1][0] if history else None
-    if latest is not None and captured_on <= latest.captured_on:
-        raise CatalogOutOfOrder(captured_on, latest.captured_on)
+    if latest is not None and moment <= latest.captured_on:
+        raise CatalogOutOfOrder(moment, latest.captured_on)
     diff = diff_catalog(fold_catalog(changes for _, changes in history), entries)
-    snapshot = CatalogSnapshot(id=f"snap_{uuid4().hex}", drive_id=drive_id, captured_on=captured_on, parent_snapshot_id=latest.id if latest else None,
+    snapshot = CatalogSnapshot(id=f"snap_{uuid4().hex}", drive_id=drive_id, captured_on=moment, parent_snapshot_id=latest.id if latest else None,
                                root_path=root_path.strip() or "/", entry_count=len(entries), total_bytes=sum(entry.size_bytes or 0 for entry in entries),
                                created_at=created_at)
     return snapshot, diff
@@ -599,9 +627,9 @@ class DriveStore(Protocol):
         """Find by QR code, in any case. Unknown codes return None."""
         ...
 
-    def record_catalog(self, drive_id: str, captured_on: date, root_path: str, entries: Sequence[CatalogEntry], created_at: float
+    def record_catalog(self, drive_id: str, captured_on: date | datetime, root_path: str, entries: Sequence[CatalogEntry], created_at: float
                        ) -> tuple[CatalogSnapshot, tuple[CatalogDiffEntry, ...]]:
-        """Record a dated scan as the changes since the Drive's latest one, and return the snapshot with those changes.
+        """Record a timed scan as the changes since the Drive's latest one, and return the snapshot with those changes.
 
         Raises UnknownDrive, or CatalogOutOfOrder when `captured_on` is not after the latest snapshot.
         """
@@ -615,8 +643,8 @@ class DriveStore(Protocol):
         """What one snapshot changed, in path order; None when the Drive has no such snapshot."""
         ...
 
-    def contents_at(self, drive_id: str, on: date) -> CatalogContents | None:
-        """The tree as of the latest snapshot dated on or before `on`; None when the Drive had none by then. Raises UnknownDrive."""
+    def contents_at(self, drive_id: str, on: date | datetime) -> CatalogContents | None:
+        """The tree as of the latest snapshot at or before `on` (a bare date means end of day in Manila); None when the Drive had none by then. Raises UnknownDrive."""
         ...
 
     def has_suspected_serial(self, serial: str) -> bool:

@@ -164,7 +164,7 @@ def catalog_diff(store: DriveStore, drive_id: str, snapshot_id: str) -> DriveCat
         DriveCatalogChange(path=c.path, kind=c.kind, change=c.change, size_bytes=c.size_bytes, mtime=c.mtime, checksum=c.checksum) for c in changes])
 
 
-def catalog_at(store: DriveStore, drive_id: str, on: date, prefix: str | None = None) -> DriveCatalogAtOutput | None:
+def catalog_at(store: DriveStore, drive_id: str, on: date | datetime, prefix: str | None = None) -> DriveCatalogAtOutput | None:
     if store.get_drive(drive_id) is None:
         return None
     found = store.contents_at(drive_id, on)

@@ -20,7 +20,7 @@ from typing import Any, NamedTuple
 
 from t6 import verbflow
 from t6.domain.studio_time import MANILA
-from t6.drives import Assignment, CatalogEntry, CustodyEvent, CustodyKind, Drive, DriveStatus, DriveStore, FormFactor, Party, PartyKind, Ref, Role, catalog_entries, diff_catalog, fold_catalog, open_duplicate
+from t6.drives import Assignment, CatalogEntry, CustodyEvent, CustodyKind, Drive, DriveStatus, DriveStore, FormFactor, Party, PartyKind, Ref, Role, catalog_entries, diff_catalog, fold_catalog, open_duplicate, parse_catalog_time
 from t6.drives.sqlite import SqliteDriveStore, audit_json
 from t6.preview import PreviewTokens
 from t6.registry.core import normalize_page_id
@@ -177,9 +177,9 @@ class DriveVerbs:
         if not isinstance(values.get('drive'), str):
             return Refused(rule='input', reason='A Drive is required')
         try:
-            date.fromisoformat(values['captured_on'])
+            parse_catalog_time(values['captured_on'])
         except (KeyError, TypeError, ValueError):
-            return Refused(rule='input', reason='captured_on must be a date as YYYY-MM-DD')
+            return Refused(rule='input', reason='captured_on must be an ISO 8601 timestamp with UTC offset or YYYY-MM-DD')
         entries = values.get('entries')
         if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
             return Refused(rule='input', reason='entries must be a list of path, kind and size_bytes objects')
@@ -237,7 +237,7 @@ class DriveVerbs:
 
     def _plan_catalog(self, store: DriveStore, values: dict[str, Any], key: str) -> Plan | Refused:
         """Plan a scan. The preview holds counts, not the manifest: confirm sends the manifest again and the token binds it."""
-        drive_id, captured_on = values['drive'], date.fromisoformat(values['captured_on'])
+        drive_id, captured_on = values['drive'], parse_catalog_time(values['captured_on'])
         if store.get_drive(drive_id) is None:
             return Refused(rule='drive', reason=f'Drive {drive_id} not found')
         try:
@@ -247,7 +247,7 @@ class DriveVerbs:
         history = store.catalog_snapshots(drive_id)
         latest = history[-1] if history else None
         if latest is not None and captured_on <= latest.captured_on:
-            return Refused(rule='catalog_order', reason=f'Drive {drive_id} was already scanned on {latest.captured_on.isoformat()}; a scan must be dated after it')
+            return Refused(rule='catalog_order', reason=f'Drive {drive_id} was already scanned at {latest.captured_on.isoformat()}; a scan must be after it')
         before = fold_catalog([store.catalog_diff(drive_id, snapshot.id) or () for snapshot in history])
         changes = diff_catalog(before, entries)
         root = (values.get('root_path') or '').strip() or '/'
@@ -258,7 +258,7 @@ class DriveVerbs:
             'removed': sum(c.change == 'removed' for c in changes)}
         return Plan(plan, [drive_id, latest.id if latest else None], lambda store_: self._catalog(store_, drive_id, captured_on, root, entries, plan))
 
-    def _catalog(self, store: DriveStore, drive_id: str, captured_on: date, root: str, entries: tuple[CatalogEntry, ...], plan: dict[str, Any]) -> list[Change]:
+    def _catalog(self, store: DriveStore, drive_id: str, captured_on: datetime, root: str, entries: tuple[CatalogEntry, ...], plan: dict[str, Any]) -> list[Change]:
         snapshot, _ = store.record_catalog(drive_id, captured_on, root, entries, self.registry._clock())
         return [(drive_id, None, {**plan, 'snapshot_id': snapshot.id})]
 
