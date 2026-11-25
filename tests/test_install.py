@@ -80,7 +80,7 @@ else:
                         self.run_command(python, "-c", "import t6.notion, t6.notion.testing")
                     self.assertLessEqual(set(installed["packages"]), allowed)
                     output = self.run_command(environment / "bin" / "t6", "version")
-                    self.assertEqual(json.loads(output), {"version": "0.6.27"})
+                    self.assertEqual(json.loads(output), {"version": "0.6.28"})
 
     @staticmethod
     def run_command(executable: Path, *arguments: str) -> str:

@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.28] - 2026-11-25
+
+The Concerns sheet release (spec #732, #734 to #737), with the CRM keep-warm DM (spec #705), the schedule snapshot (spec #694) and the Drive Inbox on top. The Concerns sheet is a Google Sheets working view for Closers: the API exports the open Concerns as a CSV after the 21:00 autoscan, and a signed Sheet Submit applies Concern rows through the queue. The Telegram Closer list is gone, so `T6_CLOSER_TELEGRAM_IDS` is no longer read. The database moves forward through migrations 62 to 65 (CRM stage history and later), so deploy by the usual path with a backup first; the Apps Script for the sheet is in the repository and is installed by hand.
+
 ### Added
 
 - Verb `schedule snapshot` (#722, spec #694, operator): reads one tab of a Client Sheet, read only, with a merge-aware Sheets read (values, merges and fills of that tab; the tab's grid size is the coverage target) and returns a `ScheduleSnapshot/v1`. Typed client `schedule_snapshot` and `t6 schedule snapshot`; the Google credential stays with the API. Documented in `docs/api-read-verbs.md`.
