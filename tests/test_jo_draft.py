@@ -69,13 +69,13 @@ class JoDraftTests(unittest.TestCase):
 
     def test_draft_has_header_title_task_assigned_and_cc(self) -> None:
         self.jo('118')
-        result = self.draft('HBR ftr export and upload seq 5 to pix share, for Maya')
+        result = self.draft('HBR ftr export and upload seq 5 to a share, for Maya')
         assert isinstance(result, Done)
         lines = result.result['text'].splitlines()
         self.assertEqual(lines[0], 'HBR - (?) - JO #119')
         self.assertEqual(lines[1], 'November 25 / Wednesday')
         self.assertIn('Title: Harbor Lights FTR', lines)
-        self.assertIn('Task: ftr export and upload seq 5 to pix share', lines)
+        self.assertIn('Task: ftr export and upload seq 5 to a share', lines)
         self.assertIn('Assigned: @mayar', lines)
         self.assertIn('cc: @leaong', lines)
         self.assertIn('Purpose: (?)', lines)
@@ -157,10 +157,10 @@ class NextNumberTests(unittest.TestCase):
 
     def test_parse_line_takes_the_code_the_tail_name_and_the_deliverable(self) -> None:
         from t6.jo_draft import parse_line
-        line = parse_line("MFG ftr task export and upload seq 5 to pix share to netflix, for Majo")
+        line = parse_line("HBR ftr task export and upload seq 5 to a share, for Maya")
         assert line is not None
-        self.assertEqual((line.code, line.assignee, line.deliverable), ('MFG', 'Majo', 'FTR'))
-        self.assertEqual(line.task, 'ftr task export and upload seq 5 to pix share to netflix')
+        self.assertEqual((line.code, line.assignee, line.deliverable), ('HBR', 'Maya', 'FTR'))
+        self.assertEqual(line.task, 'ftr task export and upload seq 5 to a share')
         self.assertIsNone(parse_line('   '))
 
 
