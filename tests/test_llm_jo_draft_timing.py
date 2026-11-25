@@ -11,7 +11,7 @@ from t6.privacy import Person, Project, Registry
 
 REGISTRY = Registry(people=[Person("Maya Reyes", aliases=["Maya"])], projects=[Project("Harbor Lights", code="HBR")])
 LINES: list[dict[str, Any]] = [
-    {"line": "HBR ftr export seq 5 to pix share, for Maya",
+    {"line": "HBR ftr export seq 5 to transfer link, for Maya",
      "candidates": [{"task": "Export Harbor Lights FTR for Maya", "purpose": "client review",
                      "mode": "PIX, password: hunter2"}] * 14},
     {"line": "HBR tlr color pass, for Maya", "candidates": []},
@@ -58,7 +58,7 @@ class TimingTests(unittest.TestCase):
     def test_output_holds_no_line_text_or_names(self) -> None:
         rows, *_ = self.run_all()
         text = json.dumps(summarize(rows))
-        for word in ("Maya", "Harbor", "pix share", "export"):
+        for word in ("Maya", "Harbor", "transfer link", "export"):
             self.assertNotIn(word, text)
 
     def test_a_failed_call_is_a_row_with_its_reason(self) -> None:
