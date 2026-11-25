@@ -257,16 +257,63 @@ def configured_handlers(
         handlers[JobKind.NOTION_PAGE_CHANGED.value] = mirror_page_changed
         handlers[JobKind.NOTION_MIRROR_REFRESH.value] = mirror_refresh
     privacy_file, data_sources_file = environ.get("T6_READ_PRIVACY_REGISTRY"), environ.get("T6_READ_DATA_SOURCES")
-    if token and privacy_file and data_sources_file:
+    missing_privacy = [
+        name
+        for name, value in (
+            ("T6_NOTION_TOKEN", token),
+            ("T6_READ_PRIVACY_REGISTRY", privacy_file),
+            ("T6_READ_DATA_SOURCES", data_sources_file),
+        )
+        if not value
+    ]
+    if missing_privacy:
+        if settings.queue == "main":
+            print(
+                f"t6.worker: privacy_registry.rebuild is off: missing {', '.join(missing_privacy)}",
+                file=sys.stderr,
+                flush=True,
+            )
+    else:
+        assert token and privacy_file and data_sources_file
         from t6.cli import read_data_source_configs
         from t6.notion import NotionClient
         from t6.notion.source import NotionSource
         from t6.privacy_build import Rebuild
 
-        privacy_sources = {key: cfg.id for key, cfg in read_data_source_configs(Path(data_sources_file)).items()}
-        if privacy_sources.get("studios") and privacy_sources.get("projects"):
-            rebuild = Rebuild(NotionSource(lambda: NotionClient(token)), privacy_sources, Path(privacy_file))
-            handlers[JobKind.PRIVACY_REGISTRY_REBUILD.value] = lambda job: rebuild(job)
+        try:
+            privacy_sources = {key: cfg.id for key, cfg in read_data_source_configs(Path(data_sources_file)).items()}
+        except (OSError, ValueError) as error:
+            if settings.queue == "main":
+                print(
+                    f"t6.worker: privacy_registry.rebuild is off: could not read T6_READ_DATA_SOURCES ({error})",
+                    file=sys.stderr,
+                    flush=True,
+                )
+        else:
+            missing_sources = [key for key in ("studios", "projects") if not privacy_sources.get(key)]
+            if missing_sources:
+                if settings.queue == "main":
+                    print(
+                        f"t6.worker: privacy_registry.rebuild is off: T6_READ_DATA_SOURCES is missing {', '.join(missing_sources)}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+            else:
+                from t6.registry.sqlite import SqliteProjectRegistry
+                from t6.worker.internal_queue import InternalJobQueue
+
+                rebuild_queue = (
+                    InternalJobQueue(SqliteProjectRegistry(environ["T6_DATABASE"]))
+                    if environ.get("T6_DATABASE")
+                    else None
+                )
+                rebuild = Rebuild(
+                    NotionSource(lambda: NotionClient(token)),
+                    privacy_sources,
+                    Path(privacy_file),
+                    queue=rebuild_queue,
+                )
+                handlers[JobKind.PRIVACY_REGISTRY_REBUILD.value] = lambda job: rebuild(job)
     if gateway_url and gateway_secret:
         chat = _whole_number(environ, "T6_REVIEW_CHAT", required=True)
         topic = _whole_number(environ, "T6_REVIEW_TOPIC", required=False)
@@ -941,6 +988,12 @@ def main(
             from t6.registry.sqlite import SqliteProjectRegistry
 
             apply_live_setting(SqliteProjectRegistry(environ['T6_DATABASE']), environ)  # ADR 0010: before the nightly reload is scheduled
+        if settings.queue == "main" and environ.get("T6_DATABASE") and JobKind.PRIVACY_REGISTRY_REBUILD.value in queue_handlers:
+            from t6.privacy_build import schedule_daily_rebuild
+            from t6.registry.sqlite import SqliteProjectRegistry
+            from t6.worker.internal_queue import InternalJobQueue
+
+            schedule_daily_rebuild(InternalJobQueue(SqliteProjectRegistry(environ["T6_DATABASE"])))
         if settings.queue == 'main' and environ.get('T6_DATABASE') and environ.get('T6_DRIVE_PROJECT_SPREADSHEET_ID'):
             from t6.drives.nightly import NightlyReload
             from t6.preview import PreviewTokens

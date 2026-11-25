@@ -259,6 +259,144 @@ class MeetingNotesVerbTests(unittest.TestCase):
         assert isinstance(blank, Refused)
         self.assertEqual(blank.rule, "idempotency_key")
 
+    def test_fake_notion_caps_inline_at_25_and_under_25_makes_no_property_requests(self) -> None:
+        import httpx
+
+        proj_ids = [self.notion.add_page("projects", {"Name": title(f"Show {i}")})["id"] for i in range(55)]
+        attendees = [{"object": "user", "id": f"user-{i}", "name": f"User {i}"} for i in range(30)]
+        big = self.notion.add_page(
+            NOTES,
+            {
+                "Name": title("Capped Check"),
+                "Project": {"type": "relation", "relation": [{"id": pid} for pid in proj_ids], "has_more": False},
+                "Team Attendees": {"type": "people", "people": attendees, "has_more": False},
+            },
+        )
+        with httpx.Client(transport=self.notion.transport, base_url="https://api.notion.com/v1") as raw:
+            got = raw.get(f"/pages/{big['id']}").json()
+            self.assertTrue(got["properties"]["Project"]["has_more"])
+            self.assertEqual(len(got["properties"]["Project"]["relation"]), 25)
+            self.assertTrue(got["properties"]["Team Attendees"]["has_more"])
+            self.assertEqual(len(got["properties"]["Team Attendees"]["people"]), 25)
+            queried = raw.post(f"/data_sources/{NOTES}/query", json={}).json()["results"][0]
+            self.assertTrue(queried["properties"]["Project"]["has_more"])
+            self.assertEqual(len(queried["properties"]["Project"]["relation"]), 25)
+            prop_page = raw.get(f"/pages/{big['id']}/properties/{MeetingNotesRow.notion_id('project')}").json()
+            self.assertEqual(prop_page["object"], "list")
+            self.assertTrue(prop_page["has_more"])
+            self.assertEqual(len(prop_page["results"]), 25)
+            self.assertEqual(prop_page["results"][0]["object"], "property_item")
+            self.assertEqual(prop_page["results"][0]["type"], "relation")
+
+        self.notion.requests.clear()
+        small = self.notion.add_page(
+            NOTES,
+            {
+                "Name": title("Exactly 25"),
+                "Project": {"type": "relation", "relation": [{"id": pid} for pid in proj_ids[:25]], "has_more": False},
+                "Team Attendees": {"type": "people", "people": attendees[:25], "has_more": False},
+            },
+        )
+        with self.notion.client() as client:
+            page = client.retrieve_page(small["id"])
+            rows = client.query_data_source(NOTES, filter={"property": "Name", "title": {"equals": "Exactly 25"}})
+        self.assertEqual(len(page["properties"]["Project"]["relation"]), 25)
+        self.assertEqual(len(rows[0]["properties"]["Team Attendees"]["people"]), 25)
+        self.assertEqual([r for r in self.notion.requests if "/properties/" in r.url.path], [])
+
+    def test_create_and_list_with_55_projects_and_30_attendees(self) -> None:
+        proj_t6_ids: list[str] = []
+        for i in range(55):
+            page = self.notion.add_page("projects", {"Name": title(f"Show {i:02d}")})
+            reg = self.registry.register(actor="setup", idempotency_key=f"p-{i}", notion_page_id=page["id"])
+            assert isinstance(reg, Registered)
+            proj_t6_ids.append(reg.project.id)
+        attendee_ids = [f"user-{i:02d}" for i in range(30)]
+
+        created = self.create(
+            title="All Hands 55",
+            project_ids=proj_t6_ids,
+            attendee_ids=attendee_ids,
+            blocks=[block("Summary")],
+        )
+        self.assertEqual(created["project_ids"], proj_t6_ids)
+        self.assertEqual(created["attendee_ids"], attendee_ids)
+        self.assertEqual(len(created["project_ids"]), 55)
+
+        found_last = self.listed(project=proj_t6_ids[54], include_body=False)
+        self.assertEqual([n["page_id"] for n in found_last], [created["page_id"]])
+        self.assertEqual(found_last[0]["project_ids"], proj_t6_ids)
+
+    def test_create_readback_mismatch_still_writes_body_and_returns_ambiguous_details(self) -> None:
+        real_retrieve = NotionClient.retrieve_page
+        dropped_once = False
+
+        def mismatched_readback(client: NotionClient, page_id: str) -> dict[str, Any]:
+            nonlocal dropped_once
+            page = real_retrieve(client, page_id)
+            if not dropped_once:
+                dropped_once = True
+                page["properties"].pop("Project", None)
+            return page
+
+        with patch.object(NotionClient, "retrieve_page", mismatched_readback):
+            result = self.reports.meeting_notes_create(
+                MeetingNotesCreateInput(
+                    title="Mismatch Note",
+                    meeting_date="2026-11-16",
+                    project_ids=[self.t6_project],
+                    attendee_ids=[],
+                    blocks=[block("Kept body")],
+                )
+            )
+        assert isinstance(result, Ambiguous)
+        self.assertEqual(len(result.candidates), 1)
+        candidate = result.candidates[0]
+        self.assertIs(candidate["pending"], True)
+        self.assertEqual(candidate["reason"], "mismatch")
+        self.assertTrue(candidate["page_id"])
+        self.assertEqual(candidate["mismatched"], ["project"])
+        listed = self.listed(title="Mismatch Note")
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]["page_id"], candidate["page_id"])
+        self.assertEqual(listed[0]["body"][0]["text"], "Kept body")
+
+    def test_create_send_timeout_returns_ambiguous_with_none_page_id(self) -> None:
+        self.notion.time_out_next()
+        result = self.reports.meeting_notes_create(
+            MeetingNotesCreateInput(
+                title="Timed Out Note",
+                meeting_date="2026-11-16",
+                project_ids=[self.t6_project],
+                attendee_ids=[],
+                blocks=[block("Never written")],
+            )
+        )
+        assert isinstance(result, Ambiguous)
+        self.assertEqual(
+            result.candidates,
+            [{"pending": True, "reason": "timeout", "page_id": None, "mismatched": []}],
+        )
+        self.assertEqual(self.audit(), [])
+        self.assertEqual(self.listed(title="Timed Out Note"), [])
+
+    def test_mark_sent_refuses_trashed_and_archived_notes(self) -> None:
+        gone = self.create("Trashed Note")
+        self.assertIsInstance(self.reports.meeting_notes_trash(MeetingNotesTrashInput(note=gone["page_id"])), Done)
+        refused = self.reports.meeting_notes_mark_sent(MeetingNotesMarkSentInput(note=gone["page_id"]))
+        assert isinstance(refused, Refused)
+        self.assertEqual(refused.rule, "sent")
+        self.assertIn("trash", refused.reason.lower())
+        self.assertIsNone((self.notion.page(gone["page_id"])["properties"].get("Sent at") or {}).get("date"))
+        self.assertEqual([row[0] for row in self.audit()].count("meeting_note_sent"), 0)
+
+        archived = self.note("Archived Note", "2026-11-16", sent=SENT)
+        self.notion.update_page(archived["id"], archived=True)
+        refused_archived = self.reports.meeting_notes_mark_sent(MeetingNotesMarkSentInput(note=archived["id"]))
+        assert isinstance(refused_archived, Refused)
+        self.assertEqual(refused_archived.rule, "sent")
+        self.assertIn("trash", refused_archived.reason.lower())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2497,6 +2497,163 @@ class ApiVerbRefreshMirrorTests(unittest.TestCase):
         )
         self.assertEqual([j.kind for j in fallback_queue.waiting("main")], [JobKind.NOTION_MIRROR_REFRESH.value])
 
+    def test_meeting_notes_over_25_projects_write_through_refresh_sync_and_filter(self) -> None:
+        from t6.domain.events import JobKind
+        from t6.notion.meeting_notes import MeetingNotes, note_from_page
+        from t6.verbs import MeetingNotesListInput
+        from t6.worker.__main__ import WorkerSettings, configured_handlers
+        from t6.worker.client import WorkerJob
+
+        env = patch.dict(os.environ, {"T6_NOTION_TOKEN": "fake", "T6_PREVIEW_SIGNING_KEY": "key"})
+        env.start()
+        self.addCleanup(env.stop)
+
+        proj_t6_ids: list[str] = []
+        proj_page_ids: list[str] = []
+        for i in range(55):
+            p = self.fake.add_page(PROJECTS_DS, {ProjectsRow.notion_name("name"): title(f"Show {i:02d}")})
+            reg = self.registry.register(actor="setup", idempotency_key=f"mn55-{i}", notion_page_id=p["id"])
+            assert isinstance(reg, Registered)
+            proj_page_ids.append(p["id"])
+            proj_t6_ids.append(reg.project.id)
+
+        from t6.domain import MeetingNote
+
+        def on_written(page: dict[str, Any]) -> None:
+            self.writer.upsert_page(
+                page, active_data_source_ids=tuple(self.sources.values()), synced_at=self.clock()
+            )
+
+        # 1. <= 25 references cost zero /properties/ requests
+        self.fake.requests.clear()
+        wt_source = NotionSource(
+            self.fake.client,
+            on_page_written=on_written,
+        )
+        small_note = MeetingNotes(wt_source, MEETING_NOTES_DS).create(
+            title="Twenty Five",
+            meeting_date=datetime(2026, 11, 20).date(),
+            project_ids=proj_page_ids[:25],
+        )
+        self.assertNotIsInstance(small_note, Refused)
+        self.assertEqual([r for r in self.fake.requests if "/properties/" in r.url.path], [])
+
+        # 2. Write-through hook stores all 55 references in mirror immediately
+        wt_note = MeetingNotes(wt_source, MEETING_NOTES_DS).create(
+            title="Write Through 55",
+            meeting_date=datetime(2026, 11, 20).date(),
+            project_ids=proj_page_ids,
+        )
+        assert isinstance(wt_note, MeetingNote)
+        reader = MirrorReader(self.db_path, clock=self.clock)
+        wt_cached = reader.retrieve_page(wt_note.page_id)
+        assert wt_cached is not None
+        self.assertEqual(len(note_from_page(wt_cached).project_ids), 55)
+
+        # 3. VerbAPI meeting-notes create -> Done with 55 projects, and notion.mirror_refresh stores all 55
+        api, inside, _queue = self._build_api(use_mirror=True, with_tap_app=True)
+        from t6.client import Client
+        from t6.server.http import make_server
+        import threading
+
+        server = make_server(("127.0.0.1", 0), api)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(thread.join)
+        self.addCleanup(server.shutdown)
+        client = Client(f"http://127.0.0.1:{server.server_port}", "api-secret")
+
+        created = client.meeting_notes_create(
+            MeetingNotesCreateInput(
+                title="Verb Created 55",
+                meeting_date="2026-11-21",
+                project_ids=proj_t6_ids,
+            )
+        )
+        assert isinstance(created, Done)
+        self.assertEqual(created.result["meeting_note"]["project_ids"], proj_t6_ids)
+        created_page_id = created.result["meeting_note"]["page_id"]
+
+        jobs = inside.find(JobKind.NOTION_MIRROR_REFRESH.value)
+        self.assertEqual(len(jobs), 1)
+        ds_cfg_file = Path(self.tmp.name) / "mn-refresh-sources.json"
+        ds_cfg_file.write_text(json.dumps(self.sources), encoding="utf-8")
+
+        def open_fake_client(_token: str) -> Any:
+            c = self.fake.client()
+            orig_close = c.close
+            closed = False
+
+            def close_once() -> None:
+                nonlocal closed
+                if not closed:
+                    closed = True
+                    orig_close()
+
+            c.close = close_once  # type: ignore[method-assign]
+            self.addCleanup(close_once)
+            return c
+
+        settings = WorkerSettings("http://server.invalid:8081", "worker-secret", "main")
+        with patch("t6.notion.NotionClient", side_effect=open_fake_client):
+            handlers = configured_handlers(
+                {
+                    "T6_NOTION_TOKEN": "fake",
+                    "T6_READ_DATA_SOURCES": str(ds_cfg_file),
+                    "T6_NOTION_MIRROR_DB": str(self.db_path),
+                },
+                settings,
+                _InProcessTransport(api.tap_app),
+            )
+        handlers["main"][JobKind.NOTION_MIRROR_REFRESH.value](
+            WorkerJob(
+                job_id=jobs[0].job_id,
+                queue="main",
+                kind=JobKind.NOTION_MIRROR_REFRESH.value,
+                dedupe_key=jobs[0].dedupe_key,
+                payload=dict(jobs[0].payload),
+                token="t",
+                attempt=1,
+            )
+        )
+
+        refreshed = reader.retrieve_page(created_page_id)
+        assert refreshed is not None
+        self.assertEqual(len(note_from_page(refreshed).project_ids), 55)
+
+        # 4. meeting-notes list from mirror filters on the 55th project with 0 HTTP calls
+        before_http = _count_notion_http(self.fake)
+        listed = api._typed_read(
+            "meeting-notes", "list", MeetingNotesListInput(project=proj_t6_ids[54], include_body=False)
+        )
+        self.assertEqual(_count_notion_http(self.fake), before_http)
+        self.assertTrue(last_read_from_mirror())
+        assert isinstance(listed, Done)
+        self.assertEqual(
+            {item["page_id"] for item in listed.result["meeting_notes"]},
+            {wt_note.page_id, created_page_id},
+        )
+        for item in listed.result["meeting_notes"]:
+            self.assertEqual(item["project_ids"], proj_t6_ids)
+
+        # 5. Full MirrorSyncer rescan stores all 55 references too
+        sync_db = Path(self.tmp.name) / "mirror-rescan-55.sqlite"
+        with MirrorWriter(sync_db, clock=self.clock) as sync_writer:
+            MirrorSyncer(
+                sync_writer,
+                NotionSource(self.fake.client),
+                {"meeting_notes": MEETING_NOTES_DS},
+                min_request_interval=0.0,
+                clock=self.clock,
+                wall_clock=self.clock,
+                sleep=self.clock.sleep,
+            ).rescan_source("meeting_notes")
+            sync_reader = MirrorReader(sync_db, clock=self.clock)
+            synced_page = sync_reader.retrieve_page(created_page_id)
+            assert synced_page is not None
+            self.assertEqual(len(note_from_page(synced_page).project_ids), 55)
+
 
 class AllSourcesGenericMirrorTests(unittest.TestCase):
     def setUp(self) -> None:

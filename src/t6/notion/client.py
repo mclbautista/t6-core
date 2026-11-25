@@ -13,6 +13,7 @@ import math
 import time
 from types import TracebackType
 from typing import Any
+from urllib.parse import quote, unquote
 
 import httpx
 
@@ -172,15 +173,15 @@ class AsyncNotionClient:
     # Pages
 
     async def retrieve_page(self, page_id: str) -> JSON:
-        return await self._call("GET", f"/pages/{page_id}", read=True)
+        return await self._complete_page(await self._call("GET", f"/pages/{page_id}", read=True))
 
     async def create_page(self, body: JSON) -> JSON:
         """Create a page. A write: never retried on a 5xx or a timeout. Credentials in text are withheld."""
-        return await self._call("POST", "/pages", withheld(body), read=False)
+        return await self._complete_page(await self._call("POST", "/pages", withheld(body), read=False))
 
     async def update_page(self, page_id: str, body: JSON) -> JSON:
         """Update a page. A write: never retried on a 5xx or a timeout. Credentials in text are withheld."""
-        return await self._call("PATCH", f"/pages/{page_id}", withheld(body), read=False)
+        return await self._complete_page(await self._call("PATCH", f"/pages/{page_id}", withheld(body), read=False))
 
     # Blocks
 
@@ -247,11 +248,41 @@ class AsyncNotionClient:
                 "POST", f"/data_sources/{data_source_id}/query", body, read=True
             )
             for row in data.get("results", []):
-                yield row
+                yield await self._complete_page(row)
             cursor = data.get("next_cursor")
             if not data.get("has_more") or not cursor:
                 return
             body = {**body, "start_cursor": cursor}
+
+    async def _complete_page(self, page: JSON) -> JSON:
+        """Fetch remaining items for any relation or people property truncated at Notion's 25-item cap."""
+        props = page.get("properties")
+        page_id = page.get("id")
+        if not isinstance(props, dict) or not page_id:
+            return page
+        encoded_page = quote(unquote(str(page_id)), safe="")
+        for name, prop in props.items():
+            if not isinstance(prop, dict) or not prop.get("has_more"):
+                continue
+            kind = prop.get("type")
+            if kind not in ("relation", "people"):
+                continue
+            prop_id = prop.get("id") or name
+            encoded_prop = quote(unquote(str(prop_id)), safe="")
+            items: list[JSON] = []
+            cursor: str | None = None
+            while True:
+                query = "?page_size=100" + (f"&start_cursor={quote(str(cursor), safe='')}" if cursor else "")
+                data = await self._call("GET", f"/pages/{encoded_page}/properties/{encoded_prop}{query}", read=True)
+                for entry in data.get("results", []):
+                    if isinstance(entry, dict) and entry.get(kind) is not None:
+                        items.append(entry[kind])
+                cursor = data.get("next_cursor")
+                if not data.get("has_more") or not cursor:
+                    break
+            prop[kind] = items
+            prop["has_more"] = False
+        return page
 
     async def query_data_source(
         self,

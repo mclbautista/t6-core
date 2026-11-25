@@ -286,7 +286,7 @@ class WiringTests(unittest.TestCase):
                 self.assertIn('T6_FRAMEIO_READ_SECRET', log)
 
     def test_a_worker_without_the_database_does_not_log_it(self) -> None:
-        self.assertEqual(self.started()[1], '')
+        self.assertNotIn('Versions from Frame.io events are off', self.started()[1])
 
     def test_a_worker_without_the_database_does_not(self) -> None:
         self.assertNotIn(KIND, self.handlers())

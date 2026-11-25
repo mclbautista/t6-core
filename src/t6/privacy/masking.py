@@ -31,7 +31,16 @@ from collections.abc import Callable, Iterable, Sequence
 from enum import Enum
 from typing import Any, Literal, TypeVar, cast
 
-from t6.privacy.words import MONTH_WORDS, PROJECT_PLAIN_WORDS, is_ordinary
+from t6.privacy.words import (
+    COMMON_WORDS,
+    EXTRA_ORDINARY,
+    MONTH_WORDS,
+    PLAIN_WORDS,
+    PROJECT_PLAIN_WORDS,
+    is_ordinary,
+)
+
+_PLAIN_NAME_WORDS = (PLAIN_WORDS | COMMON_WORDS) - EXTRA_ORDINARY
 
 Kind = Literal["person", "project", "id"]
 T = TypeVar("T")
@@ -198,16 +207,24 @@ def _terms(registry: Registry, options: MaskOptions) -> list[_Term]:
     for person in registry.people:
         if options.names:
             for name in (person.name, *person.aliases):
+                stripped = name.strip()
                 # In a fixed text an ordinary word is never a name, a person's included.
-                if readable and is_ordinary(name.strip()):
+                if readable and is_ordinary(stripped):
                     continue
-                if len(name.strip()) >= (2 if options.skip_trivial and name != person.name else 1):
+                if " " not in stripped and stripped.islower() and stripped.casefold() in _PLAIN_NAME_WORDS:
+                    continue
+                if len(stripped) >= (2 if options.skip_trivial and name != person.name else 1):
                     add(_Term("person", name))
             for handle in person.handles:
                 add(_Term("person", handle.lstrip("@"), is_handle=True))
         if options.name_words:
             for word in person.name.split():
-                if len(word) >= 3 and word.casefold() not in MONTH_WORDS and _key(word) != _key(person.name):
+                if (
+                    len(word) >= 3
+                    and word.casefold() not in MONTH_WORDS
+                    and word.casefold() not in _PLAIN_NAME_WORDS
+                    and _key(word) != _key(person.name)
+                ):
                     if not (readable and is_ordinary(word)):
                         words.append(_Term("person", word, loose=not (cautious and is_ordinary(word))))
     # A partial word never weakens a full name, whatever order the people came in.
@@ -241,7 +258,12 @@ def _source(term: _Term, options: MaskOptions) -> str:
         body = r"\s+".join(re.escape(word) for word in _key(term.name).split())
         body = f"(?i:{body})"
     else:
-        forms = dict.fromkeys(re.escape(f) for f in (term.name, term.name.capitalize(), term.name.upper()))
+        candidates = (
+            (term.name.capitalize(), term.name.upper())
+            if term.name.islower()
+            else (term.name, term.name.capitalize(), term.name.upper())
+        )
+        forms = dict.fromkeys(re.escape(f) for f in candidates)
         body = "(?:" + "|".join(forms) + ")"
     guard_start = guard_end = ""
     if _needs_decimal_guard(term, options):

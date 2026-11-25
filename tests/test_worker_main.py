@@ -218,6 +218,142 @@ class LoopTests(ServerTestCase):
             self.assertEqual(sent[0]["to"], 900)
             self.assertIn("Jane Doe (t6n_1)", str(sent[0]["text"]))
 
+    def test_main_worker_without_privacy_rebuild_settings_logs_one_line_naming_what_is_missing(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        settings = WorkerSettings("http://server.invalid:8081", WORKER_SECRET, "main")
+        transport = InProcess(self.app)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            valid_sources = root / "sources.json"
+            valid_sources.write_text('{"studios": "ds-studios", "projects": "ds-projects"}', encoding="utf-8")
+            missing_studios = root / "missing_studios.json"
+            missing_studios.write_text('{"projects": "ds-projects"}', encoding="utf-8")
+            invalid_sources = root / "invalid.json"
+            invalid_sources.write_text("{not json", encoding="utf-8")
+            privacy_path = str(root / "privacy_registry.json")
+
+            cases: list[tuple[str, dict[str, str], tuple[str, ...]]] = [
+                (
+                    "missing token",
+                    {"T6_READ_PRIVACY_REGISTRY": privacy_path, "T6_READ_DATA_SOURCES": str(valid_sources)},
+                    ("T6_NOTION_TOKEN",),
+                ),
+                (
+                    "missing privacy file and data sources",
+                    {"T6_NOTION_TOKEN": "token"},
+                    ("T6_READ_PRIVACY_REGISTRY", "T6_READ_DATA_SOURCES"),
+                ),
+                (
+                    "missing studios in data sources",
+                    {
+                        "T6_NOTION_TOKEN": "token",
+                        "T6_READ_PRIVACY_REGISTRY": privacy_path,
+                        "T6_READ_DATA_SOURCES": str(missing_studios),
+                    },
+                    ("T6_READ_DATA_SOURCES", "studios"),
+                ),
+                (
+                    "unreadable or invalid data sources",
+                    {
+                        "T6_NOTION_TOKEN": "token",
+                        "T6_READ_PRIVACY_REGISTRY": privacy_path,
+                        "T6_READ_DATA_SOURCES": str(invalid_sources),
+                    },
+                    ("T6_READ_DATA_SOURCES",),
+                ),
+            ]
+            for label, env, expected_tokens in cases:
+                with self.subTest(case=label):
+                    errors = io.StringIO()
+                    with contextlib.redirect_stderr(errors):
+                        built = configured_handlers(env, settings, transport).get("main", {})
+                    self.assertNotIn("privacy_registry.rebuild", built)
+                    lines = [line for line in errors.getvalue().splitlines() if "privacy_registry.rebuild" in line]
+                    self.assertEqual(len(lines), 1)
+                    self.assertTrue(lines[0].startswith("t6.worker: "))
+                    for token_name in expected_tokens:
+                        self.assertIn(token_name, lines[0])
+
+    def test_the_main_worker_schedules_daily_privacy_rebuild_and_reschedules_next_day(self) -> None:
+        from datetime import datetime, timedelta
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from t6.domain.studio_time import MANILA
+        from t6.notion.generated import StudiosRow
+        from t6.notion.testing import FakeNotion, multi_select, title
+        from t6.registry.sqlite import SqliteProjectRegistry
+        from t6.worker.internal_queue import InternalJobQueue
+
+        fake = FakeNotion()
+        fake.add_snapshot_data_source("ds-studios", "studios")
+        fake.add_snapshot_data_source("ds-projects", "projects")
+        fake.add_page("ds-studios", {StudiosRow.notion_name("name"): title("Acme"), StudiosRow.notion_name("aliases"): multi_select()})
+        fake.add_page("ds-projects", {"Name": title("Show One")})
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            db_path = root / "t6.sqlite"
+            privacy_path = root / "privacy_registry.json"
+            sources_path = root / "sources.json"
+            sources_path.write_text('{"studios": "ds-studios", "projects": "ds-projects"}', encoding="utf-8")
+
+            env = {
+                **ENVIRON,
+                "T6_API_URL": "http://api.invalid",
+                "T6_DATABASE": str(db_path),
+                "T6_NOTION_TOKEN": "notion-token",
+                "T6_READ_PRIVACY_REGISTRY": str(privacy_path),
+                "T6_READ_DATA_SOURCES": str(sources_path),
+            }
+            now = (datetime.now(MANILA) + timedelta(days=2)).replace(hour=3, minute=30, second=0, microsecond=0)
+            today_str = now.date().isoformat()
+            tomorrow_str = (now.date() + timedelta(days=1)).isoformat()
+            with patch("t6.privacy_build._now_manila", return_value=now):
+                for _ in range(2):
+                    code, _ = run_main(env, None, transport=InProcess(self.app), stop=RecordingStop())  # type: ignore[arg-type]
+                    self.assertEqual(code, 0)
+
+            registry = SqliteProjectRegistry(db_path)
+            queue = InternalJobQueue(registry)
+            jobs = queue.find("privacy_registry.rebuild")
+            self.assertEqual(len(jobs), 1)
+            self.assertEqual(jobs[0].dedupe_key, f"privacy_registry.rebuild:daily:{today_str}")
+            self.assertEqual(jobs[0].state, "queued")
+            with registry._transaction() as db:
+                run_at = db.execute("SELECT run_at FROM internal_jobs WHERE id = ?", (jobs[0].job_id,)).fetchone()[0]
+            self.assertEqual(run_at, datetime.combine(now.date(), datetime.min.time(), MANILA).replace(hour=4).timestamp())
+
+            with registry._transaction() as db:
+                db.execute("UPDATE internal_jobs SET run_at = 0.0 WHERE id = ?", (jobs[0].job_id,))
+            later = now + timedelta(minutes=30)
+            with patch("t6.privacy_build._now_manila", return_value=later), patch(
+                "t6.notion.NotionClient",
+                side_effect=lambda *_args, **_kwargs: fake.client(),
+            ):
+                code, _ = run_main(env, None, transport=InProcess(self.app), stop=RecordingStop())  # type: ignore[arg-type]
+                self.assertEqual(code, 0)
+
+            self.assertEqual(json.loads(privacy_path.read_text(encoding="utf-8"))["projects"], [{"name": "Show One"}])
+            jobs = queue.find("privacy_registry.rebuild")
+            self.assertEqual(
+                [(j.dedupe_key, j.state) for j in jobs],
+                [
+                    (f"privacy_registry.rebuild:daily:{today_str}", "done"),
+                    (f"privacy_registry.rebuild:daily:{tomorrow_str}", "queued"),
+                ],
+            )
+            with registry._transaction() as db:
+                next_run_at = db.execute("SELECT run_at FROM internal_jobs WHERE id = ?", (jobs[1].job_id,)).fetchone()[0]
+            self.assertEqual(
+                next_run_at,
+                datetime.combine(now.date() + timedelta(days=1), datetime.min.time(), MANILA).replace(hour=4).timestamp(),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

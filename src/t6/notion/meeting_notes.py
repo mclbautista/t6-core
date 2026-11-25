@@ -109,15 +109,23 @@ class MeetingNotes:
                 "team_attendees": tuple(attendee_ids),
             },
         )
-        if isinstance(saved, (Rejected, Ambiguous)):
+        if isinstance(saved, Rejected):
             return saved
+        if isinstance(saved, Ambiguous) and not saved.page_id:
+            return saved
+        page_id = saved.page_id
+        assert page_id is not None
         for start in range(0, len(blocks), BLOCKS_PER_REQUEST):
             try:
-                self._notion.append_block_children(saved.page_id, list(blocks[start : start + BLOCKS_PER_REQUEST]))
+                self._notion.append_block_children(page_id, list(blocks[start : start + BLOCKS_PER_REQUEST]))
             except NotionError as error:
+                if isinstance(saved, Ambiguous):
+                    return saved
                 reason = error.code if error.code in ("timeout", "network_error") else "readback_failed"
-                return Ambiguous(reason, f"the page was created but its body was not saved: {error}", saved.page_id)  # type: ignore[arg-type]
-        return note_from_page(self._notion.retrieve_page(saved.page_id, freshness="live"))
+                return Ambiguous(reason, f"the page was created but its body was not saved: {error}", page_id)  # type: ignore[arg-type]
+        if isinstance(saved, Ambiguous):
+            return saved
+        return note_from_page(self._notion.retrieve_page(page_id, freshness="live"))
 
     def append(self, page_id: str, blocks: Sequence[JSON]) -> None:
         """Append Notion `blocks` to the body in chunks. Raises `NotionError` if Notion refuses."""

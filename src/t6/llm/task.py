@@ -44,7 +44,7 @@ from t6.llm.transport import (
     ToolCall,
     ToolSpec,
 )
-from t6.privacy import Masked, Session, Unresolved, Withheld, withhold
+from t6.privacy import Leak, Masked, Session, Unresolved, Withheld, withhold
 
 In = TypeVar("In")
 Out = TypeVar("Out", bound=BaseModel)
@@ -93,6 +93,7 @@ class ToolCallOutcome:
     script_run: ScriptRun | None = None
     failure_reason: Reason | None = None
     failure_detail: str = ""
+    leak: Leak | None = None
 
 
 def mask_for_model(text: str, session: Session | None = None) -> str:
@@ -131,11 +132,12 @@ def execute_tool_call(
     """Validate, restore, run, and mask one model-requested tool call."""
     args = dict(call.arguments)
     if session is not None:
-        if session.leaks(call.name):
+        if name_leaks := session.leaks(call.name):
             return ToolCallOutcome(
                 message=None,
                 failure_reason="leak",
                 failure_detail="raw registry names in tool call name",
+                leak=name_leaks[0],
             )
         arg_leaks = session.leaks(args)
         if arg_leaks:
@@ -144,12 +146,14 @@ def execute_tool_call(
                 message=None,
                 failure_reason="leak",
                 failure_detail=f"raw registry names in tool arguments at {paths}",
+                leak=arg_leaks[0],
             )
-        if session.leaks(_collect_dict_keys(args)):
+        if key_leaks := session.leaks(_collect_dict_keys(args)):
             return ToolCallOutcome(
                 message=None,
                 failure_reason="leak",
                 failure_detail="raw registry names in tool argument keys",
+                leak=key_leaks[0],
             )
 
     tool = next((item for item in skill.tools if item.name == call.name), None)
@@ -187,12 +191,13 @@ def execute_tool_call(
     if not outcome.ok:
         raw_error = outcome.error or f"script exited with code {outcome.exit_code}"
         masked_error = mask_for_model(raw_error, session)
-        if session is not None and session.leaks(masked_error):
+        if session is not None and (error_leaks := session.leaks(masked_error)):
             return ToolCallOutcome(
                 message=None,
                 script_run=script_run,
                 failure_reason="leak",
                 failure_detail="raw registry names in masked tool error",
+                leak=error_leaks[0],
             )
         if tool.on_error == "fail":
             return ToolCallOutcome(
@@ -205,12 +210,13 @@ def execute_tool_call(
         if outcome.stdout.strip():
             error_dict["stdout"] = _mask_stdout_for_model(outcome.stdout, session)
         error_payload = json.dumps(error_dict, ensure_ascii=False)
-        if session is not None and session.leaks(error_payload):
+        if session is not None and (payload_leaks := session.leaks(error_payload)):
             return ToolCallOutcome(
                 message=None,
                 script_run=script_run,
                 failure_reason="leak",
                 failure_detail="raw registry names in masked tool error",
+                leak=payload_leaks[0],
             )
         return ToolCallOutcome(
             message={"role": "tool", "tool_call_id": call.id, "content": error_payload},
@@ -218,12 +224,13 @@ def execute_tool_call(
         )
 
     masked_stdout = _mask_stdout_for_model(outcome.stdout, session)
-    if session is not None and session.leaks(masked_stdout):
+    if session is not None and (stdout_leaks := session.leaks(masked_stdout)):
         return ToolCallOutcome(
             message=None,
             script_run=script_run,
             failure_reason="leak",
             failure_detail="raw registry names in masked tool output",
+            leak=stdout_leaks[0],
         )
     return ToolCallOutcome(
         message={"role": "tool", "tool_call_id": call.id, "content": masked_stdout},

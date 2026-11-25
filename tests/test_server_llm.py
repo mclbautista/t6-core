@@ -145,6 +145,46 @@ class LLMAPITests(unittest.TestCase):
         body = self.call()
         self.assertEqual((body['rule'], body['failure']), ('masking', 'leak'))
 
+    def test_leak_refusal_logs_task_field_path_and_word_without_putting_them_in_response_or_audit(self) -> None:
+        import contextlib
+        import io
+
+        logs: list[str] = []
+        self.serve(FakeProvider().reply('{"summary": "Jane Doe"}'), log=logs.append)
+        body = self.call()
+        self.assertEqual((body['outcome'], body['rule'], body['failure']), ('refused', 'masking', 'leak'))
+        self.assertEqual(logs, ['t6.server: llm task=summary refused rule=masking failure=leak path=summary word=Jane Doe'])
+        self.assertNotIn('Jane Doe', json.dumps(body))
+        self.assertNotIn('summary', json.dumps(body))
+        audit_text = json.dumps(self.audit())
+        self.assertNotIn('Jane Doe', audit_text)
+        self.assertNotIn('summary', audit_text)
+
+        # Nested field path and root string output (<root>), plus default stderr logging.
+        logs.clear()
+        self.body['output_schema'] = {
+            'type': 'object',
+            'properties': {'items': {'type': 'array', 'items': {'type': 'object', 'properties': {'note': {'type': 'string'}}}}},
+        }
+        self.serve(FakeProvider().reply('{"items": [{"note": "Jane Doe"}]}'), log=logs.append)
+        body = self.call()
+        self.assertEqual((body['rule'], body['failure']), ('masking', 'leak'))
+        self.assertEqual(logs, ['t6.server: llm task=summary refused rule=masking failure=leak path=items[0].note word=Jane Doe'])
+        self.assertNotIn('items[0].note', json.dumps(body))
+        self.assertNotIn('items[0].note', json.dumps(self.audit()))
+
+        stderr = io.StringIO()
+        self.body['output_schema'] = {'type': 'string'}
+        self.serve(FakeProvider().reply('"Jane Doe"'))
+        with contextlib.redirect_stderr(stderr):
+            body = self.call()
+        self.assertEqual((body['rule'], body['failure']), ('masking', 'leak'))
+        self.assertIn('t6.server: llm task=summary refused rule=masking failure=leak path=<root> word=Jane Doe', stderr.getvalue())
+        self.assertNotIn('Jane Doe', json.dumps(body))
+        self.assertNotIn('<root>', json.dumps(body))
+        self.assertNotIn('Jane Doe', json.dumps(self.audit()))
+        self.assertNotIn('<root>', json.dumps(self.audit()))
+
     def test_retention_exception_is_per_provider(self) -> None:
         loose = FakeProvider('loose-model', retention='unknown').reply('{"summary": "ok"}')
         strict = FakeProvider('strict-model', retention='unknown').reply('{"summary": "ok"}')
