@@ -833,16 +833,45 @@ class DriveVerbTests(unittest.TestCase):
         done = self.scan('2026-03-10', second, key='s2')
         self.assertEqual({k: done.result[k] for k in ('added', 'modified', 'removed')}, {'added': 1, 'modified': 1, 'removed': 1})
         snapshots = self.read('catalog-snapshots', {'drive': self.drives[0]})['snapshots']
-        self.assertEqual([(s['captured_on'], s['entry_count'], s['total_bytes']) for s in snapshots], [('2026-03-01', 3, 300), ('2026-03-10', 3, 255)])
+        self.assertEqual([(s['captured_on'], s['entry_count'], s['total_bytes']) for s in snapshots],
+                         [('2026-03-01T00:00:00+08:00', 3, 300), ('2026-03-10T00:00:00+08:00', 3, 255)])
         self.assertEqual(snapshots[1]['parent_snapshot_id'], snapshots[0]['id'])
         changes = self.read('catalog-diff', {'drive': self.drives[0], 'snapshot': snapshots[1]['id']})['changes']
         self.assertEqual([(c['path'], c['change']) for c in changes], [('Show A/clip1.mov', 'modified'), ('Show A/clip2.mov', 'removed'), ('notes.txt', 'added')])
         at = self.read('catalog-at', {'drive': self.drives[0], 'on': '2026-03-05'})
-        self.assertEqual((at['snapshot']['captured_on'], [e['path'] for e in at['entries']]), ('2026-03-01', [f['path'] for f in files]))
+        self.assertEqual((at['snapshot']['captured_on'], [e['path'] for e in at['entries']]), ('2026-03-01T00:00:00+08:00', [f['path'] for f in files]))
         under = self.read('catalog-at', {'drive': self.drives[0], 'on': '2026-04-01', 'prefix': 'Show A'})
         self.assertEqual([e['path'] for e in under['entries']], ['Show A/clip0.mov', 'Show A/clip1.mov'])
         audit = self.registry.db.execute("SELECT action FROM audit WHERE project_id=? AND action='drive_catalog_snapshot'", (self.drives[0],)).fetchall()
         self.assertEqual(len(audit), 2)
+
+    def test_timed_catalog_scans_allow_multiple_per_day_and_compare_instants(self) -> None:
+        first = [{'path': 'a.txt', 'kind': 'file', 'size_bytes': 1}]
+        second = [{'path': 'a.txt', 'kind': 'file', 'size_bytes': 1}, {'path': 'b.txt', 'kind': 'file', 'size_bytes': 2}]
+        third = [{'path': 'a.txt', 'kind': 'file', 'size_bytes': 9}, {'path': 'b.txt', 'kind': 'file', 'size_bytes': 2}]
+        self.scan('2026-03-01T09:00:00+08:00', first, key='t1')
+        d2 = self.scan('2026-03-01T14:30:00+08:00', second, key='t2')
+        d3 = self.scan('2026-03-01T10:00:00Z', third, key='t3')  # 18:00+08:00
+        self.assertEqual({k: d2.result[k] for k in ('added', 'modified', 'removed')}, {'added': 1, 'modified': 0, 'removed': 0})
+        self.assertEqual({k: d3.result[k] for k in ('added', 'modified', 'removed')}, {'added': 0, 'modified': 1, 'removed': 0})
+        snapshots = self.read('catalog-snapshots', {'drive': self.drives[0]})['snapshots']
+        self.assertEqual([s['captured_on'] for s in snapshots],
+                         ['2026-03-01T09:00:00+08:00', '2026-03-01T14:30:00+08:00', '2026-03-01T18:00:00+08:00'])
+        self.assertEqual([s['parent_snapshot_id'] for s in snapshots], [None, snapshots[0]['id'], snapshots[1]['id']])
+        diff2 = self.read('catalog-diff', {'drive': self.drives[0], 'snapshot': snapshots[1]['id']})['changes']
+        self.assertEqual([(c['path'], c['change']) for c in diff2], [('b.txt', 'added')])
+        diff3 = self.read('catalog-diff', {'drive': self.drives[0], 'snapshot': snapshots[2]['id']})['changes']
+        self.assertEqual([(c['path'], c['change']) for c in diff3], [('a.txt', 'modified')])
+        at_day = self.read('catalog-at', {'drive': self.drives[0], 'on': '2026-03-01'})
+        self.assertEqual((at_day['snapshot']['id'], [e['size_bytes'] for e in at_day['entries']]), (snapshots[2]['id'], [9, 2]))
+        at_mid = self.read('catalog-at', {'drive': self.drives[0], 'on': '2026-03-01T15:00:00+08:00'})
+        self.assertEqual((at_mid['snapshot']['id'], [e['size_bytes'] for e in at_mid['entries']]), (snapshots[1]['id'], [1, 2]))
+        for bad, rule in (({'captured_on': '2026-03-01'}, 'catalog_order'),
+                          ({'captured_on': '2026-03-01T18:00:00+08:00'}, 'catalog_order'),
+                          ({'captured_on': '2026-03-01T10:00:00+00:00'}, 'catalog_order'),
+                          ({'captured_on': '2026-03-01T19:00:00'}, 'input')):
+            with self.subTest(bad=bad):
+                self.assertEqual(self.call('drive', 'catalog-snapshot', {'drive': self.drives[0], 'entries': third, 'idempotency_key': f'k-{bad}', **bad}).rule, rule)
 
     def test_a_catalog_snapshot_is_idempotent_and_its_refusals_change_nothing(self) -> None:
         entries = [{'path': 'a.txt', 'kind': 'file', 'size_bytes': 1}]
@@ -852,7 +881,8 @@ class DriveVerbTests(unittest.TestCase):
         self.assertEqual(self.call('drive', 'catalog-snapshot', {**values, 'confirm': replay.token}), first)
         self.assertEqual(len(self.read('catalog-snapshots', {'drive': self.drives[0]})['snapshots']), 1)
         self.assertEqual(self.call('drive', 'catalog-snapshot', {**values, 'entries': [], 'idempotency_key': 'same'}).rule, 'idempotency_key')
-        for bad, rule in (({'captured_on': '2026-03-01'}, 'catalog_order'), ({'captured_on': '2026-02-01'}, 'catalog_order'), ({'captured_on': 'soon'}, 'input'),
+        for bad, rule in (({'captured_on': '2026-03-01'}, 'catalog_order'), ({'captured_on': '2026-02-01'}, 'catalog_order'),
+                          ({'captured_on': '2026-03-01T12:00:00'}, 'input'), ({'captured_on': 'soon'}, 'input'),
                           ({'captured_on': '2026-04-01', 'entries': [{'path': '../x', 'kind': 'file', 'size_bytes': 1}]}, 'input'),
                           ({'captured_on': '2026-04-01', 'entries': [{'path': 'a', 'kind': 'dir'}, {'path': 'a', 'kind': 'dir'}]}, 'input'),
                           ({'captured_on': '2026-04-01', 'entries': [{'path': 'a', 'kind': 'file'}]}, 'input'),
@@ -885,6 +915,7 @@ class DriveVerbTests(unittest.TestCase):
         self.assertEqual(self.call('drive', 'catalog-diff', {'drive': self.drives[0], 'snapshot': 'snap_x'}, actor='reader').rule, 'snapshot')
         self.assertEqual(self.call('drive', 'catalog-at', {'drive': self.drives[0], 'on': '2026-03-01'}, actor='reader').rule, 'snapshot')
         self.assertEqual(self.call('drive', 'catalog-at', {'drive': self.drives[0], 'on': 'soon'}, actor='reader').rule, 'input')
+        self.assertEqual(self.call('drive', 'catalog-at', {'drive': self.drives[0], 'on': '2026-03-01T12:00:00'}, actor='reader').rule, 'input')
 
     def test_catalogue_and_cli(self) -> None:
         from cli_api_fake import client_patch

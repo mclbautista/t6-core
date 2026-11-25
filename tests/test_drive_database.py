@@ -364,3 +364,63 @@ class DriveDatabaseTests(unittest.TestCase):
         self.assertEqual(statuses[ids[-1]], DriveStatus.RETIRED)
         self.assertEqual(list(opened.keys()), [ids[-1]])
         self.assertEqual([(n, a.label) for n, a in opened[ids[-1]]], [(1, 'LAST')])
+
+    def test_migration_67_drops_daily_uniqueness_and_keeps_existing_bare_date_snapshots(self) -> None:
+        import sqlite3
+        import tempfile
+        from contextlib import closing
+        from datetime import date, datetime
+        from pathlib import Path
+        from unittest.mock import patch
+        from t6.domain.studio_time import MANILA
+        from t6.drives import CatalogEntry, CatalogOutOfOrder
+        from t6.registry import sqlite as migrations
+        from t6.registry.sqlite import SqliteProjectRegistry
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'db'
+            with patch.object(migrations, '_MIGRATIONS', migrations._MIGRATIONS[:66]):
+                registry = SqliteProjectRegistry(path)
+                store = SqliteDriveStore(registry)
+                drive = store.add_drive(Drive(serial='MIG-67'))
+                with registry._transaction() as db:
+                    db.execute("INSERT INTO drive_catalog_snapshots VALUES ('snap_1', ?, '2026-03-01', NULL, 'Volume', 1, 10, 1000.0)", (drive.id,))
+                    db.execute("INSERT INTO drive_catalog_changes VALUES ('snap_1', 'a.txt', 'file', 'added', 10, NULL, NULL)")
+                    db.execute("INSERT INTO drive_catalog_snapshots VALUES ('snap_2', ?, '2026-03-10', 'snap_1', 'Volume', 2, 30, 1001.0)", (drive.id,))
+                    db.execute("INSERT INTO drive_catalog_changes VALUES ('snap_2', 'b.txt', 'file', 'added', 20, NULL, NULL)")
+
+            migrated_registry = SqliteProjectRegistry(path)
+            migrated = SqliteDriveStore(migrated_registry)
+            with closing(sqlite3.connect(path)) as db:
+                raw = db.execute("SELECT id, captured_on FROM drive_catalog_snapshots WHERE drive_id=? ORDER BY rowid", (drive.id,)).fetchall()
+            self.assertEqual(raw, [('snap_1', '2026-03-01'), ('snap_2', '2026-03-10')])
+
+            snaps = migrated.catalog_snapshots(drive.id)
+            self.assertEqual([s.id for s in snaps], ['snap_1', 'snap_2'])
+            self.assertEqual([s.captured_on for s in snaps], [
+                datetime(2026, 3, 1, 0, 0, tzinfo=MANILA),
+                datetime(2026, 3, 10, 0, 0, tzinfo=MANILA),
+            ])
+            at_day10 = migrated.contents_at(drive.id, date(2026, 3, 10))
+            assert at_day10 is not None
+            self.assertEqual([e.path for e in at_day10.entries], ['a.txt', 'b.txt'])
+
+            with self.assertRaises(CatalogOutOfOrder):
+                migrated.record_catalog(drive.id, date(2026, 3, 10), 'Volume', [], 1002.0)
+
+            s3, diff3 = migrated.record_catalog(
+                drive.id,
+                datetime(2026, 3, 10, 14, 30, tzinfo=MANILA),
+                'Volume',
+                [CatalogEntry(path='a.txt', kind='file', size_bytes=10), CatalogEntry(path='b.txt', kind='file', size_bytes=20), CatalogEntry(path='c.txt', kind='file', size_bytes=5)],
+                1003.0,
+            )
+            self.assertEqual(s3.parent_snapshot_id, 'snap_2')
+            self.assertEqual([(d.path, d.change) for d in diff3], [('c.txt', 'added')])
+            at_day10_after = migrated.contents_at(drive.id, date(2026, 3, 10))
+            assert at_day10_after is not None
+            self.assertEqual(at_day10_after.snapshot.id, s3.id)
+
+            # Previous release can still open the migrated database (forward_only=False).
+            with patch.object(migrations, '_MIGRATIONS', migrations._MIGRATIONS[:66]):
+                SqliteProjectRegistry(path)

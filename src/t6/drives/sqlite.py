@@ -6,13 +6,13 @@ import sqlite3
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, replace
-from datetime import date
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from t6.drives import (Assignment, CatalogContents, CatalogDiffEntry, CatalogEntry, CatalogSnapshot, CustodyEvent, CustodyKind, Drive, DriveStatus,
                        DuplicateAssignment, DuplicateQrCode, DuplicateSerial, FormFactor, Party, PartyKind, Ref, Role,
-                       SourceRow, UnknownDrive, derive_status, fold_catalog, new_catalog_snapshot, normalize_qr_code, normalize_serial, open_duplicate)
+                       SourceRow, UnknownDrive, derive_status, fold_catalog, new_catalog_snapshot, normalize_qr_code, normalize_serial, open_duplicate, parse_catalog_time)
 from t6.ids import EntityKind, T6Id
 from t6.registry.core import normalize_page_id
 from t6.registry.sqlite import SqliteProjectRegistry
@@ -149,7 +149,7 @@ class SqliteDriveStore:
 
     @staticmethod
     def _snapshot(row: Sequence[Any]) -> CatalogSnapshot:
-        return CatalogSnapshot(id=row[0], drive_id=row[1], captured_on=date.fromisoformat(row[2]), parent_snapshot_id=row[3], root_path=row[4],
+        return CatalogSnapshot(id=row[0], drive_id=row[1], captured_on=parse_catalog_time(row[2]), parent_snapshot_id=row[3], root_path=row[4],
                                entry_count=row[5], total_bytes=row[6], created_at=row[7])
 
     _SNAPSHOT_COLUMNS = 'id, drive_id, captured_on, parent_snapshot_id, root_path, entry_count, total_bytes, created_at'
@@ -159,18 +159,21 @@ class SqliteDriveStore:
         rows = db.execute('SELECT path, kind, change, size_bytes, mtime, checksum FROM drive_catalog_changes WHERE snapshot_id=? ORDER BY path', (snapshot_id,))
         return tuple(CatalogDiffEntry(path=r[0], kind=r[1], change=r[2], size_bytes=r[3], mtime=r[4], checksum=r[5]) for r in rows)
 
-    def _history(self, db: sqlite3.Connection, drive_id: str, on: date | None = None) -> list[tuple[CatalogSnapshot, tuple[CatalogDiffEntry, ...]]]:
+    def _history(self, db: sqlite3.Connection, drive_id: str, on: date | datetime | None = None) -> list[tuple[CatalogSnapshot, tuple[CatalogDiffEntry, ...]]]:
         self._get(db, drive_id)
-        sql = f'SELECT {self._SNAPSHOT_COLUMNS} FROM drive_catalog_snapshots WHERE drive_id=?' + (' AND captured_on<=?' if on else '') + ' ORDER BY captured_on'
-        rows = db.execute(sql, (drive_id, on.isoformat()) if on else (drive_id,)).fetchall()
-        return [(snapshot, self._changes(db, snapshot.id)) for snapshot in map(self._snapshot, rows)]
+        rows = db.execute(f'SELECT {self._SNAPSHOT_COLUMNS} FROM drive_catalog_snapshots WHERE drive_id=? ORDER BY rowid', (drive_id,)).fetchall()
+        snapshots = sorted(map(self._snapshot, rows), key=lambda s: s.captured_on)
+        if on is not None:
+            cutoff = parse_catalog_time(on, end_of_day=True)
+            snapshots = [s for s in snapshots if s.captured_on <= cutoff]
+        return [(snapshot, self._changes(db, snapshot.id)) for snapshot in snapshots]
 
-    def record_catalog(self, drive_id: str, captured_on: date, root_path: str, entries: Sequence[CatalogEntry], created_at: float
+    def record_catalog(self, drive_id: str, captured_on: date | datetime, root_path: str, entries: Sequence[CatalogEntry], created_at: float
                        ) -> tuple[CatalogSnapshot, tuple[CatalogDiffEntry, ...]]:
         with self._tx() as db:
             snapshot, diff = new_catalog_snapshot(drive_id, self._history(db, drive_id), captured_on, root_path, entries, created_at)
             db.execute(f'INSERT INTO drive_catalog_snapshots ({self._SNAPSHOT_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-                       (snapshot.id, drive_id, captured_on.isoformat(), snapshot.parent_snapshot_id, snapshot.root_path, snapshot.entry_count,
+                       (snapshot.id, drive_id, snapshot.captured_on.isoformat(), snapshot.parent_snapshot_id, snapshot.root_path, snapshot.entry_count,
                         snapshot.total_bytes, created_at))
             db.executemany('INSERT INTO drive_catalog_changes VALUES (?, ?, ?, ?, ?, ?, ?)',
                            [(snapshot.id, c.path, c.kind, c.change, c.size_bytes, c.mtime, c.checksum) for c in diff])
@@ -186,7 +189,7 @@ class SqliteDriveStore:
                 return None
             return self._changes(db, snapshot_id)
 
-    def contents_at(self, drive_id: str, on: date) -> CatalogContents | None:
+    def contents_at(self, drive_id: str, on: date | datetime) -> CatalogContents | None:
         with self._tx() as db:
             history = self._history(db, drive_id, on)
             if not history:
