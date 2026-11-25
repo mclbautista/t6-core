@@ -31,7 +31,7 @@ from t6.llm.decisions import MalformedReply
 from t6.llm.jsontext import repair_quotes, strip_fence
 from t6.llm.policy import DataPolicy
 from t6.llm.result import Failed, Ok, Reason, Result, ScriptRun, Tokens, Trace
-from t6.llm.skill import Skill, run_script
+from t6.llm.skill import FINAL_TURN_INSTRUCTION, FINAL_TURN_SUBMIT, Skill, run_script
 from t6.llm.transport import (
     Completion,
     DecisionsRequest,
@@ -361,12 +361,15 @@ def run(
         completion_opt: Completion | None = None
         for turn in range(1, active_skill.max_turns + 1):
             turns = turn
+            hand_in = active_skill.final_turn == FINAL_TURN_SUBMIT and turn == active_skill.max_turns
+            if hand_in:
+                messages.append({"role": "user", "content": FINAL_TURN_INSTRUCTION})
             outcome = _complete_with_retry(
                 provider,
                 messages,
                 timeout=timeout,
                 zdr=task.policy.min_retention == "zdr_enforced",
-                tools=tool_specs,
+                tools=() if hand_in else tool_specs,
                 sleep=sleep,
             )
             if isinstance(outcome, _CompletionFailure):

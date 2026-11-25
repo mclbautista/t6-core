@@ -22,7 +22,7 @@ from t6.llm.decisions import CandidateDecisions, MalformedReply, OpenRouterDecis
 from t6.llm.jsontext import repair_quotes, strip_fence
 from t6.llm.policy import RETENTIONS, DataPolicy, Retention
 from t6.llm.result import Reason, ScriptRun, Tokens
-from t6.llm.skill import Skill, SkillError, run_script
+from t6.llm.skill import FINAL_TURN_INSTRUCTION, FINAL_TURN_SUBMIT, Skill, SkillError, run_script
 from t6.llm.task import assistant_tool_message, execute_tool_call, mask_for_model
 from t6.llm.transport import Choice, Completion, DecisionsRequest, Message, OpenAIChat, Provider, ProviderError, ProviderTimeout, RateLimited, ToolSpec
 from t6.privacy import FIXED_TEXT, STRICT, Leak, Person, Project, Registry, Session, Unresolved, pseudonymize, withhold
@@ -528,7 +528,10 @@ class LLMService:
             for turn in range(1, skill.max_turns + 1):
                 turns = turn
                 meta['turns'] = turns
-                step = _complete_chat(provider, messages, require_zdr=require_zdr, tools=tool_specs)
+                hand_in = skill.final_turn == FINAL_TURN_SUBMIT and turn == skill.max_turns
+                if hand_in:
+                    messages.append({'role': 'user', 'content': FINAL_TURN_INSTRUCTION})
+                step = _complete_chat(provider, messages, require_zdr=require_zdr, tools=() if hand_in else tool_specs)
                 if isinstance(step, Refused):
                     return step
                 last_model = step.model
