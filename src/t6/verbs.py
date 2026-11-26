@@ -1455,6 +1455,23 @@ class JoFindInput(ReadInput):
     number: str | None = None
 
 
+class JoDraftInput(ReadInput):
+    """One `/jo` line, `<Project Code> <task words>[, for <Name>]`, and the day it is drafted for."""
+
+    line: str
+    date: str | None = None
+    """YYYY-MM-DD; today in Manila when omitted."""
+
+
+class JoDraftOutput(BaseModel):
+    text: str
+    findings: list[dict[str, Any]]
+    number_note: str | None
+    copied_from: str | None
+    questions: list[str]
+    report: dict[str, Any]
+
+
 class DeliverableDefineInput(BaseModel):
     project: str
     code: str
@@ -3642,6 +3659,7 @@ VERBS = (
     Verb("standing-cc", "", "Get standing cc", (), StandingCcInput, StandingCcOutput, "reader", "Read configured standing cc.", None, read_only=True),
     Verb("jo", "list", "List Job Orders", (), JoListInput, JoListOutput, "reader", "Filter by Project, assignee or status group.", api_read, read_only=True),
     Verb("jo", "find", "Find Job Orders by Telegram Key, chat and message ID, or duplicate key", (), JoFindInput, JoListOutput, "reader", "Return all matching orders.", api_read, read_only=True),
+    Verb("jo", "draft", "Draft a Job Order from one line", (), JoDraftInput, JoDraftOutput, "operator", "Writes nothing. Code only for now: Project, next number, assignee and cc; other fields are (?).", api_read),
     Verb("deliverable", "milestone record", "Record a Deliverable milestone", (), MilestoneRecordInput, MilestoneRecordOutput, "coordinator", "Milestones are append-only.", milestone_record),
     Verb("deliverable", "miss", "Record a missed Deliverable", (), DeliverableMissInput, DeliverableScheduleOutput, "coordinator", "A delivered Deliverable cannot be missed.", deliverable_schedule),
     Verb("deliverable", "delay", "Move a Deliverable date", (), DeliverableDelayInput, DeliverableScheduleOutput, "coordinator", "Date moves require a reason.", deliverable_schedule),

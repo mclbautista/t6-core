@@ -6,6 +6,7 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ### Added
 
+- Skill `t6:` key `final_turn: submit` (#793, spec #791): opt-in. On the last allowed turn the runner sends no tools and a fixed instruction to hand in the answer now, marking unknowns "(?)", so a run that would have ended in `max_turns_exceeded` returns its answer, validated against the output schema as usual. Any other value is refused when the skill loads. Skills without the key behave as before.
 - `python scripts/jo_draft_timing.py` (#792, spec #791): times the three model calls of `jo draft` on real one-line requests before they are built in: Jev match over up to 12 past Job Orders (`jo-draft-match-v1`), Jev lookups (`jo-draft-lookups-v1`) and one Haiku turn (`jo-draft-haiku-v1`). Only masked text with credentials withheld is sent, under tags that map to their own provider keys (`llm.tasks` for Haiku, `decisions_by_task` for Jev, `decisions` as the fallback). It prints per-call time, model, tokens and cost (`unknown` when the provider gave none) and the median and worst case of each call and of the three together, with no prompt or reply text. A live run uses the operator's keys.
 
 ## [0.6.28] - 2026-11-25
@@ -93,6 +94,7 @@ Reads and edits for the Drive web app's Projects and Exceptions pages (#649): th
 
 ### Added
 
+- Verb `jo draft` (#794, spec #791, operator; `Client.jo_draft`): drafts a Job Order from one line, `<Project Code> <task words>[, for <Name>]`, with no model yet. It resolves the Project, takes the next number (highest in the Project's Job Orders plus one, stepped up while `jo find` shows it taken), finds the assignee's Telegram handle, adds the standing cc, and returns the formatter's text, findings, a number note and a run report (time per step; no JO text or names). Writes nothing and is not on the MCP server. Department, Purpose and the other fields are `(?)` until the Jev and Haiku tickets land. Documented in `docs/api-read-verbs.md`.
 - `drive list` takes the text of a text-only Project in `project`, and lists the Drives with an open Assignment to that text, as it does for a registered Project ID (#649).
 - `drive capture list` (Drive callers only): captures by state (`exception` by default, or `pending`, `resolved`, `ignored`, `undone`), newest first, each with its text, sender and photo size and type. An ignored capture has no text and no photo. `drive capture photo` (Drive callers only, not an MCP tool) returns the kept photo; no photo goes to any other service (#649).
 - `drive capture` with a `capture` takes a `drive` ID (Drive callers only): the custodian gives an unresolved capture a Drive, and it resolves as a normal Movement without a new photo read (#649).

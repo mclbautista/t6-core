@@ -54,7 +54,13 @@ _FORBIDDEN_ENV_KEYS = frozenset({
 })
 _FORBIDDEN_ENV_PREFIXES = ("GOOGLE_", "T6_GOOGLE_")
 
-_T6_KEYS = frozenset({"references", "output_schema", "max_turns", "env", "pre", "tools", "post"})
+FINAL_TURN_SUBMIT = "submit"
+FINAL_TURN_INSTRUCTION = (
+    "This is the last turn and no tools are available. Hand in your answer now as the required JSON, "
+    'and mark anything you could not settle as "(?)".'
+)
+
+_T6_KEYS = frozenset({"references", "output_schema", "max_turns", "final_turn", "env", "pre", "tools", "post"})
 _HOOK_KEYS = frozenset({"name", "script", "timeout", "on_error"})
 _TOOL_KEYS = frozenset({"name", "description", "script", "parameters", "timeout", "on_error"})
 
@@ -161,6 +167,7 @@ class Skill:
     references: tuple[tuple[str, str], ...] = ()
     output_schema: dict[str, Any] | None = None
     max_turns: int = DEFAULT_MAX_TURNS
+    final_turn: str | None = None
     env: tuple[str, ...] = ()
     pre: tuple[ScriptHook, ...] = ()
     tools: tuple[ToolScript, ...] = ()
@@ -180,7 +187,7 @@ class Skill:
                 candidate = (self.root / script_rel).resolve()
                 data = candidate.read_bytes() if candidate.is_file() and candidate.is_relative_to(self.root) else b""
                 digests[script_rel.as_posix()] = hashlib.sha256(data).hexdigest()
-        canonical = {
+        canonical: dict[str, Any] = {
             "name": self.name,
             "description": self.description,
             "instructions": self.instructions,
@@ -209,6 +216,8 @@ class Skill:
             ],
             "scripts": [[path, digests[path]] for path in sorted(digests)],
         }
+        if self.final_turn is not None:
+            canonical["final_turn"] = self.final_turn
         encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
@@ -238,6 +247,7 @@ class Skill:
         references = _load_references(root, t6.get("references"))
         output_schema = _load_output_schema(root, t6.get("output_schema"))
         max_turns = _parse_max_turns(t6.get("max_turns"))
+        final_turn = _parse_final_turn(t6.get("final_turn"))
         env = _parse_env_names(t6.get("env"))
         pre = _parse_hooks(t6.get("pre"), root=root, section="pre")
         tools = _parse_tools(t6.get("tools"), root=root)
@@ -255,6 +265,7 @@ class Skill:
             references=references,
             output_schema=output_schema,
             max_turns=max_turns,
+            final_turn=final_turn,
             env=env,
             pre=pre,
             tools=tools,
@@ -400,6 +411,14 @@ def _parse_max_turns(raw: object) -> int:
     if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
         raise SkillError(f"t6.max_turns must be a positive integer, got {raw!r}")
     return raw
+
+
+def _parse_final_turn(raw: object) -> str | None:
+    if raw is None:
+        return None
+    if raw != FINAL_TURN_SUBMIT:
+        raise SkillError(f"t6.final_turn must be {FINAL_TURN_SUBMIT!r}, got {raw!r}")
+    return FINAL_TURN_SUBMIT
 
 
 def _parse_env_names(raw: object) -> tuple[str, ...]:

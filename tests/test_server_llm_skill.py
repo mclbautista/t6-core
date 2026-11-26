@@ -381,6 +381,17 @@ Use tools.
         self.assertEqual(res5['result']['tokens'], {'prompt': 9, 'completion': 3, 'total': 12})
         self.assertEqual(len(res5['result']['script_runs']), 1)
 
+        # 4b. final_turn: submit hands in on the last turn instead
+        s4b = self.skills_dir / 'loop_submit'
+        _write(s4b / 'scripts' / 'ping.py', "print('{}')\n")
+        _write(s4b / 'SKILL.md', "---\nname: loop_submit\nt6:\n  max_turns: 2\n  final_turn: submit\n  tools:\n    - name: ping\n      script: scripts/ping.py\n---\nPing.\n")
+        self.fake.tool_call('ping', {}, prompt_tokens=4, completion_tokens=1).reply('{"summary": "handed in"}')
+        before = len(self.fake.calls)
+        res5b = self.call({**self.body, 'skill': 'loop_submit', 'output_schema': SUMMARY_SCHEMA})
+        self.assertTrue(res5b['result']['output_valid'])
+        self.assertEqual(res5b['result']['turns'], 2)
+        self.assertEqual(self.fake.calls[before + 1].tools, ())
+
         # 5. tool argument leak -> Refused(rule='masking', failure='leak')
         self.fake.tool_call('ping', {'who': 'Jane Doe'})
         res6 = self.call({**self.body, 'skill': 'loop', 'output_schema': SUMMARY_SCHEMA})
