@@ -1461,6 +1461,8 @@ class JoDraftInput(ReadInput):
     line: str
     date: str | None = None
     """YYYY-MM-DD; today in Manila when omitted."""
+    answer: str | None = None
+    """A reply to the question line: a deadline ("6pm", "none") or a Purpose."""
 
 
 class JoDraftOutput(BaseModel):

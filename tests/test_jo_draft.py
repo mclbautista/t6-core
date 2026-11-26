@@ -167,6 +167,40 @@ def jev_reply(*choices: str) -> dict[str, Any]:
             'answers': {f'c{i}': {'type': 'choice', 'choice': c, 'probabilities': dict(zip(('match', 'maybe', 'no'), odds[c]))}
                         for i, c in enumerate(choices)}}
 
+    def test_a_missing_deadline_and_purpose_give_one_question_line(self) -> None:
+        self.jo('1')
+        result = self.draft('HBR ftr export, for Maya')
+        assert isinstance(result, Done)
+        self.assertEqual(result.result['questions'], ['Deadline?', 'Purpose?'])
+
+    def test_a_deadline_in_the_line_asks_nothing_about_it(self) -> None:
+        self.jo('1')
+        result = self.draft('HBR ftr export by 6pm, for Maya')
+        assert isinstance(result, Done)
+        self.assertEqual(result.result['questions'], ['Purpose?'])
+        self.assertIn('Deadline: 6pm', result.result['text'])
+
+    def test_an_answer_that_reads_as_a_deadline_fills_it(self) -> None:
+        self.jo('1')
+        result = self.operator.jo_draft(JoDraftInput(line='HBR ftr export, for Maya', date='2026-11-25', answer='6pm'))
+        assert isinstance(result, Done)
+        self.assertIn('Deadline: 6pm', result.result['text'])
+        self.assertEqual(result.result['questions'], ['Purpose?'])
+
+    def test_none_leaves_the_deadline_and_asks_nothing_more_about_it(self) -> None:
+        self.jo('1')
+        result = self.operator.jo_draft(JoDraftInput(line='HBR ftr export, for Maya', date='2026-11-25', answer='none'))
+        assert isinstance(result, Done)
+        self.assertNotIn('Deadline?', result.result['questions'])
+        self.assertNotIn('Deadline: (?)', result.result['text'])
+
+    def test_any_other_answer_is_the_purpose(self) -> None:
+        self.jo('1')
+        result = self.operator.jo_draft(JoDraftInput(line='HBR ftr export, for Maya', date='2026-11-25', answer='client review'))
+        assert isinstance(result, Done)
+        self.assertIn('Purpose: client review', result.result['text'])
+        self.assertEqual(result.result['questions'], ['Deadline?'])
+
 
 class JoDraftJevTests(JoDraftFixture):
     """The Jev match: the closest past Job Order fills the draft. Only masked text reaches the provider."""
