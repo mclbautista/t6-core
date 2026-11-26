@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- Skill `t6:` key `final_turn: submit` (#793, spec #791): opt-in. On the last allowed turn the runner sends no tools and a fixed instruction to hand in the answer now, marking unknowns "(?)", so a run that would have ended in `max_turns_exceeded` returns its answer, validated against the output schema as usual. Any other value is refused when the skill loads. Skills without the key behave as before.
+
 ## [0.6.28] - 2026-11-25
 
 The Concerns sheet release (spec #732, #734 to #737), with the CRM keep-warm DM (spec #705), the schedule snapshot (spec #694) and the Drive Inbox on top. The Concerns sheet is a Google Sheets working view for Closers: the API exports the open Concerns as a CSV after the 21:00 autoscan, and a signed Sheet Submit applies Concern rows through the queue. The Telegram Closer list is gone, so `T6_CLOSER_TELEGRAM_IDS` is no longer read. The database moves forward through migrations 61 to 66 (schema 66: one job row, then the CRM stage and edit history, the CRM snooze, the Concerns sheet results and the Drive short names; all additive, none forward-only), so deploy by the usual path with a backup first; the Apps Script for the sheet is in the repository and is installed by hand.

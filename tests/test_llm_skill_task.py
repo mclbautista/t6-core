@@ -490,6 +490,45 @@ Ping.
             self.assertEqual(res1.trace.turns, 1)
             self.assertEqual(res1.trace.script_runs, ())
 
+    def test_final_turn_submit_hands_in_on_last_turn_without_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "skill"
+            _write(root / "scripts" / "ping.py", "import json\nprint(json.dumps({'pong': True}))\n")
+            _write(
+                root / "SKILL.md",
+                """---
+name: submit-skill
+t6:
+  max_turns: 2
+  final_turn: submit
+  tools:
+    - name: ping
+      script: scripts/ping.py
+---
+Ping.
+""",
+            )
+            skill = Skill.load(root)
+            task: Task[Notes, Summary] = Task("submit-v1", Notes, Summary, render_notes, skill=skill)
+            masked, session = pseudonymize("Marco Rossi", make_registry())
+            fake = FakeProvider().tool_call("ping", {}).reply('{"headline": "handed in"}')
+            result = run(task, Notes(masked), provider=fake, session=session)
+            assert isinstance(result, Ok)
+            self.assertEqual(result.value.headline, "handed in")
+            self.assertEqual(result.trace.turns, 2)
+            self.assertEqual(len(fake.calls[0].tools), 1)
+            self.assertEqual(fake.calls[1].tools, ())
+            self.assertEqual(fake.calls[1].messages[-1]["role"], "user")
+            self.assertIn("last turn", fake.calls[1].messages[-1]["content"])
+            self.assertNotIn("last turn", json.dumps(fake.calls[0].messages))
+
+            # A last-turn reply that fails the schema still fails the run.
+            masked2, session2 = pseudonymize("Marco Rossi", make_registry())
+            bad = FakeProvider().tool_call("ping", {}).reply("not json")
+            res2 = run(task, Notes(masked2), provider=bad, session=session2)
+            assert isinstance(res2, Failed)
+            self.assertEqual(res2.reason, "invalid_json")
+
     def test_multi_tool_calls_in_single_turn_and_run_skill_override(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root1 = Path(tmp) / "s1"

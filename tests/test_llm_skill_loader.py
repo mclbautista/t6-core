@@ -269,6 +269,7 @@ items:
             "unknown_tool_key": "---\nt6:\n  tools:\n    - name: a\n      script: scripts/a.py\n      bogus: 1\n---\n",
             "bad_max_turns_zero": "---\nt6:\n  max_turns: 0\n---\n",
             "bad_max_turns_bool": "---\nt6:\n  max_turns: true\n---\n",
+            "bad_final_turn": "---\nt6:\n  final_turn: stop\n---\n",
             "bad_on_error": "---\nt6:\n  pre:\n    - name: a\n      script: scripts/a.py\n      on_error: ignore\n---\n",
             "bad_timeout": "---\nt6:\n  pre:\n    - name: a\n      script: scripts/a.py\n      timeout: 0\n---\n",
             "bad_env_equals": "---\nt6:\n  env: [FOO=bar]\n---\n",
@@ -281,6 +282,17 @@ items:
                 _write(root / "SKILL.md", content)
                 with self.assertRaises(SkillError):
                     Skill.load(root)
+
+    def test_final_turn_submit_is_opt_in_and_changes_the_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(root / "SKILL.md", "---\nname: x\nt6:\n  max_turns: 3\n---\nbody\n")
+            plain = Skill.load(root)
+            _write(root / "SKILL.md", "---\nname: x\nt6:\n  max_turns: 3\n  final_turn: submit\n---\nbody\n")
+            submit = Skill.load(root)
+        self.assertIsNone(plain.final_turn)
+        self.assertEqual(submit.final_turn, "submit")
+        self.assertNotEqual(plain.skill_hash, submit.skill_hash)
 
     def test_rejects_missing_files_and_path_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
