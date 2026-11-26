@@ -17,8 +17,9 @@ from typing import Any
 from t6.domain.deadlines import deadline as resolve_deadline
 from t6.domain.job_order_format import format_job_order
 from t6.domain.job_order_rules import is_deliverable_code, parse_number
+from t6.privacy import withhold
 
-__all__ = ["Line", "Steps", "build_draft", "candidate_text", "classify_answer", "fixed_source", "line_deadline", "next_number", "parse_line", "pick_candidates", "pick_match", "questions"]
+__all__ = ["Line", "Steps", "build_draft", "candidate_text", "classify_answer", "fixed_source", "line_deadline", "other_names", "next_number", "parse_line", "pick_candidates", "pick_match", "questions"]
 
 UNKNOWN = "(?)"
 MAX_CANDIDATES = 12
@@ -130,6 +131,20 @@ def questions(*, deadline: str | None, purpose: str | None) -> list[str]:
     return [f"{name}?" for name, value in (("Deadline", deadline), ("Purpose", purpose)) if not value]
 
 
+_NAME = re.compile(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\b")
+
+
+def other_names(task: str, assignee: str | None) -> list[str]:
+    """Capitalised names in the task other than the assignee's, in the order they appear."""
+    skip = {w.casefold() for w in (assignee or "").split()}
+    found: list[str] = []
+    for match in _NAME.finditer(task):
+        name = match.group(0)
+        if not any(w.casefold() in skip for w in name.split()) and name not in found:
+            found.append(name)
+    return found
+
+
 def next_number(numbers: Iterable[tuple[str | None, str | None]], taken: Callable[[int], bool]) -> tuple[int, str | None]:
     """The highest JO number plus one, stepped up while `taken`, and a note on how it was picked.
 
@@ -192,7 +207,8 @@ def build_draft(
     copied = copied or {}
 
     def got(key: str) -> str:
-        return " ".join(str(copied.get(key) or "").split()) or UNKNOWN
+        # Credentials and links in a copied field never reach the draft.
+        return " ".join(withhold(str(copied.get(key) or "")).text.split()) or UNKNOWN
 
     deliverable = line.deliverable
     if not deliverable:

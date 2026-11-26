@@ -1251,7 +1251,7 @@ class VerbAPI:
         """`jo draft`: the Project, its next JO number, the assignee and the standing cc, laid out by the formatter."""
         from datetime import date, datetime
         from t6.domain.studio_time import MANILA
-        from t6.jo_draft import Steps, build_draft, classify_answer, line_deadline, next_number, parse_line, questions
+        from t6.jo_draft import Steps, build_draft, classify_answer, line_deadline, next_number, other_names, parse_line, questions
         from t6.verbs import JoFindInput, JoListInput, PersonFindInput, PersonGetInput, ProjectResolveInput, StandingCcInput
 
         def read(noun: str, verb: str, request: Any) -> Any:
@@ -1310,6 +1310,11 @@ class VerbAPI:
         from t6.jo_draft import pick_candidates
         candidates = pick_candidates(line.task, past)
         copied = steps.run('jev_match', lambda: self._jo_match(line, candidates, jev)) if candidates and self.llm_service else None
+        lookups: list[str] = []
+        extra: dict[str, Any] = {}
+        if self.llm_service and not jev.get('failure') and (other_names(line.task, assigned.get('name')) or [o for o in candidates if o is not copied]):
+            lookups = steps.run('jev_lookups', lambda: self._jo_lookups(
+                line, assigned, candidates, copied, extra, jev, read))
         text, findings = steps.run('formatter', lambda: build_draft(
             line=line, project_code=project.get('project_code') or line.code.upper(), project_title=project['name'],
             number=number, assigned_handle=assigned.get('telegram_handle'), cc_handle=cc_handle, today=today, copied=copied,
@@ -1318,6 +1323,9 @@ class VerbAPI:
         report = steps.report()
         if jev:
             report['jev'] = jev
+        if extra.get('offered'):
+            report['lookups'] = {'count': len(lookups), 'names': lookups, **({'jev': jev['lookups']} if 'lookups' in jev else {}),
+                                 **({'failure': jev['lookups_failure']} if 'lookups_failure' in jev else {})}
         return Done(result={'text': text, 'findings': findings, 'number_note': note,
                             'copied_from': copied.get('name') if copied else None, 'questions': asked, 'report': report})
 
@@ -1351,6 +1359,55 @@ class VerbAPI:
         jev.update(model=out.model, prompt_tokens=out.tokens['prompt'], completion_tokens=out.tokens['completion'], cost='unknown')
         index = pick_match([a.model_dump() for a in out.answers])
         return candidates[index] if index is not None else None
+
+    def _jo_lookups(self, line: Any, assigned: Mapping[str, Any], candidates: Sequence[Mapping[str, Any]], copied: Mapping[str, Any] | None,
+                    extra: dict[str, Any], jev: dict[str, Any], read: Callable[..., Any]) -> list[str]:
+        """A second Jev call picks extra lookups, and code runs them right away: `person find` for another name in the
+        line, `jo get` for one more past Job Order in full. Their results go in `extra`. Jev failing means no lookups.
+
+        Jev sees the line's task and the closest past Job Order, masked, and never a name to look up.
+        Returns the names of the lookups that ran, for the run report.
+        """
+        from t6.jo_draft import candidate_text, other_names
+        from t6.llm.api import LLMDecideInput
+        from t6.verbs import Done as _Done, JoGetInput, PersonFindInput
+
+        assert self.llm_service is not None
+        names = other_names(line.task, assigned.get('name'))
+        more = [o for o in candidates if o is not copied][:1]
+        offered = [('person find', 'Find another person named in the request', bool(names)),
+                   ('jo get', 'Read one more past Job Order in full', bool(more))]
+        offered = [row for row in offered if row[2]]
+        extra['offered'] = [name for name, _, _ in offered]
+        if not offered:
+            return []
+        try:
+            asked = self.llm_service.decide(LLMDecideInput(
+                task_name='jo-draft-lookups-v1',
+                state={'request': line.task, 'closest_past_job_order': candidate_text(copied) if copied else '(none)'},
+                question='Does drafting this request need this extra lookup? {candidate}',
+                criteria={'match': 'Yes, the lookup is needed.', 'maybe': 'It might help.', 'no': 'No, it is not needed.'},
+                candidates=[text for _, text, _ in offered]), actor='jo-draft', registry=self.people.registry)
+        except Exception:  # no lookups, whatever went wrong with Jev
+            jev['lookups_failure'] = 'error'
+            return []
+        if not isinstance(asked, _Done):
+            jev['lookups_failure'] = asked.failure or asked.rule
+            return []
+        out = asked.result
+        jev['lookups'] = dict(model=out.model, prompt_tokens=out.tokens['prompt'], completion_tokens=out.tokens['completion'], cost='unknown')
+        ran: list[str] = []
+        for (name, _, _), answer in zip(offered, out.answers):
+            if answer.choice != 'match':
+                continue
+            if name == 'person find':
+                extra['person'] = read('person', 'find', PersonFindInput(mention=names[0], prefer_telegram=True))
+            else:
+                ref = more[0].get('t6_id') or more[0].get('page_id')
+                extra['past'] = read('jo', 'get', JoGetInput(ref=str(ref)))
+            ran.append(name)
+        extra['ran'] = ran
+        return ran
 
     def _typed_read(self, noun: str, verb: str, inputs: Any, seen: dict[str, str] | None = None) -> Any:
         def refuse(rule: str, reason: str, code: str) -> Refused:
@@ -1867,6 +1924,13 @@ class VerbAPI:
             steps.append(f"Jev: failed ({jev['failure']}), no match")
         elif jev:
             steps.append(f"Jev: {jev.get('model')}, {jev.get('prompt_tokens')} in / {jev.get('completion_tokens')} out tokens, cost {jev.get('cost')}")
+        looked = cast(dict[str, Any], report.get('lookups') or {})
+        if looked:
+            steps.append(f"Lookups: {looked['count']} ({', '.join(looked['names']) or 'none'})")
+            if looked.get('failure'):
+                steps.append(f"Jev lookups: failed ({looked['failure']}), no lookups")
+            elif looked.get('jev'):
+                steps.append(f"Jev lookups: {looked['jev']['model']}, {looked['jev']['prompt_tokens']} in / {looked['jev']['completion_tokens']} out tokens, cost {looked['jev']['cost']}")
         self._reply(chat, topic, f'{key}:report', '\n'.join([f"Run report: {report.get('total_ms', 0)} ms", *steps]))
         return Response(200, {'outcome': 'accepted'})
 
