@@ -3,7 +3,9 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -350,6 +352,127 @@ class JoDraftJevTests(JoDraftFixture):
         assert isinstance(result, Done)
         self.assertIn('Title: Harbor Lights FTR', result.result['text'])
         self.assertNotIn('no_deliverable_code', [f['code'] for f in result.result['findings']])
+
+
+SKILL_SCHEMA = {'type': 'object', 'additionalProperties': False,
+                'properties': {k: {'type': 'string'} for k in ('task', 'purpose', 'source', 'watermark', 'subtitle', 'mode_of_transfer', 'link_settings', 'notes')},
+                'required': ['task', 'purpose', 'source', 'watermark', 'subtitle', 'mode_of_transfer', 'link_settings', 'notes']}
+
+
+def haiku_fields(**over: str) -> str:
+    fields = {'task': 'Export the cut to a share', 'purpose': '(?)', 'source': '(?)', 'watermark': 'none', 'subtitle': '',
+              'mode_of_transfer': '(?)', 'link_settings': '', 'notes': ''} | over
+    return json.dumps(fields)
+
+
+class SlowProvider(FakeProvider):
+    def complete(self, *args: Any, **kwargs: Any) -> Any:
+        time.sleep(0.5)
+        return super().complete(*args, **kwargs)
+
+
+class JoDraftHaikuTests(JoDraftFixture):
+    """Haiku, through the pinned formatter skill, writes the fields; failures and the time limit give the code-only draft."""
+
+    max_turns = 3
+    provider_class: Any = FakeProvider
+
+    def setUp(self) -> None:
+        skills = tempfile.TemporaryDirectory()
+        self.addCleanup(skills.cleanup)
+        root = Path(skills.name) / 'job-order-formatter'
+        (root / 'schemas').mkdir(parents=True)
+        (root / 'schemas' / 'jo-fields.json').write_text(json.dumps(SKILL_SCHEMA))
+        (root / 'SKILL.md').write_text(f'---\nname: job-order-formatter\ndescription: Draft a Job Order.\nt6:\n  output_schema: schemas/jo-fields.json\n'
+                                       f'  max_turns: {self.max_turns}\n  final_turn: submit\n---\n\nDraft the free-text fields.\n')
+        self.haiku = self.provider_class()
+        self.send = Script(jev_reply('match'))
+        self.service = LLMService({'fake': self.haiku}, 'fake', Registry(people=[Person(name='Maya Reyes'), Person(name='Lea Ong')]),
+                                  decisions=OpenRouterDecisions(api_key='k', retention='unknown', send=self.send),
+                                  min_retention_by_provider={'decisions': 'unknown'}, skills_dir=skills.name)
+        super().setUp()
+
+    def past(self) -> None:
+        self.jo('118', 'EDIT', task='export ftr to a share', purpose='client review of the cut', source_source_drive='PIX share',
+                mode_of_transfer='Frame.io link', link_settings='view only, password: hunter2-secret', jo_notes='Send the link', title='Harbor Lights FTR')
+
+    def run_draft(self) -> Any:
+        self.past()
+        result = self.draft('HBR export the cut to a share, for Maya')
+        assert isinstance(result, Done), result
+        return result.result
+
+    def test_haiku_fields_appear_with_real_names_restored_only_in_the_output(self) -> None:
+        self.haiku.reply(haiku_fields(task='Export the cut to a share, po', notes='Pakisabi kay [person 1] pag tapos na', purpose='For client review'),
+                         prompt_tokens=40, completion_tokens=12)
+        result = self.run_draft()
+        self.assertIn('Task: Export the cut to a share, po', result['text'])
+        self.assertIn('Purpose: For client review', result['text'])
+        self.assertIn('Notes: Pakisabi kay Maya Reyes pag tapos na', result['text'])
+        sent = json.dumps([m for m in self.haiku.calls[0].messages])
+        for leaked in ('Maya', 'Reyes', 'hunter2-secret'):
+            self.assertNotIn(leaked, sent)
+
+    def test_a_field_haiku_leaves_unknown_keeps_the_codes_copy(self) -> None:
+        self.haiku.reply(haiku_fields())
+        result = self.run_draft()
+        self.assertIn('Source: PIX share', result['text'])
+        self.assertIn('Mode of Transfer: Frame.io link', result['text'])
+
+    def test_haiku_failing_gives_the_code_only_draft_and_names_the_reason(self) -> None:
+        self.haiku.api_error('HTTP 500')
+        result = self.run_draft()
+        self.assertIn('Purpose: client review of the cut', result['text'])
+        self.assertIn('failure', result['report']['haiku'])
+
+    def test_a_reply_off_the_schema_gives_the_code_only_draft(self) -> None:
+        self.haiku.reply('not json')
+        result = self.run_draft()
+        self.assertIn('Purpose: client review of the cut', result['text'])
+        self.assertIn('failure', result['report']['haiku'])
+
+    def test_a_spent_budget_skips_haiku(self) -> None:
+        with patch('t6.server.verbs.JO_DRAFT_BUDGET_SECONDS', 0.0):
+            result = self.run_draft()
+        self.assertEqual(result['report']['haiku'], {'failure': 'budget'})
+        self.assertEqual(self.haiku.calls, [])
+
+    def test_the_report_has_turns_tokens_cost_and_the_skill_hash_and_the_totals_add_up(self) -> None:
+        self.haiku.reply(haiku_fields(), prompt_tokens=40, completion_tokens=12)
+        report = self.run_draft()['report']
+        self.assertEqual({k: report['haiku'][k] for k in ('model', 'prompt_tokens', 'completion_tokens', 'cost', 'turns', 'forced_hand_in')},
+                         {'model': self.haiku.model, 'prompt_tokens': 40, 'completion_tokens': 12, 'cost': 'unknown', 'turns': 1, 'forced_hand_in': self.max_turns == 1})
+        self.assertEqual(len(report['haiku']['skill_hash']), 64)
+        self.assertIn('haiku', [s['step'] for s in report['steps']])
+        self.assertEqual(report['total_ms'], sum(s['ms'] for s in report['steps']))
+
+
+class JoDraftHaikuForcedTests(JoDraftHaikuTests):
+    max_turns = 1
+
+    def test_the_report_says_when_the_last_turn_was_a_forced_hand_in(self) -> None:
+        self.haiku.reply(haiku_fields())
+        self.assertTrue(self.run_draft()['report']['haiku']['forced_hand_in'])
+
+
+class JoDraftHaikuSlowTests(JoDraftFixture):
+    def test_the_time_limit_gives_the_code_only_draft(self) -> None:
+        skills = tempfile.TemporaryDirectory()
+        self.addCleanup(skills.cleanup)
+        root = Path(skills.name) / 'job-order-formatter'
+        (root / 'schemas').mkdir(parents=True)
+        (root / 'schemas' / 'jo-fields.json').write_text(json.dumps(SKILL_SCHEMA))
+        (root / 'SKILL.md').write_text('---\nname: job-order-formatter\ndescription: Draft a Job Order.\nt6:\n  output_schema: schemas/jo-fields.json\n---\n\nDraft.\n')
+        slow = SlowProvider()
+        slow.reply(haiku_fields())
+        self.service = LLMService({'fake': slow}, 'fake', Registry(people=[]), skills_dir=skills.name)
+        self.setUp()
+        self.jo('118', 'EDIT', task='export ftr to a share', purpose='review')
+        with patch('t6.server.verbs.JO_DRAFT_BUDGET_SECONDS', 0.05):
+            result = self.draft('HBR export the cut to a share, for Maya')
+        assert isinstance(result, Done), result
+        self.assertEqual(result.result['report']['haiku'], {'failure': 'budget'})
+        self.assertIn('Task: export the cut to a share', result.result['text'])
 
 
 class NextNumberTests(unittest.TestCase):

@@ -34,6 +34,10 @@ from t6.verbs import VERBS, Done, Preview, Refused, catalogue, invoke
 from t6.vocabulary import PERSON_KINDS
 
 
+JO_DRAFT_SKILL = 'job-order-formatter'
+JO_DRAFT_BUDGET_SECONDS = 10.0
+
+
 class VerbAPI:
     def __init__(self, people: People, queue: Any, secrets: Mapping[str, str],
                  open_notion: Callable[..., Any], tap_app: WebhookApp | None = None,
@@ -1251,7 +1255,7 @@ class VerbAPI:
         """`jo draft`: the Project, its next JO number, the assignee and the standing cc, laid out by the formatter."""
         from datetime import date, datetime
         from t6.domain.studio_time import MANILA
-        from t6.jo_draft import Steps, build_draft, classify_answer, line_deadline, next_number, other_names, parse_line, questions
+        from t6.jo_draft import Steps, build_draft, classify_answer, line_deadline, merge_fields, next_number, other_names, parse_line, questions
         from t6.verbs import JoFindInput, JoListInput, PersonFindInput, PersonGetInput, ProjectResolveInput, StandingCcInput
 
         def read(noun: str, verb: str, request: Any) -> Any:
@@ -1269,6 +1273,7 @@ class VerbAPI:
         answered_deadline, answered_purpose = classify_answer(inputs.answer, posted_at)
         stated_deadline = answered_deadline or line_deadline(line.task, posted_at)
         steps = Steps()
+        started = time.monotonic()
 
         def bundle() -> Any:
             resolved = read('project', 'resolve', ProjectResolveInput(text=line.code))
@@ -1315,14 +1320,26 @@ class VerbAPI:
         if self.llm_service and not jev.get('failure') and (other_names(line.task, assigned.get('name')) or [o for o in candidates if o is not copied]):
             lookups = steps.run('jev_lookups', lambda: self._jo_lookups(
                 line, assigned, candidates, copied, extra, jev, read))
+        haiku: dict[str, Any] = {}
+        fields: dict[str, Any] = {}
+        if self.llm_service and self.llm_service.skills_dir is not None:
+            from t6.jo_draft import haiku_input
+            person = extra['person'].result.get('match') if isinstance(extra.get('person'), Done) else None
+            past_full = extra['past'].result.get('job_order') if isinstance(extra.get('past'), Done) else None
+            message = haiku_input(line=line, project_title=project['name'], number=number, copied=copied, assigned_name=assigned.get('name'),
+                                  extra_person=person.get('name') if person else None, extra_past=past_full)
+            fields = steps.run('haiku', lambda: self._jo_haiku(message, started, haiku)) or {}
+        code_copy = merge_fields(copied, fields)
         text, findings = steps.run('formatter', lambda: build_draft(
             line=line, project_code=project.get('project_code') or line.code.upper(), project_title=project['name'],
-            number=number, assigned_handle=assigned.get('telegram_handle'), cc_handle=cc_handle, today=today, copied=copied,
-            deadline=stated_deadline, purpose=answered_purpose))
-        asked = questions(deadline=stated_deadline, purpose=answered_purpose or (copied or {}).get('purpose'))
+            number=number, assigned_handle=assigned.get('telegram_handle'), cc_handle=cc_handle, today=today, copied=code_copy,
+            deadline=stated_deadline, purpose=answered_purpose, task=fields.get('task') or None, subtitle=fields.get('subtitle') or None))
+        asked = questions(deadline=stated_deadline, purpose=answered_purpose or code_copy.get('purpose'))
         report = steps.report()
         if jev:
             report['jev'] = jev
+        if haiku:
+            report['haiku'] = haiku
         if extra.get('offered'):
             report['lookups'] = {'count': len(lookups), 'names': lookups, **({'jev': jev['lookups']} if 'lookups' in jev else {}),
                                  **({'failure': jev['lookups_failure']} if 'lookups_failure' in jev else {})}
@@ -1359,6 +1376,49 @@ class VerbAPI:
         jev.update(model=out.model, prompt_tokens=out.tokens['prompt'], completion_tokens=out.tokens['completion'], cost='unknown')
         index = pick_match([a.model_dump() for a in out.answers])
         return candidates[index] if index is not None else None
+
+    def _jo_haiku(self, message: str, started: float, haiku: dict[str, Any]) -> dict[str, Any] | None:
+        """The pinned `job-order-formatter` skill on Haiku writes the free-text fields, masked, with real names restored in the output only.
+
+        None, with the reason in `haiku`, when the skill fails, replies off its schema, or the whole draft
+        has used its budget (`JO_DRAFT_BUDGET_SECONDS` from the start): the code-only draft goes out instead.
+        """
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+        from t6.llm.api import LLMRunInput
+        from t6.llm.skill import FINAL_TURN_SUBMIT, Skill
+        from t6.verbs import Done as _Done
+
+        assert self.llm_service is not None
+        remaining = JO_DRAFT_BUDGET_SECONDS - (time.monotonic() - started)
+        if remaining <= 0:
+            haiku['failure'] = 'budget'
+            return None
+        task = LLMRunInput(task_name='jo-draft-haiku-v1', prompt_template='{input}', input_text=message, masking_preset='names',
+                           skill=JO_DRAFT_SKILL, temperature_zero=True)
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
+            future = pool.submit(self.llm_service.run, task, actor='jo-draft', registry=self.people.registry)
+            asked = future.result(timeout=remaining)
+        except FutureTimeout:
+            haiku['failure'] = 'budget'
+            return None
+        except Exception:  # the code-only draft goes out, whatever went wrong with Haiku
+            haiku['failure'] = 'error'
+            return None
+        finally:
+            pool.shutdown(wait=False)
+        if not isinstance(asked, _Done):
+            haiku['failure'] = asked.failure or asked.rule
+            return None
+        out = asked.result
+        resolved = self.llm_service._resolve_skill(JO_DRAFT_SKILL)
+        forced = isinstance(resolved, Skill) and resolved.final_turn == FINAL_TURN_SUBMIT and out.turns >= resolved.max_turns
+        haiku.update(model=out.model, prompt_tokens=out.tokens['prompt'], completion_tokens=out.tokens['completion'], cost='unknown',
+                     turns=out.turns, forced_hand_in=forced, skill_hash=out.skill_hash)
+        if not out.output_valid or not isinstance(out.output, dict):
+            haiku['failure'] = out.failure or 'schema_violation'
+            return None
+        return cast(dict[str, Any], out.output)
 
     def _jo_lookups(self, line: Any, assigned: Mapping[str, Any], candidates: Sequence[Mapping[str, Any]], copied: Mapping[str, Any] | None,
                     extra: dict[str, Any], jev: dict[str, Any], read: Callable[..., Any]) -> list[str]:
@@ -1397,9 +1457,10 @@ class VerbAPI:
         out = asked.result
         jev['lookups'] = dict(model=out.model, prompt_tokens=out.tokens['prompt'], completion_tokens=out.tokens['completion'], cost='unknown')
         ran: list[str] = []
-        for (name, _, _), answer in zip(offered, out.answers):
-            if answer.choice != 'match':
+        for answer in out.answers:
+            if answer.choice != 'match' or not 0 <= answer.index < len(offered):
                 continue
+            name = offered[answer.index][0]
             if name == 'person find':
                 extra['person'] = read('person', 'find', PersonFindInput(mention=names[0], prefer_telegram=True))
             else:
@@ -1924,6 +1985,12 @@ class VerbAPI:
             steps.append(f"Jev: failed ({jev['failure']}), no match")
         elif jev:
             steps.append(f"Jev: {jev.get('model')}, {jev.get('prompt_tokens')} in / {jev.get('completion_tokens')} out tokens, cost {jev.get('cost')}")
+        haiku = cast(dict[str, Any], report.get('haiku') or {})
+        if haiku.get('failure'):
+            steps.append(f"Haiku: failed ({haiku['failure']}), code-only draft")
+        elif haiku:
+            steps.append(f"Haiku: {haiku.get('model')}, {haiku.get('prompt_tokens')} in / {haiku.get('completion_tokens')} out tokens, "
+                         f"cost {haiku.get('cost')}, {haiku.get('turns')} turns{', forced hand-in' if haiku.get('forced_hand_in') else ''}")
         looked = cast(dict[str, Any], report.get('lookups') or {})
         if looked:
             steps.append(f"Lookups: {looked['count']} ({', '.join(looked['names']) or 'none'})")
