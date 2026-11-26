@@ -263,6 +263,9 @@ class CommandTests(OpsTestCase):
             self.assertEqual(cli_main(["health", "--local", "--ignore-history"]), 0)
             with mock.patch.dict(os.environ, {"T6_SERVER_MODE": "edge", "T6_REGISTRY_DB": str(Path(self.directory.name) / "none.sqlite")}):
                 self.assertEqual(cli_main(["health", "--local"]), 0)
+        edge = {**env, "T6_SERVER_MODE": "edge", "T6_REGISTRY_DB": str(Path(self.directory.name) / "none.sqlite")}
+        with mock.patch.dict(os.environ, edge), mock.patch("t6.ops.time.time", side_effect=self.clock), mock.patch("t6.client.Client.health", side_effect=AssertionError("an edge server must not call the API")):
+            self.assertEqual(cli_main(["health"]), 0)  # no API variables on an edge server: not a failure
         target = self.paths("restored")
         env = {"T6_REGISTRY_DB": str(target["registry"]), "T6_QUEUE_DB": str(target["queue"]), "T6_OPERATOR_DB": str(target["operator"])}
         with mock.patch.dict(os.environ, env):
