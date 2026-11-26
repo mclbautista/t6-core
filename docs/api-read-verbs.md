@@ -115,6 +115,18 @@ and an empty registry code does not fall back to it.
 `chat_id` with `message_id`, from which the API builds the Telegram Key; or
 `project` (T6 ID or page ID) with `number`, the duplicate key, answered with the
 Job Orders that share `<Project page ID>|<number>`. The reply is the same list.
+`jo draft` (operator only; not on the MCP server; writes nothing; spec #791) takes
+`line`, `<Project Code> <task words>[, for <Name>]`, and an optional `date`
+(YYYY-MM-DD, today in Manila otherwise). It resolves the Project from the first
+word, takes the next number as the highest in that Project's Job Orders plus one
+(stepped up while `jo find` shows it taken; gaps stay), finds the assignee's
+Telegram handle, adds the standing cc, and lays the draft out with the Job Order
+formatter. The reply has `text`, `findings`, `number_note` (for example
+`#119 (last: #118 COOR)`), `copied_from`, `questions` and `report` (total and
+per-step time in milliseconds; ids, numbers and step names only). This first
+version runs no model: Department, Purpose, Source, Mode of Transfer, Link
+Settings, Deadline and Notes are `(?)`. An unknown Project, a missing `for <Name>`
+or an unknown person is refused with rule `project` or `person`.
 Reads return the results of the Studio status and flag rules, so apps do not
 evaluate these rules. `project list` and `project get` add `status_key` (the
 Status without emoji and punctuation, lower case), `status_group`
