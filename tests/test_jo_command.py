@@ -61,6 +61,7 @@ class JoCommandTests(unittest.TestCase):
         self.assertIn('HBR - (?) - JO #119', draft[2])
         self.assertIn('Assigned: @mayar', draft[2])
         self.assertIn('Number: #119 (last: #118 COOR)', draft[2])
+        self.assertTrue(draft[2].rstrip().endswith('Deadline? Purpose?'))
         self.assertEqual((report[0], report[1]), ('chat.reply:c1:report', 7))
         self.assertTrue(report[2].startswith('Run report:'))
         self.assertIn('bundle:', report[2])

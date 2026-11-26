@@ -1251,7 +1251,7 @@ class VerbAPI:
         """`jo draft`: the Project, its next JO number, the assignee and the standing cc, laid out by the formatter."""
         from datetime import date, datetime
         from t6.domain.studio_time import MANILA
-        from t6.jo_draft import Steps, build_draft, next_number, parse_line
+        from t6.jo_draft import Steps, build_draft, classify_answer, line_deadline, next_number, parse_line, questions
         from t6.verbs import JoFindInput, JoListInput, PersonFindInput, PersonGetInput, ProjectResolveInput, StandingCcInput
 
         def read(noun: str, verb: str, request: Any) -> Any:
@@ -1264,6 +1264,10 @@ class VerbAPI:
         line = parse_line(inputs.line)
         if line is None:
             return Refused(rule='input', reason='Give a line: a Project Code, then the task')
+        now = datetime.fromtimestamp(self.people.registry._clock(), MANILA)
+        posted_at = datetime.combine(today, now.timetz())
+        answered_deadline, answered_purpose = classify_answer(inputs.answer, posted_at)
+        stated_deadline = answered_deadline or line_deadline(line.task, posted_at)
         steps = Steps()
 
         def bundle() -> Any:
@@ -1308,12 +1312,14 @@ class VerbAPI:
         copied = steps.run('jev_match', lambda: self._jo_match(line, candidates, jev)) if candidates and self.llm_service else None
         text, findings = steps.run('formatter', lambda: build_draft(
             line=line, project_code=project.get('project_code') or line.code.upper(), project_title=project['name'],
-            number=number, assigned_handle=assigned.get('telegram_handle'), cc_handle=cc_handle, today=today, copied=copied))
+            number=number, assigned_handle=assigned.get('telegram_handle'), cc_handle=cc_handle, today=today, copied=copied,
+            deadline=stated_deadline, purpose=answered_purpose))
+        asked = questions(deadline=stated_deadline, purpose=answered_purpose or (copied or {}).get('purpose'))
         report = steps.report()
         if jev:
             report['jev'] = jev
         return Done(result={'text': text, 'findings': findings, 'number_note': note,
-                            'copied_from': copied.get('name') if copied else None, 'questions': [], 'report': report})
+                            'copied_from': copied.get('name') if copied else None, 'questions': asked, 'report': report})
 
     def _jo_match(self, line: Any, candidates: Sequence[Mapping[str, Any]], jev: dict[str, Any]) -> Mapping[str, Any] | None:
         """The past Job Order Jev marks `match` for the line, or None. Any failure or no Jev gives None: the draft goes on.
@@ -1850,6 +1856,8 @@ class VerbAPI:
         if result.get('number_note'):
             lines += ['', f"Number: {result['number_note']}"]
         lines += [f"Check: {finding['code']}" for finding in result.get('findings') or []]
+        if result.get('questions'):
+            lines += ['', ' '.join(str(question) for question in result['questions'])]
         self._reply(chat, topic, key, '\n'.join(lines))
         report = cast(dict[str, Any], result.get('report') or {})
         steps = [f"{step['step']}: {step['ms']} ms" for step in report.get('steps') or []]

@@ -11,18 +11,21 @@ import re
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
+from t6.domain.deadlines import deadline as resolve_deadline
 from t6.domain.job_order_format import format_job_order
 from t6.domain.job_order_rules import is_deliverable_code, parse_number
 
-__all__ = ["Line", "Steps", "build_draft", "candidate_text", "fixed_source", "next_number", "parse_line", "pick_candidates", "pick_match"]
+__all__ = ["Line", "Steps", "build_draft", "candidate_text", "classify_answer", "fixed_source", "line_deadline", "next_number", "parse_line", "pick_candidates", "pick_match", "questions"]
 
 UNKNOWN = "(?)"
 MAX_CANDIDATES = 12
 _WORD = re.compile(r"[^\W_]{3,}")
 _STOP = frozenset({"the", "and", "for", "with", "from", "that", "this", "all", "new", "per", "into", "our"})
+_BY = re.compile(r"\b(?:by|before|until)\s+(?P<when>\S.*?)\s*$", re.IGNORECASE)
+_NONE = frozenset({"none", "no deadline", "-", "n/a", "na"})
 _FIXED_PLACE = re.compile(r"\b(?:drive|pix|share)\b", re.IGNORECASE)
 _FOR_TAIL = re.compile(r"[\s,;]+for\s+(?P<name>[^\W\d_][\w'’.\-]*(?:\s+[^\W\d_][\w'’.\-]*)?)\s*[.!]?\s*$", re.IGNORECASE)
 
@@ -101,6 +104,32 @@ def fixed_source(text: str | None) -> str | None:
     return text if text and "://" not in text and _FIXED_PLACE.search(text) else None
 
 
+def _states_deadline(phrase: str, posted_at: datetime) -> bool:
+    return resolve_deadline(phrase, posted_at).deadline is not None
+
+
+def line_deadline(task: str, posted_at: datetime) -> str | None:
+    """The deadline the line states as `by|before|until <when>`, when the deadline rules can read it."""
+    match = _BY.search(task)
+    return match.group("when") if match and _states_deadline(match.group("when"), posted_at) else None
+
+
+def classify_answer(answer: str | None, posted_at: datetime) -> tuple[str | None, str | None]:
+    """`(deadline, purpose)` from a reply to the question line: "none" or a readable deadline is the
+    Deadline as written, anything else is the Purpose."""
+    text = " ".join((answer or "").split())
+    if not text:
+        return None, None
+    if text.casefold() in _NONE or _states_deadline(text, posted_at):
+        return text, None
+    return None, text
+
+
+def questions(*, deadline: str | None, purpose: str | None) -> list[str]:
+    """The question line's words: Deadline when none is known, Purpose when it is unknown."""
+    return [f"{name}?" for name, value in (("Deadline", deadline), ("Purpose", purpose)) if not value]
+
+
 def next_number(numbers: Iterable[tuple[str | None, str | None]], taken: Callable[[int], bool]) -> tuple[int, str | None]:
     """The highest JO number plus one, stepped up while `taken`, and a note on how it was picked.
 
@@ -151,6 +180,8 @@ def build_draft(
     cc_handle: str | None,
     today: date,
     copied: Mapping[str, Any] | None = None,
+    deadline: str | None = None,
+    purpose: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """The formatted draft text and the formatter's findings.
 
@@ -175,11 +206,11 @@ def build_draft(
             "",
             f"Title: {title}",
             f"Task: {line.task}",
-            f"Purpose: {got('purpose')}",
+            f"Purpose: {purpose or got('purpose')}",
             f"Source: {fixed_source(copied.get('source')) or UNKNOWN}",
             f"Mode of Transfer: {got('mode_of_transfer')}",
             f"Link Settings: {got('link_settings')}",
-            f"Deadline: {UNKNOWN}",
+            f"Deadline: {deadline or UNKNOWN}",
             f"Notes: {got('notes')}",
             *([f"Watermark: {got('watermark')}"] if copied.get("watermark") else []),
             f"Assigned: {_handle(assigned_handle)}",
