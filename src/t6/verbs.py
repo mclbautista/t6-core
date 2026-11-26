@@ -1397,6 +1397,9 @@ class ReadProject(Project):
     relevant_dates: tuple[str, ...] = ()
     health_missing: bool = False
     health_rank: int = 0
+    psr_group: Literal["archiving", "incoming", "critical", "at_risk", "on_track"] = "on_track"
+    reviewed_every_psr: bool = False
+    status_unknown: bool = False
 
 
 class ProjectListInput(ReadInput):

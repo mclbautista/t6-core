@@ -14,7 +14,10 @@ from t6.domain.project_rules import (
     health_rank,
     is_snapshotted,
     missing_roles,
+    psr_group,
+    reviewed_every_psr,
     status_gate,
+    status_unknown,
 )
 
 TODAY = dt.date(2026, 11, 14)
@@ -138,6 +141,52 @@ class RoleAndHealthTests(unittest.TestCase):
         self.assertEqual(
             sorted(values, key=health_rank), ["CRITICAL", "AT RISK", "ON TRACK", "INCOMING", "Weird", "", None]
         )
+
+
+LIVE_STATUSES = ("In-Progress", "Leads", "Onboarding", "Standby", "In-Progress TVC", "Proposal Made", "Negotiations",
+                 "Operations", "Archiving", "Archived", "Lost", "Malayo Pa", "Airing")
+ARCHIVING_STAGES = ("Archiving", "For Drives Turnover", "Waiting for Payment", "Festival Rounds")
+INCOMING_STATUSES = {"Leads", "Onboarding", "Proposal Made", "Negotiations"}
+HEALTHS = {"Critical": "critical", "At Risk": "at_risk", "On Track": "on_track", "Incoming": "on_track", None: "on_track", "Weird": "on_track"}
+
+
+class PsrRuleTests(unittest.TestCase):
+    def test_psr_group_over_every_live_status_stage_and_health(self) -> None:
+        for status in LIVE_STATUSES:
+            for stage in (*ARCHIVING_STAGES, "Editing", None):
+                for health, by_health in HEALTHS.items():
+                    with self.subTest(status=status, stage=stage, health=health):
+                        if status == "Archiving" or stage in ARCHIVING_STAGES:
+                            expected = "archiving"
+                        elif status in INCOMING_STATUSES:
+                            expected = "incoming"
+                        else:
+                            expected = by_health
+                        self.assertEqual(psr_group(project(status, stage=stage, project_health=health)), expected)
+
+    def test_psr_group_ignores_emoji_and_case_in_stage_and_health(self) -> None:
+        self.assertEqual(psr_group(project("In-Progress", stage="🎬 festival  ROUNDS")), "archiving")
+        self.assertEqual(psr_group(project("🌱 Leads", project_health="🔴 Critical")), "incoming")
+        self.assertEqual(psr_group(project("In-Progress", project_health="🟡 at risk")), "at_risk")
+
+    def test_reviewed_every_psr(self) -> None:
+        for status in LIVE_STATUSES:
+            with self.subTest(status=status):
+                self.assertEqual(reviewed_every_psr(project(status)), status in ("In-Progress", "Airing", "Archiving"))
+        self.assertTrue(reviewed_every_psr(project("🚨 In-Progress")))
+        self.assertFalse(reviewed_every_psr(project("In-Progress TVC")))
+        for stage in ARCHIVING_STAGES:
+            self.assertTrue(reviewed_every_psr(project("In-Progress TVC", stage=stage)))
+            self.assertTrue(reviewed_every_psr(project("Standby", stage=stage)))
+
+    def test_status_unknown_is_true_outside_the_live_options(self) -> None:
+        for status in LIVE_STATUSES:
+            with self.subTest(status=status):
+                self.assertFalse(status_unknown(status))
+        self.assertFalse(status_unknown("🏎. In-Progress TVC"))
+        for odd in ("Something else", "Lead", "", None):
+            with self.subTest(status=odd):
+                self.assertTrue(status_unknown(odd))
 
 
 class CodeLabelTests(unittest.TestCase):
