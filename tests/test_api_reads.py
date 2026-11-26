@@ -546,6 +546,29 @@ class ReadTests(unittest.TestCase):
         plain = next(p for p in result.result['projects'] if p['name'] == 'Example Show')
         self.assertEqual((plain['status_key'], plain['status_group'], plain['snapshotted'], plain['missing_roles'], plain['relevant_dates']), ('', None, True, [], []))
 
+    def test_project_reads_return_the_psr_rules(self) -> None:
+        from t6.verbs import ProjectGetInput, ProjectListInput
+        cases = {
+            'PSR archiving stage': ('In-Progress TVC', 'Festival Rounds', 'Critical', ('archiving', True, False)),
+            'PSR incoming': ('Leads', None, 'Critical', ('incoming', False, False)),
+            'PSR tvc': ('In-Progress TVC', None, 'At Risk', ('at_risk', False, False)),
+            'PSR airing blank': ('Airing', None, None, ('on_track', True, False)),
+            'PSR lost': ('Lost', None, 'Critical', ('critical', False, False)),
+            'PSR unknown': ('Something else', None, 'On Track', ('on_track', False, True)),
+        }
+        for name, (status, stage, health, _) in cases.items():
+            self.project_with(name, status, stage=select(stage), project_health=select(health))
+        result = self.client.project_list(ProjectListInput())
+        assert isinstance(result, Done)
+        for name, (*_, expected) in cases.items():
+            with self.subTest(name=name):
+                project = next(p for p in result.result['projects'] if p['name'] == name)
+                self.assertEqual((project['psr_group'], project['reviewed_every_psr'], project['status_unknown']), expected)
+                got = self.client.project_get(ProjectGetInput(project=project['page_id']))
+                assert isinstance(got, Done)
+                self.assertEqual((got.result['project']['psr_group'], got.result['project']['reviewed_every_psr'],
+                                  got.result['project']['status_unknown']), expected)
+
     def test_project_list_filters_on_status_group(self) -> None:
         from t6.verbs import ProjectListInput
         for status in ('In-Progress', 'Airing', 'Standby', 'Leads', 'Lost'):

@@ -1,4 +1,4 @@
-"""Studio rules for Projects: the status gate, date flags, missing roles, Health order, code display.
+"""Studio rules for Projects: the status gate, date flags, missing roles, Health order, PSR group, code display.
 
 Pure functions over `t6.domain.Project`. Status and Health are matched by their
 words, ignoring emoji, case and extra spaces, so a decorated Notion option such
@@ -13,6 +13,7 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Literal
 
 from t6.domain import CrmStage, Project
 from t6.domain.dateformats import MANILA
@@ -20,6 +21,7 @@ from t6.domain.dateformats import MANILA
 __all__ = [
     "DEFAULT_LEAD_WARNING_DAYS",
     "DateFlag",
+    "PsrGroup",
     "StatusGroup",
     "code_labels",
     "date_flags",
@@ -28,9 +30,12 @@ __all__ = [
     "health_rank",
     "is_snapshotted",
     "missing_roles",
+    "psr_group",
     "relevant_dates",
+    "reviewed_every_psr",
     "status_gate",
     "status_key",
+    "status_unknown",
 ]
 
 DEFAULT_LEAD_WARNING_DAYS = 30
@@ -66,6 +71,16 @@ ROLES = (
 """The Project attributes holding every required role, in report order."""
 
 _HEALTH_ORDER = {"critical": 0, "at risk": 1, "on track": 2, "incoming": 3}
+
+_LIVE_STATUSES = {
+    "in-progress", "leads", "onboarding", "standby", "in-progress tvc", "proposal made", "negotiations",
+    "operations", "archiving", "archived", "lost", "malayo pa", "airing",
+}
+"""The 13 live Notion Status options, as `status_key` gives them."""
+_ARCHIVING_STAGES = {"archiving", "for drives turnover", "waiting for payment", "festival rounds"}
+PsrGroup = Literal["archiving", "incoming", "critical", "at_risk", "on_track"]
+_HEALTH_GROUP: dict[str, PsrGroup] = {"critical": "critical", "at risk": "at_risk", "on track": "on_track"}
+_REVIEWED_EVERY_PSR = {"in-progress", "airing"}
 
 
 def status_key(status: object) -> str:
@@ -195,6 +210,30 @@ def missing_roles(project: Project) -> tuple[str, ...]:
 def health_missing(project: Project) -> bool:
     """A blank Project Health is flagged, whatever the Status."""
     return not status_key(project.project_health)
+
+
+def psr_group(project: Project) -> PsrGroup:
+    """The PSR group a Project is shown in: `archiving`, `incoming`, `critical`, `at_risk` or `on_track`.
+
+    First match wins. Status Archiving or an archiving Stage (Archiving, For Drives Turnover, Waiting for
+    Payment, Festival Rounds) is `archiving`; an incoming status group is `incoming`; otherwise Project
+    Health decides, and a blank or unknown Health is `on_track` (`health_missing` still flags a blank one).
+    """
+    if status_key(project.status) == "archiving" or status_key(project.stage) in _ARCHIVING_STAGES:
+        return "archiving"
+    if status_gate(project.status) is StatusGroup.INCOMING:
+        return "incoming"
+    return _HEALTH_GROUP.get(status_key(project.project_health), "on_track")
+
+
+def reviewed_every_psr(project: Project) -> bool:
+    """In-Progress, Airing and every `archiving` Project are reviewed at every PSR; In-Progress TVC is not."""
+    return status_key(project.status) in _REVIEWED_EVERY_PSR or psr_group(project) == "archiving"
+
+
+def status_unknown(status: object) -> bool:
+    """The Status matches none of the 13 live options (a blank Status included). Archived and Lost are known."""
+    return status_key(status) not in _LIVE_STATUSES
 
 
 def health_rank(health: str | None) -> int:

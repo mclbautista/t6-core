@@ -1486,7 +1486,8 @@ class VerbAPI:
                                status_key=project_rules.status_key(project.status), status_group=group.value if group else None,
                                snapshotted=project_rules.is_snapshotted(project.status), missing_roles=project_rules.missing_roles(project),
                                relevant_dates=project_rules.relevant_dates(project.status), health_missing=project_rules.health_missing(project),
-                               health_rank=project_rules.health_rank(project.project_health))
+                               health_rank=project_rules.health_rank(project.project_health), psr_group=project_rules.psr_group(project),
+                               reviewed_every_psr=project_rules.reviewed_every_psr(project), status_unknown=project_rules.status_unknown(project.status))
         def order_result(order: Any) -> dict[str, Any]:
             item = asdict(order)
             group = status_group(order.status)

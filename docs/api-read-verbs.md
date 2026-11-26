@@ -142,7 +142,12 @@ Archived and Lost), `missing_roles` (the empty role attributes, in report
 order; empty unless the Status is In-Progress, In-Progress TVC or Airing),
 `relevant_dates` (the date attributes that matter for the Status),
 `health_missing` and `health_rank` (of the `Project Health` select: Critical 0,
-At Risk 1, On Track 2, Incoming 3, any other value 4, blank 5). `project list` also filters on
+At Risk 1, On Track 2, Incoming 3, any other value 4, blank 5), `psr_group` (`archiving`,
+`incoming`, `critical`, `at_risk` or `on_track`: Status Archiving or an archiving Stage first, then
+an incoming status group, then Project Health, a blank or unknown Health being `on_track`),
+`reviewed_every_psr` (true for In-Progress, Airing and every `archiving` Project; false for
+In-Progress TVC) and `status_unknown` (true when the Status is none of the 13 live options; Archived
+and Lost are known). The three are computed on each read, never stored. `project list` also filters on
 `status_group`. `jo list`, `jo get` and `jo find` add `status_group`
 (`not_started`, `started`, `cancelled` or `null`), `active`, `done` (true when the status is
 Done; `active` is false for Done and Cancelled, so `done` tells them apart), `health_flags`

@@ -10,6 +10,7 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ### Added
 
+- `project list` and `project get` return `psr_group` (`archiving`, `incoming`, `critical`, `at_risk` or `on_track`), `reviewed_every_psr` and `status_unknown` for every Project (#692, spec t6-notion-reports#134), from the new Project rules `psr_group`, `reviewed_every_psr` and `status_unknown` beside `status_gate`. An archiving Stage (Archiving, For Drives Turnover, Waiting for Payment, Festival Rounds) counts as archiving whatever the Status. Computed on each read, nothing stored; `ReadProject` carries the fields for the typed client.
 - `/jo <line>` command (#795, spec #791): the gateway's push of a `jo` command to the t6 API's tap endpoint runs `jo draft` for an operator in their own DM and replies with the draft as one plain-text message (number note and formatter checks under it) and the run report as a second. Others get `Only an operator can use /jo.`; a bad Project or person gets one line. Goes live only with the gateway `jo` command entry in `config.yaml` (netops). See `docs/operator-actions.md`.
 
 ### Added
