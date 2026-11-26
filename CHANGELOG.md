@@ -6,6 +6,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ### Added
 
+- `/jo <line>` command (#795, spec #791): the gateway's push of a `jo` command to the t6 API's tap endpoint runs `jo draft` for an operator in their own DM and replies with the draft as one plain-text message (number note and formatter checks under it) and the run report as a second. Others get `Only an operator can use /jo.`; a bad Project or person gets one line. Goes live only with the gateway `jo` command entry in `config.yaml` (netops). See `docs/operator-actions.md`.
+
+### Added
+
 - Skill `t6:` key `final_turn: submit` (#793, spec #791): opt-in. On the last allowed turn the runner sends no tools and a fixed instruction to hand in the answer now, marking unknowns "(?)", so a run that would have ended in `max_turns_exceeded` returns its answer, validated against the output schema as usual. Any other value is refused when the skill loads. Skills without the key behave as before.
 - `python scripts/jo_draft_timing.py` (#792, spec #791): times the three model calls of `jo draft` on real one-line requests before they are built in: Jev match over up to 12 past Job Orders (`jo-draft-match-v1`), Jev lookups (`jo-draft-lookups-v1`) and one Haiku turn (`jo-draft-haiku-v1`). Only masked text with credentials withheld is sent, under tags that map to their own provider keys (`llm.tasks` for Haiku, `decisions_by_task` for Jev, `decisions` as the fallback). It prints per-call time, model, tokens and cost (`unknown` when the provider gave none) and the median and worst case of each call and of the three together, with no prompt or reply text. A live run uses the operator's keys.
 

@@ -1789,6 +1789,35 @@ class VerbAPI:
             self.tap_app._inside.submit(MAIN_QUEUE, JobKind.CHAT_REPLY.value, f'chat.reply:{key}', {'chat': chat, 'topic': topic, 'text': text, 'key': key})
         return Response(200, {'outcome': 'rejected'})
 
+    def _reply(self, chat: object, topic: object, key: str, text: str) -> None:
+        """One plain-text message to a chat and topic. The key makes a pushed command send it once."""
+        import html
+        if self.tap_app is not None and type(chat) is int and (topic is None or type(topic) is int):
+            self.tap_app._inside.submit(MAIN_QUEUE, JobKind.CHAT_REPLY.value, f'chat.reply:{key}', {'chat': chat, 'topic': topic, 'text': html.escape(text, quote=False), 'key': key})
+
+    def _jo_command(self, body: dict[str, Any], person: str, telegram_id: int, key: object) -> Response:
+        """`/jo <line>` in the operator's own DM: the draft as one message, then the run report as a second (spec #791)."""
+        args, chat, topic = body.get('args'), body.get('chat'), body.get('topic')
+        if self.people.authorize(person, 'operator'):
+            return self._refused_command(chat, topic, key, 'Only an operator can use /jo.')
+        if chat != telegram_id:
+            return self._refused_command(chat, topic, key, 'Use /jo in a DM with the bot.')
+        if not isinstance(args, str) or not args.strip() or not isinstance(key, str) or not key:
+            return self._refused_command(chat, topic, key, 'Usage: /jo PROJECT CODE, what to do, for NAME')
+        response = self._dispatch(self.routes['/v1/jo/draft'], {'line': args.strip()}, person)
+        if response.body.get('outcome') != 'done':
+            return self._refused_command(chat, topic, key, f"/jo: {response.body.get('reason') or 'refused'}")
+        result = cast(dict[str, Any], response.body['result'])
+        lines = [str(result['text']).rstrip()]
+        if result.get('number_note'):
+            lines += ['', f"Number: {result['number_note']}"]
+        lines += [f"Check: {finding['code']}" for finding in result.get('findings') or []]
+        self._reply(chat, topic, key, '\n'.join(lines))
+        report = cast(dict[str, Any], result.get('report') or {})
+        steps = [f"{step['step']}: {step['ms']} ms" for step in report.get('steps') or []]
+        self._reply(chat, topic, f'{key}:report', '\n'.join([f"Run report: {report.get('total_ms', 0)} ms", *steps]))
+        return Response(200, {'outcome': 'accepted'})
+
     def _tap(self, request: Request, actor: str) -> Response:
         if actor != 'gateway':
             return Response(403, {'error': 'only the gateway may push taps'})
@@ -1826,6 +1855,8 @@ class VerbAPI:
                 _audit(db, f'telegram:{telegram_id}', 'tap_rejected', 'gateway', self.people.registry._clock(), None,
                        {'reason': 'no_person'})
             return Response(200, {'outcome': 'rejected'})
+        if body.get('kind') == 'command' and body.get('command') == 'jo':
+            return self._jo_command(body, person[0], telegram_id, request.header('idempotency-key') or body.get('idempotency_key'))
         if body.get('kind') == 'command' and body.get('command') == 'abang':
             # Typed in the source chat, where the freelancer is. The coordinator then taps a destination.
             args, chat, topic = body.get('args'), body.get('chat'), body.get('topic')
