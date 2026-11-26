@@ -93,3 +93,28 @@ class JoCommandTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class JoCommandJevTests(JoCommandTests):
+    def test_the_report_has_a_jev_line_with_model_tokens_and_cost(self) -> None:
+        from t6.llm.decisions import OpenRouterDecisions
+        from t6.llm.testing import FakeProvider
+        from t6.privacy import Registry
+        from t6.server.llm import LLMService
+
+        body = {'model': 'jev-test', 'usage': {'input_tokens': 21, 'output_tokens': 5},
+                'answers': {'c0': {'type': 'choice', 'choice': 'match', 'probabilities': {'match': 0.9, 'maybe': 0.06, 'no': 0.04}}}}
+        send = lambda url, headers, payload, timeout: json.dumps(body).encode()  # noqa: E731
+        self.api.llm_service = LLMService({'fake': FakeProvider()}, 'fake', Registry(people=[]),
+                                          decisions=OpenRouterDecisions(api_key='k', retention='unknown', send=send),
+                                          min_retention_by_provider={'decisions': 'unknown'})
+        project = self.notion.client().query_data_source('projects')[0]
+        self.notion.add_page('job_orders', {JobOrdersRow.notion_name('name'): title('HBR - EDIT - JO #120'),
+                                            JobOrdersRow.notion_name('projects'): relation(project['id']),
+                                            JobOrdersRow.notion_name('jo_number'): rich_text('#120'),
+                                            JobOrdersRow.notion_name('task'): rich_text('export seq to a share'),
+                                            JobOrdersRow.notion_name('purpose'): rich_text('review')})
+        self.jo(7, 'HBR ftr export seq 5, for Maya', 'c9')
+        (_, report) = self.replies()
+        self.assertIn('jev_match:', report[2])
+        self.assertIn('Jev: jev-test, 21 in / 5 out tokens, cost unknown', report[2])

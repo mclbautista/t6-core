@@ -1853,6 +1853,11 @@ class VerbAPI:
         self._reply(chat, topic, key, '\n'.join(lines))
         report = cast(dict[str, Any], result.get('report') or {})
         steps = [f"{step['step']}: {step['ms']} ms" for step in report.get('steps') or []]
+        jev = cast(dict[str, Any], report.get('jev') or {})
+        if jev.get('failure'):
+            steps.append(f"Jev: failed ({jev['failure']}), no match")
+        elif jev:
+            steps.append(f"Jev: {jev.get('model')}, {jev.get('prompt_tokens')} in / {jev.get('completion_tokens')} out tokens, cost {jev.get('cost')}")
         self._reply(chat, topic, f'{key}:report', '\n'.join([f"Run report: {report.get('total_ms', 0)} ms", *steps]))
         return Response(200, {'outcome': 'accepted'})
 
