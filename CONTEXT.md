@@ -513,8 +513,9 @@ words, ignoring emoji, case and spaces.
 - **Health**: a blank Project Health is flagged. Order: Critical, At Risk, On Track,
   Incoming, other, blank.
 - **Archiving rule**: a Project is *archiving* when its Status is Archiving or
-  its Stage is Archiving, For Drives Turnover, Waiting for Payment or Festival
-  Rounds, whatever the Status.
+  its Stage (the Notion `Stage` select of the production, not the CRM stage) is
+  Archiving, For Drives Turnover, Waiting for Payment or Festival Rounds,
+  whatever the Status.
 - **PSR group**: the PSR section a Project is shown in, first match wins:
   archiving (see the archiving rule), incoming (an incoming Status), then
   Critical, At Risk or On Track by Project Health. A blank or unknown Health
@@ -524,7 +525,8 @@ words, ignoring emoji, case and spaces.
 - **Unknown Status**: a Status that is none of the 13 live options
   (In-Progress, Leads, Onboarding, Standby, In-Progress TVC, Proposal Made,
   Negotiations, Operations, Archiving, Archived, Lost, Malayo Pa, Airing).
-  Archived and Lost are known.
+  Archived and Lost are known; a blank Status, and the old spelling Lead (which
+  the status gate still reads as incoming), are unknown.
 - **Code display**: the code in capitals, or "CODE (Name)" when several
   Projects share it; the name when there is no code.
 

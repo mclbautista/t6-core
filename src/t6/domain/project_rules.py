@@ -1,4 +1,4 @@
-"""Studio rules for Projects: the status gate, date flags, missing roles, Health order, code display.
+"""Studio rules for Projects: the status gate, date flags, missing roles, Health order, PSR group, code display.
 
 Pure functions over `t6.domain.Project`. Status and Health are matched by their
 words, ignoring emoji, case and extra spaces, so a decorated Notion option such
