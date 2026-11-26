@@ -123,9 +123,16 @@ word, takes the next number as the highest in that Project's Job Orders plus one
 Telegram handle, adds the standing cc, and lays the draft out with the Job Order
 formatter. The reply has `text`, `findings`, `number_note` (for example
 `#119 (last: #118 COOR)`), `copied_from`, `questions` and `report` (total and
-per-step time in milliseconds; ids, numbers and step names only). This first
-version runs no model: Department, Purpose, Source, Mode of Transfer, Link
-Settings, Deadline and Notes are `(?)`. An unknown Project, a missing `for <Name>`
+per-step time in milliseconds, and a `jev` entry with model, tokens and cost; ids,
+numbers and step names only). Code picks up to 12 of the Project's past Job Orders
+by words shared with the line (Task, Purpose, Mode of Transfer), and one Jev
+Decisions call (`jo-draft-match-v1`) over masked text marks each match, maybe or
+no. The best `match` fills Department, Purpose, Watermark, Mode of Transfer, Link
+Settings and Notes, Source only when it is a fixed place (drive, PIX, share), and
+the deliverable code when the line has none; `copied_from` names that Job Order.
+With no match, or when Jev is not configured, fails or times out, those fields
+stay `(?)` and the draft still comes back. Deadline is always `(?)`. Jev gives no
+cost, so `jev.cost` is `unknown`. An unknown Project, a missing `for <Name>`
 or an unknown person is refused with rule `project` or `person`.
 Reads return the results of the Studio status and flag rules, so apps do not
 evaluate these rules. `project list` and `project get` add `status_key` (the

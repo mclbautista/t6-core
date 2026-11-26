@@ -1296,17 +1296,55 @@ class VerbAPI:
             cc_ref = cc.result['standing_cc'] if isinstance(cc, Done) else None
             cc_contact = read('person', 'get', PersonGetInput(person_id=cc_ref)) if cc_ref else None
             cc_handle = cc_contact.result['person'].get('telegram_handle') if isinstance(cc_contact, Done) else None
-            return project, assigned, number, note, cc_handle
+            return project, assigned, number, note, cc_handle, orders.result['job_orders']
 
         gathered = steps.run('bundle', bundle)
         if not isinstance(gathered, tuple):
             return gathered
-        project, assigned, number, note, cc_handle = gathered
+        project, assigned, number, note, cc_handle, past = gathered
+        jev: dict[str, Any] = {}
+        from t6.jo_draft import pick_candidates
+        candidates = pick_candidates(line.task, past)
+        copied = steps.run('jev_match', lambda: self._jo_match(line, candidates, jev)) if candidates and self.llm_service else None
         text, findings = steps.run('formatter', lambda: build_draft(
             line=line, project_code=project.get('project_code') or line.code.upper(), project_title=project['name'],
-            number=number, assigned_handle=assigned.get('telegram_handle'), cc_handle=cc_handle, today=today))
-        return Done(result={'text': text, 'findings': findings, 'number_note': note, 'copied_from': None,
-                            'questions': [], 'report': steps.report()})
+            number=number, assigned_handle=assigned.get('telegram_handle'), cc_handle=cc_handle, today=today, copied=copied))
+        report = steps.report()
+        if jev:
+            report['jev'] = jev
+        return Done(result={'text': text, 'findings': findings, 'number_note': note,
+                            'copied_from': copied.get('name') if copied else None, 'questions': [], 'report': report})
+
+    def _jo_match(self, line: Any, candidates: Sequence[Mapping[str, Any]], jev: dict[str, Any]) -> Mapping[str, Any] | None:
+        """The past Job Order Jev marks `match` for the line, or None. Any failure or no Jev gives None: the draft goes on.
+
+        Jev sees only the line's task and each candidate's Task, Purpose and Mode of Transfer, masked
+        and with links and passwords withheld. `jev` gets the model, tokens and cost for the run report.
+        """
+        from t6.jo_draft import candidate_text, pick_match
+        from t6.llm.api import LLMDecideInput
+        from t6.verbs import Done as _Done
+
+        assert self.llm_service is not None
+        try:
+            asked = self.llm_service.decide(LLMDecideInput(
+                task_name='jo-draft-match-v1', state={'request': line.task},
+                question='Is the request the same kind of work as this past Job Order? {candidate}',
+                criteria={'match': 'The request is the same kind of work as this past Job Order.',
+                          'maybe': 'The request could be the same kind of work, but it is not clear.',
+                          'no': 'The request is a different kind of work.'},
+                candidates=[candidate_text(o) for o in candidates]), actor='jo-draft', registry=self.people.registry)
+        except Exception:  # the draft goes on without a match, whatever went wrong with Jev
+            jev['failure'] = 'error'
+            return None
+        if not isinstance(asked, _Done):
+            jev['failure'] = asked.failure or asked.rule
+            return None
+        out = asked.result
+        # Jev replies carry no cost, so it is "unknown".
+        jev.update(model=out.model, prompt_tokens=out.tokens['prompt'], completion_tokens=out.tokens['completion'], cost='unknown')
+        index = pick_match([a.model_dump() for a in out.answers])
+        return candidates[index] if index is not None else None
 
     def _typed_read(self, noun: str, verb: str, inputs: Any, seen: dict[str, str] | None = None) -> Any:
         def refuse(rule: str, reason: str, code: str) -> Refused:
@@ -1815,6 +1853,11 @@ class VerbAPI:
         self._reply(chat, topic, key, '\n'.join(lines))
         report = cast(dict[str, Any], result.get('report') or {})
         steps = [f"{step['step']}: {step['ms']} ms" for step in report.get('steps') or []]
+        jev = cast(dict[str, Any], report.get('jev') or {})
+        if jev.get('failure'):
+            steps.append(f"Jev: failed ({jev['failure']}), no match")
+        elif jev:
+            steps.append(f"Jev: {jev.get('model')}, {jev.get('prompt_tokens')} in / {jev.get('completion_tokens')} out tokens, cost {jev.get('cost')}")
         self._reply(chat, topic, f'{key}:report', '\n'.join([f"Run report: {report.get('total_ms', 0)} ms", *steps]))
         return Response(200, {'outcome': 'accepted'})
 
