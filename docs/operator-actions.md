@@ -188,6 +188,19 @@ its `/project` pushes queued as empty `tap` jobs.
 To roll back, remove the `project` command from the gateway config and restart
 it. Cards already sent stay answerable while core runs this version.
 
+## Drafting a Job Order (`/jo`)
+
+`/jo PROJECT CODE, what to do, for NAME` in an operator's own DM with the bot runs `jo draft` and answers
+with two plain-text messages: the draft (with the number note and the formatter's checks under it), then
+the run report (total and per-step time; no JO text or names). A line with no usable Project or person
+gets one line naming what failed. Anyone without the `operator` permission, or any chat that is not the
+sender's own DM, gets a one-line refusal. Nothing is written: the operator posts the draft in the intake
+topic himself.
+
+**Rollout.** The command is pushed by the gateway, so it goes live only when the gateway's `config.yaml`
+has a `jo` entry (`module: t6core`, `allow: [operators]`, which is the netops ticket for spec #791). Until then
+nothing is pushed and `/jo` does nothing, whatever t6-core version runs.
+
 ## Approvals
 
 An Approval is a t6 database record, independent of Frame.io. `approval request`

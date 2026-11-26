@@ -6,6 +6,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ### Added
 
+- `/jo <line>` command (#795, spec #791): the gateway's push of a `jo` command to the t6 API's tap endpoint runs `jo draft` for an operator in their own DM and replies with the draft as one plain-text message (number note and formatter checks under it) and the run report as a second. Others get `Only an operator can use /jo.`; a bad Project or person gets one line. Goes live only with the gateway `jo` command entry in `config.yaml` (netops). See `docs/operator-actions.md`.
+
+### Added
+
 - Skill `t6:` key `final_turn: submit` (#793, spec #791): opt-in. On the last allowed turn the runner sends no tools and a fixed instruction to hand in the answer now, marking unknowns "(?)", so a run that would have ended in `max_turns_exceeded` returns its answer, validated against the output schema as usual. Any other value is refused when the skill loads. Skills without the key behave as before.
 
 ## [0.6.28] - 2026-11-25
