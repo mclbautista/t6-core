@@ -569,10 +569,15 @@ def _ops(args: argparse.Namespace) -> int:
         elif args.command == "restore":
             result = ops.restore(args.source, _database_paths())
         else:
-            required = ("queue",) if os.environ.get("T6_SERVER_MODE") == "edge" else ("registry", "queue")
+            edge = os.environ.get("T6_SERVER_MODE") == "edge"
+            required = ("queue",) if edge else ("registry", "queue")
             result = ops.health(_database_paths(), required=required,
                                 count_history=not getattr(args, "ignore_history", False))
-            if not getattr(args, "local", False):
+            if edge and not getattr(args, "local", False):
+                # An edge server (the VPS) is kept away from the API by design, so the API check cannot apply.
+                result["api"] = {"reachable": None, "applicable": False,
+                                 "reason": "T6_SERVER_MODE=edge: this host does not reach the t6 API"}
+            elif not getattr(args, "local", False):
                 from t6.client import APIError, Client, Unavailable
                 try:
                     api = Client().health()

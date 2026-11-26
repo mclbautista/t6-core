@@ -4,6 +4,10 @@ All notable changes to this project are documented here, following [Keep a Chang
 
 ## [Unreleased]
 
+### Fixed
+
+- `t6 health` on an edge server (`T6_SERVER_MODE=edge`, the VPS) no longer asks the t6 API. It reports `api` as `{"reachable": null, "applicable": false, ...}` and `ok` follows the local checks only. Before, it returned `ok: false` and exit 1 on a clean VPS, because the VPS has no API variables by design. `--local` is unchanged.
+
 ### Added
 
 - `/jo <line>` command (#795, spec #791): the gateway's push of a `jo` command to the t6 API's tap endpoint runs `jo draft` for an operator in their own DM and replies with the draft as one plain-text message (number note and formatter checks under it) and the run report as a second. Others get `Only an operator can use /jo.`; a bad Project or person gets one line. Goes live only with the gateway `jo` command entry in `config.yaml` (netops). See `docs/operator-actions.md`.
