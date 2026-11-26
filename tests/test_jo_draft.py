@@ -202,12 +202,36 @@ def jev_reply(*choices: str) -> dict[str, Any]:
         self.assertEqual(result.result['questions'], ['Deadline?'])
 
 
+class Script(Send):
+    """A `Send` that answers each call with the next body, then repeats the last. Setting `body` replaces the script."""
+
+    def __init__(self, *bodies: Any) -> None:
+        super().__init__(None)
+        self.bodies = list(bodies)
+
+    @property
+    def body(self) -> Any:
+        return self.bodies[0]
+
+    @body.setter
+    def body(self, value: Any) -> None:
+        if hasattr(self, 'bodies'):
+            self.bodies = [value]
+
+    def __call__(self, url: str, headers: dict[str, str], payload: bytes, timeout: float) -> bytes:
+        self.last = self.bodies.pop(0) if len(self.bodies) > 1 else self.bodies[0]
+        self.requests.append((url, json.loads(payload), timeout))
+        if self.error:
+            raise self.error
+        return json.dumps(self.last).encode()
+
+
 class JoDraftJevTests(JoDraftFixture):
     """The Jev match: the closest past Job Order fills the draft. Only masked text reaches the provider."""
 
     def setUp(self) -> None:
-        self.send = Send(jev_reply('match'))
-        self.service = LLMService({'fake': FakeProvider()}, 'fake', Registry(people=[Person(name='Maya Reyes')]),
+        self.send = Script(jev_reply('match'))
+        self.service = LLMService({'fake': FakeProvider()}, 'fake', Registry(people=[Person(name='Maya Reyes'), Person(name='Lea Ong')]),
                                   decisions=OpenRouterDecisions(api_key='k', retention='unknown', send=self.send),
                                   min_retention_by_provider={'decisions': 'unknown'})
         super().setUp()
@@ -281,6 +305,44 @@ class JoDraftJevTests(JoDraftFixture):
         self.assertEqual([s['step'] for s in report['steps']], ['bundle', 'jev_match', 'formatter'])
         self.assertEqual(report['jev'], {'model': 'jev-test', 'prompt_tokens': 21, 'completion_tokens': 5, 'cost': 'unknown'})
         self.assertEqual(report['total_ms'], sum(s['ms'] for s in report['steps']))
+
+    def test_a_password_in_a_copied_field_never_reaches_the_draft(self) -> None:
+        self.past()
+        result = self.draft('HBR export the cut to a share, for Maya')
+        assert isinstance(result, Done)
+        self.assertNotIn('hunter2-secret', result.result['text'])
+        self.assertIn('Link Settings: view only', result.result['text'])
+
+    def lookups(self, *bodies: Any) -> Any:
+        self.send.bodies = list(bodies)
+        self.past('118')
+        self.jo('117', 'EDIT', task='export the cut to a drive', purpose='backup')
+        result = self.draft('HBR export the cut to a share, ask Lea Ong about it, for Maya')
+        assert isinstance(result, Done), result
+        return result.result
+
+    def test_chosen_lookups_run_and_are_named_in_the_report(self) -> None:
+        report = self.lookups(jev_reply('match', 'no'), jev_reply('match', 'match'))['report']
+        self.assertEqual(report['lookups']['names'], ['person find', 'jo get'])
+        self.assertEqual(report['lookups']['count'], 2)
+        self.assertEqual(report['lookups']['jev']['model'], 'jev-test')
+        self.assertEqual([s['step'] for s in report['steps']], ['bundle', 'jev_match', 'jev_lookups', 'formatter'])
+
+    def test_unchosen_lookups_do_not_run(self) -> None:
+        report = self.lookups(jev_reply('match', 'no'), jev_reply('no', 'match'))['report']
+        self.assertEqual(report['lookups']['names'], ['jo get'])
+
+    def test_jev_failing_on_the_lookups_means_none_run_and_still_a_draft(self) -> None:
+        result = self.lookups(jev_reply('match', 'no'), {'answers': {}})
+        self.assertEqual(result['report']['lookups']['count'], 0)
+        self.assertIn('failure', result['report']['lookups'])
+        self.assertIn('Purpose: client review of the cut', result['text'])
+
+    def test_the_lookups_call_sends_masked_text_only(self) -> None:
+        self.lookups(jev_reply('match', 'no'), jev_reply('match', 'match'))
+        wire = json.dumps(self.send.requests[1][1])
+        for leaked in ('Lea', 'Maya', 'hunter2-secret', 'example.test'):
+            self.assertNotIn(leaked, wire)
 
     def test_the_deliverable_code_comes_from_the_match_when_the_line_has_none(self) -> None:
         self.past()
