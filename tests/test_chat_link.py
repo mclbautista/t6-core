@@ -752,7 +752,8 @@ class ProjectLinksVerbTests(unittest.TestCase):
         assert isinstance(bare_res, Done)
         self.assertEqual(
             bare_res.result,
-            {'project_id': bare.project.id, 'name': None, 'code': 'BARE1', 'notion_url': None, 'frameio_url': None, 'chat_links': [], 'links': {}, 'links_unavailable': False},
+            {'project_id': bare.project.id, 'name': None, 'code': 'BARE1', 'notion_url': None, 'frameio_url': None, 'chat_links': [], 'links': {}, 'links_unavailable': False,
+             'projects': [{'project_id': bare.project.id, 'name': None, 'code': 'BARE1', 'notion_url': None, 'frameio_url': None, 'chat_links': [], 'links': {}, 'links_unavailable': False}]},
         )
 
         class BrokenNotion:

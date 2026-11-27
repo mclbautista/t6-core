@@ -2066,11 +2066,11 @@ to that ID. Named services have the `reader` role by default. To grant additiona
 set `T6_API_SERVICE_PERMISSIONS` to a JSON object mapping service names to role
 lists, for example `{"worker":["operator"],"reports":["coordinator"]}`.
 Valid additional roles are `operator`, `coordinator`, `bookings`, `drives`,
-`llm`, `unmasked`, `fleet`, `bays_edit`, `minutes`, `bay_scan` and `admin`; admin includes operator. `unmasked` lets a
+`llm`, `unmasked`, `fleet`, `bays_edit`, `minutes`, `bay_scan`, `project_links` and `admin`; admin includes operator. `unmasked` lets a
 caller read real client names (read replies are otherwise masked) and grants
 nothing else; the `mcp` service stays masked. `fleet` allows `machine sync` and
 nothing else (`machine list` needs only `reader`; for example
-`{"munki":["fleet"]}`). `bays_edit` allows `machine edit` and nothing else. `bay_scan` allows `bay scan report` and nothing else; only the `bay-scanner` service (the Mac mini's nightly bay scan, ADR 0008) carries it, for example `{"bay-scanner":["bay_scan"]}`, and that service may run no other verb, not even a read (see `docs/bay-scan.md`). Grants apply to every secret bound to
+`{"munki":["fleet"]}`). `bays_edit` allows `machine edit` and nothing else. `bay_scan` allows `bay scan report` and nothing else; only the `bay-scanner` service (the Mac mini's nightly bay scan, ADR 0008) carries it, for example `{"bay-scanner":["bay_scan"]}`, and that service may run no other verb, not even a read (see `docs/bay-scan.md`). `project_links` allows `project links` by chat and nothing else (`{"gateway":["project_links"]}`): the call must name a `chat`, and a `project` only when it is linked to that chat. Grants apply to every secret bound to
 that service. Gateway requests carrying `X-Telegram-User-Id` use the resolved
 Person's permissions instead of the gateway's grants. `GET /health` reports the
 package version, database schema version and job counts by state.

@@ -32,7 +32,7 @@ FRAMEIO_ACTOR = 'frameio'  # Frame.io events (#275): a file landing in a Deliver
 NOTION_ACTOR = 'T6 Notion'  # edits made in Notion by the T6 integration itself: no Person is bound to it, so it may run the coordinator and operator verbs
 INTERNAL_ACTORS: Mapping[str, frozenset[str]] = {CALENDAR_ACTOR: frozenset({'bookings'}), FRAMEIO_ACTOR: frozenset(), NOTION_ACTOR: frozenset({'operator', 'coordinator'})}
 
-PERMISSIONS = frozenset({"operator", "coordinator", "bookings", "drives", "admin", "llm", "unmasked", "fleet", "bays_edit", "minutes", "bay_scan"})
+PERMISSIONS = frozenset({"operator", "coordinator", "bookings", "drives", "admin", "llm", "unmasked", "fleet", "bays_edit", "minutes", "bay_scan", "project_links"})
 STAFF_RULE = "role:staff"
 """An allowed-tapper rule: any active staff Person (a kind, not a permission, so it is not in `PERMISSIONS`)."""
 

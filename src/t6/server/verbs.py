@@ -371,6 +371,8 @@ class VerbAPI:
             outcome = refusal or self._transcripts().request(entry.verb, inputs, actor, translate_enabled=self.translate_enabled)
         elif (entry.noun, entry.verb) == ('jo', 'draft'):
             outcome = self.people.authorize(actor, entry.role) or self._jo_draft(inputs, seen)
+        elif (entry.noun, entry.verb) == ('project', 'links'):
+            outcome = self._project_links(entry, inputs, actor)
         elif (entry.noun, entry.verb) in {('project', 'list'), ('project', 'get'), ('project', 'notes'), ('project', 'notes-history'), ('project', 'flags'), ('project', 'resolve'), ('lead', 'list'), ('concern', 'list'), ('concern', 'get'), ('jo', 'list'), ('jo', 'find'), ('jo', 'get'), ('person', 'get'), ('person', 'find'), ('person', 'list'), ('camera', 'get'), ('departments', ''), ('standing-cc', ''), ('external-link', 'find'), ('studio', 'notices'), ('deliverable', 'list'), ('deliverable', 'candidates'), ('deliverable', 'get'), ('meeting-notes', 'list'), ('version', 'find'), ('version', 'get')}:
             refusal = self.people.authorize(actor, entry.role)
             if not refusal and (entry.noun, entry.verb) == ('project', 'notes-history') and not self._master_brief(actor) and actor not in self._coordinators(inputs.project):
@@ -958,6 +960,20 @@ class VerbAPI:
             return done(note_from_page(notion.retrieve_page(note.page_id, freshness='live')))
         except (ValueError, KeyError, OSError, NotionError) as error:
             return Refused(rule='input', reason=str(error))
+
+    def _project_links(self, entry: Any, inputs: Any, actor: str) -> Any:
+        """`project links`: an operator reads any Project; a `project_links` grant reads only what is linked to the chat it names. Never masked here."""
+        from dataclasses import replace
+        from t6.chat_link import ChatLinks
+        role = 'operator'
+        if self.people.authorize(actor, role):
+            role = 'project_links'
+            refusal = self.people.authorize(actor, role)
+            if refusal or inputs.chat is None:
+                return refusal or Refused(rule='permission', reason='needs a chat')
+        if role == 'project_links' and inputs.project is not None and not ChatLinks(self.people.registry, self.people.tokens).is_linked(inputs.project, inputs.chat):
+            return Refused(rule='chat_scope', reason='Project is not linked to this chat')
+        return invoke(replace(entry, role=role), inputs, actor=actor, people=self.people, open_notion=self.open_notion, notion_source=self.notion_source)
 
     def _bay_scan_report(self, inputs: Any, actor: str) -> Any:
         """Tie a report to its Bay through the serial and the Bays rows, then keep it as that Bay's latest (`t6.bay_scan`)."""
@@ -1994,12 +2010,10 @@ class VerbAPI:
             if self.people.authorize(person[0], 'coordinator'):
                 return self._refused_command(chat, topic, key, f"Only a coordinator can use /{body['command']}.")
             if isinstance(args, str) and not args.strip() and body['command'] == 'link' and type(chat) is int and type(topic) is int:
-                import re
+                from t6.chat_link import topic_code
                 with self.people.registry._transaction() as db:
                     row = db.execute('SELECT name FROM linked_chat_topics WHERE chat_id = ? AND topic_id = ?', (chat, topic)).fetchone()
-                match = re.match(r'^\s*([A-Za-z0-9]+)\s+-\s+', row[0]) if row else None
-                if match:
-                    args = match.group(1)
+                args = topic_code(row[0] if row else None) or args
             if not isinstance(args, str) or len(args.split()) != 1 or type(chat) is not int or (topic is not None and type(topic) is not int) or not isinstance(key, str) or not key:
                 return self._refused_command(chat, topic, key, f"Usage: /{body['command']} CODE")
             entry = self.routes['/v1/project/' + ('link-chat' if body['command'] == 'link' else 'unlink-chat')]

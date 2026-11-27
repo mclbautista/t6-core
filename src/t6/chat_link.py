@@ -17,6 +17,15 @@ from t6.registry import RegistryError, normalize_code
 from t6.registry.sqlite import SqliteProjectRegistry
 from t6.verbs import Done, Outcome, Refused
 
+_TOPIC_CODE = re.compile(r"^\s*([A-Za-z0-9]+)\s+-\s+")
+
+
+def topic_code(name: str | None) -> str | None:
+    """The Project code a topic named `CODE - Name` suggests, the form `/link` reads; none for any other name."""
+    match = _TOPIC_CODE.match(name or '')
+    return match.group(1) if match else None
+
+
 _TARGET_SUFFIX = re.compile(r"(?:^| )(?P<project_id>\S+): chat -?\d+, topic (?:\d+|none)(?: \(.*\))?$", re.DOTALL)
 
 
@@ -186,6 +195,19 @@ class ChatLinks:
             result.append(item)
         rank = {'active': 0, 'waiting': 1, 'denied': 2, 'dead': 3, 'inactive': 4}
         return sorted(result, key=lambda i: (rank[i['state']], i['chat'], i['topic'] or 0, i['id'] or ''))
+
+    def linked_project_ids(self, chat: int, topic: int | None) -> list[str]:
+        """Projects with an active link to the chat (a whole-chat link matches any topic), in the order they were linked."""
+        with self.registry._transaction() as db:
+            return [row[0] for row in db.execute(
+                "SELECT project_id FROM chat_links WHERE chat_id = ? AND state = 'active' AND (topic_id IS NULL OR topic_id = ?) "
+                "GROUP BY project_id ORDER BY MIN(rowid)", (chat, topic))]
+
+    def is_linked(self, project: str, chat: int) -> bool:
+        """Whether the Project, by code or ID, has an active link in the chat."""
+        with self.registry._transaction() as db:
+            row = self._resolve_project(db, project)
+            return bool(row and db.execute("SELECT 1 FROM chat_links WHERE project_id = ? AND chat_id = ? AND state = 'active'", (row[0], chat)).fetchone())
 
     def links(self, project: str) -> Outcome:
         with self.registry._transaction() as db:
