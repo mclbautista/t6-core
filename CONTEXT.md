@@ -204,7 +204,7 @@ A **Timeline** (`t6t_`) is a DaVinci Resolve sequence timeline known by its
 first frame. The stamp is the identity; the Resolve name is only a label, so
 editors may rename and back up freely. T6 writes the stamp by code, through the
 Resolve worker; no person types it. This is the one Resolve write T6 makes
-(ADR 0002, rule 10).
+today (ADR 0002, rule 10; its proposed amendment allows more).
 `timeline link` without `--stamp` creates the stamp: the preview shows the new
 `t6t_` ID (the same one for the same key), and the confirm records exactly it
 as **pending** and queues a `resolve.stamp` job. The Resolve worker writes the
@@ -220,11 +220,17 @@ carries a stamp is not given a new one (pass `--stamp`), except that at confirm 
 carrying exactly the stamp the preview showed is accepted; a retried confirm with the same key returns the first result. `timeline list` refuses a
 Project that is not registered.
 
-- **Resolve worker**: the one process that holds Resolve scripting access and
-  the only Resolve writer. It runs on one Mac with Resolve Studio and claims
-  `resolve.stamp` jobs through the t6 API; it never opens the t6 database. It
-  writes only the stamp marker (add, update, read back) and never deletes a
-  marker. Before writing it refuses a timeline that carries a different stamp,
+- **Resolve worker**: a fleet Resolve agent: a process on a Mac with Resolve
+  Studio that holds Resolve scripting access and claims Resolve jobs through
+  the t6 API; it never opens the t6 database. Any fleet Resolve agent may write
+  Resolve, only through registered verbs, behind a person's confirm and an
+  automatic restore point, and every write records its host, Resolve version
+  and restore point (ADR 0002 rule 10, amendment proposed, awaiting owner
+  acceptance). The red lines never lift: no change or delete of a user marker
+  or timeline without the owner's confirm, no delete of a Resolve project or
+  database, no `ArchiveProject`, no direct write to the project server's
+  PostgreSQL. Today it writes only the stamp marker (add, update, read back)
+  and never deletes a marker. Before writing it refuses a timeline that carries a different stamp,
   or a stamp already on another timeline of the project. It closes each
   Resolve project it loads (Resolve locks a loaded project until then) and
   makes the database that was current before current again.
@@ -360,6 +366,12 @@ every blocking item of the Package's checklist is ticked. Every spec starts with
 zero blocking items, so a Package with none is kasado from the day it was
 prepared; with blocking items it became kasado on the day the last one was
 ticked (Asia/Manila). A rejected Package is never kasado.
+
+Checklist items have a **kind** (ADR 0011, proposed): **mise** (preparation
+before the work), **pipeline** (the work steps) or **handoff** (what holds before
+the Package goes to the next person). A **gate** stops the next stage: open
+blocking mise items stop the pipeline verbs; open blocking pipeline items stop
+the handoff.
 
 - **Bangko**: a Deliverable ready at least the configured margin (default 3 days)
   before its air date.
