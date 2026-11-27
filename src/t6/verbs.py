@@ -338,7 +338,12 @@ class ProjectChatLink(BaseModel):
     chat: int
     topic: int | None = None
     topic_name: str | None = None
-    state: str
+    state: Literal['active', 'inactive', 'waiting', 'denied', 'dead']
+    dead_since: str | None = None  # Manila day, dead links only
+    approval_id: str | None = None  # the open request (waiting) or the denied one (denied)
+    requested_by: str | None = None  # waiting only
+    decided_by: str | None = None  # denied only
+    reason: str | None = None  # denied only
 
 
 class ProjectLinksOutput(BaseModel):
@@ -3704,7 +3709,7 @@ VERBS = (
     Verb("lead", "list", "List the open Leads with CRM stage and client roles", (), LeadListInput, LeadListOutput, "reader", "Read the Projects in a CRM stage other than Lost.", api_read, read_only=True),
     Verb("crm", "snooze", "Snooze your CRM reminders until a date", (), CrmSnoozeInput, CrmSnoozeOutput, "reader", "Your own CRM DMs pause through the end date (at most 30 days); your Leads and reminders go to the Post Producer, then the default owner.", crm_snooze),
     Verb("crm", "unsnooze", "End your CRM snooze early", (), CrmUnsnoozeInput, CrmUnsnoozeOutput, "reader", "Your CRM DMs resume at the next 10:00 Manila.", crm_unsnooze),
-    Verb("project", "links", "Read a Project's links card", (), ProjectLinksInput, ProjectLinksOutput, "operator", "Read a Project's links card.", project_links, read_only=True),
+    Verb("project", "links", "Read a Project's links card", (), ProjectLinksInput, ProjectLinksOutput, "operator", "Read a Project's links card: Notion and Frame.io links and every chat link with its state (active, inactive, waiting, denied, dead).", project_links, read_only=True),
     Verb("project", "crm-links", "Read a Project's CRM links by kind", (), ProjectCrmLinksInput, ProjectCrmLinksOutput, "operator", "Read the CRM Sheet Log; links grouped by kind.", project_crm_links, read_only=True),
     Verb("project", "link-chat", "Link a Telegram chat to a Project", (), ProjectChatInput, ProjectChatOutput, "coordinator", "Approval is required.", project_link_chat),
     Verb("project", "unlink-chat", "Unlink a Telegram chat from a Project", (), ProjectChatInput, ProjectChatOutput, "coordinator", "Approval is required.", project_unlink_chat),
