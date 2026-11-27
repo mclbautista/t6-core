@@ -338,7 +338,12 @@ class ProjectChatLink(BaseModel):
     chat: int
     topic: int | None = None
     topic_name: str | None = None
-    state: str
+    state: Literal['active', 'inactive', 'waiting', 'denied', 'dead']
+    dead_since: str | None = None  # Manila day, dead links only
+    approval_id: str | None = None  # the open request (waiting) or the denied one (denied)
+    requested_by: str | None = None  # waiting only
+    decided_by: str | None = None  # denied only
+    reason: str | None = None  # denied only
 
 
 class ProjectLinksOutput(BaseModel):
@@ -348,13 +353,40 @@ class ProjectLinksOutput(BaseModel):
     notion_url: str | None = None
     frameio_url: str | None = None
     chat_links: list[ProjectChatLink]
+    links: dict[str, list[str]] = {}  # CRM Log links by kind, newest first; no key for a kind with none
+    links_unavailable: bool = False  # the CRM Sheet could not be read in time; the rest of the card is intact
+
+
+CARD_LINKS_TIMEOUT_SECONDS = 5.0
+
+
+def _card_links(project_id: str) -> tuple[dict[str, list[str]], bool]:
+    """The Project's CRM Log links for the card, and whether the read failed. Off (no CRM Sheet) is no links, not a failure."""
+    from concurrent.futures import ThreadPoolExecutor
+    from t6.crm.config import crm_source
+    from t6.crm.log import card_links, read_log
+
+    def read() -> dict[str, list[str]]:
+        source = crm_source(os.environ)
+        return card_links(read_log(source, {project_id}), project_id) if source is not None else {}
+
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        return pool.submit(read).result(timeout=CARD_LINKS_TIMEOUT_SECONDS), False
+    except Exception:  # a timeout or any read error; the card never waits on, or fails with, the Sheet
+        return {}, True
+    finally:
+        pool.shutdown(wait=False)
 
 
 def project_links(inputs: ProjectLinksInput, open_notion: Callable[..., Any]) -> Outcome:
     from t6.chat_link import ChatLinks
 
     people = _people()
-    return ChatLinks(people.registry, people.tokens, _project_name_reader(open_notion)).links(inputs.project)
+    card = ChatLinks(people.registry, people.tokens, _project_name_reader(open_notion)).links(inputs.project)
+    if isinstance(card, Done):
+        card.result['links'], card.result['links_unavailable'] = _card_links(card.result['project_id'])
+    return card
 
 
 class CrmSnoozeInput(BaseModel):
@@ -3704,7 +3736,7 @@ VERBS = (
     Verb("lead", "list", "List the open Leads with CRM stage and client roles", (), LeadListInput, LeadListOutput, "reader", "Read the Projects in a CRM stage other than Lost.", api_read, read_only=True),
     Verb("crm", "snooze", "Snooze your CRM reminders until a date", (), CrmSnoozeInput, CrmSnoozeOutput, "reader", "Your own CRM DMs pause through the end date (at most 30 days); your Leads and reminders go to the Post Producer, then the default owner.", crm_snooze),
     Verb("crm", "unsnooze", "End your CRM snooze early", (), CrmUnsnoozeInput, CrmUnsnoozeOutput, "reader", "Your CRM DMs resume at the next 10:00 Manila.", crm_unsnooze),
-    Verb("project", "links", "Read a Project's links card", (), ProjectLinksInput, ProjectLinksOutput, "operator", "Read a Project's links card.", project_links, read_only=True),
+    Verb("project", "links", "Read a Project's links card", (), ProjectLinksInput, ProjectLinksOutput, "operator", "Read a Project's links card: Notion and Frame.io links and every chat link with its state (active, inactive, waiting, denied, dead).", project_links, read_only=True),
     Verb("project", "crm-links", "Read a Project's CRM links by kind", (), ProjectCrmLinksInput, ProjectCrmLinksOutput, "operator", "Read the CRM Sheet Log; links grouped by kind.", project_crm_links, read_only=True),
     Verb("project", "link-chat", "Link a Telegram chat to a Project", (), ProjectChatInput, ProjectChatOutput, "coordinator", "Approval is required.", project_link_chat),
     Verb("project", "unlink-chat", "Unlink a Telegram chat from a Project", (), ProjectChatInput, ProjectChatOutput, "coordinator", "Approval is required.", project_unlink_chat),

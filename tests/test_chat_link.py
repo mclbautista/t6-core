@@ -697,7 +697,7 @@ class ProjectLinksVerbTests(unittest.TestCase):
         self.assertEqual(parsed.notion_url, f"https://www.notion.so/{self.page_id.replace('-', '')}")
         self.assertEqual(parsed.frameio_url, 'https://next.frame.io/project/fp-uuid-1')
         self.assertEqual(
-            [item.model_dump() for item in parsed.chat_links],
+            [item.model_dump(include={'id', 'chat', 'topic', 'topic_name', 'state'}) for item in parsed.chat_links],
             [
                 {'id': 't6h_2', 'chat': -1001, 'topic': None, 'topic_name': None, 'state': 'active'},
                 {'id': 't6h_1', 'chat': -1001, 'topic': 12, 'topic_name': 'ABC-123 - Edit', 'state': 'active'},
@@ -752,7 +752,7 @@ class ProjectLinksVerbTests(unittest.TestCase):
         assert isinstance(bare_res, Done)
         self.assertEqual(
             bare_res.result,
-            {'project_id': bare.project.id, 'name': None, 'code': 'BARE1', 'notion_url': None, 'frameio_url': None, 'chat_links': []},
+            {'project_id': bare.project.id, 'name': None, 'code': 'BARE1', 'notion_url': None, 'frameio_url': None, 'chat_links': [], 'links': {}, 'links_unavailable': False},
         )
 
         class BrokenNotion:
@@ -809,6 +809,192 @@ class ProjectLinksVerbTests(unittest.TestCase):
             res = Client(self.base_url, 'operator-secret').project_crm_links(ProjectCrmLinksInput(project='abc 123'))
         assert isinstance(res, Refused)
         self.assertEqual((res.rule, res.reason), ('crm_sheet', 'Google Sheets read failed (503)'))
+
+    # --- link states (#689) ---
+
+    def _request(self, verb: str, chat: int, topic: int | None, key: str, actor: str | None = None) -> Preview:
+        links = ChatLinks(self.registry, self.tokens)
+        preview = links.write(verb, {'project': self.project_id, 'chat': chat, 'topic': topic}, actor=actor or self.operator, idempotency_key=key)
+        assert isinstance(preview, Preview)
+        return preview
+
+    def _decide(self, preview: Preview, verb: str, key: str, reason: str | None = None) -> None:
+        approvals = Approvals(self.registry, self.tokens)
+        values = {'approval': preview.plan['approval_id']} | ({'reason': reason or 'no'} if verb == 'deny' else {})
+        step = approvals.write(verb, values, actor=self.operator, idempotency_key=key)
+        assert isinstance(step, Preview)
+        self.assertIsInstance(approvals.write(verb, values, actor=self.operator, idempotency_key=key, confirm=step.token), Done)
+
+    def _confirm(self, preview: Preview, verb: str, chat: int, topic: int | None, key: str) -> None:
+        done = ChatLinks(self.registry, self.tokens).write(verb, {'project': self.project_id, 'chat': chat, 'topic': topic}, actor=self.operator, idempotency_key=key, confirm=preview.token)
+        self.assertIsInstance(done, Done)
+
+    def _linked(self, chat: int, topic: int | None, key: str) -> None:
+        preview = self._request('link-chat', chat, topic, key)
+        self._decide(preview, 'grant', key + '-g')
+        self._confirm(preview, 'link-chat', chat, topic, key)
+
+    def _states(self) -> dict[tuple[int, int | None], dict[str, Any]]:
+        from t6.client import Client
+        from t6.verbs import ProjectLinksInput
+        res = Client(self.base_url, 'operator-secret').project_links(ProjectLinksInput(project=self.project_id))
+        assert isinstance(res, Done)
+        return {(item['chat'], item['topic']): item for item in res.result['chat_links']}
+
+    def test_every_link_state_is_returned(self) -> None:
+        clock = [1_700_000_000.0]
+        self.registry._clock = lambda: clock[0]
+        self._linked(-1, 1, 'active')
+        self._linked(-2, 2, 'gone')
+        self._confirm(self._unlink_approved(-2, 2, 'gone-u'), 'unlink-chat', -2, 2, 'gone-u')
+        self._linked(-3, 3, 'dead')
+        with self.registry._transaction() as db:
+            link = db.execute('SELECT id FROM chat_links WHERE chat_id = -3').fetchone()[0]
+            db.execute("UPDATE chat_links SET state = 'inactive' WHERE id = ?", (link,))
+            # 18:00 UTC on 23 Nov is already 24 Nov in Manila
+            db.execute("INSERT INTO chat_link_history (link_id, state, actor, at) VALUES (?, 'inactive', 'gateway', ?)", (link, 1_763_920_800.0))
+            db.execute("INSERT INTO linked_chat_topics VALUES (-4, 4, 'ABC-123 - Edit')")
+        waiting = self._request('link-chat', -4, 4, 'waiting')
+        denied = self._request('link-chat', -5, 5, 'denied')
+        self._decide(denied, 'deny', 'denied-d', 'wrong show')
+        got = self._states()
+        self.assertEqual({key: item['state'] for key, item in got.items()},
+                         {(-1, 1): 'active', (-2, 2): 'inactive', (-3, 3): 'dead', (-4, 4): 'waiting', (-5, 5): 'denied'})
+        self.assertIsNone(got[(-2, 2)]['dead_since'])
+        self.assertEqual(got[(-3, 3)]['dead_since'], '2025-11-24')
+        self.assertEqual((got[(-4, 4)]['approval_id'], got[(-4, 4)]['requested_by'], got[(-4, 4)]['topic_name'], got[(-4, 4)]['id']), (waiting.plan['approval_id'], self.operator, 'ABC-123 - Edit', None))
+        self.assertEqual((got[(-5, 5)]['approval_id'], got[(-5, 5)]['decided_by'], got[(-5, 5)]['reason']), (denied.plan['approval_id'], self.operator, 'wrong show'))
+        self.assertIsNone(got[(-1, 1)]['approval_id'])
+
+    def _unlink_approved(self, chat: int, topic: int | None, key: str) -> Preview:
+        preview = self._request('unlink-chat', chat, topic, key)
+        self._decide(preview, 'grant', key + '-g')
+        return preview
+
+    def test_denied_then_requested_again_shows_waiting(self) -> None:
+        first = self._request('link-chat', -1, 1, 'a')
+        self._decide(first, 'deny', 'a-d')
+        self.assertEqual(self._states()[(-1, 1)]['state'], 'denied')
+        again = self._request('link-chat', -1, 1, 'b', actor=self.staff)
+        got = self._states()
+        self.assertEqual(len(got), 1)
+        self.assertEqual((got[(-1, 1)]['state'], got[(-1, 1)]['approval_id'], got[(-1, 1)]['requested_by']), ('waiting', again.plan['approval_id'], self.staff))
+
+    def test_dead_link_with_a_new_request_shows_waiting_then_active_then_inactive(self) -> None:
+        self._linked(-1, 1, 'l')
+        with self.registry._transaction() as db:
+            link = db.execute('SELECT id FROM chat_links').fetchone()[0]
+            db.execute("UPDATE chat_links SET state = 'inactive' WHERE id = ?", (link,))
+            db.execute("INSERT INTO chat_link_history (link_id, state, actor, at) VALUES (?, 'inactive', 'gateway', ?)", (link, self.registry._clock()))
+        self.assertEqual(self._states()[(-1, 1)]['state'], 'dead')
+        relink = self._request('link-chat', -1, 1, 'r')
+        waiting = self._states()[(-1, 1)]
+        self.assertEqual((waiting['state'], waiting['id'], waiting['dead_since']), ('waiting', link, None))
+        self._decide(relink, 'grant', 'r-g')
+        self._confirm(relink, 'link-chat', -1, 1, 'r')
+        self.assertEqual(self._states()[(-1, 1)]['state'], 'active')
+        self._confirm(self._unlink_approved(-1, 1, 'u'), 'unlink-chat', -1, 1, 'u')
+        self.assertEqual(self._states()[(-1, 1)]['state'], 'inactive')
+
+    def test_denied_then_granted_then_unlinked_is_inactive_not_denied(self) -> None:
+        clock = [100.0]
+        self.registry._clock = lambda: clock[0]
+        self._decide(self._request('link-chat', -1, 1, 'a'), 'deny', 'a-d')
+        clock[0] += 10
+        self._linked(-1, 1, 'b')
+        clock[0] += 10
+        self._confirm(self._unlink_approved(-1, 1, 'u'), 'unlink-chat', -1, 1, 'u')
+        self.assertEqual(self._states()[(-1, 1)]['state'], 'inactive')
+
+    def test_active_link_stays_active_with_a_denied_unlink_or_an_older_denial(self) -> None:
+        clock = [100.0]
+        self.registry._clock = lambda: clock[0]
+        self._decide(self._request('link-chat', -1, 1, 'a'), 'deny', 'a-d')
+        clock[0] += 10
+        self._linked(-1, 1, 'b')
+        clock[0] += 10
+        self._decide(self._request('unlink-chat', -1, 1, 'u'), 'deny', 'u-d')
+        self.assertEqual(self._states()[(-1, 1)]['state'], 'active')
+
+    def test_a_reused_preview_gives_one_waiting_entry_and_a_granted_unconfirmed_link_is_omitted(self) -> None:
+        self._request('link-chat', -1, 1, 'a')
+        self._request('link-chat', -1, 1, 'b')
+        self.assertEqual([k for k in self._states()], [(-1, 1)])
+        granted = self._request('link-chat', -2, 2, 'c')
+        self._decide(granted, 'grant', 'c-g')
+        self.assertNotIn((-2, 2), self._states())
+
+    # --- links by kind (#690) ---
+
+    def _card(self) -> dict[str, Any]:
+        from t6.client import Client
+        from t6.verbs import ProjectLinksInput
+        res = Client(self.base_url, 'operator-secret').project_links(ProjectLinksInput(project=self.project_id))
+        assert isinstance(res, Done)
+        return dict(res.result)
+
+    def _sheet(self, *rows: tuple[Any, ...]) -> Any:
+        class Sheet:
+            workbook = 'synthetic-crm'
+
+            def tabs(self) -> dict[str, tuple[tuple[Any, ...], ...]]:
+                return {'Log': (('Date', 'Project', 'Kind', 'Note', 'Link', 'By', 'Remind on', 'Done'), *rows)}
+        return lambda environ: Sheet()
+
+    def test_card_lists_log_links_by_kind_newest_first_with_unknown_kinds(self) -> None:
+        me = f'Big Show \u00b7 {self.project_id}'
+        other = 'Someone Else \u00b7 t6p_' + 'e' * 24
+        source = self._sheet(
+            (46000, me, 'quote', None, 'https://example.invalid/q-old', None, None, None),
+            (46002, me, 'quote', None, 'https://example.invalid/q-new', None, None, None),
+            (46001, me, 'billing', None, 'https://example.invalid/b', None, None, None),
+            (46003, me, 'Proposal', None, 'https://example.invalid/p', None, None, None),
+            (46004, me, 'message', None, 'https://mail.google.com/mail/u/0/#inbox/abc', None, None, None),
+            (46005, me, 'call', 'no link here', None, None, None, None),
+            (46006, other, 'quote', None, 'https://example.invalid/x', None, None, None),
+        )
+        with patch('t6.crm.config.crm_source', source):
+            card = self._card()
+        self.assertEqual(card['links'], {
+            'quote': ['https://example.invalid/q-new', 'https://example.invalid/q-old'],
+            'billing': ['https://example.invalid/b'],
+            'proposal': ['https://example.invalid/p'],
+            'gmail_thread': ['https://mail.google.com/mail/u/0/#inbox/abc'],
+        })
+        self.assertFalse(card['links_unavailable'])
+        self.assertEqual(card['name'], 'Big Show')
+
+    def test_card_with_no_links_has_no_links_and_no_error(self) -> None:
+        with patch('t6.crm.config.crm_source', self._sheet()):
+            empty = self._card()
+        with patch('t6.crm.config.crm_source', lambda environ: None):  # CRM Sheet not set up
+            off = self._card()
+        for card in (empty, off):
+            self.assertEqual((card['links'], card['links_unavailable'], card['code']), ({}, False, 'ABC-123'))
+
+    def test_card_survives_a_sheet_error_or_timeout(self) -> None:
+        import threading
+
+        def broken(environ: Any) -> Any:
+            raise ValueError('Google Sheets read failed (503)')
+
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        class Slow:
+            workbook = 'slow'
+
+            def tabs(self) -> dict[str, tuple[tuple[Any, ...], ...]]:
+                release.wait(5)
+                return {}
+
+        with patch('t6.crm.config.crm_source', broken):
+            failed = self._card()
+        with patch('t6.crm.config.crm_source', lambda environ: Slow()), patch('t6.verbs.CARD_LINKS_TIMEOUT_SECONDS', 0.05):
+            slow = self._card()
+        for card in (failed, slow):
+            self.assertEqual((card['links'], card['links_unavailable']), ({}, True))
+            self.assertEqual((card['name'], card['code'], card['notion_url']), ('Big Show', 'ABC-123', f"https://www.notion.so/{self.page_id.replace('-', '')}"))
 
     def test_operator_only_authorization(self) -> None:
         from t6.client import Client

@@ -7,8 +7,10 @@ import re
 import secrets
 import sqlite3
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
+from t6.domain.studio_time import MANILA
 from t6.ids import EntityKind, T6Id
 from t6.preview import PreviewTokens
 from t6.registry import RegistryError, normalize_code
@@ -141,6 +143,50 @@ class ChatLinks:
         code = row[1] if row and row[1] else None
         return ' '.join(part for part in (name, f'[{code}]' if code else None) if part)
 
+    @staticmethod
+    def _link_states(link_rows: list[Any], approval_rows: list[Any]) -> list[dict[str, Any]]:
+        """One entry per chat and topic: active, waiting, denied, dead or inactive (see `project links`).
+
+        Active wins. An open link request makes the link waiting, whatever came before. A link request denied after the
+        link's last change is denied. Otherwise an inactive link is dead when the gateway or worker turned it off
+        (a failed send, a deleted topic) and inactive when `/unlink` did.
+        """
+        open_request: dict[tuple[int, int | None], Any] = {}
+        decided: dict[tuple[int, int | None], Any] = {}
+        for approval in approval_rows:
+            request = json.loads(approval[6])
+            values = request.get('values') or {}
+            if request.get('verb') != 'link-chat' or type(values.get('chat')) is not int:
+                continue
+            key = (values['chat'], values.get('topic'))
+            if approval[1] == 'requested':
+                open_request[key] = approval
+            elif approval[4] is not None and (key not in decided or approval[4] >= decided[key][4]):
+                decided[key] = approval
+        entries: dict[tuple[int, int | None], dict[str, Any]] = {}
+        for link, chat, topic, topic_name, state, actor, at in link_rows:
+            entries[(chat, topic)] = {'id': link, 'topic_name': topic_name, 'state': state, 'at': at or 0.0, 'actor': actor}
+        for key in set(open_request) | set(decided):
+            entries.setdefault(key, {'id': None, 'topic_name': (open_request.get(key) or decided[key])[7], 'state': None, 'at': None, 'actor': None})
+        result = []
+        for (chat, topic), entry in entries.items():
+            state, waiting, last = entry['state'], open_request.get((chat, topic)), decided.get((chat, topic))
+            item: dict[str, Any] = {'id': entry['id'], 'chat': chat, 'topic': topic, 'topic_name': entry['topic_name'], 'state': state,
+                                    'dead_since': None, 'approval_id': None, 'requested_by': None, 'decided_by': None, 'reason': None}
+            if state == 'active':
+                pass
+            elif waiting:
+                item.update(state='waiting', approval_id=waiting[0], requested_by=waiting[2])
+            elif last and last[1] == 'denied' and (entry['at'] is None or last[4] > entry['at']):
+                item.update(state='denied', approval_id=last[0], decided_by=last[3], reason=last[5])
+            elif state == 'inactive' and entry['actor'] in ('gateway', 'worker'):
+                item.update(state='dead', dead_since=datetime.fromtimestamp(entry['at'], MANILA).date().isoformat())
+            elif state is None:
+                continue  # granted, link not yet confirmed
+            result.append(item)
+        rank = {'active': 0, 'waiting': 1, 'denied': 2, 'dead': 3, 'inactive': 4}
+        return sorted(result, key=lambda i: (rank[i['state']], i['chat'], i['topic'] or 0, i['id'] or ''))
+
     def links(self, project: str) -> Outcome:
         with self.registry._transaction() as db:
             row = self._resolve_project(db, project)
@@ -150,12 +196,20 @@ class ChatLinks:
             binding = db.execute("SELECT page_id FROM bindings WHERE system = 'notion' AND project_id = ? AND active = 1", (project_id,)).fetchone()
             frameio = db.execute("SELECT ref FROM media_locations WHERE project_id = ? AND kind = 'frameio-project' AND active = 1 ORDER BY id LIMIT 1", (project_id,)).fetchone()
             link_rows = db.execute(
-                "SELECT c.id, c.chat_id, c.topic_id, t.name, c.state "
+                "SELECT c.id, c.chat_id, c.topic_id, t.name, c.state, "
+                "(SELECT h.actor FROM chat_link_history h WHERE h.link_id = c.id ORDER BY h.id DESC LIMIT 1), "
+                "(SELECT h.at FROM chat_link_history h WHERE h.link_id = c.id ORDER BY h.id DESC LIMIT 1) "
                 "FROM chat_links c "
                 "LEFT JOIN linked_chat_topics t ON t.chat_id = c.chat_id AND t.topic_id = c.topic_id "
-                "WHERE c.project_id = ? "
-                "ORDER BY CASE c.state WHEN 'active' THEN 0 ELSE 1 END, c.chat_id, COALESCE(c.topic_id, 0), c.id",
+                "WHERE c.project_id = ?",
                 (project_id,),
+            ).fetchall()
+            approval_rows = db.execute(
+                "SELECT a.id, a.state, a.requester, a.decided_by, a.decided_at, a.reason, p.request, t.name "
+                "FROM approvals a JOIN chat_link_previews p ON p.approval_id = a.id "
+                "LEFT JOIN linked_chat_topics t ON t.chat_id = json_extract(p.request, '$.values.chat') AND t.topic_id = json_extract(p.request, '$.values.topic') "
+                "WHERE a.gate = 'chat link' AND instr(a.target, ?) > 0 GROUP BY a.id ORDER BY a.rowid",
+                (f'{project_id}: chat ',),
             ).fetchall()
         page_id = str(binding[0]) if binding else None
         notion_url = f"https://www.notion.so/{page_id.replace('-', '')}" if page_id else None
@@ -166,10 +220,7 @@ class ChatLinks:
                 name = (self.project_name(page_id) or '').strip() or None
             except Exception:
                 name = None
-        chat_links = [
-            {'id': r[0], 'chat': r[1], 'topic': r[2], 'topic_name': r[3], 'state': r[4]}
-            for r in link_rows
-        ]
+        chat_links = self._link_states(link_rows, approval_rows)
         return Done(result={
             'project_id': project_id,
             'name': name,

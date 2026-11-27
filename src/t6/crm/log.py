@@ -99,6 +99,10 @@ def read_log(source: SheetSource, known_projects: Collection[str]) -> CrmLog:
     return log
 
 
+def _link_kind(row: LogRow) -> str:
+    return 'gmail_thread' if urlsplit(row.link or '').hostname == 'mail.google.com' else row.kind
+
+
 def links_by_kind(log: CrmLog, project_id: str) -> dict[str, list[str]]:
     """A Project's Log links grouped by kind, in Sheet order; every known kind is present.
 
@@ -106,11 +110,20 @@ def links_by_kind(log: CrmLog, project_id: str) -> dict[str, list[str]]:
     """
     links: dict[str, list[str]] = {kind: [] for kind in LINK_KINDS}
     for row in log.by_project.get(project_id, ()):
-        if not row.link:
-            continue
-        kind = 'gmail_thread' if urlsplit(row.link).hostname == 'mail.google.com' else row.kind
-        if kind in links:
-            links[kind].append(row.link)
+        if row.link and _link_kind(row) in links:
+            links[_link_kind(row)].append(row.link)
+    return links
+
+
+def card_links(log: CrmLog, project_id: str) -> dict[str, list[str]]:
+    """A Project's Log links for the links card: grouped by kind, newest first, only kinds that have a link.
+
+    A kind not in `LINK_KINDS` is listed under its own name, so a new kind needs no change here.
+    """
+    links: dict[str, list[str]] = {}
+    for row in sorted(reversed(log.by_project.get(project_id, ())), key=lambda r: r.day, reverse=True):
+        if row.link:
+            links.setdefault(_link_kind(row) or 'other', []).append(row.link)
     return links
 
 
