@@ -330,7 +330,11 @@ def project_unlink_chat(inputs: ProjectChatInput, open_notion: Callable[..., Any
 
 
 class ProjectLinksInput(BaseModel):
-    project: str
+    project: str | None = None  # a Project by code or ID, or ...
+    chat: int | None = None  # ... the Projects linked to this chat (and topic)
+    topic: int | None = None
+    topic_name: str | None = None  # the topic's name as Telegram sent it, for the code suggestion on an unlinked topic
+    asker_telegram_id: int | None = None  # only to tell whether the asker may `/link`; never refuses a caller
 
 
 class ProjectChatLink(BaseModel):
@@ -346,7 +350,7 @@ class ProjectChatLink(BaseModel):
     reason: str | None = None  # denied only
 
 
-class ProjectLinksOutput(BaseModel):
+class ProjectLinksCard(BaseModel):
     project_id: str
     name: str | None = None
     code: str | None = None
@@ -355,6 +359,21 @@ class ProjectLinksOutput(BaseModel):
     chat_links: list[ProjectChatLink]
     links: dict[str, list[str]] = {}  # CRM Log links by kind, newest first; no key for a kind with none
     links_unavailable: bool = False  # the CRM Sheet could not be read in time; the rest of the card is intact
+
+
+class ProjectLinksOutput(BaseModel):
+    """A lookup by Project fills the card fields at the top as well as `projects`; a lookup by chat fills `projects` only."""
+    project_id: str | None = None
+    name: str | None = None
+    code: str | None = None
+    notion_url: str | None = None
+    frameio_url: str | None = None
+    chat_links: list[ProjectChatLink] = []
+    links: dict[str, list[str]] = {}
+    links_unavailable: bool = False
+    projects: list[ProjectLinksCard] = []
+    can_link: bool = False  # a chat lookup that found no Project: the asker may `/link` this topic
+    suggested_code: str | None = None  # ... and the topic is named `CODE - Name`; only given when `can_link`
 
 
 CARD_LINKS_TIMEOUT_SECONDS = 5.0
@@ -379,14 +398,44 @@ def _card_links(project_id: str) -> tuple[dict[str, list[str]], bool]:
         pool.shutdown(wait=False)
 
 
-def project_links(inputs: ProjectLinksInput, open_notion: Callable[..., Any]) -> Outcome:
-    from t6.chat_link import ChatLinks
-
-    people = _people()
-    card = ChatLinks(people.registry, people.tokens, _project_name_reader(open_notion)).links(inputs.project)
+def _links_card(links: Any, project: str) -> Outcome:
+    card: Outcome = links.links(project)
     if isinstance(card, Done):
         card.result['links'], card.result['links_unavailable'] = _card_links(card.result['project_id'])
     return card
+
+
+def _asker_can_link(people: People, inputs: ProjectLinksInput) -> bool:
+    """Whether the asker (the Person with that Telegram ID, else the caller when it is a Person) may use `/link`."""
+    from t6.person import SERVICES
+
+    asker = people.by_telegram(inputs.asker_telegram_id) if inputs.asker_telegram_id is not None else None
+    asker = asker or (None if _actor.get() in SERVICES else _actor.get())
+    return asker is not None and people.authorize(asker, 'coordinator') is None
+
+
+def project_links(inputs: ProjectLinksInput, open_notion: Callable[..., Any]) -> Outcome:
+    from t6.chat_link import ChatLinks, topic_code
+
+    if (inputs.project is None and inputs.chat is None) or (inputs.topic is not None and inputs.chat is None):
+        return Refused(rule='input', reason='A Project or a chat is required, and a topic needs its chat')
+    people = _people()
+    links = ChatLinks(people.registry, people.tokens, _project_name_reader(open_notion))
+    if inputs.project is not None:
+        card = _links_card(links, inputs.project)
+        return Done(result={**card.result, 'projects': [card.result]}) if isinstance(card, Done) else card
+    assert inputs.chat is not None
+    cards = [_links_card(links, project_id) for project_id in links.linked_project_ids(inputs.chat, inputs.topic)]
+    result: dict[str, Any] = {'projects': [card.result for card in cards if isinstance(card, Done)], 'can_link': False, 'suggested_code': None}
+    if not result['projects']:
+        name = (inputs.topic_name or '').strip() or None
+        if name is None and inputs.topic is not None:
+            with people.registry._transaction() as db:
+                row = db.execute('SELECT name FROM linked_chat_topics WHERE chat_id = ? AND topic_id = ?', (inputs.chat, inputs.topic)).fetchone()
+            name = row[0] if row else None
+        result['can_link'] = _asker_can_link(people, inputs)
+        result['suggested_code'] = topic_code(name) if result['can_link'] else None
+    return Done(result=result)
 
 
 class CrmSnoozeInput(BaseModel):
@@ -3736,7 +3785,7 @@ VERBS = (
     Verb("lead", "list", "List the open Leads with CRM stage and client roles", (), LeadListInput, LeadListOutput, "reader", "Read the Projects in a CRM stage other than Lost.", api_read, read_only=True),
     Verb("crm", "snooze", "Snooze your CRM reminders until a date", (), CrmSnoozeInput, CrmSnoozeOutput, "reader", "Your own CRM DMs pause through the end date (at most 30 days); your Leads and reminders go to the Post Producer, then the default owner.", crm_snooze),
     Verb("crm", "unsnooze", "End your CRM snooze early", (), CrmUnsnoozeInput, CrmUnsnoozeOutput, "reader", "Your CRM DMs resume at the next 10:00 Manila.", crm_unsnooze),
-    Verb("project", "links", "Read a Project's links card", (), ProjectLinksInput, ProjectLinksOutput, "operator", "Read a Project's links card: Notion and Frame.io links and every chat link with its state (active, inactive, waiting, denied, dead).", project_links, read_only=True),
+    Verb("project", "links", "Read a Project's links card, or the cards of the Projects linked to a chat", (), ProjectLinksInput, ProjectLinksOutput, "operator", "Read a Project's links card (project) or the cards of the Projects linked to a chat and topic (chat, topic): Notion and Frame.io links, every chat link with its state (active, inactive, waiting, denied, dead) and CRM links. An operator may read any Project; the `project_links` grant reads only what is linked to the chat it names. For a topic with no Project, `can_link` and `suggested_code` (from `topic_name` and `asker_telegram_id`) say whether the asker may /link it and to which code.", project_links, read_only=True),
     Verb("project", "crm-links", "Read a Project's CRM links by kind", (), ProjectCrmLinksInput, ProjectCrmLinksOutput, "operator", "Read the CRM Sheet Log; links grouped by kind.", project_crm_links, read_only=True),
     Verb("project", "link-chat", "Link a Telegram chat to a Project", (), ProjectChatInput, ProjectChatOutput, "coordinator", "Approval is required.", project_link_chat),
     Verb("project", "unlink-chat", "Unlink a Telegram chat from a Project", (), ProjectChatInput, ProjectChatOutput, "coordinator", "Approval is required.", project_unlink_chat),
@@ -4230,7 +4279,15 @@ def add_parsers(commands: Any) -> None:
                                     required=field.is_required(), default=field.get_default())
             parser.set_defaults(registered_verb=entry)
             continue
-        if entry.handler in (project_links, project_crm_links):
+        if entry.handler is project_links:
+            parser.add_argument('project', nargs='?')
+            parser.add_argument('--chat', type=int)
+            parser.add_argument('--topic', type=int)
+            parser.add_argument('--topic-name')
+            parser.add_argument('--asker-telegram-id', type=int)
+            parser.set_defaults(registered_verb=entry)
+            continue
+        if entry.handler is project_crm_links:
             parser.add_argument('project')
             parser.set_defaults(registered_verb=entry)
             continue
