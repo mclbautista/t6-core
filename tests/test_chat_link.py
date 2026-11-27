@@ -752,7 +752,7 @@ class ProjectLinksVerbTests(unittest.TestCase):
         assert isinstance(bare_res, Done)
         self.assertEqual(
             bare_res.result,
-            {'project_id': bare.project.id, 'name': None, 'code': 'BARE1', 'notion_url': None, 'frameio_url': None, 'chat_links': []},
+            {'project_id': bare.project.id, 'name': None, 'code': 'BARE1', 'notion_url': None, 'frameio_url': None, 'chat_links': [], 'links': {}, 'links_unavailable': False},
         )
 
         class BrokenNotion:
@@ -923,6 +923,78 @@ class ProjectLinksVerbTests(unittest.TestCase):
         granted = self._request('link-chat', -2, 2, 'c')
         self._decide(granted, 'grant', 'c-g')
         self.assertNotIn((-2, 2), self._states())
+
+    # --- links by kind (#690) ---
+
+    def _card(self) -> dict[str, Any]:
+        from t6.client import Client
+        from t6.verbs import ProjectLinksInput
+        res = Client(self.base_url, 'operator-secret').project_links(ProjectLinksInput(project=self.project_id))
+        assert isinstance(res, Done)
+        return dict(res.result)
+
+    def _sheet(self, *rows: tuple[Any, ...]) -> Any:
+        class Sheet:
+            workbook = 'synthetic-crm'
+
+            def tabs(self) -> dict[str, tuple[tuple[Any, ...], ...]]:
+                return {'Log': (('Date', 'Project', 'Kind', 'Note', 'Link', 'By', 'Remind on', 'Done'), *rows)}
+        return lambda environ: Sheet()
+
+    def test_card_lists_log_links_by_kind_newest_first_with_unknown_kinds(self) -> None:
+        me = f'Big Show \u00b7 {self.project_id}'
+        other = 'Someone Else \u00b7 t6p_' + 'e' * 24
+        source = self._sheet(
+            (46000, me, 'quote', None, 'https://example.invalid/q-old', None, None, None),
+            (46002, me, 'quote', None, 'https://example.invalid/q-new', None, None, None),
+            (46001, me, 'billing', None, 'https://example.invalid/b', None, None, None),
+            (46003, me, 'Proposal', None, 'https://example.invalid/p', None, None, None),
+            (46004, me, 'message', None, 'https://mail.google.com/mail/u/0/#inbox/abc', None, None, None),
+            (46005, me, 'call', 'no link here', None, None, None, None),
+            (46006, other, 'quote', None, 'https://example.invalid/x', None, None, None),
+        )
+        with patch('t6.crm.config.crm_source', source):
+            card = self._card()
+        self.assertEqual(card['links'], {
+            'quote': ['https://example.invalid/q-new', 'https://example.invalid/q-old'],
+            'billing': ['https://example.invalid/b'],
+            'proposal': ['https://example.invalid/p'],
+            'gmail_thread': ['https://mail.google.com/mail/u/0/#inbox/abc'],
+        })
+        self.assertFalse(card['links_unavailable'])
+        self.assertEqual(card['name'], 'Big Show')
+
+    def test_card_with_no_links_has_no_links_and_no_error(self) -> None:
+        with patch('t6.crm.config.crm_source', self._sheet()):
+            empty = self._card()
+        with patch('t6.crm.config.crm_source', lambda environ: None):  # CRM Sheet not set up
+            off = self._card()
+        for card in (empty, off):
+            self.assertEqual((card['links'], card['links_unavailable'], card['code']), ({}, False, 'ABC-123'))
+
+    def test_card_survives_a_sheet_error_or_timeout(self) -> None:
+        import threading
+
+        def broken(environ: Any) -> Any:
+            raise ValueError('Google Sheets read failed (503)')
+
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        class Slow:
+            workbook = 'slow'
+
+            def tabs(self) -> dict[str, tuple[tuple[Any, ...], ...]]:
+                release.wait(5)
+                return {}
+
+        with patch('t6.crm.config.crm_source', broken):
+            failed = self._card()
+        with patch('t6.crm.config.crm_source', lambda environ: Slow()), patch('t6.verbs.CARD_LINKS_TIMEOUT_SECONDS', 0.05):
+            slow = self._card()
+        for card in (failed, slow):
+            self.assertEqual((card['links'], card['links_unavailable']), ({}, True))
+            self.assertEqual((card['name'], card['code'], card['notion_url']), ('Big Show', 'ABC-123', f"https://www.notion.so/{self.page_id.replace('-', '')}"))
 
     def test_operator_only_authorization(self) -> None:
         from t6.client import Client

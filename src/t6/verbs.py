@@ -353,13 +353,40 @@ class ProjectLinksOutput(BaseModel):
     notion_url: str | None = None
     frameio_url: str | None = None
     chat_links: list[ProjectChatLink]
+    links: dict[str, list[str]] = {}  # CRM Log links by kind, newest first; no key for a kind with none
+    links_unavailable: bool = False  # the CRM Sheet could not be read in time; the rest of the card is intact
+
+
+CARD_LINKS_TIMEOUT_SECONDS = 5.0
+
+
+def _card_links(project_id: str) -> tuple[dict[str, list[str]], bool]:
+    """The Project's CRM Log links for the card, and whether the read failed. Off (no CRM Sheet) is no links, not a failure."""
+    from concurrent.futures import ThreadPoolExecutor
+    from t6.crm.config import crm_source
+    from t6.crm.log import card_links, read_log
+
+    def read() -> dict[str, list[str]]:
+        source = crm_source(os.environ)
+        return card_links(read_log(source, {project_id}), project_id) if source is not None else {}
+
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        return pool.submit(read).result(timeout=CARD_LINKS_TIMEOUT_SECONDS), False
+    except Exception:  # a timeout or any read error; the card never waits on, or fails with, the Sheet
+        return {}, True
+    finally:
+        pool.shutdown(wait=False)
 
 
 def project_links(inputs: ProjectLinksInput, open_notion: Callable[..., Any]) -> Outcome:
     from t6.chat_link import ChatLinks
 
     people = _people()
-    return ChatLinks(people.registry, people.tokens, _project_name_reader(open_notion)).links(inputs.project)
+    card = ChatLinks(people.registry, people.tokens, _project_name_reader(open_notion)).links(inputs.project)
+    if isinstance(card, Done):
+        card.result['links'], card.result['links_unavailable'] = _card_links(card.result['project_id'])
+    return card
 
 
 class CrmSnoozeInput(BaseModel):
