@@ -1,6 +1,7 @@
 # 2. The consumer contract: every app uses t6-core
 
 Date: 2026-11-13. Status: accepted; amended 2026-11-14, 2026-11-16 and 2026-11-22. Source: specs #115, #178 and #577.
+Amendment of rule 10 (many Resolve agents, #777, spec #771): proposed, awaiting owner acceptance.
 
 ## Context
 
@@ -74,6 +75,26 @@ Every app follows these ten rules. Each has its reason.
     through the Resolve scripting API; the project server database stays
     read-only. Owner, 2026-11-22: stamping "should be done by code". *Why:*
     stamps typed by hand get skipped or mistyped, and nothing checks them.
+
+    Amendment, proposed (awaiting owner acceptance; #777, spec #771): the
+    exception above is widened for vfxprep, which needs markers, nested
+    timelines, start timecodes and renames from any fleet Mac with Resolve
+    Studio. Any fleet Resolve agent may write Resolve, only through registered
+    verbs (ADR 0005), only behind a person's confirm and an automatic backtrack
+    point: a backup of the project and the timeline before the write, recorded
+    as a restore point. The stamp-only limit above no longer applies to the
+    verbs the registry lists; the project server database stays read-only. The
+    red lines stay absolute, with no exception and no confirm that lifts them:
+
+    - Never change or delete a user marker or a user's timeline without the
+      owner's confirm.
+    - Never delete a Resolve project or database.
+    - Never call `ArchiveProject`.
+    - Never write the project server's PostgreSQL directly.
+
+    Every write records the host, its Resolve version and the restore point.
+    *Why:* the studio needs more than one write and more than one Mac, and a
+    confirm plus a restore point keeps each write reversible.
 
 ## Consequences
 
