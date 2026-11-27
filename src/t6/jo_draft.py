@@ -19,7 +19,7 @@ from t6.domain.job_order_format import format_job_order
 from t6.domain.job_order_rules import is_deliverable_code, parse_number
 from t6.privacy import withhold
 
-__all__ = ["Line", "Steps", "build_draft", "candidate_text", "classify_answer", "fixed_source", "line_deadline", "other_names", "next_number", "parse_line", "pick_candidates", "pick_match", "questions"]
+__all__ = ["Line", "Steps", "build_draft", "candidate_text", "classify_answer", "fixed_source", "haiku_input", "line_deadline", "merge_fields", "other_names", "next_number", "parse_line", "pick_candidates", "pick_match", "questions"]
 
 UNKNOWN = "(?)"
 MAX_CANDIDATES = 12
@@ -145,6 +145,44 @@ def other_names(task: str, assignee: str | None) -> list[str]:
     return found
 
 
+_PAST_FIELDS = (("Department", "department"), ("Purpose", "purpose"), ("Source", "source"), ("Watermark", "watermark"),
+                ("Mode of Transfer", "mode_of_transfer"), ("Link Settings", "link_settings"), ("Notes", "notes"))
+_HAIKU_KEYS = ("purpose", "source", "watermark", "mode_of_transfer", "link_settings", "notes")
+
+
+def _past_text(order: Mapping[str, Any], heading: str) -> list[str]:
+    return [heading, *(f"{label}: {order.get(key) or ''}" for label, key in _PAST_FIELDS)]
+
+
+def haiku_input(
+    *, line: Line, project_title: str, number: int, copied: Mapping[str, Any] | None, assigned_name: str | None,
+    extra_person: str | None = None, extra_past: Mapping[str, Any] | None = None,
+) -> str:
+    """The one message the formatter skill gets: the request, what is settled, the closest past Job Order and extra lookups.
+
+    Plain text, masked and credential-free later by the runner. Nothing here is a link the skill may copy.
+    """
+    parts = [f"Request: {line.task}", f"Project title: {project_title}", f"JO number: {number}"]
+    if assigned_name:
+        parts.append(f"Assigned: {assigned_name}")
+    parts += _past_text(copied, "Closest past Job Order:") if copied else ["Closest past Job Order: none"]
+    if extra_person:
+        parts.append(f"Another person named in the request: {extra_person}")
+    if extra_past:
+        parts += _past_text(extra_past, "One more past Job Order:")
+    return "\n".join(parts)
+
+
+def merge_fields(copied: Mapping[str, Any] | None, fields: Mapping[str, Any]) -> dict[str, Any]:
+    """The code's copy with the skill's fields over it: a field the skill leaves empty or "(?)" keeps the copy's value."""
+    merged = dict(copied or {})
+    for key in _HAIKU_KEYS:
+        value = " ".join(str(fields.get(key) or "").split())
+        if value and value != UNKNOWN:
+            merged[key] = value
+    return merged
+
+
 def next_number(numbers: Iterable[tuple[str | None, str | None]], taken: Callable[[int], bool]) -> tuple[int, str | None]:
     """The highest JO number plus one, stepped up while `taken`, and a note on how it was picked.
 
@@ -197,6 +235,8 @@ def build_draft(
     copied: Mapping[str, Any] | None = None,
     deadline: str | None = None,
     purpose: str | None = None,
+    task: str | None = None,
+    subtitle: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """The formatted draft text and the formatter's findings.
 
@@ -221,9 +261,10 @@ def build_draft(
             f"{project_code} - {got('department')} - JO #{number}",
             "",
             f"Title: {title}",
-            f"Task: {line.task}",
+            f"Task: {task or line.task}",
             f"Purpose: {purpose or got('purpose')}",
             f"Source: {fixed_source(copied.get('source')) or UNKNOWN}",
+            *([f"Subtitle: {subtitle}"] if subtitle else []),
             f"Mode of Transfer: {got('mode_of_transfer')}",
             f"Link Settings: {got('link_settings')}",
             f"Deadline: {deadline or UNKNOWN}",
